@@ -29,6 +29,41 @@
       "when": 1786460570046,
       "tag": "0003_cooing_spectrum",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786478137829,
+      "tag": "0004_colorful_mojo",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786600000000,
+      "tag": "0120_cart_checkout",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786600000160,
+      "tag": "0160_orders_fulfillment",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786600000200,
+      "tag": "0140_payments",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1786600000300,
+      "tag": "0100_catalog",
+      "breakpoints": true
     }
   ]
 }

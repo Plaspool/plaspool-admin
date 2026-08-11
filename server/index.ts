@@ -10,6 +10,8 @@ import { routes as auth } from './routes/auth';
 import { routes as posts } from './routes/posts';
 import { routes as revisions } from './routes/revisions';
 import { routes as backup } from './routes/backup';
+import { routes as images } from './routes/images';
+import { SHOP_PREFIX, shopApp } from './shop/app';
 import type { AppEnv } from './app-env';
 
 export type { AppEnv } from './app-env';
@@ -131,6 +133,33 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
   app.route(API_PREFIX, posts);
   app.route(API_PREFIX, revisions);
   app.route(API_PREFIX, backup);
+  /*
+   * Mounted like every other router, and note what that does NOT do: importing
+   * this module builds no S3 client. `server/storage/r2.ts` constructs one on
+   * first use, so a deployment with no R2 configuration still boots and still
+   * serves `GET /api/posts` — the media routes are the only ones that fail, and
+   * they fail with a named error rather than taking the import down.
+   */
+  app.route(API_PREFIX, images);
+
+  /*
+   * COMMERCE, UNDER `/api/shop` (commerce contract §10). ONE LINE, and it is the
+   * only edit this file takes for the whole of commerce — that is why the
+   * contract names a single owner for it (§3).
+   *
+   * `shopApp()` is a sub-app that Cart, Payments and Orders mount THEIR routers
+   * into (`server/shop/app.ts`), so four concurrently-built subsystems reach the
+   * network through one seam rather than four edits to this file.
+   *
+   * It inherits everything above it — the request id, the origin guard, the lazy
+   * database factory, the session middleware — because it is mounted after them,
+   * and it deliberately does not re-declare any of them. The storefront routes
+   * are public and the admin routes carry `requireAuth()` per route; the shop
+   * app adds nothing to the chain except an `onError` that renders Catalog's two
+   * conflict errors with a `product` rather than a `post`, falling through to
+   * `toResponse` for every other row of the §8 table.
+   */
+  app.route(`${API_PREFIX}${SHOP_PREFIX}`, shopApp());
 
   return app;
 }

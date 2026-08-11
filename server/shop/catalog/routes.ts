@@ -165,11 +165,21 @@ const UpdateVariantBody = z
  * rather than rounded somewhere later, which is contract §10's "no floats for
  * money" made enforceable at the one place a float could enter. `money()` then
  * refuses it a second time, and the column's `CHECK` a third.
+ *
+ * THE CURRENCY IS SHAPE-CHECKED HERE AND NOT ONLY IN `money()`, AND THAT IS A
+ * BUG FIX. `str().length(3)` alone accepts `"gbp"`, which `money()` then refuses
+ * by throwing `MoneyError` — a programming-error class with no row in the error
+ * table, so it fell through to a **500**. Measured: `PUT
+ * /admin/variants/:id/price` with `{"currency":"gbp"}` answered 500, and a 500
+ * is transient by the client's retry policy — five retries with backoff for a
+ * request that can never succeed, which is the exact failure spec §8's table
+ * exists to prevent. The regex makes it a 400 that names the field; `money()`
+ * stays as the backstop for any caller that is not this route.
  */
 const PriceBody = z
   .object({
     amount: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
-    currency: str().length(3),
+    currency: str().regex(/^[A-Z]{3}$/, 'iso4217'),
   })
   .strict();
 
