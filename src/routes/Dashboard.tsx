@@ -37,6 +37,8 @@ import { Skeleton, ProgressIndeterminate } from '../components/ui/Feedback';
 import { useDelayed } from '../components/ui/useDelayed';
 import { ConfirmDialog } from '../components/Dialog';
 import { openShortcuts } from '../components/ShortcutsDialog';
+import { BrandLogo } from '../components/BrandLogo';
+import { brand } from '../brand';
 import { useToast } from '../components/Toast';
 import type { Post } from '../data/types';
 import './dashboard.css';
@@ -200,7 +202,12 @@ export default function Dashboard() {
       <header className="dash__masthead">
         <div className="dash__brand">
           <div>
-            <h1 className="dash__title">Blog Admin</h1>
+            {/* The <h1> is the logo. Its accessible name comes from the image's
+                own `alt`, so a screen reader hears the publication once — not
+                once for the artwork and again for a hidden label. */}
+            <h1 className="dash__title">
+              <BrandLogo className="dash__logo" />
+            </h1>
             <p className="dash__sub">
               {posts === undefined
                 ? 'Opening your library…'
@@ -307,7 +314,7 @@ export default function Dashboard() {
         <div className="notice notice--danger" role="alert">
           <div>
             <strong>Your library isn’t opening.</strong> This usually means
-            another tab of Blog Admin is holding the database open. Your posts
+            another tab of {brand.name} is holding the database open. Your posts
             are still on disk — close the other tabs and reload.
           </div>
           <div className="notice__actions">

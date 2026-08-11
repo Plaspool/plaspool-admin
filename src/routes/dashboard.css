@@ -27,12 +27,22 @@
 }
 /* The wordmark is identification, not headline. The posts are the headline —
    so the brand sits at label scale and the content carries the weight. */
+/* The wordmark is identification, not headline. The posts are the headline —
+   so the brand sits at label scale and the content carries the weight. That
+   applies to artwork too: the lockup is capped to roughly the height the text
+   wordmark occupied, so swapping in a taller logo cannot shove the masthead
+   around. */
 .dash__title {
   font-family: var(--font-display);
   font-size: var(--step-0);
   font-weight: 600;
   letter-spacing: 0.02em;
   line-height: 1.2;
+}
+.dash__logo {
+  --brand-logo-h: 1.5rem;
+  /* A very wide lockup gets scaled down rather than pushing the actions out. */
+  max-width: min(14rem, 45vw);
 }
 .dash__sub {
   margin-top: 1px;

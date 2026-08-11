@@ -1,0 +1,56 @@
+/* ---------------------------------------------------------------
+   Brand logo. The three selectors below mirror `tokens.css` exactly —
+   :root, the prefers-color-scheme block guarded by :not([data-theme='light']),
+   and the explicit [data-theme='dark'] override. Keeping them identical is
+   what guarantees the logo and the palette always agree about the theme.
+----------------------------------------------------------------- */
+
+.brandlogo {
+  display: inline-flex;
+  align-items: center;
+  /* The caller sets the height; width follows the artwork's aspect ratio. */
+  height: var(--brand-logo-h, 1.75rem);
+}
+.brandlogo img {
+  display: block;
+  height: 100%;
+  width: auto;
+  /* An over-wide lockup must never push the masthead off screen. */
+  max-width: 100%;
+  object-fit: contain;
+}
+
+/* Light surfaces: show the light-surface artwork. */
+.brandlogo__dark {
+  display: none;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .brandlogo__light {
+    display: none;
+  }
+  :root:not([data-theme='light']) .brandlogo__dark {
+    display: block;
+  }
+}
+:root[data-theme='dark'] .brandlogo__light {
+  display: none;
+}
+:root[data-theme='dark'] .brandlogo__dark {
+  display: block;
+}
+/* An explicit light choice wins over the OS preference, same as the tokens. */
+:root[data-theme='light'] .brandlogo__light {
+  display: block;
+}
+:root[data-theme='light'] .brandlogo__dark {
+  display: none;
+}
+
+/* No artwork configured: the name carries the identity on its own. */
+.brandlogo--text {
+  font-family: var(--font-display);
+  font-size: var(--step-0);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+}

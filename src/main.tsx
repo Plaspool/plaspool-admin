@@ -7,6 +7,7 @@ import './styles/prose.css';
 import { ToastProvider } from './components/Toast';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { initTheme } from './components/ThemeToggle';
+import { syncDocumentBrand } from './brand';
 import { RouteError } from './components/RouteError';
 import { TooltipProvider } from './components/ui/Switch';
 import { ShortcutsDialog } from './components/ShortcutsDialog';
@@ -19,6 +20,10 @@ import SettingsRoute from './routes/Settings';
 // host without server rewrite rules.
 // Apply the saved theme before first paint so there is no light flash.
 initTheme();
+// Same reason, and same moment: the brand's accent has to be in the cascade
+// before anything paints, or the first frame renders in the design system's
+// default green and then snaps to the publication's colour.
+syncDocumentBrand();
 
 // Offline shell. Production only — a service worker in dev fights HMR.
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {

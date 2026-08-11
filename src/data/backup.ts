@@ -122,7 +122,10 @@ export async function importBundle(json: string): Promise<ImportResult> {
     !bundle.format.startsWith('publishing-studio/') ||
     !Array.isArray(bundle.posts)
   ) {
-    throw new ImportError('That doesn’t look like a Blog Admin backup file.');
+    // Deliberately not naming the publication. `data/` is the layer that lifts
+    // onto a server almost unchanged (ARCHITECTURE §1), and importing the brand
+    // here would tie it to one deployment's identity for the sake of one noun.
+    throw new ImportError('That doesn’t look like a backup file from this app.');
   }
 
   // Old ids → new ids, so documents keep pointing at the right images.

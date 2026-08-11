@@ -4,11 +4,45 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
+
+    <!--
+      ===================== BRAND — keep in sync with src/brand.ts =====================
+      This block duplicates values from `src/brand.ts`, and it has to: a social
+      crawler fetches this HTML and never runs the app, so the tags below are the
+      only ones it will ever see. `src/brand.test.tsx` compares the two and fails
+      if they drift, which is what stops that duplication from rotting.
+
+      Per-POST share cards (a card that shows the article's own title and cover)
+      cannot be done here at all — one static file cannot describe every post.
+      That needs server-rendered meta and is written up in ARCHITECTURE.md
+      § TODO — future backend.
+      ==================================================================================
+    -->
+    <title>PlaSpool — Writing studio</title>
     <meta
       name="description"
-      content="A local-first publishing studio. Your posts live in your browser."
+      content="A local-first publishing studio. Write, organise and read your posts — all of it stored in your browser. No account, no server, no waiting."
     />
-    <title>Blog Admin — local-first publishing</title>
+    <link rel="icon" href="/brand/icon.png" />
+    <link rel="apple-touch-icon" href="/brand/icon.png" />
+    <!-- Tints the browser chrome on mobile. Brand accent, one per theme. -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#231c50" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14140f" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="PlaSpool" />
+    <meta property="og:title" content="PlaSpool — Writing studio" />
+    <meta
+      property="og:description"
+      content="A local-first publishing studio. Write, organise and read your posts — all of it stored in your browser. No account, no server, no waiting."
+    />
+    <meta property="og:url" content="https://blog-admin-app-gold.vercel.app" />
+    <meta
+      property="og:image"
+      content="https://blog-admin-app-gold.vercel.app/brand/icon.png"
+    />
+    <meta name="twitter:card" content="summary" />
+    <!-- ==================== end BRAND ==================== -->
   </head>
   <body>
     <div id="root"></div>
