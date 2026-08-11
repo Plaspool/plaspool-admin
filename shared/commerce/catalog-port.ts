@@ -1,0 +1,183 @@
+/**
+ * `CatalogPort` and its types (contract §5), in a file **Catalog owns
+ * exclusively** and which `shared/commerce/ports.ts` re-exports.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * WHY NOT WRITTEN DIRECTLY INTO `ports.ts`, WHICH IS WHERE §5 PUTS IT. Because
+ * "shared, append-only" is a convention with no mechanism behind it, and it did
+ * not hold. During this build `shared/commerce/ports.ts` was WHOLESALE
+ * OVERWRITTEN by successive agents rather than appended to, and Catalog's block
+ * was silently lost twice — as was the same block in
+ * `server/db/commerce-schema.ts`. Raised as amendment A-CAT-009.
+ *
+ * A file per owner, re-exported from the shared one, keeps §5's actual purpose
+ * — one import path where every port is reachable — while reducing the
+ * contested surface to a single `export *` line. A clobber then costs one line
+ * that `tsc` names immediately, instead of two hundred that vanish quietly. And
+ * a consumer whose re-export has been clobbered can still import
+ * `shared/commerce/catalog-port` directly and keep working.
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * NOTHING HERE IMPORTS A `server/` MODULE. `shared/` is compiled into the
+ * browser bundle as well as the server, so `Db` is a TYPE PARAMETER rather than
+ * an import of `server/db/client` — the convention `PaymentPort<Db>` set in
+ * `ports.ts`. Contract §5 writes the signatures as `quote(db: Db, …)` and that
+ * is exactly what they are; naming the concrete type here is the one thing that
+ * would make this file server-only.
+ */
+
+/**
+ * `draft` → not for sale. `active` → sellable. `archived` → withdrawn.
+ *
+ * NOT `published`, deliberately: a product's sellable state and a blog post's
+ * public state are different words for different things, and reusing the word
+ * would invite the two lifecycles to be merged later.
+ *
+ * The array is exported beside the union because `server/shop/catalog/schema.ts`
+ * builds its `check()` list from it. A check whose literals were retyped by hand
+ * is a check that disagrees with its TypeScript union the first time either
+ * changes, and the disagreement surfaces as a 23514 in production rather than as
+ * a type error.
+ */
+export type ProductStatus = 'draft' | 'active' | 'archived';
+export const PRODUCT_STATUSES: readonly ProductStatus[] = ['draft', 'active', 'archived'];
+
+/**
+ * A variant is sellable or it is retired. There is no `draft` variant: the
+ * PRODUCT's status decides whether anything beneath it may be sold, so a second
+ * draft-ness on the variant would be two answers to one question.
+ */
+export type VariantStatus = 'active' | 'discontinued';
+export const VARIANT_STATUSES: readonly VariantStatus[] = ['active', 'discontinued'];
+
+/**
+ * The state of one stock hold, in Catalog's own ledger (`shop_inventory_holds`,
+ * amendment A-CAT-002).
+ *
+ * `held` is counted in `shop_inventory.reserved`; the other two are terminal and
+ * are not. Both `release` and `commitReservation` require `held`, which is what
+ * makes the sweeper/capture race a no-op for whichever loses rather than a
+ * double decrement (brief §5).
+ */
+export type HoldState = 'held' | 'released' | 'committed';
+export const HOLD_STATES: readonly HoldState[] = ['held', 'released', 'committed'];
+
+/**
+ * A priced, sellable snapshot of one variant AT THIS INSTANT.
+ *
+ * Everything a cart line needs to be built without asking Catalog a second
+ * question, and everything it needs to be FROZEN: contract §5 says a checkout's
+ * totals are computed once and never recomputed, so a quote that made its caller
+ * re-read the price later would defeat that by construction.
+ *
+ * "Sellable" is decided HERE and once — the product is `active` and not deleted,
+ * the variant is `active`, and a current price row exists. A consumer that had to
+ * assemble that predicate itself would be a second implementation of Catalog's
+ * publication rules living in Cart, and the two would disagree the first time
+ * either changed.
+ */
+export interface VariantQuote {
+  variantId: string;
+  productId: string;
+  sku: string;
+  /** The PRODUCT's title. A variant has options, not a name of its own. */
+  title: string;
+  /** `{ "Size": "M", "Colour": "Navy" }` — the option tuple, for display. */
+  optionValues: Record<string, string>;
+  /**
+   * Contract §10's `Money`, spelled structurally so this file needs no import
+   * at all. `shared/commerce/money.ts`'s `Money` is assignable to it.
+   */
+  price: { amount: number; currency: string };
+  /** Shipping needs it; NULL is honest for a variant nobody has weighed. */
+  weightGrams: number | null;
+  /**
+   * `on_hand - reserved`, DERIVED (brief §5). A number to SHOW a shopper, never
+   * a number to decide a sale on: between this read and a `reserve`, any
+   * quantity of it can be taken. `reserve` re-checks inside its own conditional
+   * statement rather than trusting this, which is why the two are separate
+   * calls rather than one.
+   */
+  available: number;
+  /** When true, `available <= 0` does not refuse a reservation. */
+  backorderable: boolean;
+}
+
+export interface ReservationRequest {
+  /**
+   * CALLER-SUPPLIED, AND THE IDEMPOTENCY KEY (brief §5). Reserving twice with
+   * the same id holds stock once — enforced by a unique row inside Catalog, not
+   * by a JS check on a prior read, because a check on a stale read is exactly
+   * what GAUNTLET II Part 2b measured as having zero effect across 254 tests.
+   */
+  reservationId: string;
+  variantId: string;
+  /** A positive integer. Anything else is `{ ok: false, reason: 'invalid_qty' }`. */
+  qty: number;
+  /**
+   * epoch-ms. Recorded by Catalog and acted on by NOTHING in Catalog: Cart owns
+   * the expiry policy and sweeps expired holds through `release` (brief §5). The
+   * count is Catalog's, the clock is Cart's.
+   */
+  expiresAt: number;
+}
+
+/**
+ * INSUFFICIENT STOCK IS A RETURN VALUE, NOT AN EXCEPTION (brief §5).
+ *
+ * A shopper adding the last two of an item to their basket is the most ordinary
+ * event a shop has. Thrown, it is indistinguishable at every layer above from a
+ * database being down — same `catch`, same 500, same five client retries for a
+ * request whose answer will never change — and the one thing the customer has to
+ * be told, HOW MANY ARE ACTUALLY LEFT, is the thing an exception has nowhere to
+ * put.
+ */
+export type ReservationResult =
+  | {
+      ok: true;
+      reservationId: string;
+      variantId: string;
+      qty: number;
+      /** Availability AFTER this hold. */
+      available: number;
+      /**
+       * True when the call found the hold already recorded and changed nothing.
+       * The caller succeeded either way; this exists so a retry is visible in a
+       * log rather than looking like a second sale.
+       */
+      replayed: boolean;
+    }
+  | {
+      ok: false;
+      /**
+       * - `insufficient` — the stock is not there. `available` says how much is.
+       * - `unknown_variant` — no inventory row: the variant does not exist, or
+       *   was deleted between the quote and the reservation.
+       * - `not_sellable` — it exists but may not be sold right now: the product
+       *   is draft, archived or trashed, or the variant is discontinued.
+       * - `invalid_qty` — non-positive or non-integer. A return value rather
+       *   than a throw so a malformed cart line cannot become a 500.
+       */
+      reason: 'insufficient' | 'unknown_variant' | 'not_sellable' | 'invalid_qty';
+      available: number;
+    };
+
+/**
+ * Implemented by Catalog in `server/shop/catalog/port.ts`. Consumed by Cart, and
+ * by Payments for the capture-time commit.
+ *
+ * Consumed BY INJECTION, never by importing the implementation (contract §5), so
+ * every consumer can be tested against
+ * `server/shop/catalog/test/fake-catalog-port.ts` and no consumer is ever
+ * blocked on Catalog's code landing.
+ */
+export interface CatalogPort<Db> {
+  /** Priced, sellable snapshot of a variant at this instant, or null. */
+  quote(db: Db, variantId: string): Promise<VariantQuote | null>;
+  /** Atomically hold `qty` of `variantId` until `expiresAt`. */
+  reserve(db: Db, req: ReservationRequest): Promise<ReservationResult>;
+  /** Idempotent by reservationId, and safe after expiry. */
+  release(db: Db, reservationId: string): Promise<void>;
+  /** Reservation → permanent decrement. Idempotent. Called on payment capture. */
+  commitReservation(db: Db, reservationId: string): Promise<void>;
+}
