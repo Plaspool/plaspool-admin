@@ -270,6 +270,29 @@ export async function readJson<T>(c: Context, schema: ZodType<T>): Promise<T> {
   return parsed.data;
 }
 
+/**
+ * As `readJson`, but an ABSENT body is `{}` rather than a 400.
+ *
+ * `POST /api/posts` creates an empty draft, so `fetch('/api/posts', { method:
+ * 'POST' })` with no body at all is the ordinary call. `c.req.json()` throws on
+ * an empty string, which would make the simplest possible request the one that
+ * fails.
+ */
+export async function readJsonOrEmpty<T>(c: Context, schema: ZodType<T>): Promise<T> {
+  const text = await c.req.text();
+  let raw: unknown = {};
+  if (text.trim() !== '') {
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      throw new BadRequestError('body');
+    }
+  }
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) throw new BadRequestError(zodDetail(parsed.error));
+  return parsed.data;
+}
+
 /** As `readJson`, for query strings. */
 export function readQuery<T>(c: Context, schema: ZodType<T>): T {
   const parsed = schema.safeParse(c.req.query());

@@ -7,6 +7,7 @@ import { NotFoundError } from './repo/errors';
 import { originGuard } from './middleware/origin';
 import { sessionMiddleware } from './middleware/session';
 import { routes as auth } from './routes/auth';
+import { routes as posts } from './routes/posts';
 import type { AppEnv } from './app-env';
 
 export type { AppEnv } from './app-env';
@@ -105,6 +106,7 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
   app.use(`${API_PREFIX}/*`, sessionMiddleware());
 
   app.route(API_PREFIX, auth);
+  app.route(API_PREFIX, posts);
 
   return app;
 }
