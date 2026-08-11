@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createHash, createHmac } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { SEED_PASSWORD, freshDb, migratedDb } from '../test/harness';
 import { verifyPassword } from './password';
@@ -7,11 +8,13 @@ import type { Db } from '../db/client';
 import {
   SESSION_ABSOLUTE_MAX_MS,
   SESSION_TTL_MS,
+  UserInputError,
   acceptInvite,
   createInvite,
   createSession,
   createUser,
   destroySession,
+  disableUser,
   findUserByEmail,
   resolveSession,
 } from './users';
@@ -33,7 +36,7 @@ const email = () => `u${++seq}.${Date.now().toString(36)}@test.local`;
 async function owner() {
   return createUser(db, {
     email: email(),
-    password: 'pw-owner',
+    password: 'pw-owner-strong',
     displayName: 'Owner',
     role: 'owner',
   });
@@ -41,10 +44,13 @@ async function owner() {
 
 async function sessionRow(userId: string) {
   const res = await db.execute(sql`
-    SELECT created_at, expires_at FROM sessions WHERE user_id = ${userId}`);
+    SELECT id, created_at, expires_at, last_seen_at
+      FROM sessions WHERE user_id = ${userId}`);
   return {
+    id: String(res.rows[0].id),
     createdAt: Number(res.rows[0].created_at),
     expiresAt: Number(res.rows[0].expires_at),
+    lastSeenAt: Number(res.rows[0].last_seen_at),
   };
 }
 
@@ -110,6 +116,91 @@ describe('sessions', () => {
     expect(capped.expiresAt).toBeLessThan(now + SESSION_TTL_MS);
     expect(capped.expiresAt).toBeGreaterThan(now);
   });
+
+  it('writes last_seen_at on every resolve, not only when the window slides', async () => {
+    const user = await owner();
+    const { token } = await createSession(db, user.id);
+    const before = await sessionRow(user.id);
+
+    // Backdate ONLY last_seen_at. `expires_at` stays fresh, so the session is
+    // nowhere near the halfway point and the sliding-refresh branch cannot
+    // fire. Written inside that branch — as it used to be — last_seen_at moves
+    // at most once per ~15 days, so a session-management UI reports a
+    // fortnight-old "last used" for a session in use this minute, and the one
+    // question that column exists to answer is answered wrongly.
+    const stale = Date.now() - 3 * 24 * 60 * 60 * 1000;
+    await db.execute(sql`
+      UPDATE sessions SET last_seen_at = ${stale} WHERE user_id = ${user.id}`);
+
+    expect(await resolveSession(db, token)).not.toBeNull();
+
+    const after = await sessionRow(user.id);
+    expect(after.lastSeenAt).toBeGreaterThan(stale);
+    // Proof the refresh branch really did not run: expiry did not move.
+    expect(after.expiresAt).toBe(before.expiresAt);
+  });
+
+  it('stores the session id keyed by SESSION_SECRET, not as a bare digest', async () => {
+    // A bare SHA-256 is offline-computable, so a stolen database dump can be
+    // attacked with a precomputed table of candidate tokens and the winning row
+    // replayed as a live session. Keying it with a secret that lives in the
+    // environment rather than the database makes the dump inert on its own —
+    // and gives SESSION_SECRET, which `server/env.ts` requires, a consumer.
+    const secret = process.env.SESSION_SECRET;
+    expect(secret).toBeTruthy();
+
+    const user = await owner();
+    const { token } = await createSession(db, user.id);
+    const stored = (await sessionRow(user.id)).id;
+
+    expect(stored).not.toBe(createHash('sha256').update(token).digest('hex'));
+    expect(stored).toBe(createHmac('sha256', secret!).update(token).digest('hex'));
+
+    // Invite tokens go through the same function, so they are keyed too.
+    const { token: inviteToken } = await createInvite(db, {
+      email: email(),
+      role: 'writer',
+      invitedBy: user.id,
+    });
+    const inviteRow = await db.execute(sql`
+      SELECT token_hash FROM invites WHERE invited_by = ${user.id}`);
+    const storedInvite = String(inviteRow.rows[0].token_hash);
+    expect(storedInvite).not.toBe(
+      createHash('sha256').update(inviteToken).digest('hex'),
+    );
+    expect(storedInvite).toBe(
+      createHmac('sha256', secret!).update(inviteToken).digest('hex'),
+    );
+  });
+
+  it('disabling a user destroys their sessions, so reinstating cannot resurrect one', async () => {
+    const user = await owner();
+    const { token } = await createSession(db, user.id);
+    expect(await resolveSession(db, token)).not.toBeNull();
+
+    expect(await disableUser(db, user.id)).toBe(1);
+    expect(await resolveSession(db, token)).toBeNull();
+
+    // Gone, not merely shadowed by `disabled_at`. Marking alone is not
+    // revocation: the rows survive, so the day someone clears `disabled_at` to
+    // reinstate a writer, every session ever issued to them comes back — including
+    // the one on the laptop that prompted the revocation.
+    const rows = await db.execute(sql`
+      SELECT count(*)::int AS n FROM sessions WHERE user_id = ${user.id}`);
+    expect(rows.rows[0].n).toBe(0);
+
+    await db.execute(sql`UPDATE users SET disabled_at = NULL WHERE id = ${user.id}`);
+    expect(await resolveSession(db, token)).toBeNull();
+
+    // Idempotent, and it keeps the original disable time.
+    const first = await db.execute(sql`
+      UPDATE users SET disabled_at = 123 WHERE id = ${user.id} RETURNING disabled_at`);
+    expect(Number(first.rows[0].disabled_at)).toBe(123);
+    expect(await disableUser(db, user.id)).toBe(0);
+    const still = await db.execute(sql`
+      SELECT disabled_at FROM users WHERE id = ${user.id}`);
+    expect(Number(still.rows[0].disabled_at)).toBe(123);
+  });
 });
 
 describe('invites', () => {
@@ -131,7 +222,7 @@ describe('invites', () => {
     expect(await findUserByEmail(db, invitee)).not.toBeNull();
 
     await expect(
-      acceptInvite(db, { token, password: 'second', displayName: 'Impostor' }),
+      acceptInvite(db, { token, password: 'second-attempt-x', displayName: 'Impostor' }),
     ).rejects.toThrow(/invite/i);
   });
 
@@ -147,7 +238,7 @@ describe('invites', () => {
       UPDATE invites SET expires_at = ${Date.now() - 1} WHERE id = ${id}`);
 
     await expect(
-      acceptInvite(db, { token, password: 'pw', displayName: 'Late' }),
+      acceptInvite(db, { token, password: 'too-late-here', displayName: 'Late' }),
     ).rejects.toThrow(/invite/i);
     // Nothing was created on the way to the rejection.
     expect(await findUserByEmail(db, invitee)).toBeNull();
@@ -164,7 +255,7 @@ describe('invites', () => {
 
     const user = await acceptInvite(db, {
       token,
-      password: 'pw',
+      password: 'mallory-password',
       displayName: 'Mallory',
       // Smuggled in. The invite is the authority for both of these.
       email: 'mallory@evil.test',
@@ -178,12 +269,86 @@ describe('invites', () => {
   });
 });
 
+describe('credential policy', () => {
+  async function inviteFor(inviterId: string) {
+    const invitee = email();
+    const { token } = await createInvite(db, {
+      email: invitee,
+      role: 'writer',
+      invitedBy: inviterId,
+    });
+    return { invitee, token };
+  }
+
+  it('refuses an empty or too-short password and leaves the invite spendable', async () => {
+    const inviter = await owner();
+    const { invitee, token } = await inviteFor(inviter.id);
+
+    // Before this policy, an empty password was ACCEPTED — scrypt hashes ''
+    // quite happily — and then `verifyPassword('', stored)` returned true, so
+    // the account was open to anyone who knew the address.
+    await expect(
+      acceptInvite(db, { token, password: '', displayName: 'Empty' }),
+    ).rejects.toBeInstanceOf(UserInputError);
+    await expect(
+      acceptInvite(db, { token, password: 'nine-char', displayName: 'Short' }),
+    ).rejects.toThrow(/at least 10/);
+
+    // Nothing was created, and the invite was not burned on the way out.
+    expect(await findUserByEmail(db, invitee)).toBeNull();
+    const user = await acceptInvite(db, {
+      token,
+      password: 'a-long-enough-one',
+      displayName: 'Real',
+    });
+    expect(user.email).toBe(invitee);
+  });
+
+  it('refuses a display name that is blank or only whitespace', async () => {
+    const inviter = await owner();
+    const { invitee, token } = await inviteFor(inviter.id);
+
+    const err = await acceptInvite(db, {
+      token,
+      password: 'a-long-enough-one',
+      displayName: '   ',
+    }).then(
+      () => {
+        throw new Error('expected a blank display name to be refused');
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(UserInputError);
+    expect((err as UserInputError).field).toBe('displayName');
+    expect(await findUserByEmail(db, invitee)).toBeNull();
+  });
+
+  it('applies to createUser too, and trims the stored display name', async () => {
+    await expect(
+      createUser(db, {
+        email: email(),
+        password: 'short',
+        displayName: 'Anyone',
+        role: 'writer',
+      }),
+    ).rejects.toBeInstanceOf(UserInputError);
+
+    const user = await createUser(db, {
+      email: email(),
+      password: 'a-long-enough-one',
+      displayName: '  Padded Name  ',
+      role: 'writer',
+    });
+    expect(user.displayName).toBe('Padded Name');
+  });
+});
+
 describe('users', () => {
   it('findUserByEmail is case-insensitive and returns the hash separately', async () => {
     const address = email();
     const created = await createUser(db, {
       email: address.toUpperCase(),
-      password: 'pw-lookup',
+      password: 'pw-lookup-long',
       displayName: 'Mixed Case',
       role: 'writer',
     });

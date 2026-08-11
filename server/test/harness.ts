@@ -1,8 +1,9 @@
-import { PGlite } from '@electric-sql/pglite';
+import { PGlite, types } from '@electric-sql/pglite';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { sql } from 'drizzle-orm';
 import * as schema from '../db/schema';
+import { guardDb } from '../db/client';
 import type { Db } from '../db/client';
 import type { AuthUser } from '../../shared/types';
 import { hashPassword } from '../repo/password';
@@ -30,9 +31,26 @@ export interface RawCtx {
   close(): Promise<void>;
 }
 
+/**
+ * Make the test driver behave like the production one.
+ *
+ * PGlite parses int8 into a JS number; `@neondatabase/serverless` returns it as
+ * a string. Left alone, every bigint read is correct in the suite and wrong in
+ * production — `row.expires_at <= now` becomes a string comparison, and
+ * `row.created_at + TTL` becomes concatenation. Overriding the int8 parser to
+ * pass the raw string through makes PGlite the stricter of the two, so
+ * `toEpochMs` is exercised for real rather than trusted (spec §9).
+ *
+ * Do not "fix" a test by removing this. A test that only passes with PGlite's
+ * numeric int8 is a test that documents a production 500.
+ */
+const NEON_LIKE_PARSERS = { [types.INT8]: (value: string) => value };
+
 export async function migratedDb(): Promise<RawCtx> {
-  const client = new PGlite();
-  const db = drizzle(client, { schema }) as unknown as Db;
+  const client = new PGlite({ parsers: NEON_LIKE_PARSERS });
+  // Guarded exactly as `getDb()` guards the production handle, so a driver
+  // error that would leak query parameters fails the suite instead of shipping.
+  const db = guardDb(drizzle(client, { schema }) as unknown as Db);
   await migrate(db as never, { migrationsFolder: 'server/db/migrations' });
   return { db, close: () => client.close() };
 }

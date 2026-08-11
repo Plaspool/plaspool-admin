@@ -1,7 +1,9 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { sql } from 'drizzle-orm';
+import { toEpochMs, uniqueViolation } from '../db/client';
 import type { Db } from '../db/client';
 import type { AuthUser } from '../../shared/types';
+import { getEnv } from '../env';
 import { hashPassword } from './password';
 
 export type Role = 'owner' | 'writer';
@@ -26,22 +28,67 @@ export class InviteError extends Error {
   }
 }
 
+/**
+ * A duplicate email surfaced as a domain error rather than a driver error.
+ *
+ * Without this, the ordinary "invite an address that already has an account"
+ * path throws a `DrizzleQueryError` whose message and stack carry the account
+ * email and the freshly derived password hash. `guardDb` scrubs that centrally;
+ * translating here means the unique-violation path never produces a driver
+ * error to scrub in the first place, and gives the route layer something it can
+ * map onto a 409 without string-matching a SQLSTATE.
+ */
+export class DuplicateEmailError extends Error {
+  constructor() {
+    // Deliberately no email in the message — this is the exact value the leak
+    // was about.
+    super('an account already exists for that email address');
+    this.name = 'DuplicateEmailError';
+  }
+}
+
+/**
+ * Ghost's bar is ten characters plus a common-password blocklist. The length
+ * floor is here; the blocklist is not, and its absence is deliberate rather
+ * than forgotten — it belongs with the auth routes that can report it usefully.
+ *
+ * Before this existed, `acceptInvite({ password: '' })` succeeded and the empty
+ * password then verified `true`, because scrypt hashes an empty string quite
+ * happily.
+ */
+export const MIN_PASSWORD_LENGTH = 10;
+
+/** A rejected `password` or `displayName`, carrying which one. */
+export class UserInputError extends Error {
+  readonly field: 'password' | 'displayName';
+  constructor(field: 'password' | 'displayName', message: string) {
+    super(message);
+    this.name = 'UserInputError';
+    this.field = field;
+  }
+}
+
 /** 256 bits, URL-safe. Returned to the client once and never stored raw. */
 function mintToken(): string {
   return randomBytes(32).toString('base64url');
 }
 
-function tokenId(token: string): string {
-  return createHash('sha256').update(token).digest('hex');
-}
-
 /**
- * PGlite hands `bigint` back as a JS number; the Neon HTTP driver hands it
- * back as a string. Coerce at every read so the two agree — a divergence here
- * is the exact class of bug that passes every test and breaks in production.
+ * The stored id of a session or invite token: HMAC-SHA-256 under
+ * `SESSION_SECRET`, not a bare SHA-256.
+ *
+ * A bare digest is offline-computable, so a stolen database dump can be
+ * attacked with a precomputed table of candidate tokens and the winning row
+ * replayed as a live session. Keying the digest with a secret that lives in the
+ * environment and not in the database means a dump on its own is inert. It also
+ * gives `SESSION_SECRET` — required by `server/env.ts` — an actual consumer;
+ * a required variable nothing reads erodes boot-time validation.
+ *
+ * Rotating `SESSION_SECRET` invalidates every outstanding session and invite,
+ * which is the correct behaviour for a secret rotation.
  */
-function num(value: unknown): number {
-  return Number(value);
+function tokenId(token: string): string {
+  return createHmac('sha256', getEnv().SESSION_SECRET).update(token).digest('hex');
 }
 
 function rowToAuthUser(row: Record<string, unknown>): AuthUser {
@@ -55,17 +102,41 @@ function rowToAuthUser(row: Record<string, unknown>): AuthUser {
 
 // ------------------------------------------------------------------- users
 
+/**
+ * The one place a password or a display name is judged, so every route that
+ * creates an account — accept-invite today, anything else later — is bound by
+ * it without having to remember.
+ */
+export function assertCredentials(a: { password: string; displayName: string }): void {
+  if (a.password.length < MIN_PASSWORD_LENGTH) {
+    throw new UserInputError(
+      'password',
+      `password must be at least ${MIN_PASSWORD_LENGTH} characters`,
+    );
+  }
+  if (a.displayName.trim() === '') {
+    throw new UserInputError('displayName', 'display name must not be empty');
+  }
+}
+
 export async function createUser(
   db: Db,
   a: { email: string; password: string; displayName: string; role: Role },
 ): Promise<AuthUser> {
+  // Before hashing: a rejected password should not cost 200 ms of scrypt.
+  assertCredentials(a);
   const passwordHash = await hashPassword(a.password);
-  const res = await db.execute(sql`
-    INSERT INTO users (email, password_hash, display_name, role, created_at)
-    VALUES (${a.email.trim().toLowerCase()}, ${passwordHash}, ${a.displayName},
-            ${a.role}, ${Date.now()})
-    RETURNING id, email, display_name, role`);
-  return rowToAuthUser(res.rows[0]);
+  try {
+    const res = await db.execute(sql`
+      INSERT INTO users (email, password_hash, display_name, role, created_at)
+      VALUES (${a.email.trim().toLowerCase()}, ${passwordHash}, ${a.displayName.trim()},
+              ${a.role}, ${Date.now()})
+      RETURNING id, email, display_name, role`);
+    return rowToAuthUser(res.rows[0]);
+  } catch (err) {
+    if (uniqueViolation(err) === 'users_email_unique') throw new DuplicateEmailError();
+    throw err;
+  }
 }
 
 /**
@@ -121,7 +192,7 @@ export async function resolveSession(db: Db, token: string): Promise<AuthUser | 
   if (!row) return null;
 
   const now = Date.now();
-  const expiresAt = num(row.expires_at);
+  const expiresAt = toEpochMs(row.expires_at);
   if (expiresAt <= now) {
     await db.execute(sql`DELETE FROM sessions WHERE id = ${id}`).catch(() => undefined);
     return null;
@@ -130,21 +201,65 @@ export async function resolveSession(db: Db, token: string): Promise<AuthUser | 
   // their own expiry.
   if (row.disabled_at != null) return null;
 
-  const createdAt = num(row.created_at);
+  const createdAt = toEpochMs(row.created_at);
   const halfway = expiresAt - SESSION_TTL_MS / 2;
-  if (now > halfway) {
-    const next = Math.min(now + SESSION_TTL_MS, createdAt + SESSION_ABSOLUTE_MAX_MS);
-    if (next > expiresAt) {
-      await db
-        .execute(
-          sql`UPDATE sessions SET expires_at = ${next}, last_seen_at = ${now}
-               WHERE id = ${id}`,
-        )
-        .catch(() => undefined);
-    }
-  }
+  const slid =
+    now > halfway
+      ? Math.min(now + SESSION_TTL_MS, createdAt + SESSION_ABSOLUTE_MAX_MS)
+      : expiresAt;
+
+  /**
+   * `last_seen_at` is written on EVERY resolve, not only when the sliding
+   * refresh fires. Folded into the refresh branch it updated at most once per
+   * ~15 days, so the "last used" column of a session-management UI would show a
+   * fortnight-old timestamp for a session in use this minute — and the one
+   * question that column exists to answer ("is this me, or someone else?")
+   * would be answered wrongly.
+   *
+   * `expires_at` never moves backwards: `slid` equals the stored value outside
+   * the refresh window, and the absolute cap can only shorten a slide, so
+   * `GREATEST` keeps a capped session from being pulled in.
+   */
+  await db
+    .execute(
+      sql`UPDATE sessions
+             SET last_seen_at = ${now},
+                 expires_at = GREATEST(expires_at, ${slid})
+           WHERE id = ${id}`,
+    )
+    .catch(() => undefined);
 
   return rowToAuthUser(row);
+}
+
+/**
+ * Revoke a user: mark them disabled AND destroy every session they hold.
+ *
+ * The marking alone is not revocation. `resolveSession` refuses a session whose
+ * user is disabled, but the rows survive — so the day someone clears
+ * `disabled_at` to reinstate a writer, every session ever issued to them comes
+ * back with it, including the one on the laptop that prompted the revocation.
+ * Sessions outlive their reason for existing; deleting them is the only state
+ * that means "revoked".
+ *
+ * One statement, not `db.transaction` — the Neon HTTP driver throws
+ * unconditionally on `transaction()`, so a transaction here would pass every
+ * PGlite test and 500 in production. `COALESCE` keeps the original disable time
+ * on a repeat call while still sweeping any session issued in between.
+ *
+ * @returns how many sessions were destroyed.
+ */
+export async function disableUser(db: Db, userId: string): Promise<number> {
+  const now = Date.now();
+  const res = await db.execute(sql`
+    WITH revoked AS (
+      UPDATE users SET disabled_at = COALESCE(disabled_at, ${now})
+       WHERE id = ${userId}
+      RETURNING id
+    )
+    DELETE FROM sessions WHERE user_id IN (SELECT id FROM revoked)
+    RETURNING id`);
+  return res.rows.length;
 }
 
 export async function destroySession(db: Db, token: string): Promise<void> {
@@ -183,6 +298,10 @@ export async function acceptInvite(
   db: Db,
   a: { token: string; password: string; displayName: string },
 ): Promise<AuthUser> {
+  // Judged before the invite is claimed, so a too-short password costs a
+  // round trip rather than a claim-and-restore cycle.
+  assertCredentials(a);
+
   const now = Date.now();
   const claimed = await db.execute(sql`
     UPDATE invites SET accepted_at = ${now}
@@ -211,6 +330,10 @@ export async function acceptInvite(
              WHERE id = ${String(invite.id)} AND accepted_at = ${now}`,
       )
       .catch(() => undefined);
+    // Safe to rethrow unchanged: `createUser` has already turned the duplicate
+    // email into a `DuplicateEmailError`, and anything that still is a driver
+    // error was scrubbed by `guardDb` before it got here. This line used to be
+    // the shortest route from a unique violation to a password hash in a log.
     throw err;
   }
 }

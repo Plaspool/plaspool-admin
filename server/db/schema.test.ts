@@ -74,9 +74,12 @@ async function mkRevision(
 }
 
 /**
- * Drizzle wraps a driver error in a `Failed query: …` Error and hangs the real
- * one off `cause`, so asserting on the top-level message can never see the
- * constraint name. Flatten the chain and assert on that.
+ * Every `Db` in this codebase is wrapped by `guardDb`, which discards the
+ * driver error — message, query, params, stack and all — and rethrows a
+ * `DbError` carrying only SQLSTATE plus the relation/constraint/column names.
+ * That is what these assertions match on. The flattening walk is kept because
+ * it also holds for an unguarded handle, where the constraint name is down on
+ * `cause` rather than in the message.
  */
 function causeChain(err: unknown): string {
   const parts: string[] = [];
@@ -188,5 +191,54 @@ describe('posts and revisions integrity', () => {
     // positions, which silently makes setweight a no-op.
     expect(vec).toMatch(/'hello':1A/);
     expect(vec).toMatch(/'gamma':\d+C/);
+  });
+});
+
+/**
+ * Two properties of the migration that nothing else asserts, so both could be
+ * deleted from `0000_*.sql` with the whole suite staying green.
+ */
+describe('migration properties', () => {
+  it('sessions.user_id cascades on delete, in the catalogue and in behaviour', async () => {
+    // Catalogue first: `confdeltype` is 'c' for CASCADE, 'a' for NO ACTION.
+    // Asserting the behaviour alone is not enough to name the failure — a
+    // downgrade to NO ACTION makes the DELETE below throw rather than leave
+    // rows behind, and the test would fail for a reason the message hides.
+    const fk = await db.execute(sql`
+      SELECT confdeltype FROM pg_constraint
+       WHERE conname = 'sessions_user_id_users_id_fk'`);
+    expect(fk.rows).toHaveLength(1);
+    expect(fk.rows[0].confdeltype).toBe('c');
+
+    const user = await mkUser();
+    const now = Date.now();
+    await db.execute(sql`
+      INSERT INTO sessions (id, user_id, created_at, expires_at, last_seen_at, user_agent)
+      VALUES (${uid('s')}, ${user}, ${now}, ${now + 1000}, ${now}, NULL)`);
+
+    const before = await db.execute(sql`
+      SELECT count(*)::int AS n FROM sessions WHERE user_id = ${user}`);
+    expect(before.rows[0].n).toBe(1);
+
+    // Deleting a user must not be blocked by their own sessions, and must not
+    // leave orphan rows that a recreated uuid could inherit.
+    await db.execute(sql`DELETE FROM users WHERE id = ${user}`);
+    const after = await db.execute(sql`
+      SELECT count(*)::int AS n FROM sessions WHERE user_id = ${user}`);
+    expect(after.rows[0].n).toBe(0);
+  });
+
+  it('posts_search_idx exists and is a GIN index over the generated column', async () => {
+    // The GIN index is hand-appended DDL, absent from `meta/0000_snapshot.json`
+    // — so it is exactly the kind of thing a regenerate or a `drizzle-kit push`
+    // silently drops. Without this, full-text search degrades to a sequential
+    // scan and every test still passes.
+    const res = await db.execute(sql`
+      SELECT indexdef FROM pg_indexes
+       WHERE tablename = 'posts' AND indexname = 'posts_search_idx'`);
+    expect(res.rows).toHaveLength(1);
+    const def = String(res.rows[0].indexdef);
+    expect(def).toMatch(/USING gin/i);
+    expect(def).toMatch(/\bsearch\b/);
   });
 });

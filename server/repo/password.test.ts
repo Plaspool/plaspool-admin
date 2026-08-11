@@ -42,10 +42,8 @@ describe('password hashing', () => {
   });
 
   it('hashPassword does not block the event loop', async () => {
-    let ticks = 0;
-    const timer = setInterval(() => {
-      ticks++;
-    }, 10);
+    const ticks: number[] = [];
+    const timer = setInterval(() => ticks.push(Date.now()), 10);
     const started = Date.now();
     await Promise.all([
       hashPassword('a'),
@@ -53,13 +51,31 @@ describe('password hashing', () => {
       hashPassword('c'),
       hashPassword('d'),
     ]);
-    const elapsed = Date.now() - started;
+    const finished = Date.now();
     clearInterval(timer);
+    const elapsed = finished - started;
 
     // scryptSync would hold the loop for the whole run and Node coalesces the
     // missed interval fires into one, so `ticks` would be ~1.
     expect(elapsed).toBeGreaterThan(20);
-    expect(ticks).toBeGreaterThanOrEqual(3);
-    expect(ticks).toBeGreaterThan(Math.floor(elapsed / 10) * 0.4);
+    expect(ticks.length).toBeGreaterThanOrEqual(3);
+
+    /**
+     * The longest stretch the loop went unserved — NOT the tick rate.
+     *
+     * A rate assertion (`ticks > elapsed/10 * 0.4`) measures how busy the
+     * machine is, not what this test is about: with four Vitest projects
+     * competing for cores the interval fires every ~40 ms rather than every
+     * ~10 ms, and the test fails on a green codebase. Measured: 13 ticks over
+     * 520 ms against a threshold of 20.8, roughly one full run in three.
+     *
+     * The gap is the property itself, and it separates the two cases by orders
+     * of magnitude rather than by a ratio: async scrypt runs on the libuv
+     * threadpool and never holds the loop for more than a scheduling slice,
+     * while `scryptSync` holds it for essentially the whole `elapsed`.
+     */
+    const marks = [started, ...ticks, finished];
+    const longestGap = Math.max(...marks.slice(1).map((t, i) => t - marks[i]));
+    expect(longestGap).toBeLessThan(elapsed / 2);
   });
 });
