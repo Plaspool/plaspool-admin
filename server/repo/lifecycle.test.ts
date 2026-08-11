@@ -849,6 +849,67 @@ describe('sweepBlankDrafts', () => {
     expect(await getPost(ctx.db, post.id)).not.toBeNull();
   });
 
+  /**
+   * A DOCUMENT WE CANNOT PARSE IS NOT AN EMPTY DOCUMENT.
+   *
+   * The descent needs `jsonb_array_elements` to be handed an array, so a
+   * `content` key holding a string, a number or an object was replaced with
+   * `'[]'::jsonb` — which made "we could not walk this" identical to "there is
+   * nothing in it". Measured before the fix: `{"type":"doc","content":"words"}`
+   * returned `swept: 1`, and the post was gone.
+   *
+   * This is the image-only-draft finding in its worst form. The rows most
+   * likely to hold a malformed document are the ones that came in through
+   * import or a backfill — somebody's migrated archive — and the reason they
+   * are malformed is exactly the reason we cannot judge them.
+   *
+   * Written straight into the column, because `validateDoc` refuses all four
+   * shapes on the API path: a backfill, an import or manual SQL is how they get
+   * there, which is the same door the age floor and the allow-list exist for.
+   */
+  const MALFORMED: [string, string][] = [
+    ['content is a string', '{"type":"doc","content":"words"}'],
+    ['content is an object', '{"type":"doc","content":{"0":{"type":"paragraph"}}}'],
+    ['content is a number', '{"type":"doc","content":42}'],
+    ['content is JSON null', '{"type":"doc","content":null}'],
+    [
+      'a nested content is not an array',
+      '{"type":"doc","content":[{"type":"paragraph","content":"x"}]}',
+    ],
+    [
+      'a nested text is not a string',
+      '{"type":"doc","content":[{"type":"text","text":42}]}',
+    ],
+  ];
+
+  it.each(MALFORMED)('never sweeps a draft whose %s', async (_name, json) => {
+    const post = await seeded({ content: EMPTY, updatedAt: AGES_AGO() });
+    await ctx.db.execute(
+      sql`UPDATE posts SET content = ${json}::jsonb, word_count = 0 WHERE id = ${post.id}`,
+    );
+
+    expect(await sweepBlankDrafts(ctx.db)).toBe(0);
+    expect(await getPost(ctx.db, post.id)).not.toBeNull();
+  });
+
+  it('but an ABSENT content key is still blank, or the sweep would never run', async () => {
+    /*
+     * The other half, and the reason the predicate leads with `IS NOT NULL`.
+     * An empty paragraph is `{ "type": "paragraph" }` with no `content` key at
+     * all — `node -> 'content'` is SQL NULL, not a jsonb value. Treating absent
+     * as malformed would make every blank draft survive, i.e. delete the
+     * feature while every other test stayed green.
+     */
+    const blank = await seeded({ content: EMPTY, updatedAt: AGES_AGO() });
+    await ctx.db.execute(
+      sql`UPDATE posts SET content = '{"type":"doc","content":[{"type":"paragraph"}]}'::jsonb
+           WHERE id = ${blank.id}`,
+    );
+
+    expect(await sweepBlankDrafts(ctx.db)).toBe(1);
+    expect(await getPost(ctx.db, blank.id)).toBeNull();
+  });
+
   it('sweeps every eligible draft in one statement and returns the count', async () => {
     for (let i = 0; i < 3; i += 1) await seeded({ content: EMPTY, updatedAt: AGES_AGO() });
     const kept = await seeded({ title: 'Kept', content: EMPTY, updatedAt: AGES_AGO() });

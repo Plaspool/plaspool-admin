@@ -683,18 +683,41 @@ const BLANK_DRAFT_GRACE_MS = 60_000;
  * recursive term below walks the document exactly as `isBlankDoc` does and an
  * unrecognised node counts as content, which is the safe direction to fail.
  *
- * Three things the SQL is careful about, each mirroring the JS predicate:
+ * AND SO DOES AN UNPARSEABLE ONE. That principle had a hole: the descent needs
+ * `jsonb_array_elements` to be handed an array, so a `content` key that is a
+ * string, a number or an object was replaced with `'[]'::jsonb` — which made a
+ * document we could not walk indistinguishable from one with nothing in it.
+ * Measured: `{"type":"doc","content":"words"}` was swept, the draft destroyed.
+ * That is the same bug as the image-only draft in its worst form, because the
+ * rows most likely to hold a malformed document are the ones that arrived
+ * through import or a backfill — i.e. somebody's migrated archive. The `ELSE`
+ * branch below now only stops the walk from erroring; deciding what a malformed
+ * node MEANS belongs in `occupied`, which counts it as content.
+ *
+ * Four things the SQL is careful about, each mirroring the JS predicate:
  *
  * - it descends through `content` arrays ONLY, never into `attrs` or `marks`,
  *   so a paragraph carrying `attrs: { type: 'image' }` is still blank;
  * - a node with no `type` at all counts as content (`coalesce(…,'')` is in no
  *   allow-list), which is what makes a corrupt or foreign document survive;
  * - `text` counts only when it really is a JSON string, matching
- *   `typeof n.text === 'string'`.
+ *   `typeof n.text === 'string'`;
+ * - a `content` or `text` key that is PRESENT but of the wrong JSON type counts
+ *   as content — absent is not the same as malformed, and an empty paragraph
+ *   (`{ "type": "paragraph" }`, no `content` key at all) must stay sweepable or
+ *   the sweep never runs.
  *
  * One statement, so a draft cannot be half-swept, and `WITH RECURSIVE` is legal
  * around a data-modifying CTE as long as that CTE is not itself the recursive
  * term.
+ *
+ * THE SAME RULE BINDS THE ORPHAN-IMAGE WALK (spec §5.4), which does not exist
+ * yet. `collectOrphanImages` moves server-side as SQL over `posts.content` and
+ * `revisions.content`, and a malformed document reading as "references nothing"
+ * there deletes image bytes that are still in use — the identical failure with
+ * a worse blast radius, because a revision is history nobody can re-upload.
+ * Whatever walks those columns must treat an unwalkable document as referencing
+ * EVERYTHING, or refuse to collect while one exists.
  */
 export async function sweepBlankDrafts(db: Db, exceptId?: string): Promise<number> {
   const cutoff = Date.now() - BLANK_DRAFT_GRACE_MS;
@@ -718,6 +741,9 @@ export async function sweepBlankDrafts(db: Db, exceptId?: string): Promise<numbe
       SELECT n.post_id, child
         FROM nodes n
         CROSS JOIN LATERAL jsonb_array_elements(
+          -- Only so the walk does not error: jsonb_array_elements raises on a
+          -- scalar or an object. What a non-array content MEANS is decided in
+          -- the occupied CTE below, which counts it as content.
           CASE WHEN jsonb_typeof(n.node -> 'content') = 'array'
                THEN n.node -> 'content'
                ELSE '[]'::jsonb
@@ -727,6 +753,21 @@ export async function sweepBlankDrafts(db: Db, exceptId?: string): Promise<numbe
         FROM nodes
        WHERE coalesce(node ->> 'type', '') NOT IN ('doc', 'paragraph', 'text')
           OR (jsonb_typeof(node -> 'text') = 'string' AND btrim(node ->> 'text') <> '')
+          /*
+           * UNPARSEABLE COUNTS AS CONTENT.
+           *
+           * IS NOT NULL first, and it is doing real work: node -> 'content' is
+           * SQL NULL when the key is ABSENT and a jsonb value when it is
+           * present, including the jsonb null of "content": null. An empty
+           * paragraph has no content key at all and must stay sweepable, or the
+           * sweep never deletes anything again; a content that is present and
+           * is not an array is a document this walk cannot read, and a row we
+           * cannot read is a row we must not destroy.
+           */
+          OR (node -> 'content' IS NOT NULL
+              AND jsonb_typeof(node -> 'content') <> 'array')
+          OR (node -> 'text' IS NOT NULL
+              AND jsonb_typeof(node -> 'text') <> 'string')
     ), gone AS (
       DELETE FROM posts
        WHERE id IN (SELECT id FROM candidates)
