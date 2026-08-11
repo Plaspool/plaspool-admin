@@ -12,7 +12,8 @@ import {
   shippingOptionsForCart,
   startCheckout,
 } from '../checkout/repo';
-import { extendReservations, sweepExpiredReservations } from '../reservations/repo';
+import { extendReservations } from '../reservations/repo';
+import { runCartMaintenance } from '../events/consumer';
 import { cartCookie } from '../identity/cookies';
 import { CHECKOUT_START_LIMIT, CHECKOUT_START_WINDOW_MS } from '../limits';
 import type { CheckoutConfig } from '../checkout/repo';
@@ -151,24 +152,41 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
   });
 
   /**
-   * The cron route for the expiry sweep (brief §4).
+   * Cart's housekeeping: DRAIN the outbox, then sweep expired holds (brief §4).
    *
-   * BEHIND `requireAuth()` and under `/admin/*` (contract §10). It is not a
-   * public endpoint: sweeping is cheap per call but it reaches `CatalogPort` once
-   * per expired hold, so an anonymous caller could turn it into an amplifier.
+   * ONE ROUTE FOR BOTH, AND IN THAT ORDER. They are not independent: a
+   * `payment.captured` that arrives after the TTL has elapsed must still sell
+   * the stock, so the drain has to run before the sweeper looks. The other way
+   * round the sweeper releases units somebody has paid for and the capture then
+   * finds nothing to commit. Splitting them into two routes would make the
+   * ordering a caller's problem, and callers are cron entries nobody reads.
+   *
+   * BEHIND `requireAuth()` and under `/admin/*` (contract §10). Not public:
+   * both halves reach `CatalogPort` once per row, so an anonymous caller could
+   * turn this into an amplifier.
    *
    * A ROUTE AND NOT A TIMER, deliberately. Brief §4: "Do not build a background
    * timer. Sweep lazily on read plus on a cron route, the same shape the image
    * orphan sweep uses." A tight retry loop froze a tab in GAUNTLET I Round 1 #2;
-   * a tight sweep loop on a serverless platform does the same to a bill.
+   * a tight loop on a serverless platform does the same to a bill.
+   *
+   * NOTHING SCHEDULES THIS YET. `vercel.json` declares no crons and Orders'
+   * `/admin/sweep` is in the same state. Said out loud because a maintenance
+   * endpoint nobody calls is the "mechanism wired to no caller" finding waiting
+   * to happen — the lazy drain on the cart read is what keeps it working in the
+   * meantime.
    */
-  routes.post('/admin/reservations/sweep', requireAuth(), async (c) => {
+  routes.post('/admin/cart/maintenance', requireAuth(), async (c) => {
     const body = await readJsonOrEmpty(c, SweepBody);
-    const outcome = await sweepExpiredReservations(shopDb(c), deps.catalog, {
+    const outcome = await runCartMaintenance(shopDb(c), deps.catalog, {
       limit: body.limit,
     });
-    // `failed` is reported rather than swallowed: a non-zero value means stock
-    // is held for checkouts that are over, and this is the only signal saying so.
+    /*
+     * `abandoned` and `failed` are reported rather than swallowed. A non-zero
+     * `abandoned` means a capture Cart could not read and has given up on —
+     * stock held for a sale that already happened. A non-zero `failed` means
+     * stock held for checkouts that are over. Neither has any other signal.
+     */
     return c.json(outcome);
   });
 

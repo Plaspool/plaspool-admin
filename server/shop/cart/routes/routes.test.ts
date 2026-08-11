@@ -365,12 +365,12 @@ describe('the checkout flow, end to end', () => {
   });
 });
 
-describe('the sweep cron route', () => {
+describe('the maintenance cron route', () => {
   it('is refused to an anonymous caller', async () => {
     // Sweeping reaches `CatalogPort` once per expired hold, so an anonymous
     // caller could turn it into an amplifier. Contract §10 puts admin routes
     // under `/api/shop/admin/*` behind `requireAuth()`.
-    const res = await client.post('/api/shop/admin/reservations/sweep');
+    const res = await client.post('/api/shop/admin/cart/maintenance');
     expect(res.status).toBe(401);
   });
 
@@ -380,14 +380,21 @@ describe('the sweep cron route', () => {
       password: SEED_PASSWORD,
     });
 
-    const res = await client.post('/api/shop/admin/reservations/sweep');
+    const res = await client.post('/api/shop/admin/cart/maintenance');
     expect(res.status).toBe(200);
     // `failed` is reported rather than swallowed: a non-zero value means stock
     // is held for checkouts that are over, and this is the only signal saying so.
-    expect(await json<{ released: number; failed: number }>(res)).toEqual({
-      released: 0,
-      failed: 0,
-    });
+    /*
+     * `ignored: 2` is the two `catalog.variant.published` events `seedSellable`
+     * emitted — a free demonstration of contract §6 rule 4 on real data from
+     * another subsystem: Cart reads them, recognises they are not its business,
+     * and records that rather than throwing or parking them.
+     */
+    expect(await json<{ drain: { scanned: number }; sweep: { released: number } }>(res))
+      .toEqual({
+        drain: { scanned: 2, applied: 0, ignored: 2, parked: 0, abandoned: 0 },
+        sweep: { released: 0, failed: 0 },
+      });
   });
 });
 

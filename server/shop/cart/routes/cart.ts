@@ -4,7 +4,7 @@ import { pathParam, readJson, readJsonOrEmpty, str } from '../../../middleware/e
 import { NotFoundError } from '../../../repo/errors';
 import { addLine, createCart, getCart, listLines, removeLine, setLineQty } from '../cart/repo';
 import { adoptCartForCustomer } from '../cart/merge';
-import { sweepExpiredReservations } from '../reservations/repo';
+import { runCartMaintenance } from '../events/consumer';
 import { computeTotals } from '../totals/compute';
 import { unknownZoneTaxRate } from '../checkout/shipping';
 import { cartCookie, setCartCookie } from '../identity/cookies';
@@ -196,11 +196,21 @@ async function view(
   cart: Cart,
 ): Promise<Record<string, unknown>> {
   /*
-   * SWEEP LAZILY ON READ (brief §4), bounded, and best-effort. Sweeping is
-   * nobody's request — a failure here must not cost a shopper their basket page,
-   * and the cron route is what guarantees it happens at all.
+   * MAINTENANCE LAZILY ON READ (brief §4) — drain the outbox, then sweep. Small
+   * bound and best-effort: this is nobody's request, so a failure must not cost
+   * a shopper their basket page.
+   *
+   * THE LAZY DRAIN IS WHAT MAKES CAPTURES COMMIT WITHOUT A SCHEDULER. Nothing
+   * cron-like is wired to `/admin/cart/maintenance` yet, so if this were sweep
+   * only, a paid checkout's holds would expire and the shop would resell what it
+   * had already sold. Any shopper loading any basket now drains a few events,
+   * which is enough on a shop with traffic and is exactly the shape the image
+   * orphan sweep uses.
+   *
+   * FIVE, not the drain's own 25: this runs on the page a storefront loads most,
+   * and the cron route is where a backlog is supposed to be cleared.
    */
-  await sweepExpiredReservations(db, deps.catalog, { limit: 25 }).catch(() => undefined);
+  await runCartMaintenance(db, deps.catalog, { limit: 5 }).catch(() => undefined);
 
   // A signed-in shopper carrying an anonymous cart gets it attached, and their
   // previous basket merged in, on the next read — see `cart/merge.ts` for why

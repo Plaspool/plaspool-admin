@@ -64,6 +64,13 @@
       "when": 1786600000300,
       "tag": "0100_catalog",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1786600000301,
+      "tag": "0121_cart_event_consumptions",
+      "breakpoints": true
     }
   ]
 }

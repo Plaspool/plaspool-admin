@@ -23,6 +23,7 @@ import {
   shopCarts,
   shopCustomerSessions,
   shopCustomers,
+  shopCartEventConsumptions,
   shopReservations,
 } from './schema';
 import type { Db } from '../../db/client';
@@ -43,6 +44,7 @@ const CART_TABLES = [
   'shop_cart_lines',
   'shop_reservations',
   'shop_addresses',
+  'shop_cart_event_consumptions',
   'commerce_events',
 ];
 
@@ -114,6 +116,7 @@ describe('migration 0120 is applied', () => {
       'shop_carts_status_ck',
       'shop_reservations_state_ck',
       'shop_addresses_kind_ck',
+      'shop_cart_event_consumptions_outcome_ck',
     ]) {
       expect(names, check).toContain(check);
     }
@@ -210,6 +213,10 @@ describe('migration 0120 is applied', () => {
       ['shop_cart_lines', Object.values(shopCartLines).map(nameOf)],
       ['shop_reservations', Object.values(shopReservations).map(nameOf)],
       ['shop_addresses', Object.values(shopAddresses).map(nameOf)],
+      [
+        'shop_cart_event_consumptions',
+        Object.values(shopCartEventConsumptions).map(nameOf),
+      ],
     ];
 
     for (const [table, columns] of declared) {

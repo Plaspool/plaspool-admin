@@ -37,9 +37,9 @@ import {
   commitReservationsForCart,
   listReservations,
   releaseReservationsForCart,
-
   sweepExpiredReservations,
 } from './reservations/repo';
+import { runCartMaintenance } from './events/consumer';
 import {
   completeCheckout,
   freezeCheckout,
@@ -149,14 +149,76 @@ describe('a whole guest checkout, against real stock', () => {
     await completeCheckout(ctx.db, { cartId: cart.id });
     expect((await getCart(ctx.db, cart.id))?.status).toBe('converted');
 
-    // The stock is still HELD, not sold: nothing has captured a payment yet.
-    // This is A-007's gap made visible — the commit below has no caller in the
-    // contract, and without one these two units expire back into stock fifteen
-    // minutes after the customer paid.
+    // Still HELD, and correctly so: the checkout is complete but nobody has
+    // paid yet. Stock becomes a permanent decrement on `payment.captured`, not
+    // on conversion — see the next test.
     expect(await stock(variant.id)).toEqual({ onHand: 10, reserved: 2 });
 
     const committed = await commitReservationsForCart(ctx.db, catalogPort, cart.id);
     expect(committed).toBe(1);
+    expect(await stock(variant.id)).toEqual({ onHand: 8, reserved: 0 });
+  });
+
+  it('an outbox `payment.captured` sells the stock, against the real counter', async () => {
+    /*
+     * THE WHOLE PATH, with nothing hand-called: Cart converts, Payments' event
+     * lands in the outbox, Cart's consumer drains it, and Catalog's `on_hand`
+     * moves. This is amendment A-007 closed — the contract said
+     * `commitReservation` is "called on payment capture" and named no caller.
+     *
+     * The event row is written here exactly as `server/shop/payments/intents.ts`
+     * writes it, because a test that emitted through Payments' own code would be
+     * testing Payments.
+     */
+    const variant = await sellable({ onHand: 10, amount: 1999 });
+    const cart = await createCart(ctx.db, { currency: CURRENCY });
+    await addLine(ctx.db, { cartId: cart.id, variantId: variant.id, qty: 3 });
+    await startCheckout(ctx.db, catalogPort, { cartId: cart.id });
+    await putAddresses(ctx.db, CONFIG, { cartId: cart.id, shipping: UK, billing: null });
+    await setShipping(ctx.db, CONFIG, { cartId: cart.id, optionId: 'standard' });
+    await freezeCheckout(ctx.db, catalogPort, CONFIG, { cartId: cart.id });
+    await completeCheckout(ctx.db, { cartId: cart.id });
+    expect(await stock(variant.id)).toEqual({ onHand: 10, reserved: 3 });
+
+    await ctx.db.execute(sql`
+      INSERT INTO commerce_events (id, type, subject_id, payload, occurred_at, attempts)
+      VALUES ('evt_capture_1', 'payment.captured', 'pi_1',
+              ${JSON.stringify({
+                intentId: 'pi_1',
+                checkoutId: cart.id,
+                amount: 1,
+                currency: CURRENCY,
+                occurredAt: Date.now(),
+              })}::jsonb, ${Date.now()}, 0)`);
+
+    const summary = await runCartMaintenance(ctx.db, catalogPort);
+
+    expect(summary.drain.applied).toBe(1);
+    expect(await stock(variant.id)).toEqual({ onHand: 7, reserved: 0 });
+    expect((await listReservations(ctx.db, cart.id))[0].state).toBe('committed');
+  });
+
+  it('a capture that arrives AFTER the holds expired still sells the stock', async () => {
+    /*
+     * The failure the consumer exists to prevent, end to end against the real
+     * counter: without the drain running first, the sweeper hands back units the
+     * customer has already paid for and the shop resells them.
+     */
+    const variant = await sellable({ onHand: 10 });
+    const cart = await createCart(ctx.db, { currency: CURRENCY });
+    await addLine(ctx.db, { cartId: cart.id, variantId: variant.id, qty: 2 });
+    await startCheckout(ctx.db, catalogPort, { cartId: cart.id });
+    await ctx.db.execute(sql`UPDATE shop_reservations SET expires_at = ${Date.now() - 1}`);
+    await ctx.db.execute(sql`
+      INSERT INTO commerce_events (id, type, subject_id, payload, occurred_at, attempts)
+      VALUES ('evt_capture_late', 'payment.captured', 'pi_2',
+              ${JSON.stringify({ intentId: 'pi_2', checkoutId: cart.id })}::jsonb,
+              ${Date.now()}, 0)`);
+
+    const summary = await runCartMaintenance(ctx.db, catalogPort);
+
+    expect(summary.drain.applied).toBe(1);
+    expect(summary.sweep.released).toBe(0);
     expect(await stock(variant.id)).toEqual({ onHand: 8, reserved: 0 });
   });
 

@@ -6,6 +6,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
@@ -226,6 +227,45 @@ export const shopAddresses = pgTable(
     // derived from this, so a lowercase or three-letter code would silently pick
     // the fallback zone and charge the wrong tax.
     check('shop_addresses_country_ck', sql`${t.countryCode} ~ '^[A-Z]{2}$'`),
+  ],
+);
+
+// -------------------------------------------------------- outbox consumption
+
+/**
+ * Idempotency for Cart's outbox consumer, keyed on `(consumer, event_id)` —
+ * contract §6 rule 2, as a PRIMARY KEY rather than as a convention.
+ *
+ * SEPARATE FROM `shop_order_event_consumptions`, WHICH HAS THE IDENTICAL SHAPE.
+ * That table is Orders' and R3 makes ownership exclusive, so Cart cannot use it.
+ * The columns here are deliberately the same names so that merging the two into
+ * one `commerce_event_consumptions` is a rename rather than a redesign —
+ * amendment A-012.
+ */
+export const shopCartEventConsumptions = pgTable(
+  'shop_cart_event_consumptions',
+  {
+    consumer: text('consumer').notNull(),
+    eventId: text('event_id').notNull(),
+    handledAt: epochMs('handled_at').notNull(),
+    /** `parked` is still a candidate; `abandoned` needs a human, not a retry. */
+    outcome: text('outcome')
+      .$type<'parked' | 'applied' | 'ignored' | 'abandoned'>()
+      .notNull(),
+    /** PER CONSUMER. Two consumers incrementing `commerce_events.attempts` makes
+     * it mean nothing to either of them. */
+    attempts: integer('attempts').notNull().default(0),
+    /** A field path or a short reason. NEVER a value. */
+    detail: text('detail'),
+  },
+  (t) => [
+    primaryKey({ name: 'shop_cart_event_consumptions_pk', columns: [t.consumer, t.eventId] }),
+    index('shop_cart_event_consumptions_retry_idx').on(t.consumer, t.outcome),
+    check(
+      'shop_cart_event_consumptions_outcome_ck',
+      sql`${t.outcome} IN ('parked','applied','ignored','abandoned')`,
+    ),
+    check('shop_cart_event_consumptions_attempts_ck', sql`${t.attempts} >= 0`),
   ],
 );
 
