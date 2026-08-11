@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { readQuery } from '../middleware/errors';
+import { pathParam, readQuery, str } from '../middleware/errors';
 import { requireAuth } from '../middleware/session';
 import { assertAuthorized } from '../authorize';
 import { getPost } from '../repo/posts';
@@ -35,7 +35,7 @@ const auth = requireAuth();
 
 const PageQuery = z
   .object({
-    cursor: z.string().optional(),
+    cursor: str().optional(),
     limit: z.coerce.number().int().optional(),
   })
   .strict();
@@ -51,7 +51,7 @@ routes.get('/posts/:id/revisions', auth, async (c) => {
   const db = currentDb(c);
   // Read the post first so a caller cannot probe for post ids by watching the
   // difference between "no such post" and "no revisions".
-  const post = await requirePost(db, c.req.param('id'));
+  const post = await requirePost(db, pathParam(c, 'id'));
   assertAuthorized(post, currentUser(c), 'read');
 
   const { cursor, limit } = readQuery(c, PageQuery);
@@ -69,7 +69,7 @@ routes.get('/posts/:id/revisions', auth, async (c) => {
  */
 routes.get('/revisions/:revId', auth, async (c) => {
   const db = currentDb(c);
-  const revId = c.req.param('revId');
+  const revId = pathParam(c, 'revId');
   const revision = await getRevision(db, revId);
   if (!revision) throw new NotFoundError(revId);
   assertAuthorized(await requirePost(db, revision.postId), currentUser(c), 'read');
@@ -88,9 +88,9 @@ routes.get('/revisions/:revId', auth, async (c) => {
 routes.post('/posts/:id/revisions/:revId/restore', auth, async (c) => {
   const db = currentDb(c);
   const user = currentUser(c);
-  const post = await requirePost(db, c.req.param('id'));
+  const post = await requirePost(db, pathParam(c, 'id'));
   assertAuthorized(post, user, 'write');
   return c.json({
-    post: await restoreRevision(db, post.id, c.req.param('revId'), user),
+    post: await restoreRevision(db, post.id, pathParam(c, 'revId'), user),
   });
 });

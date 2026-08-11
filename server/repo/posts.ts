@@ -719,7 +719,11 @@ const BLANK_DRAFT_GRACE_MS = 60_000;
  * Whatever walks those columns must treat an unwalkable document as referencing
  * EVERYTHING, or refuse to collect while one exists.
  */
-export async function sweepBlankDrafts(db: Db, exceptId?: string): Promise<number> {
+export async function sweepBlankDrafts(
+  db: Db,
+  authorId: string,
+  exceptId?: string,
+): Promise<number> {
   const cutoff = Date.now() - BLANK_DRAFT_GRACE_MS;
   const res = await db.execute(sql`
     WITH RECURSIVE candidates AS (
@@ -733,6 +737,16 @@ export async function sweepBlankDrafts(db: Db, exceptId?: string): Promise<numbe
          AND cover_image IS NULL
          AND coalesce(array_length(tags, 1), 0) = 0
          AND category = ''
+         -- SCOPED TO ONE AUTHOR, and authorId is REQUIRED rather than optional.
+         --
+         -- Reproduced before this line existed: alice leaves an untitled draft,
+         -- it ages past the grace window, bob's dashboard mounts and calls
+         -- sweep-blank with his own exceptId, and alice's row is hard deleted.
+         -- No words were lost (the document walk held) but a draft vanishes
+         -- under its writer and their next autosave 404s against a post they
+         -- still have open. Required, not defaulted, so a caller that forgets
+         -- it does not get the whole table.
+         AND author_id = ${authorId}
          AND updated_at < ${cutoff}
          AND id IS DISTINCT FROM ${exceptId ?? null}::text
     ), nodes AS (

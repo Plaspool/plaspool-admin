@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { readJson, readJsonOrEmpty, readQuery } from '../middleware/errors';
+import { pathParam, readJson, readJsonOrEmpty, readQuery, str } from '../middleware/errors';
 import { requireAuth, requireOwner } from '../middleware/session';
 import { assertAuthorized } from '../authorize';
 import {
@@ -61,9 +61,9 @@ const auth = requireAuth();
 
 const CoverImage = z
   .object({
-    blobId: z.string().min(1).max(300),
-    alt: z.string().max(2000),
-    focalPoint: z.string().max(100),
+    blobId: str().min(1).max(300),
+    alt: str().max(2000),
+    focalPoint: str().max(100),
     width: z.number().int().min(0).max(100_000),
     height: z.number().int().min(0).max(100_000),
   })
@@ -88,13 +88,13 @@ const CoverImage = z
  */
 const PostPatchBody = z
   .object({
-    title: z.string(),
-    subtitle: z.string(),
+    title: str(),
+    subtitle: str(),
     content: z.unknown(),
     coverImage: CoverImage.nullable(),
-    category: z.string(),
-    tags: z.array(z.string()).max(1000),
-    excerpt: z.string(),
+    category: str(),
+    tags: z.array(str()).max(1000),
+    excerpt: str(),
     template: z.enum(['magazine', 'minimal', 'editorial', 'technical']).nullable(),
   })
   .partial()
@@ -143,10 +143,10 @@ const ListQueryParams = z
     sort: z
       .enum(['updated', 'published', 'oldest', 'alphabetical', 'drafts-first'])
       .default('updated'),
-    search: z.string().optional(),
-    category: z.string().optional(),
-    tag: z.string().optional(),
-    cursor: z.string().optional(),
+    search: str().optional(),
+    category: str().optional(),
+    tag: str().optional(),
+    cursor: str().optional(),
     /**
      * `pageLimit` decides the range and answers 400 by itself; this only makes
      * a non-numeric `?limit=abc` a 400 here rather than a NaN there.
@@ -180,7 +180,7 @@ async function requirePost(db: Db, id: string): Promise<Post> {
 }
 
 routes.get('/posts/:id', auth, async (c) => {
-  const post = await requirePost(currentDb(c), c.req.param('id'));
+  const post = await requirePost(currentDb(c), pathParam(c, 'id'));
   // Always true today. Called anyway: the day reads stop being universal, the
   // rule changes in `authorize()` and every route inherits it.
   assertAuthorized(post, currentUser(c), 'read');
@@ -231,7 +231,7 @@ routes.patch('/posts/:id', auth, async (c) => {
 
   // Read first so authorization is judged against the stored author, and so an
   // absent post is a 404 rather than a 403 that reveals nothing.
-  const current = await requirePost(db, c.req.param('id'));
+  const current = await requirePost(db, pathParam(c, 'id'));
   assertAuthorized(current, user, 'write');
 
   /*
@@ -287,7 +287,7 @@ for (const [name, run] of Object.entries(TRANSITIONS)) {
   routes.post(`/posts/:id/${name}`, auth, async (c) => {
     const db = currentDb(c);
     const user = currentUser(c);
-    const current = await requirePost(db, c.req.param('id'));
+    const current = await requirePost(db, pathParam(c, 'id'));
     assertAuthorized(current, user, 'write');
     return c.json({ post: await run(db, current.id, user) });
   });
@@ -306,7 +306,7 @@ for (const [name, run] of Object.entries(TRANSITIONS)) {
 routes.post('/posts/:id/duplicate', auth, async (c) => {
   const db = currentDb(c);
   const user = currentUser(c);
-  const source = await requirePost(db, c.req.param('id'));
+  const source = await requirePost(db, pathParam(c, 'id'));
   assertAuthorized(source, user, 'read');
   return c.json({ post: await duplicatePost(db, source.id, user) }, 201);
 });
@@ -328,7 +328,7 @@ routes.post('/posts/:id/duplicate', auth, async (c) => {
  */
 routes.delete('/posts/:id', auth, async (c) => {
   const db = currentDb(c);
-  const post = await requirePost(db, c.req.param('id'));
+  const post = await requirePost(db, pathParam(c, 'id'));
   assertAuthorized(post, currentUser(c), 'destroy');
   await destroyPost(db, post.id);
   return c.json({ ok: true });
@@ -347,7 +347,7 @@ routes.delete('/posts/:id', auth, async (c) => {
 const SweepBody = z
   .object({
     /** The draft the caller is currently editing — never swept out from under them. */
-    exceptId: z.string().min(1).max(200).optional(),
+    exceptId: str().min(1).max(200).optional(),
   })
   .strict();
 
@@ -361,7 +361,18 @@ const SweepBody = z
  */
 routes.post('/posts/sweep-blank', auth, async (c) => {
   const { exceptId } = await readJsonOrEmpty(c, SweepBody);
-  return c.json({ swept: await sweepBlankDrafts(currentDb(c), exceptId) });
+  /*
+   * THE CALLER'S OWN DRAFTS, AND NOBODY ELSE'S.
+   *
+   * Not owner-only, because spec §5.4's table marks `/images/collect-orphans`
+   * owner-only and leaves this one unmarked — a writer's dashboard is where it
+   * runs, and an owner-only sweep would simply never run for a writer, leaving
+   * their blank drafts to accumulate forever. Scoping it to `authorId` keeps
+   * the route where the spec puts it while removing the only thing that made
+   * it dangerous: one writer hard-deleting another writer's row.
+   */
+  const swept = await sweepBlankDrafts(currentDb(c), currentUser(c).id, exceptId);
+  return c.json({ swept });
 });
 
 /**

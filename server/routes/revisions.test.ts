@@ -399,6 +399,45 @@ describe('POST /api/import', () => {
     expect(fetched.post.authorName).toBe(ctx.users.writer.displayName);
   });
 
+  it('a bundle authorId naming a REAL other user is still not honoured', async () => {
+    /*
+     * THE MUTANT THIS PINS: adding `authorId: post.authorId` to `toPartial`
+     * left all 459 server tests green, because the only existing probe used a
+     * string that was not a real users.id. With a real one it is impersonation
+     * — the writer imports a bundle and the post is attributed to the owner —
+     * and it is also self-denial-of-service: `authorize` keys on
+     * `post.authorId`, so the importer could not write to their own import.
+     */
+    const res = await writer.post(
+      '/api/import',
+      bundle([post('p_forged', { authorId: ctx.users.owner.id, authorName: 'The Owner' })]),
+    );
+    expect(res.status).toBe(200);
+
+    const fetched = await json<{ post: Post }>(await writer.get('/api/posts/p_forged'));
+    expect(fetched.post.authorId).toBe(ctx.users.writer.id);
+    expect(fetched.post.authorId).not.toBe(ctx.users.owner.id);
+    expect(fetched.post.authorName).toBe(ctx.users.writer.displayName);
+
+    // And therefore the importer can still write to what they imported.
+    const saved = await writer.patch('/api/posts/p_forged', { patch: { title: 'Mine' } });
+    expect(saved.status).toBe(200);
+  });
+
+  it('an unknown TOP-LEVEL bundle key is a 400 — ImportBody is strict too', async () => {
+    /*
+     * `.strict()` on `ImportBody` was a surviving mutant: every existing probe
+     * put its unknown key inside `posts[0]`, which `BundlePost.strict()`
+     * catches, so dropping the outer one changed nothing.
+     */
+    const res = await owner.post('/api/import', {
+      ...bundle([post('p_ok')]),
+      settings: { theme: 'dark' },
+    });
+    expect(res.status).toBe(400);
+    expect((await json(res)).detail).toBe('settings');
+  });
+
   it('restores status and timestamps but never revision or the counts', async () => {
     const created = Date.now() - 90_000_000;
     await owner.post(

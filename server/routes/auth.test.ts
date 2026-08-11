@@ -263,6 +263,32 @@ describe('login rate limiting', () => {
     expect(LOGIN_LIMIT).toBe(5);
   });
 
+  it('the ip bucket is consulted BEFORE the body is parsed', async () => {
+    /*
+     * The limiter cannot bound work it runs after itself. With `readJson` first,
+     * a caller that had already been refused twenty times still made the process
+     * parse a body up to the platform limit on every further request — the one
+     * thing an unauthenticated caller could make the server do without limit.
+     *
+     * Observable as the ORDER of two refusals: once the bucket is spent, a body
+     * that is not even JSON is answered 429 rather than 400, which is only
+     * possible if the limiter ran before the parse.
+     */
+    const ip = '198.51.100.21';
+    const c = client(ip);
+    for (let i = 0; i < LOGIN_IP_LIMIT; i += 1) {
+      await c.post('/api/auth/login', { email: `pre-${i}@test.local`, password: 'wrong' });
+    }
+
+    const res = await c.request('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'this is not json at all',
+    });
+    expect(res.status).toBe(429);
+    expect((await json(res)).error).toBe('rate_limited');
+  });
+
   it('both buckets fire: per email+ip and per ip alone', async () => {
     /*
      * The defect the second bucket exists for: five attempts against each of a

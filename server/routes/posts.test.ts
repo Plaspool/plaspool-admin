@@ -9,7 +9,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { SEED_PASSWORD, freshDb, type TestCtx } from '../test/harness';
-import { httpClient, json, type HttpClient } from '../test/http';
+import { TEST_ORIGIN, httpClient, json, type HttpClient } from '../test/http';
 import { authorize } from '../authorize';
 import { AUTOSAVE_KEEP } from '../repo/revisions';
 import { MAX_TITLE_BYTES } from '../../shared/validate';
@@ -415,6 +415,63 @@ describe('PATCH /api/posts/:id', () => {
       expect(res.status, key).toBe(400);
       expect((await json(res)).detail, key).toBe(`patch.${key}`);
     }
+  });
+
+  it('a __proto__ key is 400, like every other unknown key', async () => {
+    /*
+     * `JSON.parse` makes `__proto__` an OWN data property, but Zod's
+     * unrecognized-key check never saw it, so `{"patch":{"__proto__":{...}}}`
+     * was silently dropped while a top-level `constructor` was a 400. No
+     * pollution occurred either way (asserted below) — the defect is that the
+     * contract was two rules instead of one.
+     */
+    const post = await create(owner, { title: 'Sealed' });
+    const nested = await owner.patch(`/api/posts/${post.id}`, {
+      patch: { ['__proto__']: { polluted: 1 } },
+      baseRevision: post.revision,
+    });
+    expect(nested.status).toBe(400);
+    expect((await json(nested)).detail).toBe('__proto__');
+
+    const top = await owner.patch(`/api/posts/${post.id}`, {
+      ['__proto__']: { polluted: 1 },
+      patch: { title: 'x' },
+      baseRevision: post.revision,
+    });
+    expect(top.status).toBe(400);
+
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  it('a body that does not declare application/json is a 400', async () => {
+    /*
+     * `readJson` never looked at `Content-Type`, so `text/plain` — or no header
+     * at all — was parsed as JSON. Not exploitable (a cross-origin simple
+     * request still carries an `Origin` and `originGuard` refuses it) but laxer
+     * than the contract implies.
+     */
+    const post = await create(owner, { title: 'Typed' });
+    const body = JSON.stringify({ patch: { title: 'x' }, baseRevision: post.revision });
+
+    for (const type of ['text/plain', 'application/x-www-form-urlencoded', '']) {
+      const headers: Record<string, string> = { origin: TEST_ORIGIN };
+      if (type) headers['content-type'] = type;
+      const res = await owner.request(`/api/posts/${post.id}`, {
+        method: 'PATCH',
+        headers,
+        body,
+      });
+      expect(res.status, type || '(absent)').toBe(400);
+      expect((await json(res)).detail, type || '(absent)').toBe('content-type');
+    }
+
+    // The real thing still works, charset and all.
+    const ok = await owner.request(`/api/posts/${post.id}`, {
+      method: 'PATCH',
+      headers: { origin: TEST_ORIGIN, 'content-type': 'application/json; charset=utf-8' },
+      body,
+    });
+    expect(ok.status).toBe(200);
   });
 
   it('with a slug key is 400 — slugs are server-authoritative', async () => {

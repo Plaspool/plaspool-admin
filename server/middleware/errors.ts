@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { ZodError, ZodType } from 'zod';
 import type { Context } from 'hono';
 import {
@@ -251,6 +252,83 @@ export function zodDetail(error: ZodError): string {
   return path.join('.') || 'body';
 }
 
+// ------------------------------------------------------- the string boundary
+
+/**
+ * A `text` value Postgres can actually store.
+ *
+ * U+0000 is the whole of it. Postgres `text` cannot hold one — the driver
+ * raises SQLSTATE 22021 — and jsonb cannot either (22P05). Neither has a row in
+ * spec §8's table, so untranslated both are a 500 that the client's retry
+ * policy re-sends five times over ~30 seconds for input that can never be
+ * accepted. Spec §8 names a NUL byte as the example that must be 400.
+ *
+ * `.regex()` and not `.refine()` DELIBERATELY: a regex is a `ZodString` check,
+ * so `str().min(1).max(300)` still type-checks and still reads as a string
+ * schema. A `.refine()` returns a wrapper in some Zod versions and every call
+ * site would have to be reordered around it.
+ *
+ * USE THIS INSTEAD OF `z.string()` FOR EVERY CALLER-SUPPLIED FIELD. There is a
+ * test — `server/nul-bytes.test.ts` — that walks every registered route and fails if
+ * a NUL in a path segment or a string body field produces a 5xx, so a route
+ * added later either inherits this or fails that test.
+ */
+const NUL = String.fromCharCode(0);
+const NO_NUL = new RegExp(`^[^${NUL}]*$`, 'u');
+
+export function str(): z.ZodString {
+  return z.string().regex(NO_NUL, 'nul');
+}
+
+/**
+ * A path segment, or a 400.
+ *
+ * The same boundary as `str()`, for the values Zod never sees: `:id` and
+ * `:revId` arrive from the URL, are percent-decoded by the router, and go
+ * straight into a bound parameter. `/api/posts/%00` was a 500 at every one of
+ * them.
+ */
+export function pathParam(c: Context, name: string): string {
+  const value = c.req.param(name) as string | undefined;
+  if (value === undefined || !NO_NUL.test(value)) throw new BadRequestError(name);
+  return value;
+}
+
+/**
+ * A body carrying an own `__proto__` key is a 400, like every other unknown key.
+ *
+ * `JSON.parse` makes `__proto__` an own data property, but Zod's
+ * unrecognized-key check does not see it, so `{"patch":{"__proto__":{}}}` was
+ * accepted and silently dropped while a top-level `constructor` was refused.
+ * No pollution occurred either way — this is about the contract being one rule
+ * rather than two.
+ */
+function assertNoProtoKey(value: unknown, depth = 0): void {
+  if (depth > 100 || value === null || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    for (const item of value) assertNoProtoKey(item, depth + 1);
+    return;
+  }
+  if (Object.hasOwn(value, '__proto__')) throw new BadRequestError('__proto__');
+  for (const item of Object.values(value)) assertNoProtoKey(item, depth + 1);
+}
+
+/**
+ * The declared media type, or a 400.
+ *
+ * A `PATCH` with `text/plain` was parsed as JSON. Not exploitable — a
+ * cross-origin simple request still carries an `Origin` and `originGuard`
+ * refuses it — but the contract says JSON and every real client sends the
+ * header, so accepting anything else is laxer than what is documented.
+ */
+function assertJsonContentType(c: Context): void {
+  const header = c.req.header('content-type') ?? '';
+  const type = header.split(';')[0].trim().toLowerCase();
+  if (type !== 'application/json' && !type.endsWith('+json')) {
+    throw new BadRequestError('content-type');
+  }
+}
+
 /**
  * Parse a JSON body against a `.strict()` schema, or 400.
  *
@@ -259,12 +337,14 @@ export function zodDetail(error: ZodError): string {
  * 500 would be retried five times before failing anyway.
  */
 export async function readJson<T>(c: Context, schema: ZodType<T>): Promise<T> {
+  assertJsonContentType(c);
   let raw: unknown;
   try {
     raw = await c.req.json();
   } catch {
     throw new BadRequestError('body');
   }
+  assertNoProtoKey(raw);
   const parsed = schema.safeParse(raw);
   if (!parsed.success) throw new BadRequestError(zodDetail(parsed.error));
   return parsed.data;
@@ -288,6 +368,7 @@ export async function readJsonOrEmpty<T>(c: Context, schema: ZodType<T>): Promis
       throw new BadRequestError('body');
     }
   }
+  assertNoProtoKey(raw);
   const parsed = schema.safeParse(raw);
   if (!parsed.success) throw new BadRequestError(zodDetail(parsed.error));
   return parsed.data;

@@ -1,0 +1,12 @@
+# Everything under `api/` becomes a serverless function under zero-config
+# detection. A test file left there deploys as a PUBLIC endpoint — `/api/x.test`
+# — and drags its devDependencies (vitest) into the bundle. Excluded here as
+# well as moved out of `api/`, so a test file dropped into `api/` later still
+# cannot become a route.
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
+
+# Fixtures and harnesses that only tests import.
+server/test/

@@ -789,7 +789,7 @@ describe('sweepBlankDrafts', () => {
 
   it('destroys a blank draft that is past the grace window', async () => {
     const blank = await seeded({ content: EMPTY, updatedAt: AGES_AGO() });
-    expect(await sweepBlankDrafts(ctx.db)).toBe(1);
+    expect(await sweepBlankDrafts(ctx.db, actor().id)).toBe(1);
     expect(await getPost(ctx.db, blank.id)).toBeNull();
     expect(await countRevisions(blank.id)).toBe(0);
   });
@@ -800,7 +800,7 @@ describe('sweepBlankDrafts', () => {
     const recent = await seeded({ content: EMPTY });
     const editing = await seeded({ content: EMPTY, updatedAt: AGES_AGO() });
 
-    expect(await sweepBlankDrafts(ctx.db, editing.id)).toBe(0);
+    expect(await sweepBlankDrafts(ctx.db, actor().id, editing.id)).toBe(0);
 
     expect(await getPost(ctx.db, recent.id)).not.toBeNull();
     expect(await getPost(ctx.db, editing.id)).not.toBeNull();
@@ -827,7 +827,7 @@ describe('sweepBlankDrafts', () => {
       updatedAt: AGES_AGO(),
     });
 
-    expect(await sweepBlankDrafts(ctx.db)).toBe(1);
+    expect(await sweepBlankDrafts(ctx.db, actor().id)).toBe(1);
 
     expect(await getPost(ctx.db, image.id)).not.toBeNull();
     expect(await getPost(ctx.db, rule.id)).not.toBeNull();
@@ -845,7 +845,7 @@ describe('sweepBlankDrafts', () => {
     ['a trash flag', { deletedAt: 111 }],
   ])('never sweeps a draft that has %s', async (_name, partial) => {
     const post = await seeded({ content: EMPTY, updatedAt: AGES_AGO(), ...partial });
-    expect(await sweepBlankDrafts(ctx.db)).toBe(0);
+    expect(await sweepBlankDrafts(ctx.db, actor().id)).toBe(0);
     expect(await getPost(ctx.db, post.id)).not.toBeNull();
   });
 
@@ -888,7 +888,7 @@ describe('sweepBlankDrafts', () => {
       sql`UPDATE posts SET content = ${json}::jsonb, word_count = 0 WHERE id = ${post.id}`,
     );
 
-    expect(await sweepBlankDrafts(ctx.db)).toBe(0);
+    expect(await sweepBlankDrafts(ctx.db, actor().id)).toBe(0);
     expect(await getPost(ctx.db, post.id)).not.toBeNull();
   });
 
@@ -906,7 +906,7 @@ describe('sweepBlankDrafts', () => {
            WHERE id = ${blank.id}`,
     );
 
-    expect(await sweepBlankDrafts(ctx.db)).toBe(1);
+    expect(await sweepBlankDrafts(ctx.db, actor().id)).toBe(1);
     expect(await getPost(ctx.db, blank.id)).toBeNull();
   });
 
@@ -914,7 +914,7 @@ describe('sweepBlankDrafts', () => {
     for (let i = 0; i < 3; i += 1) await seeded({ content: EMPTY, updatedAt: AGES_AGO() });
     const kept = await seeded({ title: 'Kept', content: EMPTY, updatedAt: AGES_AGO() });
 
-    expect(await sweepBlankDrafts(ctx.db)).toBe(3);
+    expect(await sweepBlankDrafts(ctx.db, actor().id)).toBe(3);
 
     const res = await ctx.db.execute(sql`SELECT count(*)::int AS n FROM posts`);
     expect(Number(res.rows[0].n)).toBe(1);

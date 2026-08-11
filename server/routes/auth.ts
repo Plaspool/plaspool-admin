@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { readJson } from '../middleware/errors';
+import { readJson, str } from '../middleware/errors';
 import {
   clearSessionCookie,
   requireAuth,
@@ -72,21 +72,21 @@ export const INVITE_PATH = '/accept-invite';
  * malformed address with a different status from a valid unknown one is the
  * enumeration oracle again, one layer up.
  */
-const Email = z.string().min(1).max(320);
+const Email = str().min(1).max(320);
 
 const LoginBody = z
   .object({
     email: Email,
     // Bounded so an unauthenticated caller cannot hand scrypt a 10 MB input.
-    password: z.string().min(1).max(1024),
+    password: str().min(1).max(1024),
   })
   .strict();
 
 const AcceptInviteBody = z
   .object({
-    token: z.string().min(1).max(512),
-    password: z.string().min(1).max(1024),
-    displayName: z.string().min(1).max(200),
+    token: str().min(1).max(512),
+    password: str().min(1).max(1024),
+    displayName: str().min(1).max(200),
   })
   .strict();
 
@@ -106,9 +106,21 @@ function normaliseEmail(email: string): string {
 
 routes.post('/auth/login', async (c) => {
   const db = currentDb(c);
+  const ip = clientIp(c);
+
+  /*
+   * THE IP BUCKET IS CONSULTED BEFORE THE BODY IS READ.
+   *
+   * Parsing first meant an unauthenticated caller could make the process parse
+   * a body up to the platform limit on every request, however many times it
+   * had already been refused — the limiter cannot bound work it runs after.
+   * The narrow bucket is keyed by the email and therefore cannot move above
+   * the parse; the IP bucket is the one that has to.
+   */
+  await limit(c, `login:${ip}`, LOGIN_IP_LIMIT, LOGIN_WINDOW_MS);
+
   const { email, password } = await readJson(c, LoginBody);
   const address = normaliseEmail(email);
-  const ip = clientIp(c);
 
   /*
    * TWO BUCKETS, IP FIRST (spec §6).
@@ -119,7 +131,6 @@ routes.post('/auth/login', async (c) => {
    * `auth_attempts` row per address it guesses — which would make the limiter
    * itself the storage-exhaustion primitive.
    */
-  await limit(c, `login:${ip}`, LOGIN_IP_LIMIT, LOGIN_WINDOW_MS);
   const narrowKey = `login:${ip}|${address}`;
   await limit(c, narrowKey, LOGIN_LIMIT, LOGIN_WINDOW_MS);
 

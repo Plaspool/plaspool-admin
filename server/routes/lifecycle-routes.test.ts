@@ -515,4 +515,34 @@ describe('POST /api/posts/sweep-blank', () => {
     expect(res.status).toBe(400);
     expect((await json(res)).detail).toBe('exceptIds');
   });
+
+  it('NEVER touches another writer’s draft', async () => {
+    /*
+     * REPRODUCED BEFORE THE FIX. The sweep was scoped to nothing but the blank
+     * predicate, so any authenticated caller swept the whole deployment: the
+     * owner leaves an untitled draft, it ages past the grace window, the writer
+     * mounts their dashboard and calls sweep-blank with their own exceptId, and
+     * the owner's row is HARD DELETED. No words are lost — the document walk
+     * held — but a draft vanishes under its author and the tab they still have
+     * open 404s on its next autosave.
+     *
+     * Scoped rather than made owner-only: spec §5.4's table marks
+     * /images/collect-orphans owner-only and leaves this one unmarked, and an
+     * owner-only sweep would simply never run for a writer.
+     */
+    const theirs = await create(owner);
+    const mine = await create(writer);
+    const editing = await create(writer);
+    await age(theirs.id);
+    await age(mine.id);
+    await age(editing.id);
+
+    const res = await writer.post('/api/posts/sweep-blank', { exceptId: editing.id });
+    expect(res.status).toBe(200);
+    expect((await json(res)).swept).toBe(1);
+
+    expect((await owner.get(`/api/posts/${theirs.id}`)).status).toBe(200);
+    expect((await owner.get(`/api/posts/${editing.id}`)).status).toBe(200);
+    expect((await owner.get(`/api/posts/${mine.id}`)).status).toBe(404);
+  });
 });

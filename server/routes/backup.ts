@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { readJson } from '../middleware/errors';
+import { readJson, str } from '../middleware/errors';
 import { requireAuth, requireOwner } from '../middleware/session';
 import { limit } from '../middleware/ratelimit';
 import { BACKUP_LIMIT, BACKUP_WINDOW_MS } from '../repo/ratelimit';
@@ -63,9 +63,9 @@ routes.get('/export', requireOwner(), async (c) => {
 
 const CoverImage = z
   .object({
-    blobId: z.string().min(1).max(300),
-    alt: z.string().max(2000),
-    focalPoint: z.string().max(100),
+    blobId: str().min(1).max(300),
+    alt: str().max(2000),
+    focalPoint: str().max(100),
     width: z.number().int().min(0).max(100_000),
     height: z.number().int().min(0).max(100_000),
   })
@@ -85,16 +85,16 @@ const CoverImage = z
  */
 const BundlePost = z
   .object({
-    id: z.string().min(1).max(300),
-    title: z.string(),
-    subtitle: z.string(),
-    slug: z.string().nullable().optional(),
-    excerpt: z.string().optional(),
+    id: str().min(1).max(300),
+    title: str(),
+    subtitle: str(),
+    slug: str().nullable().optional(),
+    excerpt: str().optional(),
     excerptSource: z.enum(['derived', 'author']).optional(),
     content: z.unknown(),
     coverImage: CoverImage.nullable().optional(),
-    category: z.string().optional(),
-    tags: z.array(z.string()).max(1000).optional(),
+    category: str().optional(),
+    tags: z.array(str()).max(1000).optional(),
     template: z.enum(['magazine', 'minimal', 'editorial', 'technical']).nullable().optional(),
     status: z.enum(['draft', 'published', 'archived']).optional(),
     createdAt: z.number().int().optional(),
@@ -104,10 +104,10 @@ const BundlePost = z
     // Declared, never honoured — see `toPartial`.
     wordCount: z.number().optional(),
     readingTime: z.number().optional(),
-    authorId: z.string().optional(),
-    authorName: z.string().optional(),
+    authorId: str().optional(),
+    authorName: str().optional(),
     revision: z.number().optional(),
-    author: z.string().optional(),
+    author: str().optional(),
   })
   .strict();
 
@@ -115,8 +115,8 @@ type BundlePostInput = z.infer<typeof BundlePost>;
 
 const ImportBody = z
   .object({
-    format: z.string().min(1).max(200),
-    exportedAt: z.string().max(100).optional(),
+    format: str().min(1).max(200),
+    exportedAt: str().max(100).optional(),
     posts: z.array(BundlePost).max(20_000),
     /*
      * ACCEPTED AND IGNORED, AND THE RESPONSE SAYS SO.

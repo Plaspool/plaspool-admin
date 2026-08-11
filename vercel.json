@@ -5,11 +5,14 @@
   "outputDirectory": "dist",
   "functions": {
     "api/*.ts": {
-      "runtime": "nodejs24.x",
       "maxDuration": 30
     }
   },
   "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api"
+    },
     {
       "source": "/((?!api/).*)",
       "destination": "/index.html"
