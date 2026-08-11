@@ -29,3 +29,8 @@ dist-ssr
 *.sw?
 
 .vercel
+
+# Personal Claude Code overrides for this checkout. `.claude/settings.json`
+# would be the shared, committed one; this is not it. (`*.local` above does not
+# cover it — that matches names ending in `.local`, not `settings.local.json`.)
+.claude/settings.local.json
