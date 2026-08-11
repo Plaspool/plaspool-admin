@@ -51,9 +51,13 @@ export function configuredOrigins(): string[] {
  */
 export function originGuard(origins?: readonly string[]): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
+    const allowed = origins ?? configuredOrigins();
+    // Published on every request, safe or not: `POST /api/invites` builds an
+    // invite URL from it, and building one from the request's own `Host` header
+    // would deliver a credential to whatever domain the caller named.
+    c.set('origins', allowed);
     if (SAFE_METHODS.has(c.req.method)) return next();
     const origin = c.req.header('Origin');
-    const allowed = origins ?? configuredOrigins();
     // `includes` on the exact string. Not `startsWith`, not `endsWith`, not a
     // URL parse that would normalise a trailing slash into a match.
     if (!origin || !allowed.includes(origin)) throw new ForbiddenError();

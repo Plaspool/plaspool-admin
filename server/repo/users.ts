@@ -1,6 +1,6 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import { sql } from 'drizzle-orm';
-import { toEpochMs, uniqueViolation } from '../db/client';
+import { toEpochMs, toEpochMsOrNull, uniqueViolation } from '../db/client';
 import type { Db } from '../db/client';
 import type { AuthUser } from '../../shared/types';
 import { getEnv } from '../env';
@@ -143,17 +143,28 @@ export async function createUser(
  * The hash comes back beside the user rather than on it, so `AuthUser` — the
  * only user shape that crosses the boundary — can never carry a password hash
  * into a response.
+ *
+ * `disabledAt` comes back too, and the login route has to consult it.
+ * `resolveSession` already refuses a disabled user's SESSION, but nothing
+ * stopped a disabled user from creating a new one: login would succeed, set a
+ * cookie, and every subsequent request would 401 — a revoked writer who appears
+ * to log in and then cannot do anything, which reads as a broken app rather
+ * than as a revocation.
  */
 export async function findUserByEmail(
   db: Db,
   email: string,
-): Promise<{ user: AuthUser; passwordHash: string } | null> {
+): Promise<{ user: AuthUser; passwordHash: string; disabledAt: number | null } | null> {
   const res = await db.execute(sql`
-    SELECT id, email, display_name, role, password_hash
+    SELECT id, email, display_name, role, password_hash, disabled_at
       FROM users WHERE email = ${email.trim().toLowerCase()}`);
   const row = res.rows[0];
   if (!row) return null;
-  return { user: rowToAuthUser(row), passwordHash: String(row.password_hash) };
+  return {
+    user: rowToAuthUser(row),
+    passwordHash: String(row.password_hash),
+    disabledAt: toEpochMsOrNull(row.disabled_at),
+  };
 }
 
 // ---------------------------------------------------------------- sessions
@@ -281,6 +292,60 @@ export async function createInvite(
             ${a.invitedBy}, ${now}, ${expiresAt})
     RETURNING id`);
   return { id: String(res.rows[0].id), token, expiresAt };
+}
+
+/** What `GET /api/invites` returns. Never `token_hash`. */
+export interface InviteSummary {
+  id: string;
+  email: string;
+  role: Role;
+  createdAt: number;
+  expiresAt: number;
+  invitedBy: string;
+}
+
+/**
+ * Outstanding invites — unspent and unexpired.
+ *
+ * `token_hash` is enumerated OUT rather than being dropped by the mapper.
+ * It is an HMAC and not a token, so leaking one is not immediately fatal, but
+ * it is the exact value the `invites` lookup keys on and there is no reason for
+ * it to leave the database. Same rule as `POST_COLUMNS`: no `SELECT *`.
+ *
+ * Expired rows are filtered rather than deleted. A list called "outstanding"
+ * that quietly destroys history would make "did we ever invite this address"
+ * unanswerable, and `acceptInvite` refuses an expired row anyway.
+ */
+export async function listInvites(db: Db): Promise<InviteSummary[]> {
+  const now = Date.now();
+  const res = await db.execute(sql`
+    SELECT id, email, role, created_at, expires_at, invited_by
+      FROM invites
+     WHERE accepted_at IS NULL AND expires_at > ${now}
+     ORDER BY created_at DESC, id DESC`);
+  return res.rows.map((row) => ({
+    id: String(row.id),
+    email: String(row.email),
+    role: row.role as Role,
+    createdAt: toEpochMs(row.created_at),
+    expiresAt: toEpochMs(row.expires_at),
+    invitedBy: String(row.invited_by),
+  }));
+}
+
+/**
+ * Revoke an invite. `false` when there was nothing to revoke, so the route can
+ * answer 404 rather than pretending.
+ *
+ * A DELETE and not `SET expires_at = 0`: an unspent invite carries a live
+ * credential, and the only state that means "this token can never be used" is
+ * the absence of the row it hashes to.
+ */
+export async function revokeInvite(db: Db, id: string): Promise<boolean> {
+  const res = await db.execute(sql`
+    DELETE FROM invites WHERE id = ${id}::uuid AND accepted_at IS NULL
+    RETURNING id`);
+  return res.rows.length > 0;
 }
 
 /**

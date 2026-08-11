@@ -6,6 +6,7 @@ import { toResponse } from './middleware/errors';
 import { NotFoundError } from './repo/errors';
 import { originGuard } from './middleware/origin';
 import { sessionMiddleware } from './middleware/session';
+import { routes as auth } from './routes/auth';
 import type { AppEnv } from './app-env';
 
 export type { AppEnv } from './app-env';
@@ -102,6 +103,8 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
   // costs a session lookup.
   app.use(`${API_PREFIX}/*`, originGuard(deps.origins));
   app.use(`${API_PREFIX}/*`, sessionMiddleware());
+
+  app.route(API_PREFIX, auth);
 
   return app;
 }

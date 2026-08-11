@@ -18,6 +18,14 @@ export type AppEnv = {
     user: AuthUser | null;
     db: Db;
     requestId: string;
+    /**
+     * The exact-match allow-list this request was judged against.
+     *
+     * Shared with the routes rather than re-read, so the invite URL and the
+     * CSRF guard cannot disagree about what this deployment's origin is — and
+     * so neither is ever built from an attacker-controlled `Host` header.
+     */
+    origins: readonly string[];
   };
 };
 
