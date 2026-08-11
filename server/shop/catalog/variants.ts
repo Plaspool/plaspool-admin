@@ -1,0 +1,208 @@
+import { sql } from 'drizzle-orm';
+import type { Db } from '../../db/client';
+import { uniqueViolation } from '../../db/client';
+import { BadRequestError, NotFoundError } from '../../repo/errors';
+import { rejectNul } from '../../repo/cursor';
+import type { AuthUser } from '../../../shared/types';
+import type { VariantStatus } from '../../../shared/commerce/catalog-port';
+import { VARIANT_COLUMNS, newCatalogId, rowToVariant, rowToVariantWithPrice } from './mapping';
+import type { Variant, VariantPatch, VariantWithPrice } from './types';
+
+/**
+ * Variants — the sellable unit.
+ *
+ * NO CAS HERE, AND THAT IS A DECISION RATHER THAN AN OMISSION. `shop_products`
+ * carries `revision` because a product is a document two people edit at once and
+ * losing one of their edits is the failure the whole CAS path exists to prevent.
+ * A variant is a tuple of short scalars — a SKU, a position, a weight, a status
+ * — and there is no merge to lose: a PATCH names the fields it sets and each one
+ * is last-writer-wins by construction. Adding a revision column would create a
+ * conflict surface where the domain has none, and every admin edit would then
+ * need a token nobody has a use for.
+ *
+ * The two things that DO need database-level protection have it, and neither is
+ * a CAS: `sku` is UNIQUE (a SKU is an address, and two products claiming one is
+ * a picking error in a warehouse), and stock lives in `shop_inventory` where
+ * `reserve` is a single conditional statement.
+ *
+ * A NEW VARIANT GETS AN INVENTORY ROW IN THE SAME STATEMENT. A variant that
+ * exists with no inventory row is a variant `reserve` answers `unknown_variant`
+ * for — indistinguishable, at the port, from one that was deleted. Creating both
+ * together means that state is unreachable through this API rather than merely
+ * unlikely.
+ */
+
+/** `sku` is a UNIQUE column, so a duplicate is a 400 that names the field. */
+export class DuplicateSkuError extends BadRequestError {
+  constructor() {
+    super('sku');
+    this.name = 'DuplicateSkuError';
+  }
+}
+
+export interface CreateVariantInput {
+  sku: string;
+  optionValues?: Record<string, string>;
+  position?: number;
+  weightGrams?: number | null;
+  /** Stock at creation. Defaults to zero — nothing is in the warehouse yet. */
+  onHand?: number;
+  backorderable?: boolean;
+}
+
+export async function listVariants(db: Db, productId: string): Promise<Variant[]> {
+  const res = await db.execute(sql`
+    SELECT ${sql.raw(VARIANT_COLUMNS.join(', '))} FROM shop_variants
+     WHERE product_id = ${productId} ORDER BY position ASC, id ASC`);
+  return res.rows.map(rowToVariant);
+}
+
+/**
+ * Variants of one product, joined to the current price and the stock row.
+ *
+ * ONE STATEMENT, NOT N+1. A product page renders every variant with its price
+ * and availability; doing that as a query per variant is the shape that looks
+ * fine on a two-variant product and takes forty round trips on a size-by-colour
+ * grid. `pr.effective_to IS NULL` is the "current price" predicate, and the
+ * partial unique index guarantees it matches at most one row — without that
+ * index this join would silently multiply rows.
+ */
+export async function listVariantsWithPrices(
+  db: Db,
+  productId: string,
+): Promise<VariantWithPrice[]> {
+  const res = await db.execute(sql`
+    SELECT ${sql.raw(VARIANT_COLUMNS.map((c) => `v.${c}`).join(', '))},
+           pr.amount AS price_amount, pr.currency AS price_currency,
+           i.on_hand - i.reserved AS available, i.backorderable
+      FROM shop_variants v
+      LEFT JOIN shop_prices pr ON pr.variant_id = v.id AND pr.effective_to IS NULL
+      LEFT JOIN shop_inventory i ON i.variant_id = v.id
+     WHERE v.product_id = ${productId}
+     ORDER BY v.position ASC, v.id ASC`);
+  return res.rows.map(rowToVariantWithPrice);
+}
+
+export async function getVariant(db: Db, id: string): Promise<Variant | null> {
+  const res = await db.execute(sql`
+    SELECT ${sql.raw(VARIANT_COLUMNS.join(', '))} FROM shop_variants WHERE id = ${id}`);
+  const row = res.rows[0];
+  return row ? rowToVariant(row) : null;
+}
+
+export async function createVariant(
+  db: Db,
+  productId: string,
+  input: CreateVariantInput,
+  _actor: AuthUser,
+): Promise<Variant> {
+  const now = Date.now();
+  const id = newCatalogId('var_');
+  const sku = rejectNul(input.sku.trim(), 'sku');
+  if (!sku) throw new BadRequestError('sku');
+  const onHand = input.onHand ?? 0;
+  if (!Number.isInteger(onHand) || onHand < 0) throw new BadRequestError('onHand');
+
+  /*
+   * `position` DEFAULTS TO THE END, computed in SQL rather than read first.
+   * `coalesce(max(position) + 1, 0)` inside the INSERT means two concurrent
+   * creates cannot both read "3" and both claim it — and position is not unique,
+   * so a collision would not be an error, it would be two variants in an order
+   * that depends on the planner.
+   */
+  const position =
+    input.position !== undefined
+      ? sql`${input.position}`
+      : sql`(SELECT coalesce(max(position) + 1, 0) FROM shop_variants WHERE product_id = ${productId})`;
+
+  const row = await db
+    .execute(sql`
+      WITH prod AS (
+        SELECT id FROM shop_products WHERE id = ${productId}
+      ), ins AS (
+        INSERT INTO shop_variants (id, product_id, sku, option_values, position,
+                                   weight_grams, status, created_at, updated_at)
+        SELECT ${id}, prod.id, ${sku},
+               ${JSON.stringify(input.optionValues ?? {})}::jsonb, ${position},
+               ${input.weightGrams ?? null}, 'active', ${now}, ${now}
+          FROM prod
+        RETURNING ${sql.raw(VARIANT_COLUMNS.join(', '))}
+      ), inv AS (
+        INSERT INTO shop_inventory (variant_id, on_hand, reserved, backorderable, updated_at)
+        SELECT ins.id, ${onHand}, 0, ${input.backorderable ?? false}, ${now} FROM ins
+        RETURNING 1
+      )
+      SELECT ${sql.raw(VARIANT_COLUMNS.join(', '))} FROM ins`)
+    .then((res) => res.rows[0])
+    .catch((err: unknown) => {
+      if (uniqueViolation(err) === 'shop_variants_sku_unique') throw new DuplicateSkuError();
+      throw err;
+    });
+
+  /*
+   * No row means the `prod` CTE was empty — the product does not exist. A 404
+   * rather than a foreign-key 500, and reached WITHOUT a separate existence read:
+   * a read-then-insert would let the product be trashed in between and turn a
+   * clean 404 into a raw 23503.
+   */
+  if (!row) throw new NotFoundError(productId);
+  return rowToVariant(row);
+}
+
+/**
+ * Update a variant's merchandising fields.
+ *
+ * `status` IS PATCHABLE HERE, unlike a product's. Discontinuing a variant is not
+ * a lifecycle transition with an inverse that can be lost in a race — it is a
+ * flag on a sellable unit, and the thing that must not be got wrong is that a
+ * discontinued variant stops being quotable, which `quote()` enforces by reading
+ * the CURRENT row rather than by trusting anything written here.
+ */
+export async function updateVariant(
+  db: Db,
+  id: string,
+  patch: VariantPatch,
+): Promise<Variant> {
+  const assignments = [];
+  if (patch.sku !== undefined) {
+    const sku = rejectNul(patch.sku.trim(), 'sku');
+    if (!sku) throw new BadRequestError('sku');
+    assignments.push(sql`sku = ${sku}`);
+  }
+  if (patch.optionValues !== undefined) {
+    assignments.push(sql`option_values = ${JSON.stringify(patch.optionValues)}::jsonb`);
+  }
+  if (patch.position !== undefined) {
+    if (!Number.isInteger(patch.position) || patch.position < 0) {
+      throw new BadRequestError('position');
+    }
+    assignments.push(sql`position = ${patch.position}`);
+  }
+  if (patch.weightGrams !== undefined) {
+    if (patch.weightGrams !== null && (!Number.isInteger(patch.weightGrams) || patch.weightGrams < 0)) {
+      throw new BadRequestError('weightGrams');
+    }
+    assignments.push(sql`weight_grams = ${patch.weightGrams}`);
+  }
+  if (patch.status !== undefined) {
+    assignments.push(sql`status = ${patch.status satisfies VariantStatus}`);
+  }
+
+  // An empty patch is a 400, not a no-op that reports success. A caller sending
+  // `{}` has misunderstood something, and answering 200 confirms the mistake.
+  if (assignments.length === 0) throw new BadRequestError('patch');
+
+  const row = await db
+    .execute(sql`
+      UPDATE shop_variants SET ${sql.join(assignments, sql`, `)}, updated_at = ${Date.now()}
+       WHERE id = ${id}
+      RETURNING ${sql.raw(VARIANT_COLUMNS.join(', '))}`)
+    .then((res) => res.rows[0])
+    .catch((err: unknown) => {
+      if (uniqueViolation(err) === 'shop_variants_sku_unique') throw new DuplicateSkuError();
+      throw err;
+    });
+
+  if (!row) throw new NotFoundError(id);
+  return rowToVariant(row);
+}
