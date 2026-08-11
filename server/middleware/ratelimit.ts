@@ -1,6 +1,7 @@
 import type { Context } from 'hono';
 import { hit } from '../repo/ratelimit';
 import { RateLimitedError } from './errors';
+import { currentDb } from '../app-env';
 import type { AppEnv } from '../app-env';
 
 /**
@@ -46,6 +47,6 @@ export async function limit(
   max: number,
   windowMs: number,
 ): Promise<void> {
-  const verdict = await hit(c.get('db'), key, max, windowMs);
+  const verdict = await hit(currentDb(c), key, max, windowMs);
   if (!verdict.ok) throw new RateLimitedError(verdict.retryAfter);
 }

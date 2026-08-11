@@ -2,6 +2,7 @@ import type { Context, MiddlewareHandler } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { resolveSession } from '../repo/users';
 import { ForbiddenError, UnauthenticatedError } from './errors';
+import { currentDb } from '../app-env';
 import type { AppEnv } from '../app-env';
 
 /**
@@ -34,7 +35,13 @@ export const SESSION_COOKIE = '__Host-studio_session';
 export function sessionMiddleware(): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     const token = getCookie(c, SESSION_COOKIE);
-    c.set('user', token ? await resolveSession(c.get('db'), token) : null);
+    /*
+     * `currentDb` is only reached when a cookie is present, which is what keeps
+     * an anonymous request from building a database client to be told it is
+     * anonymous — the difference between a 401 and a 500 on a deployment whose
+     * DATABASE_URL is wrong.
+     */
+    c.set('user', token ? await resolveSession(currentDb(c), token) : null);
     await next();
   };
 }

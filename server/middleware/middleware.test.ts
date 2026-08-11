@@ -293,18 +293,64 @@ describe('the assembled app', () => {
     expect(refused.status).toBe(403);
   });
 
-  it('/api/health answers before the database middleware runs', async () => {
-    // Built with a `db` factory that throws: the health route must never call
-    // it, or a liveness probe reports the environment rather than the process.
+  it('a request that needs no database never builds one', async () => {
+    /*
+     * MEASURED AGAINST A BOOTED DEV SERVER, and it is why the handle is lazy.
+     * With the database resolved eagerly by a middleware, `getDb()` runs for
+     * every `/api/*` request — so on a deployment whose `DATABASE_URL` is
+     * wrong, three different answers all became 500: an unrouted path instead
+     * of 404, an anonymous request instead of 401, and a forged cross-origin
+     * POST instead of 403. The last one is the serious one: a CSRF refusal
+     * must not depend on a dependency being available.
+     */
+    let resolved = 0;
     const noDb = createApp({
       db: () => {
-        throw new Error('database must not be resolved for /api/health');
+        resolved += 1;
+        throw new Error('the database must not be resolved for this request');
       },
       origins: [ORIGIN],
     });
-    const res = await noDb.request('/api/health');
-    expect(res.status).toBe(200);
-    expect(await bodyOf(res)).toEqual({ ok: true });
+
+    const health = await noDb.request('/api/health');
+    expect(health.status).toBe(200);
+    expect(await bodyOf(health)).toEqual({ ok: true });
+
+    expect((await noDb.request('/api/nothing-here')).status).toBe(404);
+    expect((await noDb.request('/api/auth/me')).status).toBe(401);
+    expect(
+      (await noDb.request('/api/posts', { method: 'POST' })).status,
+    ).toBe(403);
+    expect(
+      (
+        await noDb.request('/api/posts', {
+          method: 'POST',
+          headers: { Origin: 'https://attacker.example' },
+        })
+      ).status,
+    ).toBe(403);
+
+    expect(resolved).toBe(0);
+  });
+
+  it('resolves the handle at most once per request', async () => {
+    let resolved = 0;
+    const counting = createApp({
+      db: () => {
+        resolved += 1;
+        return ctx.db;
+      },
+      origins: [ORIGIN],
+    });
+    // Two rate-limit buckets plus a user lookup on one request: memoised, or a
+    // serverless function opens a client per statement.
+    const res = await counting.request('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: ORIGIN },
+      body: JSON.stringify({ email: 'nobody@test.local', password: 'wrong-password' }),
+    });
+    expect(res.status).toBe(401);
+    expect(resolved).toBe(1);
   });
 
   it('an error thrown inside a route becomes the §8 response, not a raw 500', async () => {

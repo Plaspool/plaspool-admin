@@ -97,14 +97,30 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    */
   app.get(`${API_PREFIX}/health`, (c) => c.json({ ok: true }));
 
+  /*
+   * ORIGIN FIRST, THEN THE DATABASE, THEN THE SESSION.
+   *
+   * A forged cross-origin write is refused before anything is resolved or
+   * looked up — it is the cheapest possible refusal and it must not depend on
+   * a dependency being available. Measured on a booted dev server with an
+   * unusable `DATABASE_URL`: with the database middleware first, that 403 was
+   * a 500.
+   */
+  app.use(`${API_PREFIX}/*`, originGuard(deps.origins));
+
+  /*
+   * LAZY, AND MEMOISED PER REQUEST. `resolveDb` is not called here; the closure
+   * is published and `currentDb(c)` calls it on first use. A request that never
+   * touches the database — an unrouted path, an anonymous 401, the 403 above —
+   * never builds a client, so its answer cannot be turned into a 500 by an
+   * environment it did not need.
+   */
   app.use(`${API_PREFIX}/*`, async (c, next) => {
-    c.set('db', resolveDb());
+    let handle: Db | null = null;
+    c.set('dbFactory', () => (handle ??= resolveDb()));
     await next();
   });
 
-  // Origin before session: a forged cross-origin write is refused before it
-  // costs a session lookup.
-  app.use(`${API_PREFIX}/*`, originGuard(deps.origins));
   app.use(`${API_PREFIX}/*`, sessionMiddleware());
 
   app.route(API_PREFIX, auth);

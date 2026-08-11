@@ -16,7 +16,25 @@ export type AppEnv = {
   Variables: {
     /** Null until `sessionMiddleware` runs, and null for an anonymous caller. */
     user: AuthUser | null;
-    db: Db;
+    /**
+     * The handle, BEHIND A FUNCTION, and read through `currentDb(c)`.
+     *
+     * The plan's interface is `const db = c.get('db')` — an eagerly resolved
+     * handle set by a middleware. Measured against a booted dev server, that
+     * turns three different answers into the same 500: `getDb()` builds the
+     * Neon client from `DATABASE_URL` and throws if it cannot, so a request
+     * that never touches the database still pays for one. An unrouted
+     * `/api/nope` answered 500 instead of 404, an anonymous `/api/auth/me`
+     * answered 500 instead of 401, and — the one that matters — a forged
+     * cross-origin `POST` answered 500 instead of 403, i.e. the CSRF refusal
+     * depended on the database client constructing.
+     *
+     * Lazy, it is resolved on the first `currentDb(c)` and memoised for the
+     * rest of the request, so those three paths never reach it. Named
+     * `dbFactory` rather than `db` so nobody can follow the plan's snippet
+     * literally and get a function where they expected a handle.
+     */
+    dbFactory: () => Db;
     requestId: string;
     /**
      * The exact-match allow-list this request was judged against.
@@ -43,7 +61,14 @@ export function currentUser(c: Context<AppEnv>): AuthUser {
   return user;
 }
 
-/** The request-scoped database handle. */
+/**
+ * The request-scoped database handle, resolved on first use.
+ *
+ * THE ONLY WAY TO GET ONE. Every route and every middleware goes through here,
+ * so "was a database needed for this request" is answered by whether anything
+ * called this function rather than by where a middleware happens to sit in the
+ * chain.
+ */
 export function currentDb(c: Context<AppEnv>): Db {
-  return c.get('db');
+  return c.get('dbFactory')();
 }
