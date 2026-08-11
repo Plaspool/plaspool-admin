@@ -1,15 +1,29 @@
 /**
  * Lifecycle operations (spec §4.2, §4.3a).
  *
- * Two properties carry this file, and neither is "the status changed".
+ * Three properties carry this file, and none of them is "the status changed".
  *
- * THE PRECONDITION. Every lifecycle CAS carries its precondition in the
- * predicate, and the retry re-checks it on the row it just re-read. Retry
- * answers "the row moved under me"; it must never answer "someone did the
- * opposite thing on purpose". Without that, a queued `unpublish` that lost a
- * race silently reverses a deliberate archive, and a queued `trash` overwrites
- * the trash timestamp of a post someone else had already trashed — which, if
- * the owner then empties the trash, is how a post and its whole history go.
+ * THE PRECONDITION, AND THE FACT THAT IT IS NOT ENOUGH. Every lifecycle CAS
+ * carries its precondition in the predicate. Retry answers "the row moved under
+ * me"; it must never answer "someone did the opposite thing on purpose".
+ *
+ * But a predicate over the CURRENT state cannot tell "never left draft" from
+ * "was trashed and restored back to draft", and that is a defect this file once
+ * missed entirely: a `trash` that lost a race to a concurrent
+ * trash-then-restore found `deleted_at IS NULL` again, retried, and put the
+ * post back in the bin somebody had deliberately taken it out of — after which
+ * `emptyTrash` destroyed the row and CASCADEd away every revision. So the CAS
+ * also pins `lifecycle_generation`, a counter the DATABASE bumps on any change
+ * to `status`, `published_at` or `deleted_at` and on nothing else.
+ *
+ * THE GUARDS MUST BE LOAD-BEARING IN THE DATABASE, NOT IN TYPESCRIPT. Mutation
+ * testing of the previous version found that replacing `deleted_at IS NULL` or
+ * `status <> 'published'` with `true` broke NO test, because every precondition
+ * case was satisfied by a JS check performed on an already-stale read. Nothing
+ * in this file may rely on that check: `transition` now consults `holds()` only
+ * to CLASSIFY a predicate that has already matched nothing. `mutating()` below
+ * exists to keep it that way — it rewrites the SQL as it goes to the driver and
+ * proves each half of the predicate is what refuses the write.
  *
  * ONE STATEMENT. `destroyPost`, `emptyTrash` and `sweepBlankDrafts` are single
  * data-modifying-CTE statements, never `db.transaction`: the neon-http driver
@@ -35,7 +49,7 @@ import {
   unarchivePost,
   unpublishPost,
 } from './posts';
-import { NotFoundError, StaleWriteError } from './errors';
+import { NotFoundError, PreconditionFailedError, StaleWriteError } from './errors';
 import type { Db } from '../db/client';
 import type { DocNode, Post } from '../../shared/types';
 
@@ -92,6 +106,14 @@ async function rawPost(id: string): Promise<Record<string, unknown>> {
   return res.rows[0];
 }
 
+/** The column the CAS pins. Not on `Post`, so it is read straight from the row. */
+async function generation(id: string): Promise<number> {
+  const res = await ctx.db.execute(
+    sql`SELECT lifecycle_generation FROM posts WHERE id = ${id}`,
+  );
+  return Number(res.rows[0].lifecycle_generation);
+}
+
 /** The rejection itself, typed — `.catch(e => e)` widens to `T | error`. */
 async function rejection<T>(promise: Promise<unknown>): Promise<T> {
   let caught: unknown;
@@ -134,6 +156,51 @@ function alwaysMoving(db: Db, id: string): { db: Db; statements: () => number } 
   });
   return { db: proxy, statements: () => statements };
 }
+
+interface Dialecty {
+  dialect: { sqlToQuery(query: unknown): { sql: string; params: unknown[] } };
+}
+
+/**
+ * A handle that rewrites the SQL on its way to the driver — the mutation
+ * operator, run from inside the suite.
+ *
+ * WHY THIS EXISTS. The previous version of this file could not tell whether the
+ * CAS predicate did anything: replacing `deleted_at IS NULL` with `true` broke
+ * none of the 254 server tests, because every precondition case was decided by
+ * a JavaScript check on an already-read row — the one check that cannot be
+ * trusted under concurrency, and the reason the A→B→A defect below survived a
+ * green suite. A test that asserts a mutant MISBEHAVES is the only kind that
+ * proves the original is what refuses the write.
+ *
+ * It rebuilds rather than string-patches: `sqlToQuery` renders the statement
+ * with `$n` placeholders, the substitution is applied to that text, and the
+ * placeholders are turned back into bound parameters — so nothing is inlined
+ * into SQL and the mutant differs from the original in exactly one predicate.
+ * Statements that do not match are passed through untouched.
+ */
+function mutating(db: Db, find: RegExp, replacement: string): Db {
+  return new Proxy(db, {
+    get(target, prop) {
+      const value: unknown = Reflect.get(target, prop);
+      if (prop !== 'execute' || typeof value !== 'function') return value;
+      const execute = value as (...args: unknown[]) => Promise<unknown>;
+      return (...args: unknown[]) => {
+        const built = (target as unknown as Dialecty).dialect.sqlToQuery(args[0]);
+        if (!find.test(built.sql)) return execute.apply(target, args);
+        const parts = built.sql.replace(find, replacement).split(/\$(\d+)/);
+        const chunks = parts.map((part, i) =>
+          i % 2 === 0 ? sql.raw(part) : sql`${built.params[Number(part) - 1]}`,
+        );
+        return execute.apply(target, [sql.join(chunks, sql``)]);
+      };
+    },
+  });
+}
+
+/** The two halves of the lifecycle CAS predicate, as they render. */
+const GENERATION_PIN = /lifecycle_generation = \$\d+/;
+const TRASH_GUARD = /deleted_at is null/i;
 
 // ------------------------------------------------------------------- publish
 
@@ -193,31 +260,56 @@ describe('publishPost', () => {
 
 describe('preconditions (spec §4.2)', () => {
   /**
-   * A lifecycle op whose precondition is already false is refused outright. It
-   * is the same answer the retry gives, arrived at one statement earlier: the
-   * post is already in the state being asked for, so applying the op again
-   * would bump the revision, write a duplicate history entry and — for trash —
-   * overwrite the timestamp of whoever actually put it there.
+   * A lifecycle op whose precondition is already false is REFUSED, and refused
+   * by the database: the post is already in the state being asked for, so
+   * applying the op again would bump the revision, write a duplicate history
+   * entry and — for trash — overwrite the timestamp of whoever actually put it
+   * there.
+   *
+   * `PreconditionFailedError`, not `StaleWriteError`. This used to arrive as a
+   * `StaleWriteError` with `expected === actual`, which is not a conflict any
+   * banner can render and which a route layer could only tell apart from a real
+   * race by comparing two numbers and guessing. Nothing is stale here; the
+   * request is simply refused.
    */
-  const cases: [string, (p: Post) => Promise<unknown>, Partial<Post>][] = [
-    ['publish an already published post', (p) => publishPost(ctx.db, p.id, actor()), { status: 'published', publishedAt: 5 }],
-    ['unpublish a draft', (p) => unpublishPost(ctx.db, p.id, actor()), { status: 'draft' }],
-    ['archive an archived post', (p) => archivePost(ctx.db, p.id, actor()), { status: 'archived' }],
-    ['unarchive a draft', (p) => unarchivePost(ctx.db, p.id, actor()), { status: 'draft' }],
-    ['trash a post already in the trash', (p) => trashPost(ctx.db, p.id, actor()), { deletedAt: 111 }],
-    ['restore a post that is not in the trash', (p) => restorePost(ctx.db, p.id, actor()), { deletedAt: null }],
+  const cases: [string, (db: Db, p: Post) => Promise<unknown>, Partial<Post>, string][] = [
+    ['publish an already published post', (db, p) => publishPost(db, p.id, actor()), { status: 'published', publishedAt: 5 }, 'publish'],
+    ['unpublish a draft', (db, p) => unpublishPost(db, p.id, actor()), { status: 'draft' }, 'unpublish'],
+    ['archive an archived post', (db, p) => archivePost(db, p.id, actor()), { status: 'archived' }, 'archive'],
+    ['unarchive a draft', (db, p) => unarchivePost(db, p.id, actor()), { status: 'draft' }, 'unarchive'],
+    ['trash a post already in the trash', (db, p) => trashPost(db, p.id, actor()), { deletedAt: 111 }, 'trash'],
+    ['restore a post that is not in the trash', (db, p) => restorePost(db, p.id, actor()), { deletedAt: null }, 'restore'],
   ];
 
-  it.each(cases)('refuses to %s with a 409, changing nothing', async (_name, run, state) => {
+  it.each(cases)('refuses to %s, changing nothing', async (_name, run, state, name) => {
     const post = await seeded({ title: 'Precondition', ...state });
     const before = await rawPost(post.id);
 
-    const err = await rejection<StaleWriteError>(run(post) as Promise<unknown>);
+    const err = await rejection<PreconditionFailedError>(run(ctx.db, post) as Promise<unknown>);
 
-    expect(err).toBeInstanceOf(StaleWriteError);
-    expect(err.post?.id).toBe(post.id);
+    expect(err).toBeInstanceOf(PreconditionFailedError);
+    expect(err.operation).toBe(name);
+    expect(err.post.id).toBe(post.id);
     expect(await rawPost(post.id)).toEqual(before);
     expect(await countRevisions(post.id)).toBe(1);
+  });
+
+  it('THE GUARD IS LOAD-BEARING: neutralised, an already-trashed post is re-trashed', async () => {
+    /*
+     * The mutation the previous suite could not detect. `deleted_at IS NULL`
+     * replaced by `true` in the CAS predicate, and nothing else changed.
+     *
+     * If this test ever passes-by-throwing again, the precondition has drifted
+     * back into TypeScript — judged on a row that has already been read, which
+     * is exactly the check the CAS exists because it cannot trust.
+     */
+    const post = await seeded({ title: 'Mutant', deletedAt: 111 });
+    const mutant = mutating(ctx.db, TRASH_GUARD, 'true');
+
+    const trashed = await trashPost(mutant, post.id, actor());
+
+    expect(trashed.deletedAt).not.toBe(111);
+    expect(await countRevisions(post.id)).toBe(2);
   });
 
   it.each([
@@ -230,6 +322,202 @@ describe('preconditions (spec §4.2)', () => {
     ['duplicate', duplicatePost],
   ] as const)('%s is a NotFoundError for a post that does not exist', async (_n, op) => {
     await expect(op(ctx.db, 'p_missing', actor())).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+// ---------------------------------------------------- the A→B→A interleaving
+
+/**
+ * THE DEFECT THE LIFECYCLE GENERATION EXISTS FOR.
+ *
+ * Every op below loses a race to a concurrent INVERSE pair — someone else does
+ * the opposite thing and then undoes it — which returns the row to a state the
+ * op's own precondition accepts. Before `lifecycle_generation`, the retry saw
+ * that state, could not tell it from "nothing happened", and re-applied an
+ * intent the caller had already lost. For trash that was unrecoverable: the
+ * re-applied trash put the post back in the bin and the next `emptyTrash` hard
+ * deleted it, CASCADEing away every revision. Measured: post DESTROYED,
+ * revisions 0.
+ *
+ * The raw UPDATEs are exactly what a concurrent lifecycle op does to the row,
+ * and they land between the op's read and its CAS because PGlite is one
+ * connection with a FIFO queue — the statements below are enqueued before the
+ * suspended `transition` resumes and issues its own.
+ */
+describe('a concurrent inverse pair cannot be re-applied', () => {
+  const pairs: [string, (db: Db, id: string) => Promise<unknown>, Partial<Post>, string, string][] =
+    [
+      ['publish', (db, id) => publishPost(db, id, actor()), { status: 'draft' }, `status = 'published'`, `status = 'draft'`],
+      ['unpublish', (db, id) => unpublishPost(db, id, actor()), { status: 'published', publishedAt: 5 }, `status = 'draft'`, `status = 'published'`],
+      ['archive', (db, id) => archivePost(db, id, actor()), { status: 'draft' }, `status = 'archived'`, `status = 'draft'`],
+      ['unarchive', (db, id) => unarchivePost(db, id, actor()), { status: 'archived' }, `status = 'draft'`, `status = 'archived'`],
+      ['trash', (db, id) => trashPost(db, id, actor()), { deletedAt: null }, 'deleted_at = 111', 'deleted_at = NULL'],
+      ['restore', (db, id) => restorePost(db, id, actor()), { deletedAt: 111 }, 'deleted_at = NULL', 'deleted_at = 111'],
+    ];
+
+  it.each(pairs)(
+    '%s that loses to an inverse pair is a 409, not a silent re-apply',
+    async (_name, run, state, there, back) => {
+      const post = await seeded({ title: 'Contended', ...state });
+      const before = await rawPost(post.id);
+
+      const racing = run(ctx.db, post.id);
+      await ctx.db.execute(
+        sql`UPDATE posts SET ${sql.raw(there)}, revision = revision + 1 WHERE id = ${post.id}`,
+      );
+      await ctx.db.execute(
+        sql`UPDATE posts SET ${sql.raw(back)}, revision = revision + 1 WHERE id = ${post.id}`,
+      );
+      const err = await rejection<StaleWriteError>(racing);
+
+      expect(err).toBeInstanceOf(StaleWriteError);
+      // A real conflict, so the two sides genuinely differ — the thing a
+      // refused-op `StaleWriteError` could never say.
+      expect(err.actual).toBeGreaterThan(err.expected);
+
+      const row = await rawPost(post.id);
+      // Exactly what the inverse pair left, and nothing the losing op wanted.
+      expect(row.status).toBe(before.status);
+      expect(row.deleted_at).toEqual(before.deleted_at);
+      expect(row.published_at).toEqual(before.published_at);
+      expect(Number(row.revision)).toBe(Number(before.revision) + 2);
+      // And it wrote no history at all.
+      expect(await countRevisions(post.id)).toBe(1);
+    },
+  );
+
+  it('the trash case in full: the post survives and emptyTrash finds nothing', async () => {
+    // The consequence, spelled out. Re-applying the trash here is not a wrong
+    // status, it is a destroyed post.
+    const post = await seeded({ title: 'Doomed', content: doc('words') });
+
+    const trashing = trashPost(ctx.db, post.id, actor());
+    await ctx.db.execute(
+      sql`UPDATE posts SET deleted_at = 111,  revision = revision + 1 WHERE id = ${post.id}`,
+    );
+    await ctx.db.execute(
+      sql`UPDATE posts SET deleted_at = NULL, revision = revision + 1 WHERE id = ${post.id}`,
+    );
+    await expect(trashing).rejects.toBeInstanceOf(StaleWriteError);
+
+    expect((await getPost(ctx.db, post.id))?.deletedAt).toBeNull();
+    expect(await emptyTrash(ctx.db)).toBe(0);
+    expect(await getPost(ctx.db, post.id)).not.toBeNull();
+    expect(await countRevisions(post.id)).toBe(1);
+  });
+
+  it.each([
+    ['a deliberate archive', `status = 'archived'`, `status = 'archived', deleted_at = NULL`],
+    ['a deliberate trash', `deleted_at = 222`, `deleted_at = 222`],
+  ])('a publish retried after %s is refused too', async (_name, there, back) => {
+    /*
+     * The cross pairs. `publish`'s precondition is `status <> 'published'`,
+     * which an archive and a trash both leave TRUE — so neither is an inverse
+     * pair and the state predicate alone never objected. The archive vanished;
+     * the trash vanished AND `deleted_at` was cleared, because publish's SET
+     * list assigns `deleted_at = NULL`.
+     */
+    const post = await seeded({ title: 'Cross Pair' });
+
+    const publishing = publishPost(ctx.db, post.id, actor());
+    await ctx.db.execute(
+      sql`UPDATE posts SET ${sql.raw(there)}, revision = revision + 1 WHERE id = ${post.id}`,
+    );
+    await ctx.db.execute(
+      sql`UPDATE posts SET ${sql.raw(back)}, revision = revision + 1 WHERE id = ${post.id}`,
+    );
+    await expect(publishing).rejects.toBeInstanceOf(StaleWriteError);
+
+    const after = await getPost(ctx.db, post.id);
+    expect(after?.status).not.toBe('published');
+    expect(await countRevisions(post.id)).toBe(1);
+  });
+
+  it('THE GENERATION PIN IS LOAD-BEARING: neutralised, the trash is re-applied', async () => {
+    /*
+     * `lifecycle_generation = $n` replaced by `true` in the CAS predicate, and
+     * nothing else changed — the exact code the fix added, removed. The retry
+     * then finds `deleted_at IS NULL`, cannot tell it from "nothing happened",
+     * and re-trashes the post: the original defect, reproduced on demand.
+     *
+     * Written as an assertion that the MUTANT misbehaves so the guard cannot go
+     * quiet. The state predicate is still there and still true; it is the
+     * generation, and only the generation, that carries this property.
+     */
+    const post = await seeded({ title: 'Doomed' });
+    const mutant = mutating(ctx.db, GENERATION_PIN, 'true');
+
+    const trashing = trashPost(mutant, post.id, actor());
+    await ctx.db.execute(
+      sql`UPDATE posts SET deleted_at = 111,  revision = revision + 1 WHERE id = ${post.id}`,
+    );
+    await ctx.db.execute(
+      sql`UPDATE posts SET deleted_at = NULL, revision = revision + 1 WHERE id = ${post.id}`,
+    );
+    await trashing;
+
+    expect((await getPost(ctx.db, post.id))?.deletedAt).not.toBeNull();
+    expect(await emptyTrash(ctx.db)).toBe(1);
+  });
+});
+
+// ----------------------------------------------- what does and does not move it
+
+describe('lifecycle_generation moves for lifecycle changes and nothing else', () => {
+  it('a new post starts at 0 and every lifecycle op bumps it exactly once', async () => {
+    const post = await seeded({ title: 'Counted' });
+    expect(await generation(post.id)).toBe(0);
+
+    await publishPost(ctx.db, post.id, actor());
+    expect(await generation(post.id)).toBe(1);
+    await unpublishPost(ctx.db, post.id, actor());
+    expect(await generation(post.id)).toBe(2);
+    await archivePost(ctx.db, post.id, actor());
+    expect(await generation(post.id)).toBe(3);
+    await unarchivePost(ctx.db, post.id, actor());
+    expect(await generation(post.id)).toBe(4);
+    await trashPost(ctx.db, post.id, actor());
+    expect(await generation(post.id)).toBe(5);
+    await restorePost(ctx.db, post.id, actor());
+    expect(await generation(post.id)).toBe(6);
+  });
+
+  it('savePost never moves it, however much it writes', async () => {
+    /*
+     * The half of the property that keeps the retry USEFUL. If a content edit
+     * moved the generation, a publish racing an autosave would 409 at a human
+     * instead of re-deriving its slug and excerpt from the newer text — and the
+     * fix for a lost-update bug would have become a spurious-conflict bug.
+     */
+    const post = await seeded({ title: 'Edited' });
+    for (const title of ['One', 'Two', 'Three']) {
+      await savePost(ctx.db, post.id, { title, content: doc(title) }, { actor: actor() });
+    }
+    expect(await generation(post.id)).toBe(0);
+  });
+
+  it('the database owns it: an UPDATE cannot set it, and a bare UPDATE cannot skip it', async () => {
+    /*
+     * A counter the repository incremented would only be honest about writes
+     * that went through the repository — and `deleted_at` is moved by imports,
+     * backfills and retention sweeps too. The trigger is what makes the pin a
+     * property of the row rather than a convention.
+     */
+    const post = await seeded({ title: 'Owned' });
+
+    // Setting it directly is ignored...
+    await ctx.db.execute(
+      sql`UPDATE posts SET lifecycle_generation = 99 WHERE id = ${post.id}`,
+    );
+    expect(await generation(post.id)).toBe(0);
+
+    // ...and a hand-written lifecycle change moves it anyway.
+    await ctx.db.execute(sql`UPDATE posts SET deleted_at = 111 WHERE id = ${post.id}`);
+    expect(await generation(post.id)).toBe(1);
+
+    // A write that touches neither leaves it alone.
+    await ctx.db.execute(sql`UPDATE posts SET title = 'Renamed' WHERE id = ${post.id}`);
+    expect(await generation(post.id)).toBe(1);
   });
 });
 

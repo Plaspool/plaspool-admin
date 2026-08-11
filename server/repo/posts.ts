@@ -5,7 +5,12 @@ import { DbError, uniqueViolation } from '../db/client';
 import { derive, nextExcerpt } from '../domain/derive';
 import { SLUG_ATTEMPTS, uniqueSlug } from '../domain/slug';
 import { POST_COLUMNS, postColumns, rowToPost } from './mapping';
-import { InvalidDocumentError, NotFoundError, StaleWriteError } from './errors';
+import {
+  InvalidDocumentError,
+  NotFoundError,
+  PreconditionFailedError,
+  StaleWriteError,
+} from './errors';
 import { deriveExcerpt, slugify } from '../../shared/doc';
 import { checkPostMeta, validateDoc } from '../../shared/validate';
 import type {
@@ -59,6 +64,34 @@ export async function getPost(db: Db, id: string): Promise<Post | null> {
      WHERE p.id = ${id}`);
   const row = res.rows[0];
   return row ? rowToPost(row, String(row.author_name)) : null;
+}
+
+/**
+ * The same read, plus the lifecycle generation.
+ *
+ * `lifecycleGeneration` is deliberately NOT a field on `Post`. It is a
+ * concurrency token for one code path, like `content_text` is a storage detail
+ * for one column — putting it on the shared domain type would ship it to the
+ * client, invite a caller to compare it, and make a server-side schema decision
+ * part of the frontend's compile surface for no benefit.
+ */
+interface LifecycleRead {
+  post: Post;
+  generation: number;
+}
+
+async function readLifecycle(db: Db, id: string): Promise<LifecycleRead | null> {
+  const res = await db.execute(sql`
+    SELECT ${sql.raw(postColumns('p'))}, p.lifecycle_generation,
+           u.display_name AS author_name
+      FROM posts p JOIN users u ON u.id = p.author_id
+     WHERE p.id = ${id}`);
+  const row = res.rows[0];
+  if (!row) return null;
+  return {
+    post: rowToPost(row, String(row.author_name)),
+    generation: Number(row.lifecycle_generation),
+  };
 }
 
 // -------------------------------------------------------------------- create
@@ -316,23 +349,43 @@ export async function savePost(
  * smuggling a status change past the lifecycle rules — so each transition needs
  * its own statement, differing only in what it assigns and what it demands.
  *
- * The two halves of the contract:
+ * The three halves of the contract:
  *
  * - **No client base revision, so a bounded internal retry.** There is no human
  *   decision to surface here; the derivation simply needs a fresh row. Three
  *   attempts, then 409.
- * - **The precondition rides in the CAS predicate, and is re-checked on every
- *   re-read.** Retry answers "the row moved under me". It must never answer
- *   "someone did the opposite thing on purpose": an `unpublish` that lost a
- *   race and blindly retried would flip a post someone deliberately archived
- *   back to draft, and a `trash` that blindly retried would overwrite the
- *   trash timestamp of whoever actually put it there — the clock a retention
- *   sweep reads before destroying the post and its whole history.
+ * - **The retry re-bases on the row it just read, and PINS THE LIFECYCLE
+ *   GENERATION it first read.** Retry answers "the row moved under me". It must
+ *   never answer "someone did the opposite thing on purpose": an `unpublish`
+ *   that lost a race and blindly retried would flip a post someone deliberately
+ *   archived back to draft, and a `trash` that blindly retried would overwrite
+ *   the trash timestamp of whoever actually put it there — the clock a
+ *   retention sweep reads before destroying the post and its whole history.
+ *
+ *   The precondition alone could not carry that, and this is the defect the
+ *   generation column exists for. `trash`'s precondition is `deleted_at IS
+ *   NULL`; a concurrent trash-then-restore returns the row to `deleted_at IS
+ *   NULL`, so the precondition accepted it, the retry fired, and the post went
+ *   back into the bin somebody had just taken it out of. `emptyTrash` then
+ *   destroyed it and CASCADEd away every revision. `posts.lifecycle_generation`
+ *   moves on any change to `status`, `published_at` or `deleted_at` and on
+ *   nothing else, so A→B→A is visible where the state is not — and a concurrent
+ *   CONTENT edit still leaves the retry free to win and re-derive.
+ * - **The CAS predicate is the ONLY authority.** No JS check short-circuits it,
+ *   and that is deliberate: a precondition judged in TypeScript is judged
+ *   against a row that has already been read, i.e. against exactly the stale
+ *   value the CAS exists to distrust. `holds()` is used only to CLASSIFY a
+ *   predicate that has already matched nothing, on a row read after the fact.
  */
 export const LIFECYCLE_ATTEMPTS = 3;
 
 interface Transition {
-  /** The precondition, on the row this attempt derived from. */
+  /** For the refusal message — `publish`, `trash`, … */
+  name: string;
+  /**
+   * The precondition. Used only to explain a CAS that matched nothing, never to
+   * decide whether the write may proceed — see `guard`.
+   */
   holds(post: Post): boolean;
   /** The same precondition, in the CAS predicate — this is the authoritative one. */
   guard: SQL;
@@ -350,21 +403,24 @@ async function transition(
   actor: AuthUser,
   t: Transition,
 ): Promise<Post> {
-  let base = 0;
+  let read = await readLifecycle(db, id);
+  if (!read) throw new NotFoundError(id);
+
+  /*
+   * READ ONCE, ON THE FIRST ATTEMPT, AND PINNED FOR THE REST.
+   *
+   * Re-reading it per attempt would defeat the whole point: the retry would
+   * adopt whatever generation the concurrent lifecycle op left behind and win
+   * against it, which is the original defect with an extra column.
+   */
+  const pinned = read.generation;
+  const derivedFrom = read.post.revision;
 
   for (let i = 0; i < LIFECYCLE_ATTEMPTS; i += 1) {
-    const current = await getPost(db, id);
-    if (!current) throw new NotFoundError(id);
-    base = current.revision;
-
-    /*
-     * Checked here as well as in the predicate, so an op that is already a
-     * no-op costs one read rather than a write attempt — and so the 409 for
-     * "someone did the opposite thing on purpose" is reached identically on the
-     * first attempt and on a retry. `expected === actual` on this path is not a
-     * mistake: nothing is stale, the request is simply refused.
-     */
-    if (!t.holds(current)) throw new StaleWriteError(base, base, current);
+    const current = read.post;
+    // Re-based every attempt, unlike the generation: a concurrent AUTOSAVE must
+    // not 409 a publish, it must be re-derived from.
+    const base = current.revision;
 
     const now = Date.now();
     const revId = newId('r_');
@@ -387,7 +443,9 @@ async function transition(
           UPDATE posts
              SET ${t.set(current, now, slug)},
                  revision = revision + 1, updated_at = ${now}
-           WHERE id = ${id} AND revision = ${base} AND ${t.guard}
+           WHERE id = ${id} AND revision = ${base}
+             AND lifecycle_generation = ${pinned}
+             AND ${t.guard}
           RETURNING ${sql.raw(POST_COLUMNS.join(', '))}
         ), rev AS (
           INSERT INTO revisions (id, post_id, revision, created_at, author_id,
@@ -416,15 +474,36 @@ async function transition(
     // Undefined means the CAS matched nothing, so nothing at all was written:
     // `INSERT … SELECT FROM upd` had no rows to insert.
     if (row) return rowToPost(row, current.authorName);
+
+    /*
+     * The predicate matched nothing. Read the row back to find out which half
+     * of it said no — and note that this read is the ONLY thing `holds()` is
+     * ever consulted about.
+     *
+     * Generation unchanged means no lifecycle op has happened since the first
+     * read at all, so a false precondition NOW was already false THEN: the
+     * request is refused, not lost, and retrying it two more times would only
+     * cost two more statements to reach the same answer. Anything else — a
+     * moved revision, a moved generation — is a genuine race, so it re-bases
+     * and tries again.
+     */
+    const after = await readLifecycle(db, id);
+    if (!after) throw new NotFoundError(id);
+    if (after.generation === pinned && !t.holds(after.post)) {
+      throw new PreconditionFailedError(t.name, after.post);
+    }
+    read = after;
   }
 
   /*
    * Three attempts, three lost races. Bounded on purpose — an unbounded retry
    * against a row that never settles is a hung request, not a resilient one.
+   *
+   * `expected` is the revision the FIRST read derived from, not the last one
+   * tried: that is the version the caller's request was actually about, and it
+   * is what makes `expected !== actual` true here and only here.
    */
-  const actual = await getPost(db, id);
-  if (!actual) throw new NotFoundError(id);
-  throw new StaleWriteError(base, actual.revision, actual);
+  throw new StaleWriteError(derivedFrom, read.post.revision, read.post);
 }
 
 /**
@@ -442,7 +521,19 @@ function publishExcerpt(post: Post): string {
     : deriveExcerpt(post.content);
 }
 
+/**
+ * PUBLISH ALSO UNTRASHES, ON PURPOSE.
+ *
+ * `deleted_at = NULL` is in the SET list while the guard is only
+ * `status <> 'published'`, so publishing a post that is in the trash takes it
+ * out of the trash — without RESTORE's precondition ever being consulted. That
+ * matches `src/data/posts.ts`, and it is the behaviour a writer expects:
+ * "publish this" cannot sensibly mean "publish it and leave it in the bin,
+ * where the next `emptyTrash` destroys it". It is spelled out in spec §4.2's
+ * table rather than left as an undocumented side effect of the SET list.
+ */
 const PUBLISH: Transition = {
+  name: 'publish',
   holds: (p) => p.status !== 'published',
   guard: sql`status <> 'published'`,
   kind: 'publish',
@@ -457,6 +548,7 @@ const PUBLISH: Transition = {
 };
 
 const UNPUBLISH: Transition = {
+  name: 'unpublish',
   holds: (p) => p.status === 'published',
   guard: sql`status = 'published'`,
   kind: 'status',
@@ -465,6 +557,7 @@ const UNPUBLISH: Transition = {
 };
 
 const ARCHIVE: Transition = {
+  name: 'archive',
   holds: (p) => p.status !== 'archived',
   guard: sql`status <> 'archived'`,
   kind: 'status',
@@ -473,6 +566,7 @@ const ARCHIVE: Transition = {
 };
 
 const UNARCHIVE: Transition = {
+  name: 'unarchive',
   holds: (p) => p.status === 'archived',
   guard: sql`status = 'archived'`,
   kind: 'status',
@@ -482,6 +576,7 @@ const UNARCHIVE: Transition = {
 
 /** Soft delete. The row and every revision stay intact. */
 const TRASH: Transition = {
+  name: 'trash',
   holds: (p) => p.deletedAt == null,
   guard: sql`deleted_at IS NULL`,
   kind: 'status',
@@ -490,6 +585,7 @@ const TRASH: Transition = {
 };
 
 const RESTORE: Transition = {
+  name: 'restore',
   holds: (p) => p.deletedAt != null,
   guard: sql`deleted_at IS NOT NULL`,
   kind: 'status',

@@ -2,7 +2,13 @@ import { sql, type SQL } from 'drizzle-orm';
 import type { Db } from '../db/client';
 import { toEpochMsOrNull } from '../db/client';
 import { LIST_POST_COLUMNS, postColumns, rowToListPost } from './mapping';
-import { encodeCursor, pageLimit, requireCursor, type CursorValue } from './cursor';
+import {
+  encodeCursor,
+  pageLimit,
+  rejectNul,
+  requireCursor,
+  type CursorValue,
+} from './cursor';
 import { BadRequestError } from './errors';
 import type { ListPost, SortKey, StatusFilter } from '../../shared/types';
 
@@ -23,6 +29,18 @@ import type { ListPost, SortKey, StatusFilter } from '../../shared/types';
  *   Postgres defaults to NULLS FIRST on DESC, which would head "recently
  *   published" with every post that has never been published.
  * - `drafts-first` sorts on a two-part key, `(statusRank, updatedAt)`.
+ *
+ * AND SEARCH IS NOT A SUBSTRING MATCH ANY MORE. `filterAndSort` lowercases a
+ * joined haystack and calls `String.includes`; this matches a `tsvector`. Most
+ * of the difference is an improvement — `bodies` now finds `body` — but two
+ * cases are a visible regression to a writer, and the second is the one that
+ * will be reported as a bug: `ost` no longer matches `post`, and **a
+ * stopword-only search matches nothing at all**, so `?search=the` returns zero
+ * rows where the dashboard returned every post containing those three letters.
+ * Both are asserted in `query.test.ts` and recorded in spec §5.2 so the cutover
+ * meets them as a decision rather than as a surprise. The fix, if it is ever
+ * unwanted, is a trigram index — not a reversion to scanning every document in
+ * the browser.
  */
 
 export interface ListQuery {
@@ -44,11 +62,55 @@ interface SortPart {
   /** Used identically in the SELECT list, the ORDER BY and the keyset. */
   expr: SQL;
   direction: 'asc' | 'desc';
+  /**
+   * The Postgres type `expr` has, and therefore the only type a cursor
+   * component may be bound as.
+   *
+   * Declared rather than inferred so a cursor component is COERCED to it before
+   * it reaches the driver: the cursor payload is base64 JSON, so a caller can
+   * put anything in it, and a string compared against `p.updated_at` is
+   * SQLSTATE 22P02 — a `DbError`, a 500, and five client retries for a request
+   * that can never succeed.
+   */
+  type: 'number' | 'text';
   /** Only `published_at` is nullable. NULLS LAST either way, as the client is. */
   nullable?: boolean;
-  /** Read the key back off the row, in the type the cursor should carry. */
-  read(value: unknown): CursorValue;
 }
+
+/**
+ * Letters ICU treats as equal to a base letter (or to a pair of them) at
+ * PRIMARY strength but that NFKD does not decompose, because they are letters
+ * in their own right rather than letter-plus-accent.
+ *
+ * Without these, `Straße` folds to `straße`, whose UTF-8 bytes put it after
+ * every ASCII string — so it sorted after `zzz` on the server and mid-alphabet
+ * in the dashboard. Same for `Ærø`, `Œuvre`, `Øst`, `Łódź`.
+ *
+ * MEASURED, NOT ASSUMED, AND `þ` IS DELIBERATELY ABSENT. Over the 64-title,
+ * 2016-pair census in `query.test.ts`, against
+ * `Intl.Collator(undefined, { sensitivity: 'base' })`, adding `þ → th` makes
+ * parity WORSE: ICU's root collation gives thorn its own primary weight after
+ * `z` rather than treating it as a digraph, and an unexpanded `þ` folds to a
+ * two-byte sequence `COLLATE "C"` also sorts after every ASCII letter — so
+ * leaving it alone is what matches. `ð`, by contrast, ICU really does weight as
+ * a `d`, so it is expanded.
+ *
+ * `ı → i` and `ŋ → n` are near misses kept on purpose. ICU orders those two
+ * immediately AFTER their base letter rather than equal to it, so folding makes
+ * `ıstanbul` tie with `istanbul` where ICU separates them by one — against not
+ * folding, which puts it after `zzz`.
+ */
+const PRIMARY_EXPANSIONS: [string, string][] = [
+  ['ß', 'ss'],
+  ['æ', 'ae'],
+  ['œ', 'oe'],
+  ['ø', 'o'],
+  ['ð', 'd'],
+  ['đ', 'd'],
+  ['ł', 'l'],
+  ['ı', 'i'],
+  ['ŋ', 'n'],
+];
 
 /**
  * `(a.title || 'Untitled')` compared at base sensitivity, in SQL.
@@ -59,43 +121,97 @@ interface SortPart {
  * one sort key in any production build without ICU. `und-x-icu` does exist and
  * matches — but it is still a bet on how the deployment was compiled.
  *
- * So the fold is done with built-ins instead, and it is the SAME fold
- * `slugify` already performs in `shared/doc.ts`: NFKD, drop the combining
- * marks, lowercase. `COLLATE "C"` then makes the comparison byte-ordered over
- * the folded text, which is the only collation guaranteed to exist everywhere
- * and the only way the ordering is identical in PGlite and on Neon rather than
+ * So the fold is done with built-ins instead: NFKD, drop the combining marks,
+ * lowercase — the same fold `slugify` performs in `shared/doc.ts` — plus the
+ * primary-strength expansions above, which `slugify` does not need and a
+ * collator does. `COLLATE "C"` then makes the comparison byte-ordered over the
+ * folded text, which is the only collation guaranteed to exist everywhere and
+ * the only way the ordering is identical in PGlite and on Neon rather than
  * depending on each database's `datcollate`.
  *
- * Measured against `localeCompare(…, { sensitivity: 'base' })` over accented,
- * mixed-case, punctuated and empty titles: identical ordering. It is not a
- * general collator — it does not know that `ä` sorts as `ae` in German phone
- * books — and the residual difference is punctuation weighting, which
- * `Intl.Collator` treats as variable.
+ * WHAT THIS IS AND IS NOT — MEASURED, AND NARROWER THAN THIS COMMENT USED TO
+ * CLAIM. It said "identical ordering", having been measured over a corpus that
+ * contained none of the shapes that break it. Censused against
+ * `Intl.Collator(undefined, { sensitivity: 'base' })` over 64 titles chosen to
+ * include them, it disagrees on 84 of 2016 pairs:
+ *
+ * - **Punctuation, 80 pairs.** ICU gives punctuation primary weights of its
+ *   own, ordered by category rather than by code point: `~tilde` sorts before
+ *   every letter for ICU and after every letter here, `-dash` before `_under`
+ *   there and after it here, and the same rule applies inside a word
+ *   (`the-end` vs `the_end` vs `the'end`). Reproducing it needs ICU's weight
+ *   table, which is the dependency this expression exists to avoid.
+ * - **NFKD compatibility forms, 2 pairs.** `normalize(…, NFKD)` is
+ *   COMPATIBILITY decomposition, so `①`, `½`, `ﬁ` and `㎏` fold to their ASCII
+ *   spellings; ICU keeps them distinct at primary strength.
+ * - **Dotless `ı` and eng `ŋ`, 2 pairs.** Folded to their base letter, so they
+ *   tie where ICU orders them one apart. See `PRIMARY_EXPANSIONS`.
+ *
+ * NO PAIR OF ORDINARY ALPHABETIC TITLES DISAGREES, which is the claim that
+ * matters and the one that was false before the expansions: `Straße` used to
+ * sort after `zzz` here and next to `Strasse` in the dashboard.
+ *
+ * All four counts are pinned by the census in `query.test.ts`, which imports
+ * this expression rather than transcribing it — a second copy of a sort key is
+ * a second implementation, and the disagreement between two of them is a page
+ * boundary that skips rows.
  */
-const TITLE_SORT = sql.raw(
-  `lower(regexp_replace(normalize(COALESCE(NULLIF(p.title, ''), 'Untitled'), NFKD), ` +
-    `'[\\u0300-\\u036f]', '', 'g')) COLLATE "C"`,
-);
+export function titleFold(column: string): string {
+  return PRIMARY_EXPANSIONS.reduce(
+    (expr, [from, to]) => `replace(${expr}, '${from}', '${to}')`,
+    `lower(regexp_replace(normalize(COALESCE(NULLIF(${column}, ''), 'Untitled'), NFKD), ` +
+      `'[\\u0300-\\u036f]', '', 'g'))`,
+  );
+}
+
+const TITLE_SORT = sql.raw(`${titleFold('p.title')} COLLATE "C"`);
 
 /** `rank()` from `src/data/posts.ts:493`. */
 const STATUS_RANK = sql.raw(
   `CASE p.status WHEN 'draft' THEN 0 WHEN 'published' THEN 1 ELSE 2 END`,
 );
 
-const epoch = (value: unknown): CursorValue => toEpochMsOrNull(value);
-
 const SORTS: Record<SortKey, SortPart[]> = {
-  updated: [{ expr: sql.raw('p.updated_at'), direction: 'desc', read: epoch }],
+  updated: [{ expr: sql.raw('p.updated_at'), direction: 'desc', type: 'number' }],
   published: [
-    { expr: sql.raw('p.published_at'), direction: 'desc', nullable: true, read: epoch },
+    { expr: sql.raw('p.published_at'), direction: 'desc', nullable: true, type: 'number' },
   ],
-  oldest: [{ expr: sql.raw('p.created_at'), direction: 'asc', read: epoch }],
-  alphabetical: [{ expr: TITLE_SORT, direction: 'asc', read: (v) => String(v) }],
+  oldest: [{ expr: sql.raw('p.created_at'), direction: 'asc', type: 'number' }],
+  alphabetical: [{ expr: TITLE_SORT, direction: 'asc', type: 'text' }],
   'drafts-first': [
-    { expr: STATUS_RANK, direction: 'asc', read: (v) => Number(v) },
-    { expr: sql.raw('p.updated_at'), direction: 'desc', read: epoch },
+    { expr: STATUS_RANK, direction: 'asc', type: 'number' },
+    { expr: sql.raw('p.updated_at'), direction: 'desc', type: 'number' },
   ],
 };
+
+/** Read the key back off the row, in the type the cursor should carry. */
+function readKey(part: SortPart, value: unknown): CursorValue {
+  return part.type === 'text' ? String(value) : toEpochMsOrNull(value);
+}
+
+/**
+ * A cursor component, forced into the type its part declares — or a 400.
+ *
+ * The last line of defence for BOTH halves of the cursor contract. The sort key
+ * inside the payload already refuses a cursor minted under another ordering,
+ * but the payload is base64 JSON that anyone can write, so a hand-made cursor
+ * can name the right sort and still carry the wrong shape. Coercing here means
+ * no cursor component can reach the driver as a type the column does not
+ * accept, whatever the payload said.
+ */
+function coerce(part: SortPart, value: CursorValue): CursorValue {
+  if (value === null) {
+    // Only `published_at` can BE null. A null against a non-nullable part would
+    // make `expr > NULL` evaluate to NULL, i.e. an empty page rather than an
+    // error — a skip, silently.
+    if (!part.nullable) throw new BadRequestError('cursor');
+    return null;
+  }
+  if (part.type === 'text') return rejectNul(String(value), 'cursor');
+  const n = Number(value);
+  if (!Number.isFinite(n)) throw new BadRequestError('cursor');
+  return n;
+}
 
 /**
  * Strictly after `value` in this part's own ordering.
@@ -169,13 +285,24 @@ function filters(q: ListQuery): SQL[] {
     if (q.status !== 'all') where.push(sql`p.status = ${q.status}`);
   }
 
+  /*
+   * ALL THREE TEXT FILTERS ARE CHECKED FOR U+0000 BEFORE THEY ARE BOUND.
+   *
+   * They arrive from a query string and go straight into the predicate;
+   * `.trim()` does not strip a NUL and no domain rule forbids one, so
+   * `GET /api/posts?search=%00` reached the driver as SQLSTATE 22021, scrubbed
+   * to a `DbError`, and answered 500 — which the client's retry policy then
+   * repeats five times for a request that can never succeed. `pageLimit` and
+   * `decodeCursor` already answer their own malformed input with a 400; this is
+   * the same answer for the same class of input.
+   */
   // `if (q.category && …)` in the client: an empty string is "no filter", not
   // "posts with no category".
-  if (q.category) where.push(sql`p.category = ${q.category}`);
+  if (q.category) where.push(sql`p.category = ${rejectNul(q.category, 'category')}`);
   // `@>` rather than `= ANY`, so the GIN index on `tags` can serve it.
-  if (q.tag) where.push(sql`p.tags @> ${sql.param([q.tag])}::text[]`);
+  if (q.tag) where.push(sql`p.tags @> ${sql.param([rejectNul(q.tag, 'tag')])}::text[]`);
 
-  const needle = (q.search ?? '').trim();
+  const needle = rejectNul((q.search ?? '').trim(), 'search');
   if (needle) {
     /*
      * `websearch_to_tsquery`, never `to_tsquery`. `to_tsquery` is a parser: a
@@ -202,16 +329,22 @@ export async function listPosts(
 
   const where = filters(q);
   if (q.cursor !== undefined) {
-    const cursor = requireCursor(q.cursor);
     /*
      * A cursor minted under one sort key cannot be spent under another: the
-     * components would be compared against the wrong columns, which does not
-     * fail, it just returns a wrong page. Width is the cheapest check that
-     * catches it, and it catches the case that matters — a one-component
-     * cursor from `updated` handed to `drafts-first`.
+     * components would be compared against different columns, which either
+     * raises a type error (an `alphabetical` cursor under `updated` is 22P02, a
+     * 500, five retries) or does not fail at all and simply returns a page with
+     * rows missing from it (measured: a `published` cursor under `oldest`
+     * returned 2 of 8 rows). `requireCursor` matches the sort key the payload
+     * carries against the active one, so neither is reachable — and the width
+     * check below is no longer the thing standing between the two, it is only
+     * the guard for a hand-made payload that names the right sort and carries
+     * the wrong number of components.
      */
+    const cursor = requireCursor(q.cursor, q.sort);
     if (cursor.sortValues.length !== parts.length) throw new BadRequestError('cursor');
-    where.push(keysetPredicate(parts, cursor.sortValues, cursor.id));
+    const values = parts.map((part, i) => coerce(part, cursor.sortValues[i]));
+    where.push(keysetPredicate(parts, values, cursor.id));
   }
 
   /*
@@ -246,7 +379,8 @@ export async function listPosts(
     nextCursor:
       more && last
         ? encodeCursor(
-            parts.map((part, i) => part.read(last[`k${i}`])),
+            q.sort,
+            parts.map((part, i) => readKey(part, last[`k${i}`])),
             String(last.id),
           )
         : null,

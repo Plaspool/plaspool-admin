@@ -23,6 +23,7 @@ import { freshDb, type TestCtx } from '../test/harness';
 import { createPost, getPost, savePost, publishPost, trashPost } from './posts';
 import {
   AUTOSAVE_KEEP,
+  REVISION_ORDER,
   getRevision,
   listRevisions,
   pruneAutosaves,
@@ -173,7 +174,20 @@ describe('listRevisions', () => {
 
   it('an undecodable cursor is a decode failure, not a crash', async () => {
     const post = await seeded();
-    for (const cursor of ['', 'not-base64!!', btoa('{'), btoa('{"a":1}'), btoa('[[1],2]')]) {
+    const undecodable = [
+      '',
+      'not-base64!!',
+      btoa('{'),
+      btoa('{"a":1}'),
+      btoa('[[1],2]'),
+      // The old two-element shape, which no longer decodes: a cursor must name
+      // the ordering it was minted under.
+      btoa('[[1],"r_1"]'),
+      btoa('["revision",[],"r_1"]'),
+      btoa('["revision",[1],""]'),
+      btoa('["",[1],"r_1"]'),
+    ];
+    for (const cursor of undecodable) {
       expect(decodeCursor(cursor), cursor).toBeNull();
       await expect(
         listRevisions(ctx.db, post.id, cursor),
@@ -182,9 +196,34 @@ describe('listRevisions', () => {
     }
   });
 
-  it('round-trips a cursor through the codec', () => {
-    const encoded = encodeCursor([12, 'b', null], 'r_1');
-    expect(decodeCursor(encoded)).toEqual({ sortValues: [12, 'b', null], id: 'r_1' });
+  it('refuses a cursor minted under another ordering', async () => {
+    // The revision list and the post list share one codec, so they must not
+    // share cursors: `revision` compared against `updated_at` is a wrong page
+    // at best and SQLSTATE 22P02 at worst.
+    const post = await seeded();
+    const foreign = encodeCursor('updated', [1_700_000_000_000], post.id);
+    await expect(listRevisions(ctx.db, post.id, foreign)).rejects.toBeInstanceOf(
+      BadRequestError,
+    );
+  });
+
+  it('refuses a cursor whose revision component is not a number', async () => {
+    // The payload is base64 JSON, so the sort tag proves nothing about the
+    // shape underneath it. Uncoerced, this is 22P02 → DbError → 500.
+    const post = await seeded();
+    const bogus = encodeCursor(REVISION_ORDER, ['not-a-revision'], post.id);
+    await expect(listRevisions(ctx.db, post.id, bogus)).rejects.toBeInstanceOf(
+      BadRequestError,
+    );
+  });
+
+  it('round-trips a cursor through the codec, sort key included', () => {
+    const encoded = encodeCursor('drafts-first', [12, 'b', null], 'r_1');
+    expect(decodeCursor(encoded)).toEqual({
+      sort: 'drafts-first',
+      sortValues: [12, 'b', null],
+      id: 'r_1',
+    });
   });
 });
 

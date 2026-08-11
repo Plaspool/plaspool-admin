@@ -8,7 +8,7 @@ import {
   rowToRevisionMeta,
 } from './mapping';
 import { pageLimit, encodeCursor, requireCursor } from './cursor';
-import { NotFoundError } from './errors';
+import { BadRequestError, NotFoundError } from './errors';
 import type { AuthUser, Post, Revision, RevisionMeta } from '../../shared/types';
 
 /**
@@ -44,7 +44,14 @@ export type { RevisionMeta } from '../../shared/types';
  * per post by the schema's own constraint, which is the same fact `pruneAutosaves`
  * relies on — but the row comparison costs nothing and keeps one cursor codec
  * across this and `listPosts`, so an undecodable cursor is handled in one place.
+ *
+ * `REVISION_ORDER` is that shared codec's sort tag. Sharing the codec means
+ * sharing its binding rule: a cursor minted here cannot be spent on
+ * `GET /posts` and vice versa, which is a 400 rather than a `revision` compared
+ * against `updated_at`.
  */
+export const REVISION_ORDER = 'revision';
+
 export async function listRevisions(
   db: Db,
   postId: string,
@@ -52,9 +59,20 @@ export async function listRevisions(
   limit?: number,
 ): Promise<{ items: RevisionMeta[]; nextCursor: string | null }> {
   const size = pageLimit(limit);
-  const after = cursor === undefined ? null : requireCursor(cursor);
+  const after = cursor === undefined ? null : requireCursor(cursor, REVISION_ORDER);
+  /*
+   * Coerced, for the reason `query.ts#coerce` exists: the payload is base64
+   * JSON, so `sortValues[0]` is whatever the caller put there, and a string
+   * compared against the integer `revision` column is SQLSTATE 22P02 — a
+   * `DbError`, a 500, and five client retries for a request that can never
+   * succeed.
+   */
+  const afterRevision = after === null ? 0 : Number(after.sortValues[0]);
+  if (after !== null && !Number.isFinite(afterRevision)) {
+    throw new BadRequestError('cursor');
+  }
   const keyset = after
-    ? sql`AND (revision, id) < (${after.sortValues[0]}, ${after.id})`
+    ? sql`AND (revision, id) < (${afterRevision}, ${after.id})`
     : sql``;
 
   /*
@@ -75,7 +93,8 @@ export async function listRevisions(
   const last = items[items.length - 1];
   return {
     items,
-    nextCursor: more && last ? encodeCursor([last.revision], last.id) : null,
+    nextCursor:
+      more && last ? encodeCursor(REVISION_ORDER, [last.revision], last.id) : null,
   };
 }
 

@@ -33,8 +33,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { freshDb, type TestCtx } from '../test/harness';
 import { createPost } from './posts';
-import { listPosts, type ListQuery } from './query';
-import { MAX_PAGE_LIMIT } from './cursor';
+import { listPosts, titleFold, type ListQuery } from './query';
+import { MAX_PAGE_LIMIT, decodeCursor, encodeCursor } from './cursor';
+import {
+  LIST_POST_COLUMNS,
+  POST_COLUMNS,
+  REVISION_COLUMNS,
+  REVISION_META_COLUMNS,
+} from './mapping';
 import { BadRequestError } from './errors';
 import { docToText } from '../../shared/doc';
 import type { DocNode, ListPost, Post, Query, SortKey } from '../../shared/types';
@@ -421,6 +427,184 @@ describe('keyset pagination', () => {
       listPosts(ctx.db, { status: 'all', sort: 'drafts-first', cursor: nextCursor as string }),
     ).rejects.toBeInstanceOf(BadRequestError);
   });
+
+  /**
+   * A CURSOR IS BOUND TO THE SORT THAT MINTED IT (spec §5.2).
+   *
+   * Width was the only check, and width cannot tell `updated`, `published`,
+   * `oldest` and `alphabetical` apart — all four are one component wide. Both
+   * failure modes were reachable by a dashboard changing its sort dropdown
+   * mid-scroll, and neither was an error the client could act on:
+   *
+   * - `alphabetical` (text) spent under `updated` (bigint) raised SQLSTATE
+   *   22P02, which `guardDb` scrubs to a `DbError` and which answers 500 — a
+   *   status the client's policy retries five times for a request that can
+   *   never succeed;
+   * - `published` spent under `oldest` did not error at all. Measured on this
+   *   corpus it returned a page with rows silently missing from it, which spec
+   *   §5.2's "cannot skip or duplicate a row" exists to forbid.
+   */
+  describe('a cursor cannot be spent under another sort', () => {
+    const OTHERS = (sort: SortKey) => SORTS.filter((s) => s !== sort);
+
+    it.each(SORTS)('a cursor minted under %s is a 400 under every other sort', async (sort) => {
+      const { nextCursor } = await listPosts(ctx.db, { status: 'all', sort, limit: 2 });
+      expect(nextCursor).not.toBeNull();
+      for (const other of OTHERS(sort)) {
+        await expect(
+          listPosts(ctx.db, { status: 'all', sort: other, cursor: nextCursor as string }),
+          `${sort} cursor under ${other}`,
+        ).rejects.toBeInstanceOf(BadRequestError);
+      }
+    });
+
+    it('and the same cursor is still accepted under the sort that minted it', async () => {
+      // Without this the assertions above would also pass against a codec that
+      // rejects every cursor.
+      for (const sort of SORTS) {
+        const first = await listPosts(ctx.db, { status: 'all', sort, limit: 2 });
+        await expect(
+          listPosts(ctx.db, { status: 'all', sort, cursor: first.nextCursor as string }),
+          sort,
+        ).resolves.toBeDefined();
+      }
+    });
+
+    it('a hand-made cursor naming the right sort but the wrong shape is a 400', async () => {
+      /*
+       * The payload is base64 JSON, so the sort tag proves nothing about what
+       * is under it. These are the shapes that reached the driver as a type it
+       * could not compare, i.e. as a 500.
+       */
+      const bad: [string, string][] = [
+        ['text where a bigint belongs', encodeCursor('updated', ['not-a-number'], 'p_seed_00')],
+        ['null on a non-nullable key', encodeCursor('updated', [null], 'p_seed_00')],
+        ['null rank on drafts-first', encodeCursor('drafts-first', [null, 1], 'p_seed_00')],
+        ['too few components', encodeCursor('drafts-first', [0], 'p_seed_00')],
+        ['too many components', encodeCursor('updated', [1, 2], 'p_seed_00')],
+      ];
+      for (const [name, cursor] of bad) {
+        const sort = decodeCursor(cursor)?.sort as SortKey;
+        await expect(
+          listPosts(ctx.db, { status: 'all', sort, cursor }),
+          name,
+        ).rejects.toBeInstanceOf(BadRequestError);
+      }
+    });
+
+    it('a null publishedAt cursor still paginates, because that key IS nullable', async () => {
+      // The coercion rejects `null` for keys that cannot be null; it must not
+      // reject it for the one that can, or the second half of a `published`
+      // walk becomes a 400.
+      const cursor = encodeCursor('published', [null], 'p_seed_00');
+      await expect(
+        listPosts(ctx.db, { status: 'all', sort: 'published', cursor }),
+      ).resolves.toBeDefined();
+    });
+  });
+});
+
+// -------------------------------------------------------------- malformed input
+
+/**
+ * U+0000 IS A 400, NOT A 500.
+ *
+ * `filters()` binds `search`, `category` and `tag` straight into the predicate
+ * and `.trim()` does not strip a NUL, so `GET /api/posts?search=%00` — a
+ * one-line request — reached the driver as SQLSTATE 22021, scrubbed to a
+ * `DbError`, and answered 500. Spec §8 makes 500 transient, so the client's
+ * retry policy repeats it five times with backoff for input that can never be
+ * accepted. The cursor id had the same hole.
+ */
+describe('a NUL byte in text input', () => {
+  const NUL = String.fromCharCode(0);
+
+  it.each(['search', 'category', 'tag'] as const)('%s is a BadRequestError', async (field) => {
+    await expect(
+      listPosts(ctx.db, { status: 'all', sort: 'updated', [field]: `a${NUL}b` }),
+    ).rejects.toBeInstanceOf(BadRequestError);
+  });
+
+  it('and the same input without the NUL is an ordinary query', async () => {
+    for (const field of ['search', 'category', 'tag'] as const) {
+      await expect(
+        listPosts(ctx.db, { status: 'all', sort: 'updated', [field]: 'ab' }),
+        field,
+      ).resolves.toBeDefined();
+    }
+  });
+
+  it('a cursor carrying one does not decode', async () => {
+    for (const cursor of [
+      encodeCursor('updated', [1], `p_${NUL}x`),
+      encodeCursor('alphabetical', [`a${NUL}b`], 'p_seed_00'),
+      encodeCursor(`updated${NUL}`, [1], 'p_seed_00'),
+    ]) {
+      expect(decodeCursor(cursor)).toBeNull();
+      await expect(
+        listPosts(ctx.db, { status: 'all', sort: 'updated', cursor }),
+      ).rejects.toBeInstanceOf(BadRequestError);
+    }
+  });
+});
+
+// --------------------------------------------------------- projection columns
+
+/**
+ * THE COLUMN LISTS, PINNED.
+ *
+ * `LIST_POST_COLUMNS` and `REVISION_META_COLUMNS` exist to keep an unbounded
+ * jsonb blob out of a list query, and nothing tested them: adding `content`
+ * back to either broke no test, because the mappers drop unknown keys and the
+ * response looked identical. The property that was covered was "the response
+ * has no `content`"; the property that matters is "the DATABASE was never asked
+ * for it" — one row of history is a whole document, and a list is unbounded in
+ * rows.
+ */
+describe('list queries never read the document column', () => {
+  it('LIST_POST_COLUMNS is POST_COLUMNS minus content, and nothing else', () => {
+    expect(LIST_POST_COLUMNS).not.toContain('content');
+    expect(POST_COLUMNS).toContain('content');
+    expect(LIST_POST_COLUMNS).toEqual(POST_COLUMNS.filter((c) => c !== 'content'));
+  });
+
+  it('REVISION_META_COLUMNS is REVISION_COLUMNS minus content', () => {
+    expect(REVISION_META_COLUMNS).not.toContain('content');
+    expect(REVISION_COLUMNS).toContain('content');
+    expect(REVISION_COLUMNS).toEqual([...REVISION_META_COLUMNS, 'content']);
+  });
+
+  it('and the SELECT `listPosts` issues does not name it', async () => {
+    // The assertion the mappers cannot make. It reads the statement on its way
+    // to the driver, so adding `content` to the list is caught where it costs —
+    // in the query — rather than at the response, where it does not show.
+    const seen: string[] = [];
+    const spy = new Proxy(ctx.db, {
+      get(target, prop) {
+        const value: unknown = Reflect.get(target, prop);
+        if (prop !== 'execute' || typeof value !== 'function') return value;
+        const execute = value as (...args: unknown[]) => Promise<unknown>;
+        return (...args: unknown[]) => {
+          seen.push(
+            (target as unknown as {
+              dialect: { sqlToQuery(q: unknown): { sql: string } };
+            }).dialect.sqlToQuery(args[0]).sql,
+          );
+          return execute.apply(target, args);
+        };
+      },
+    });
+
+    await listPosts(spy, { status: 'all', sort: 'updated', limit: 2 });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain('p.excerpt');
+    expect(seen[0]).not.toContain('p.content');
+    // `content_text` and the generated tsvector are not on `Post` at all, and
+    // the second is an unbounded blob of lexemes and positions.
+    expect(seen[0]).not.toContain('content_text');
+    expect(seen[0]).not.toMatch(/\bp\.search\b/);
+  });
 });
 
 // ------------------------------------------------------------------- search
@@ -522,6 +706,185 @@ describe('search', () => {
     expect(new Set(seen).size).toBe(seen.length);
   });
 });
+
+// ------------------------------------------------------ the alphabetical fold
+
+/**
+ * THE PARITY CENSUS, AND WHY THE CORPUS ABOVE COULD NOT BE IT.
+ *
+ * `server/repo/query.ts` used to claim the fold was measured "over accented,
+ * mixed-case, punctuated and empty titles: identical ordering". It was — over
+ * exactly the shapes `SEED` contains, which is a corpus with none of the shapes
+ * that break it. A 1830-pair census against `Intl.Collator` found 97 disagreeing
+ * pairs, the largest class of which was not punctuation at all: NFKD does not
+ * decompose `ß` or `æ`, so `Straße` sorted after `zzz` on the server and
+ * mid-alphabet in the dashboard.
+ *
+ * So the corpus lives here, holding every shape that was missing, and the
+ * assertions are a census rather than a golden ordering: a golden pins what the
+ * server does, and what has to be pinned is the RELATIONSHIP between what the
+ * server does and what `localeCompare` does — the one the dashboard uses and
+ * the one the cutover has to preserve.
+ *
+ * It runs against `titleFold` itself, imported, so it can never drift into
+ * measuring a transcription. And it uses `VALUES` rather than real posts, so it
+ * costs one statement and leaves the corpus above untouched.
+ */
+describe('the alphabetical fold, censused against Intl.Collator', () => {
+  /** Every shape the repo's own parity corpus lacked, plus controls. */
+  const SHAPES = [
+    // controls: ordinary letters, case, accents, the empty title
+    'apple', 'Apricot', 'banana', 'Zebra', 'zzz', 'MIXED case', 'Untitled', '',
+    'Éclair', 'über', 'ÜBER', 'naïve', 'Zoë', 'Ångström', 'çedilla', 'ñandu',
+    // letters ICU expands at primary strength but NFKD leaves alone
+    'Straße', 'strasse', 'Strasse', 'weiß', 'weiss',
+    'Ærø', 'aero', 'æther', 'aether', 'Œuvre', 'oeuvre', 'Øst', 'Ost',
+    'Ðjango', 'django', 'Łódź', 'Lodz', 'đan', 'dan', 'ıstanbul', 'istanbul',
+    'ŋoma', 'noma',
+    // the one expansion deliberately NOT applied: ICU weights thorn after z
+    'Þing', 'thing',
+    // punctuation vs punctuation, and punctuation vs digit
+    '-dash', '_under', '.dot', "'quote", '"double', '(paren', '!bang', '~tilde',
+    '1one', '2two', '9nine',
+    // interior punctuation
+    'the end', 'the-end', 'the_end', 'theend', 'the.end', "the'end",
+    // NFKD compatibility forms
+    'ﬁnal', 'final', '①one', '½half', 'ｆｕｌｌ', 'full', '㎏kg',
+  ];
+
+  const collator = new Intl.Collator(undefined, { sensitivity: 'base' });
+  const sign = (n: number) => (n < 0 ? -1 : n > 0 ? 1 : 0);
+  /** Letters, digits and spaces only — a title with no punctuation in it. */
+  const plain = (s: string) => /^[\p{L}\p{N} ]*$/u.test(s);
+  const compatibility = (s: string) => /[ﬀ-ﭏ①-⓿¼-¾＀-￯㌀-㏿]/u.test(s);
+  const thorn = (s: string) => /þ/i.test(s);
+  /** Letters ICU orders immediately AFTER their base letter, not equal to it. */
+  const nearTie = (s: string) => /[ıŋ]/i.test(s);
+
+  interface Pair { a: string; b: string; icu: number; pg: number }
+
+  /**
+   * Why a pair is allowed to disagree — or `null`, which fails the census.
+   *
+   * Each reason is a property of ICU's root collation that a Postgres
+   * `COLLATE "C"` over a folded string cannot express without shipping ICU's
+   * weight table, which is the dependency this whole expression exists to avoid.
+   */
+  function excuse(p: Pair): string | null {
+    if (!plain(p.a) || !plain(p.b)) return 'punctuation carries its own primary weight';
+    if (compatibility(p.a) || compatibility(p.b)) {
+      return 'NFKD is compatibility decomposition; ICU keeps these distinct';
+    }
+    if (p.pg === 0 && (nearTie(p.a) || nearTie(p.b))) {
+      // Folding ı to i puts `ıstanbul` next to `istanbul` and lets the id
+      // tiebreak decide; ICU puts it immediately after. Not folding it puts it
+      // after `zzz`, which is worse by far — this is the near miss, kept.
+      return 'folded to its base letter, which ICU orders just after rather than equal to';
+    }
+    return null;
+  }
+
+  /** Every unordered pair on which the SQL fold and `Intl.Collator` differ. */
+  async function census(): Promise<{ pairs: number; disagreeing: Pair[] }> {
+    const rows = sql.join(
+      SHAPES.map((v, i) => sql`(${i}::int, ${v}::text)`),
+      sql`, `,
+    );
+    const fold = (alias: string) => sql.raw(`(${titleFold(`${alias}.v`)} COLLATE "C")`);
+    const res = await ctx.db.execute(sql`
+      WITH t(i, v) AS (VALUES ${rows})
+      SELECT a.i AS ai, b.i AS bi,
+             CASE WHEN ${fold('a')} < ${fold('b')} THEN -1
+                  WHEN ${fold('a')} > ${fold('b')} THEN 1
+                  ELSE 0 END AS s
+        FROM t a CROSS JOIN t b
+       WHERE a.i < b.i`);
+
+    const disagreeing: Pair[] = [];
+    for (const row of res.rows) {
+      const a = SHAPES[Number(row.ai)];
+      const b = SHAPES[Number(row.bi)];
+      // `|| 'Untitled'` on both sides, exactly as the client's comparator and
+      // the SQL's `COALESCE(NULLIF(...))` do.
+      const icu = sign(collator.compare(a || 'Untitled', b || 'Untitled'));
+      const pg = sign(Number(row.s));
+      if (icu !== pg) disagreeing.push({ a, b, icu, pg });
+    }
+    return { pairs: res.rows.length, disagreeing };
+  }
+
+  it('every disagreement has a named reason, and there are no others', async () => {
+    /*
+     * THE CENSUS ITSELF. An unexcused pair means the fold and the dashboard put
+     * two titles in different places for a reason nobody has written down —
+     * which is exactly the state this file was in when it claimed "identical
+     * ordering" over a corpus containing none of the shapes that break it.
+     */
+    const { pairs, disagreeing } = await census();
+    expect(pairs).toBe((SHAPES.length * (SHAPES.length - 1)) / 2);
+
+    const unexplained = disagreeing
+      .filter((p) => excuse(p) === null)
+      .map((p) => `${p.a} vs ${p.b} (icu ${p.icu}, pg ${p.pg})`);
+    expect(unexplained).toEqual([]);
+  });
+
+  it('sorts ß, æ, œ, ø, ł, đ and ð exactly where the dashboard does', async () => {
+    /*
+     * The named symptom, asserted directly rather than as a census statistic.
+     * NFKD does not decompose these — they are letters, not letter-plus-accent
+     * — so unexpanded `Straße` folded to `straße`, whose UTF-8 bytes put it
+     * after every ASCII string: it sorted after `zzz` on the server and next to
+     * `Strasse` in the dashboard. 57 of the 97 originally-measured disagreeing
+     * pairs were this one class.
+     */
+    const { disagreeing } = await census();
+    const letters = disagreeing.filter(
+      (p) => plain(p.a) && plain(p.b) && /[ßæœøłđð]/i.test(p.a + p.b),
+    );
+    expect(letters.map((p) => `${p.a} vs ${p.b}`)).toEqual([]);
+  });
+
+  it('leaving þ undecomposed is what matches ICU, which is why it is not expanded', async () => {
+    /*
+     * The measurement behind `PRIMARY_EXPANSIONS`' one deliberate omission.
+     * ICU's root collation gives thorn its own primary weight AFTER `z` — it
+     * does not treat it as the digraph `th` — and an unexpanded `þ` folds to a
+     * two-byte sequence that `COLLATE "C"` also puts after every ASCII letter.
+     * Adding `þ → th` therefore makes parity worse, not better.
+     */
+    const { disagreeing } = await census();
+    const thorns = disagreeing.filter((p) => plain(p.a) && plain(p.b) && (thorn(p.a) || thorn(p.b)));
+    expect(thorns.map((p) => `${p.a} vs ${p.b}`)).toEqual([]);
+  });
+
+  it('the residual gap is pinned, so it cannot widen quietly', async () => {
+    /*
+     * If this number moves, the fold changed. Re-measure, decide whether the
+     * change is an improvement, and update this number AND the comment in
+     * `query.ts` together — that comment is the one that overclaimed before.
+     */
+    const { disagreeing } = await census();
+    const byReason = new Map<string, number>();
+    for (const p of disagreeing) {
+      const reason = excuse(p) ?? 'UNEXPLAINED';
+      byReason.set(reason, (byReason.get(reason) ?? 0) + 1);
+    }
+    expect(Object.fromEntries(byReason)).toEqual(RESIDUAL_BY_REASON);
+  });
+});
+
+/**
+ * Measured against this corpus, not guessed — see the test that asserts it.
+ *
+ * 84 of 2016 pairs. A reason that stops occurring, or a new one, fails the test
+ * either way: the map is compared whole.
+ */
+const RESIDUAL_BY_REASON: Record<string, number> = {
+  'punctuation carries its own primary weight': 80,
+  'NFKD is compatibility decomposition; ICU keeps these distinct': 2,
+  'folded to its base letter, which ICU orders just after rather than equal to': 2,
+};
 
 // --------------------------------------------------------------- drift guard
 

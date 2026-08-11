@@ -30,6 +30,33 @@ export class StaleWriteError extends Error {
 }
 
 /**
+ * 409 `{ error: 'precondition_failed', operation, post }`. The lifecycle op was
+ * REFUSED, not lost: the post is already in the state being asked for.
+ *
+ * Separate from `StaleWriteError` because the two need different words in the
+ * UI and different handling in a client. A stale write means "someone else got
+ * there first, here is theirs, choose"; this means "there is nothing to do —
+ * the post is already published". Reported as a `StaleWriteError` it arrived
+ * with `expected === actual`, which is not a conflict any conflict banner can
+ * render and not something a route layer could tell apart from a real race
+ * without inspecting two numbers for equality and guessing.
+ *
+ * `post` is non-null: this error is only ever raised from a read that found the
+ * row, so the caller always gets the state that refused it.
+ */
+export class PreconditionFailedError extends Error {
+  readonly operation: string;
+  readonly post: Post;
+
+  constructor(operation: string, post: Post) {
+    super(`Cannot ${operation}: the post is already in that state`);
+    this.name = 'PreconditionFailedError';
+    this.operation = operation;
+    this.post = post;
+  }
+}
+
+/**
  * 400 `{ error: 'bad_request', detail }`. A request the server can parse but
  * cannot honour: a page limit outside its range, a cursor that does not decode.
  *

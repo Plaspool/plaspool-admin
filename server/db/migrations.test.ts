@@ -26,11 +26,18 @@ const read = (path: string) => readFileSync(path, 'utf8');
 
 const MIGRATION_SQL = 'server/db/migrations/0000_nappy_betty_brant.sql';
 const BOUND_SEARCH_SQL = 'server/db/migrations/0001_bound_search_input.sql';
+const LIFECYCLE_SQL = 'server/db/migrations/0003_cooing_spectrum.sql';
 const SNAPSHOT = 'server/db/migrations/meta/0000_snapshot.json';
 const JOURNAL = 'server/db/migrations/meta/_journal.json';
 
 /** Everything appended by hand, and therefore invisible to drizzle-kit. */
 const HAND_WRITTEN = ['tags_text', 'posts_search_idx', 'posts_tags_idx'];
+
+/** The same hazard, in 0003: a trigger drizzle-kit cannot model either. */
+const HAND_WRITTEN_0003 = [
+  'posts_bump_lifecycle_generation',
+  'posts_lifecycle_generation',
+];
 
 describe('the migrations are applicable', () => {
   it('package.json exposes db:generate and db:migrate', () => {
@@ -136,6 +143,35 @@ describe('drizzle-kit push would drop the hand-appended DDL', () => {
     expect(sqlText).toContain('CREATE INDEX posts_search_idx ON posts USING GIN (search)');
     // Statements are separated, or the migrator sends the file as one string.
     expect(sqlText.split('--> statement-breakpoint')).toHaveLength(4);
+  });
+
+  it('0003 carries the lifecycle trigger, which the snapshot cannot model either', () => {
+    /*
+     * `lifecycle_generation` is a plain column, so drizzle-kit generated it and
+     * gave 0003 a snapshot — which is what the rule in `drizzle.config.ts`
+     * requires before hand-written statements may be added to a file. The
+     * TRIGGER that maintains the column is invisible to drizzle-kit, exactly as
+     * the `search` tsvector is, so it is appended by hand to that same file.
+     *
+     * Losing it would not fail anything loudly: the column would still exist
+     * and still be readable, it would simply stop moving — and the lifecycle
+     * CAS would go back to pinning a constant, i.e. back to re-applying a lost
+     * trash and losing the post to the next `emptyTrash` (spec §4.2).
+     */
+    const sqlText = read(LIFECYCLE_SQL);
+    expect(sqlText).toContain('lifecycle_generation');
+    for (const object of HAND_WRITTEN_0003) expect(sqlText).toContain(object);
+    expect(sqlText).toContain('BEFORE UPDATE ON posts');
+    // The three columns it watches, and no more: `savePost` must not move it.
+    expect(sqlText).toContain('(NEW.status, NEW.published_at, NEW.deleted_at)');
+    // Statements are separated, or the migrator sends the file as one string —
+    // and the neon-http migrator issues each one on its own.
+    expect(sqlText.split('--> statement-breakpoint')).toHaveLength(4);
+
+    // Modelled by drizzle-kit: the column. Not modelled: the trigger.
+    const snapshot = read('server/db/migrations/meta/0003_snapshot.json');
+    expect(snapshot).toContain('lifecycle_generation');
+    for (const object of HAND_WRITTEN_0003) expect(snapshot).not.toContain(object);
   });
 
   it('drizzle.config.ts carries the warning where someone about to run push will see it', () => {
@@ -306,6 +342,7 @@ describe('the replay check fails loudly rather than silently', () => {
       '0000_nappy_betty_brant',
       '0001_bound_search_input',
       '0002_lyrical_kate_bishop',
+      '0003_cooing_spectrum',
     ]);
     for (const entry of entries) expect(entry.hash).toMatch(/^[0-9a-f]{64}$/);
   });

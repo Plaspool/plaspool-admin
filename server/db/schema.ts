@@ -147,6 +147,31 @@ export const posts = pgTable(
       .references(() => users.id),
     /** The CAS token. Monotonic per post. */
     revision: integer('revision').notNull(),
+    /**
+     * The LIFECYCLE CAS token. Monotonic per post, and moved by exactly one
+     * thing: a change to `status`, `published_at` or `deleted_at`.
+     *
+     * `revision` cannot answer the question a lifecycle retry has to ask.
+     * `revision` moves on every save, so pinning it would 409 a publish that
+     * merely raced an autosave — and the publish genuinely wants to re-derive
+     * its slug and excerpt from the newer text. But a predicate over the
+     * CURRENT lifecycle state cannot tell "never left draft" from "was trashed
+     * and restored back to draft", so a retry re-applied a trash somebody had
+     * deliberately undone, and the next `emptyTrash` destroyed the post and
+     * every revision with it (spec §4.2).
+     *
+     * A generation counter answers it: content edits leave it alone, so the
+     * retry still wins and re-derives; any lifecycle change by anyone moves it,
+     * so a retry pinned to the old value cannot win and the caller gets a 409.
+     *
+     * MAINTAINED BY A TRIGGER, NOT BY THE REPOSITORY. `posts_lifecycle_generation`
+     * (hand-appended to migration 0003, because drizzle-kit cannot express a
+     * trigger) bumps it in the database, so an import, a backfill or manual SQL
+     * moves it exactly as `trashPost` does. A counter the application increments
+     * would only be honest about writes that went through the application —
+     * which is precisely the guarantee a CAS predicate must not depend on.
+     */
+    lifecycleGeneration: integer('lifecycle_generation').notNull().default(0),
   },
   (t) => [
     check('posts_status_ck', sql`${t.status} IN ('draft', 'published', 'archived')`),
