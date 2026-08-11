@@ -17,6 +17,7 @@ import {
   type SaveOptions,
 } from './types';
 import { IDB_SCHEME } from './doc';
+import { isBlankDoc } from './docguards';
 
 /**
  * The type aliases moved to `shared/types.ts` so `server/` shares them. They
@@ -55,6 +56,10 @@ export function createDraftShape(partial: Partial<Post> = {}): Post {
     coverImage: partial.coverImage ?? null,
     category: partial.category ?? '',
     tags: partial.tags ?? [],
+    // `?? null`, not `|| null`: a post that pins a layout must keep it through
+    // an export/import round trip, and `backup.ts` rebuilds every imported post
+    // through this function. A field missing here is a field silently dropped.
+    template: partial.template ?? null,
     status: partial.status ?? 'draft',
     createdAt: partial.createdAt ?? now,
     updatedAt: partial.updatedAt ?? now,
@@ -358,6 +363,9 @@ export async function collectOrphanImages(): Promise<number> {
 /** A draft with no title, no words, no cover and no metadata. */
 export function isBlankDraft(p: Post): boolean {
   return (
+    // Scalar checks first: `sweepBlankDrafts` runs on every dashboard mount, so
+    // the document walk must only happen for drafts that are blank on the cheap
+    // criteria. Round 1 already caught one "cost scales with document length".
     p.status === 'draft' &&
     p.deletedAt == null &&
     p.title.trim() === '' &&
@@ -365,7 +373,11 @@ export function isBlankDraft(p: Post): boolean {
     p.wordCount === 0 &&
     !p.coverImage &&
     p.tags.length === 0 &&
-    p.category === ''
+    p.category === '' &&
+    // `wordCount === 0` is not emptiness. An image-only or divider-only draft
+    // has no words and was being destroyed — with its image bytes — the instant
+    // the writer left the editor. See isBlankDoc.
+    isBlankDoc(p.content)
   );
 }
 
