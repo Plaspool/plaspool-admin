@@ -139,6 +139,46 @@ export interface Revision {
   note?: string;
 }
 
+// ------------------------------------------------------------------ backup
+
+/**
+ * The backup bundle (spec §5.5).
+ *
+ * HERE RATHER THAN IN `src/data/backup.ts`, for the reason everything else in
+ * this file is here: `GET /api/export` and `POST /api/import` speak this exact
+ * shape, `server/` may not import from `src/`, and a second declaration on the
+ * server side is the duplication the shared module exists to prevent.
+ *
+ * `src/data/backup.ts` still carries its own copy today — Project C's cutover
+ * is what re-points it at this one. Until then the two are identical by
+ * inspection and the server's is the authority for what the API accepts.
+ */
+export const BUNDLE_FORMAT = 'publishing-studio/v2';
+
+/**
+ * The prefix every version of the format shares. Import checks this rather
+ * than the exact string, so a v1 bundle from an older export is still
+ * recognisable as one of ours.
+ */
+export const BUNDLE_FORMAT_PREFIX = 'publishing-studio/';
+
+export interface BundleImage {
+  id: string;
+  type: string;
+  width: number;
+  height: number;
+  /** base64, no `data:` prefix. */
+  data: string;
+}
+
+export interface Bundle {
+  format: string;
+  exportedAt: string;
+  posts: Post[];
+  revisions: Revision[];
+  images: BundleImage[];
+}
+
 export interface StoredImage {
   id: string;
   blob: Blob;

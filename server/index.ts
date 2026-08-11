@@ -8,6 +8,8 @@ import { originGuard } from './middleware/origin';
 import { sessionMiddleware } from './middleware/session';
 import { routes as auth } from './routes/auth';
 import { routes as posts } from './routes/posts';
+import { routes as revisions } from './routes/revisions';
+import { routes as backup } from './routes/backup';
 import type { AppEnv } from './app-env';
 
 export type { AppEnv } from './app-env';
@@ -107,6 +109,8 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
 
   app.route(API_PREFIX, auth);
   app.route(API_PREFIX, posts);
+  app.route(API_PREFIX, revisions);
+  app.route(API_PREFIX, backup);
 
   return app;
 }
