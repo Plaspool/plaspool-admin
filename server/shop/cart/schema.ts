@@ -1,0 +1,236 @@
+import { sql } from 'drizzle-orm';
+import {
+  bigint,
+  check,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  uniqueIndex,
+} from 'drizzle-orm/pg-core';
+
+/**
+ * Cart + Checkout tables (contract §4), declared in a file Cart owns
+ * exclusively and re-exported from `server/db/commerce-schema.ts`.
+ *
+ * WHY NOT DECLARED IN `commerce-schema.ts` DIRECTLY, WHICH IS WHAT §4 SAYS.
+ * Because "shared, append-only" turned out to be a convention with no mechanism
+ * behind it: that file was overwritten wholesale several times in one afternoon
+ * by different agents, and Catalog's and Payments' blocks were silently lost
+ * before either of them moved to this pattern. A single `export *` line is a
+ * surface that costs one line to restore and that `tsc` names immediately;
+ * three hundred lines of table declarations vanish quietly. §4's actual purpose
+ * — every commerce table reachable from one import path — is preserved exactly.
+ *
+ * ⚠️  THIS FILE IS NOT THE SOURCE OF TRUTH FOR THE DDL. `drizzle.config.ts`
+ *     declares `schema: './server/db/schema.ts'` and nothing else, so
+ *     drizzle-kit has never seen these tables. They exist because migration
+ *     `0120_cart_checkout.sql` created them. What this file buys is `$inferSelect`
+ *     types and one place to read the shape — and it is kept honest rather than
+ *     decorative by `server/shop/cart/schema.test.ts`, which reads every column
+ *     name back out of `information_schema` and fails if the two disagree.
+ *
+ * Two rules carry over from `server/db/schema.ts` and are not optional:
+ *
+ * - **Timestamps are `bigint` epoch-milliseconds, never `timestamptz`.** A
+ *   `timestamptz` reads back as a `Date` from PGlite and a string from Neon, and
+ *   `toEpochMs` — the function that closes that divergence — works on neither.
+ * - **Every enum-ish column carries a `check()`,** because `.$type<>()` is
+ *   compile-time only and buys exactly nothing at runtime.
+ */
+
+/** epoch-ms. `mode: 'number'` so a read is a number in both drivers. */
+const epochMs = (name: string) => bigint(name, { mode: 'number' });
+
+// ------------------------------------------------------------------ identity
+
+/**
+ * A customer is NOT a user (contract §7). No password, no role, and an email
+ * that may be absent — a pure guest has none.
+ */
+export const shopCustomers = pgTable(
+  'shop_customers',
+  {
+    id: text('id').primaryKey(),
+    email: text('email').unique('shop_customers_email_uq'),
+    displayName: text('display_name'),
+    createdAt: epochMs('created_at').notNull(),
+  },
+  (t) => [
+    // Postgres permits many NULLs in a UNIQUE column but exactly ONE empty
+    // string, so `''` would make the SECOND guest-turned-account row fail with a
+    // raw 23505. The identical trap `normaliseSlug` handles for `posts.slug`.
+    check('shop_customers_email_ck', sql`${t.email} IS NULL OR ${t.email} <> ''`),
+  ],
+);
+
+/**
+ * `id` is an HMAC-SHA-256 of the token under `SESSION_SECRET`, hex — never the
+ * raw token. Same construction as `sessions`, and for the same reason: a bare
+ * digest is offline-computable, so a stolen dump could be attacked with a
+ * precomputed table and the winning row replayed as a live session.
+ */
+export const shopCustomerSessions = pgTable(
+  'shop_customer_sessions',
+  {
+    id: text('id').primaryKey(),
+    customerId: text('customer_id')
+      .notNull()
+      .references(() => shopCustomers.id, { onDelete: 'cascade' }),
+    createdAt: epochMs('created_at').notNull(),
+    expiresAt: epochMs('expires_at').notNull(),
+    lastSeenAt: epochMs('last_seen_at').notNull(),
+  },
+  (t) => [index('shop_customer_sessions_customer_idx').on(t.customerId)],
+);
+
+// ---------------------------------------------------------------------- cart
+
+export const shopCarts = pgTable(
+  'shop_carts',
+  {
+    id: text('id').primaryKey(),
+    /** NULLABLE, and contract §7 makes that load-bearing: a cart exists before
+     * any identity does. SET NULL, not CASCADE — deleting a customer must not
+     * destroy the cart rows an order was built from. */
+    customerId: text('customer_id').references(() => shopCustomers.id, {
+      onDelete: 'set null',
+    }),
+    currency: text('currency').notNull(),
+    status: text('status').$type<'open' | 'converting' | 'converted' | 'abandoned'>().notNull(),
+    email: text('email'),
+    shippingOptionId: text('shipping_option_id'),
+    taxZone: text('tax_zone'),
+    /** THE FROZEN TOTALS. `CheckoutPort.totals()` reads this and never
+     * recomputes (brief §5). */
+    frozenTotals: jsonb('frozen_totals'),
+    /** The goods, frozen at the same instant from the same `quote` calls. */
+    frozenLines: jsonb('frozen_lines'),
+    frozenAt: epochMs('frozen_at'),
+    createdAt: epochMs('created_at').notNull(),
+    updatedAt: epochMs('updated_at').notNull(),
+    expiresAt: epochMs('expires_at').notNull(),
+    /** CAS, same as `posts.revision`. Moves on EVERY write of any kind, which is
+     * what makes an A→B→A status change visible and a generation trigger
+     * unnecessary — see `cart/repo.ts`. */
+    revision: integer('revision').notNull(),
+  },
+  (t) => [
+    index('shop_carts_customer_idx').on(t.customerId),
+    check(
+      'shop_carts_status_ck',
+      sql`${t.status} IN ('open','converting','converted','abandoned')`,
+    ),
+    check('shop_carts_revision_ck', sql`${t.revision} > 0`),
+    check('shop_carts_currency_ck', sql`${t.currency} ~ '^[A-Z]{3}$'`),
+    check(
+      'shop_carts_frozen_ck',
+      sql`(${t.frozenTotals} IS NULL AND ${t.frozenLines} IS NULL AND ${t.frozenAt} IS NULL)
+          OR (${t.frozenTotals} IS NOT NULL AND ${t.frozenLines} IS NOT NULL
+              AND ${t.frozenAt} IS NOT NULL)`,
+    ),
+  ],
+);
+
+export const shopCartLines = pgTable(
+  'shop_cart_lines',
+  {
+    id: text('id').primaryKey(),
+    cartId: text('cart_id')
+      .notNull()
+      .references(() => shopCarts.id, { onDelete: 'cascade' }),
+    /** DELIBERATELY NOT A FOREIGN KEY (contract §2 R3, brief §3). `shop_variants`
+     * is Catalog's; a cross-subsystem FK turns a catalog cleanup into a cart
+     * failure, and CASCADE across the boundary would let Catalog silently empty
+     * somebody's basket. */
+    variantId: text('variant_id').notNull(),
+    qty: integer('qty').notNull(),
+    addedAt: epochMs('added_at').notNull(),
+    // NO PRICE COLUMN, ON PURPOSE (brief §3). `schema.test.ts` fails if one
+    // is ever added: a price on a cart line is a third source of truth that goes
+    // stale and that nobody notices going stale.
+  },
+  (t) => [
+    uniqueIndex('shop_cart_lines_cart_variant_uq').on(t.cartId, t.variantId),
+    check('shop_cart_lines_qty_ck', sql`${t.qty} > 0`),
+  ],
+);
+
+// -------------------------------------------------------------- reservations
+
+/**
+ * The hold, and the CLOCK that governs it. Catalog owns the count; Cart owns
+ * the expiry (brief §4).
+ *
+ * `id` IS the idempotency key Catalog dedupes on, so it is minted here and
+ * handed across the port rather than being Catalog's to choose.
+ */
+export const shopReservations = pgTable(
+  'shop_reservations',
+  {
+    id: text('id').primaryKey(),
+    cartId: text('cart_id')
+      .notNull()
+      .references(() => shopCarts.id, { onDelete: 'cascade' }),
+    variantId: text('variant_id').notNull(),
+    qty: integer('qty').notNull(),
+    createdAt: epochMs('created_at').notNull(),
+    expiresAt: epochMs('expires_at').notNull(),
+    /** The arbiter of the sweeper-versus-capture race. Every transition is a
+     * conditional `UPDATE … WHERE state = 'held'`, so exactly one side moves it
+     * and exactly one side calls Catalog. */
+    state: text('state').$type<'held' | 'released' | 'committed' | 'expired'>().notNull(),
+  },
+  (t) => [
+    index('shop_reservations_cart_idx').on(t.cartId),
+    check('shop_reservations_qty_ck', sql`${t.qty} > 0`),
+    check(
+      'shop_reservations_state_ck',
+      sql`${t.state} IN ('held','released','committed','expired')`,
+    ),
+    // NOTE: `shop_reservations_sweep_idx` is PARTIAL (`WHERE state = 'held'`)
+    // and drizzle-kit cannot express it. It lives only in migration 0120, and
+    // `schema.test.ts` asserts it is applied.
+  ],
+);
+
+// ----------------------------------------------------------------- addresses
+
+/**
+ * Snapshotted onto the order later; never mutated after conversion — enforced
+ * by every write going through `updateCartFields`, which is guarded on
+ * `status = 'open'`.
+ */
+export const shopAddresses = pgTable(
+  'shop_addresses',
+  {
+    id: text('id').primaryKey(),
+    cartId: text('cart_id')
+      .notNull()
+      .references(() => shopCarts.id, { onDelete: 'cascade' }),
+    kind: text('kind').$type<'shipping' | 'billing'>().notNull(),
+    name: text('name').notNull(),
+    line1: text('line1').notNull(),
+    line2: text('line2'),
+    city: text('city').notNull(),
+    region: text('region'),
+    postalCode: text('postal_code'),
+    countryCode: text('country_code').notNull(),
+    phone: text('phone'),
+  },
+  (t) => [
+    uniqueIndex('shop_addresses_cart_kind_uq').on(t.cartId, t.kind),
+    check('shop_addresses_kind_ck', sql`${t.kind} IN ('shipping','billing')`),
+    // ISO-3166-1 alpha-2. The shipping zone and therefore the TAX RATE are
+    // derived from this, so a lowercase or three-letter code would silently pick
+    // the fallback zone and charge the wrong tax.
+    check('shop_addresses_country_ck', sql`${t.countryCode} ~ '^[A-Z]{2}$'`),
+  ],
+);
+
+export type DbShopCustomer = typeof shopCustomers.$inferSelect;
+export type DbShopCart = typeof shopCarts.$inferSelect;
+export type DbShopCartLine = typeof shopCartLines.$inferSelect;
+export type DbShopReservation = typeof shopReservations.$inferSelect;
+export type DbShopAddress = typeof shopAddresses.$inferSelect;

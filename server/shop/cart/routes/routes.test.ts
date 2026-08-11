@@ -1,0 +1,474 @@
+/**
+ * The storefront, driven through the whole stack.
+ *
+ * Through `httpClient` and a real `createApp()` rather than by calling repo
+ * functions, because the seam between the repository and HTTP is what these
+ * routes ADD and therefore where their defects are — router, origin guard,
+ * session middleware, error handler, cookie jar. `server/test/http.ts` says the
+ * same thing about the blog's route suites.
+ */
+import { sql } from 'drizzle-orm';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { freshDb, resetShopTables, SEED_PASSWORD } from '../test/harness';
+import { fakeCatalog } from '../test/fake-catalog';
+import { httpClient, json } from '../../../test/http';
+import { CART_COOKIE } from '../identity/cookies';
+import { mountShopCart, shopCartRoutes } from './index';
+import { mapsShopErrors } from './errors';
+import { CART_CREATE_LIMIT } from '../limits';
+import { DEFAULT_STORE_CURRENCY } from '../checkout/shipping';
+import type { CartFakeCatalog } from '../test/fake-catalog';
+import type { HttpClient } from '../../../test/http';
+import type { TestCtx } from '../test/harness';
+
+let ctx: TestCtx;
+let client: HttpClient;
+let catalog: CartFakeCatalog;
+
+const CURRENCY = DEFAULT_STORE_CURRENCY;
+
+const UK = {
+  name: 'A Shopper',
+  line1: '1 High Street',
+  city: 'London',
+  countryCode: 'GB',
+};
+
+beforeAll(async () => {
+  ctx = await freshDb();
+});
+afterAll(() => ctx.close());
+
+beforeEach(async () => {
+  await resetShopTables(ctx.db);
+  await ctx.db.execute(sql`TRUNCATE auth_attempts`);
+  catalog = fakeCatalog([
+    {
+      variantId: 'var_tee',
+      sku: 'TEE-NAVY-M',
+      title: 'Navy Tee',
+      price: { amount: 1999, currency: CURRENCY },
+      onHand: 10,
+    },
+    {
+      variantId: 'var_scarce',
+      sku: 'SCARCE',
+      title: 'Nearly gone',
+      price: { amount: 500, currency: CURRENCY },
+      onHand: 1,
+    },
+  ]);
+  client = httpClient(ctx.db);
+  mountShopCart(client.app, { catalog });
+});
+
+/** Every request carries an IP, so the per-IP buckets are per test, not shared. */
+const ip = (value: string) => ({ headers: { 'x-real-ip': value } });
+
+interface CartView {
+  cart: { id: string; revision: number; status: string; currency: string } | null;
+  lines: Array<{
+    id: string;
+    variantId: string;
+    qty: number;
+    available: boolean;
+    title: string | null;
+  }>;
+  preview: { grandTotal: { amount: number } } | null;
+  changes: unknown[];
+}
+
+async function newCart(): Promise<CartView> {
+  const res = await client.post('/api/shop/cart', undefined, ip('10.0.0.1'));
+  expect(res.status).toBe(201);
+  return json<CartView>(res);
+}
+
+describe('POST /api/shop/cart', () => {
+  it('creates a cart, sets the cookie, and needs no identity at all', async () => {
+    const view = await newCart();
+    expect(view.cart?.status).toBe('open');
+    expect(view.cart?.currency).toBe(CURRENCY);
+    expect(client.cookies().get(CART_COOKIE)).toBe(view.cart?.id);
+  });
+
+  it('ADOPTS the cookie rather than stranding the basket', async () => {
+    /*
+     * A double-submitted "start shopping" must not leave the first basket
+     * behind. The shopper would watch their items vanish with no explanation,
+     * which is the worst version of every failure in this brief.
+     */
+    const first = await newCart();
+    await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 1 });
+
+    const res = await client.post('/api/shop/cart', undefined, ip('10.0.0.1'));
+    expect(res.status).toBe(200);
+    const second = await json<CartView>(res);
+    expect(second.cart?.id).toBe(first.cart?.id);
+    expect(second.lines).toHaveLength(1);
+  });
+
+  it('is rate limited per IP', async () => {
+    for (let i = 0; i < CART_CREATE_LIMIT; i += 1) {
+      client.clearCookies();
+      expect((await client.post('/api/shop/cart', undefined, ip('10.9.9.9'))).status).toBe(201);
+    }
+    client.clearCookies();
+    const res = await client.post('/api/shop/cart', undefined, ip('10.9.9.9'));
+    expect(res.status).toBe(429);
+    expect(res.headers.get('retry-after')).toBeTruthy();
+  });
+});
+
+describe('GET /api/shop/cart', () => {
+  it('answers `cart: null` for a browser that has never had one — and WRITES NOTHING', async () => {
+    // A GET that created a row would make every crawler and every prefetch a
+    // cart, and would put the rate limiter on the page a shopper loads most.
+    const res = await client.get('/api/shop/cart');
+    expect(res.status).toBe(200);
+    expect((await json<CartView>(res)).cart).toBeNull();
+    const rows = await ctx.db.execute(sql`SELECT count(*)::int AS n FROM shop_carts`);
+    expect(Number(rows.rows[0].n)).toBe(0);
+  });
+
+  it('resolves lines through CatalogPort and previews a total', async () => {
+    await newCart();
+    await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 2 });
+
+    const view = await json<CartView>(await client.get('/api/shop/cart'));
+    expect(view.lines[0]).toMatchObject({
+      variantId: 'var_tee',
+      qty: 2,
+      available: true,
+      title: 'Navy Tee',
+    });
+    // The preview is not the price — no address yet, so the named zero rate.
+    expect(view.preview?.grandTotal.amount).toBe(3998);
+  });
+
+  it('RENDERS an unresolvable line rather than dropping it, and shows no total', async () => {
+    /*
+     * Brief §3: "render an unresolvable line as 'no longer available' rather
+     * than dropping it. A line that vanishes with no explanation is the worst
+     * version of this." And there is no honest total for a basket holding
+     * something that cannot be priced, so the preview is null rather than a
+     * number that will change.
+     */
+    await newCart();
+    await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 1 });
+    catalog.seed({
+      variantId: 'var_tee',
+      price: { amount: 1999, currency: CURRENCY },
+      onHand: 10,
+      sellable: false,
+    });
+
+    const view = await json<CartView>(await client.get('/api/shop/cart'));
+    expect(view.lines).toHaveLength(1);
+    expect(view.lines[0].available).toBe(false);
+    expect(view.lines[0].title).toBeNull();
+    expect(view.preview).toBeNull();
+  });
+});
+
+describe('line mutations', () => {
+  it('adds, changes and removes', async () => {
+    await newCart();
+    const added = await json<CartView>(
+      await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 1 }),
+    );
+    const lineId = added.lines[0].id;
+
+    const patched = await json<CartView>(
+      await client.patch(`/api/shop/cart/lines/${lineId}`, { qty: 4 }),
+    );
+    expect(patched.lines[0].qty).toBe(4);
+
+    const removed = await json<CartView>(
+      await client.del(`/api/shop/cart/lines/${lineId}`),
+    );
+    expect(removed.lines).toHaveLength(0);
+  });
+
+  it('answers 409 `stale_write` carrying the current cart when the revision has moved', async () => {
+    const view = await newCart();
+    await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 1 });
+
+    const res = await client.post('/api/shop/cart/lines', {
+      variantId: 'var_scarce',
+      qty: 1,
+      baseRevision: view.cart?.revision,
+    });
+
+    expect(res.status).toBe(409);
+    const body = await json<{ error: string; expected: number; actual: number; cart: { revision: number } }>(res);
+    expect(body.error).toBe('stale_write');
+    expect(body.expected).toBe(1);
+    expect(body.actual).toBe(2);
+    // The current cart rides along so the client re-renders with no second
+    // request — the same property the post path's 409 has.
+    expect(body.cart.revision).toBe(2);
+  });
+
+  it('404s a line id belonging to somebody else’s cart', async () => {
+    await newCart();
+    const mine = await json<CartView>(
+      await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 1 }),
+    );
+
+    client.clearCookies();
+    await client.post('/api/shop/cart', undefined, ip('10.0.0.2'));
+    const res = await client.del(`/api/shop/cart/lines/${mine.lines[0].id}`);
+
+    expect(res.status).toBe(404);
+    expect((await json<{ error: string }>(res)).error).toBe('gone');
+  });
+
+  it('400s an unknown body key rather than ignoring it', async () => {
+    await newCart();
+    const res = await client.post('/api/shop/cart/lines', {
+      variantId: 'var_tee',
+      qty: 1,
+      price: 1,
+    });
+    expect(res.status).toBe(400);
+    expect((await json<{ detail: string }>(res)).detail).toBe('price');
+  });
+
+  it('400s a NUL byte in a path segment rather than 500ing on 22021', async () => {
+    // Postgres `text` cannot hold U+0000 and spec §8 has no row for 22021, so
+    // untranslated it is a 500 the client retries five times for input that can
+    // never be accepted.
+    await newCart();
+    const res = await client.del('/api/shop/cart/lines/%00');
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('the checkout flow, end to end', () => {
+  it('start → addresses → shipping → freeze', async () => {
+    await newCart();
+    await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 2 });
+
+    const started = await client.post('/api/shop/checkout/start');
+    expect(started.status).toBe(200);
+    expect((await json<{ reservations: unknown[] }>(started)).reservations).toHaveLength(1);
+    expect(catalog.stockOf('var_tee')).toEqual({ onHand: 10, reserved: 2 });
+
+    const addressed = await client.request('/api/shop/checkout/addresses', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shipping: UK }),
+    });
+    expect(addressed.status).toBe(200);
+    const zoneBody = await json<{ zone: string; options: Array<{ id: string }> }>(addressed);
+    expect(zoneBody.zone).toBe('domestic');
+    expect(zoneBody.options.map((o) => o.id)).toEqual(['standard', 'express']);
+
+    const shipped = await client.request('/api/shop/checkout/shipping', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ optionId: 'standard' }),
+    });
+    expect(shipped.status).toBe(200);
+
+    const frozen = await client.post('/api/shop/checkout/freeze');
+    expect(frozen.status).toBe(200);
+    const totals = (await json<{ totals: { grandTotal: { amount: number } } }>(frozen)).totals;
+    expect(totals.grandTotal.amount).toBe(3998 + 399 + 880);
+
+    // And the frozen number is what a re-render sees.
+    const reread = await client.get('/api/shop/checkout/totals');
+    expect((await json<{ totals: typeof totals }>(reread)).totals).toEqual(totals);
+  });
+
+  it('409s a shortfall WITH THE NUMBER', async () => {
+    await newCart();
+    await client.post('/api/shop/cart/lines', { variantId: 'var_scarce', qty: 5 });
+
+    const res = await client.post('/api/shop/checkout/start');
+
+    expect(res.status).toBe(409);
+    const body = await json<{ error: string; shortfalls: unknown[] }>(res);
+    expect(body.error).toBe('insufficient_stock');
+    expect(body.shortfalls).toEqual([
+      { variantId: 'var_scarce', requested: 5, available: 1 },
+    ]);
+  });
+
+  it('409s a freeze whose line has become unavailable, naming the variant', async () => {
+    await newCart();
+    await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 1 });
+    await client.request('/api/shop/checkout/addresses', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shipping: UK }),
+    });
+    catalog.seed({
+      variantId: 'var_tee',
+      price: { amount: 1999, currency: CURRENCY },
+      onHand: 10,
+      sellable: false,
+    });
+
+    const res = await client.post('/api/shop/checkout/freeze');
+    expect(res.status).toBe(409);
+    const body = await json<{ error: string; variantIds: string[] }>(res);
+    expect(body.error).toBe('unavailable_lines');
+    expect(body.variantIds).toEqual(['var_tee']);
+  });
+
+  it('400s a lowercase country code before it can pick the wrong tax zone', async () => {
+    await newCart();
+    const res = await client.request('/api/shop/checkout/addresses', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shipping: { ...UK, countryCode: 'gb' } }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('404s the whole flow for a browser with no cart', async () => {
+    expect((await client.post('/api/shop/checkout/start')).status).toBe(404);
+    expect((await client.post('/api/shop/checkout/freeze')).status).toBe(404);
+  });
+});
+
+describe('the sweep cron route', () => {
+  it('is refused to an anonymous caller', async () => {
+    // Sweeping reaches `CatalogPort` once per expired hold, so an anonymous
+    // caller could turn it into an amplifier. Contract §10 puts admin routes
+    // under `/api/shop/admin/*` behind `requireAuth()`.
+    const res = await client.post('/api/shop/admin/reservations/sweep');
+    expect(res.status).toBe(401);
+  });
+
+  it('runs for a signed-in writer and reports what it could NOT release', async () => {
+    await client.post('/api/auth/login', {
+      email: 'owner@test.local',
+      password: SEED_PASSWORD,
+    });
+
+    const res = await client.post('/api/shop/admin/reservations/sweep');
+    expect(res.status).toBe(200);
+    // `failed` is reported rather than swallowed: a non-zero value means stock
+    // is held for checkouts that are over, and this is the only signal saying so.
+    expect(await json<{ released: number; failed: number }>(res)).toEqual({
+      released: 0,
+      failed: 0,
+    });
+  });
+});
+
+describe('every route maps this subsystem’s errors', () => {
+  it('has no unwrapped handler — checked mechanically, not by convention', () => {
+    /*
+     * THE GUARD THAT STOPS THE NEXT ROUTE BEING THE ONE THAT 500s.
+     *
+     * `CartStaleWriteError` and `CartPreconditionError` have to become 409s, and
+     * the mapping cannot be a middleware: Hono's `compose` calls the app's
+     * `onError` at the frame that threw, so an error never reaches an enclosing
+     * `await next()` — measured with a three-line Hono app, and the reason the
+     * first version of this suite saw a 500 where it expected a 409.
+     *
+     * The mapping is therefore applied per handler by `mapErrors()`. A per-route
+     * wrapper is exactly the kind of thing the NEXT route forgets, so this walks
+     * the registered table instead of trusting anyone to remember.
+     */
+    const app = shopCartRoutes({ catalog });
+    expect(app.routes.length).toBeGreaterThan(10);
+    const unwrapped = app.routes
+      .filter((route) => !mapsShopErrors(route.handler))
+      .map((route) => `${route.method} ${route.path}`);
+    expect(unwrapped).toEqual([]);
+  });
+
+  it('turns a repo-level precondition into a 409 rather than a 500', async () => {
+    // The end-to-end version of the same property, through the real stack.
+    await newCart();
+    await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 1 });
+    await client.request('/api/shop/checkout/addresses', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shipping: UK }),
+    });
+    await client.post('/api/shop/checkout/freeze');
+
+    // The cart is `converting` now, so a line write is refused, not raced.
+    const res = await client.post('/api/shop/cart/lines', { variantId: 'var_scarce', qty: 1 });
+    expect(res.status).toBe(409);
+    const body = await json<{ error: string; operation: string; cart: { status: string } }>(res);
+    expect(body.error).toBe('precondition_failed');
+    expect(body.operation).toBe('add_line');
+    expect(body.cart.status).toBe('converting');
+  });
+
+  it('answers 501 for the magic link, because delivery is not implemented', async () => {
+    /*
+     * A stub that REFUSES rather than one that pretends. The alternative —
+     * returning the session token in the response body — is an unauthenticated
+     * account-takeover primitive for any address an attacker types, and it would
+     * have passed every test written against it. See AMENDMENTS A-006.
+     */
+    const res = await client.post('/api/shop/customer/session', {
+      email: 'someone@test.local',
+    });
+    expect(res.status).toBe(501);
+    const body = await json<{ error: string; feature: string }>(res);
+    expect(body.error).toBe('not_implemented');
+    expect(body.feature).toBe('magic-link delivery');
+    // And nothing was written on the way to refusing.
+    const rows = await ctx.db.execute(sql`SELECT count(*)::int AS n FROM shop_customers`);
+    expect(Number(rows.rows[0].n)).toBe(0);
+  });
+
+  it('accepts the magic link when a deliverer IS injected, and never leaks the token', async () => {
+    const delivered: Array<{ email: string; token: string }> = [];
+    const wired = httpClient(ctx.db);
+    mountShopCart(wired.app, {
+      catalog,
+      deliverMagicLink: async (a) => {
+        delivered.push({ email: a.email, token: a.token });
+      },
+    });
+
+    const res = await wired.post('/api/shop/customer/session', { email: 'A@Test.Local' });
+
+    expect(res.status).toBe(202);
+    const body = await res.text();
+    // The body says nothing about whether the address was known — a different
+    // answer for a known address is a customer-enumeration oracle, and for a
+    // shop it leaks who has bought something here.
+    expect(JSON.parse(body)).toEqual({ sent: true });
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].email).toBe('a@test.local');
+    // The token reached the DELIVERER and not the response. This is the whole
+    // difference between a stub and an account-takeover primitive.
+    expect(body).not.toContain(delivered[0].token);
+  });
+});
+
+describe('the storefront never demands an account', () => {
+  it('completes a whole guest checkout with no customer session at all', async () => {
+    // Contract §7: "Guest checkout is the default path. Do not require an
+    // account to buy." Asserted by doing it.
+    await newCart();
+    await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 1 });
+    await client.post('/api/shop/checkout/start');
+    await client.request('/api/shop/checkout/addresses', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shipping: UK }),
+    });
+    await client.request('/api/shop/checkout/shipping', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ optionId: 'standard' }),
+    });
+    const frozen = await client.post('/api/shop/checkout/freeze');
+
+    expect(frozen.status).toBe(200);
+    const carts = await ctx.db.execute(sql`SELECT customer_id FROM shop_carts`);
+    expect(carts.rows[0].customer_id).toBeNull();
+  });
+});

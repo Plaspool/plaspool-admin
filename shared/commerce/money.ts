@@ -6,7 +6,7 @@
  * overwrote this file with a `Write` while building concurrently: it did not
  * exist when Cart last looked, and Cart did not re-check before writing. That
  * is a straightforward breach of contract §2 R1 and it is recorded here and in
- * AMENDMENTS A-001 rather than quietly fixed.
+ * AMENDMENTS A-008 rather than quietly fixed.
  *
  * What is below was rebuilt from `shared/commerce/money.test.ts`, which was NOT
  * touched and which specifies this module completely — all 37 of its

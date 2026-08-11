@@ -336,14 +336,53 @@ describe('the replay check fails loudly rather than silently', () => {
     );
   });
 
+  /**
+   * The blog's own migrations, in the order the migrator applies them.
+   *
+   * 0004 makes `images.width`/`height` nullable — the server issues an upload
+   * slot before it has seen a single byte, so there is nothing honest to put in
+   * them — and adds `unreferenced_since`, the orphan sweep's quarantine clock.
+   * Fully drizzle-kit generated: it touches only modelled objects, which is the
+   * rule `drizzle.config.ts` sets for any migration allowed to carry
+   * hand-written statements.
+   */
+  const BLOG_MIGRATIONS = [
+    '0000_nappy_betty_brant',
+    '0001_bound_search_input',
+    '0002_lyrical_kate_bishop',
+    '0003_cooing_spectrum',
+    '0004_colorful_mojo',
+  ];
+
   it('reads the same journal the migrator does, hash included', () => {
+    /*
+     * A PREFIX, NOT THE WHOLE LIST — see AMENDMENTS A-003.
+     *
+     * This assertion used to pin the journal's tags with an exact `toEqual`
+     * against these five. `toEqual` on arrays is exact, so the FIRST commerce
+     * migration to land turned this suite red — and commerce migrations are
+     * appended by four subsystems into private number ranges the commerce
+     * contract §8 allocates, none of which this file has any business knowing
+     * about. It went red for a change that is correct.
+     *
+     * The subject here is `readJournal`: that it reads the same two inputs the
+     * migrator reads and computes the same hash over the same bytes. The blog's
+     * five migrations existing, in order, at the head of the journal is the part
+     * of that which this file owns; what follows them is somebody else's range.
+     *
+     * WHAT THE RELAXATION DOES NOT COST. The exactness that mattered is still
+     * asserted, in three places rather than one: `idx === index` and the
+     * strictly-increasing `when` above (both of which walk EVERY entry,
+     * including commerce ones), the hash-shape check below, and the
+     * no-duplicate-tags check — which is new, and which is the failure an exact
+     * list would actually have caught here: two agents appending under the same
+     * tag, or one appending twice.
+     */
     const entries = readJournal(MIGRATIONS);
-    expect(entries.map((e) => e.tag)).toEqual([
-      '0000_nappy_betty_brant',
-      '0001_bound_search_input',
-      '0002_lyrical_kate_bishop',
-      '0003_cooing_spectrum',
-    ]);
+    const tags = entries.map((e) => e.tag);
+
+    expect(tags.slice(0, BLOG_MIGRATIONS.length)).toEqual(BLOG_MIGRATIONS);
+    expect(new Set(tags).size, 'two journal entries share a tag').toBe(tags.length);
     for (const entry of entries) expect(entry.hash).toMatch(/^[0-9a-f]{64}$/);
   });
 });
