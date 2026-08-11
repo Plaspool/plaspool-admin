@@ -41,11 +41,6 @@ export interface Product {
   revision: number;
 }
 
-/** A product with its variants, for `GET /api/shop/products/:slug`. */
-export interface ProductWithVariants extends Product {
-  variants: VariantWithPrice[];
-}
-
 export interface Variant {
   id: string;
   productId: string;
@@ -71,20 +66,6 @@ export interface VariantWithPrice extends Variant {
   price: { amount: number; currency: string } | null;
   available: number | null;
   backorderable: boolean;
-}
-
-/** A row of `shop_product_revisions`, as the history endpoint returns it. */
-export interface ProductRevision {
-  id: string;
-  productId: string;
-  revision: number;
-  createdAt: number;
-  authorId: string;
-  title: string;
-  description: DocNode;
-  status: string;
-  kind: 'edit' | 'status';
-  note: string | null;
 }
 
 /** A row of `shop_inventory`, for the admin surface. `available` is derived. */

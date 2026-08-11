@@ -10,7 +10,6 @@ import type {
   InventoryHold,
   InventoryLevel,
   Product,
-  ProductRevision,
   Variant,
   VariantWithPrice,
 } from './types';
@@ -192,21 +191,6 @@ export function rowToVariantWithPrice(row: Record<string, unknown>): VariantWith
      */
     available: row.available == null ? null : Number(row.available),
     backorderable: row.backorderable === true,
-  };
-}
-
-export function rowToProductRevision(row: Record<string, unknown>): ProductRevision {
-  return {
-    id: String(row.id),
-    productId: String(row.product_id),
-    revision: Number(row.revision),
-    createdAt: toEpochMs(row.created_at),
-    authorId: String(row.author_id),
-    title: String(row.title),
-    description: json<DocNode>(row.description) ?? { type: 'doc', content: [] },
-    status: String(row.status),
-    kind: row.kind as 'edit' | 'status',
-    note: row.note == null ? null : String(row.note),
   };
 }
 

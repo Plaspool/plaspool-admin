@@ -1,6 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import type { Db } from '../../db/client';
-import { DbError, uniqueViolation } from '../../db/client';
+import { uniqueViolation } from '../../db/client';
 import { InvalidDocumentError, NotFoundError } from '../../repo/errors';
 import { ProductPreconditionFailedError, StaleProductWriteError } from './errors';
 import { docToText, slugify } from '../../../shared/doc';
@@ -613,11 +613,6 @@ function isSlugCollision(err: unknown): boolean {
 
 function isRevisionCollision(err: unknown): boolean {
   return uniqueViolation(err) === 'shop_product_revisions_uq';
-}
-
-/** Present so a caller can distinguish a real driver failure in a test. */
-export function isDbError(err: unknown): err is DbError {
-  return err instanceof DbError;
 }
 
 /**

@@ -352,3 +352,53 @@ describe('NUL bytes and malformed input are 400s, never 500s', () => {
     expect(wrong.status).toBe(400);
   });
 });
+
+describe('the price history', () => {
+  beforeAll(login);
+
+  it('records every price change, newest first, with the window closed behind it', async () => {
+    /*
+     * The endpoint that makes brief §2's justification for effective-dated rows
+     * real rather than theoretical: "the catalog still needs to answer 'what did
+     * this cost on Tuesday' for reconciliation, and a column cannot".
+     */
+    const created = await createProduct('Priced Over Time');
+    const variantRes = await http.post(`/api/shop/admin/products/${created.id}/variants`, {
+      sku: 'HISTORY-1',
+    });
+    const { variant } = await json<{ variant: { id: string } }>(variantRes);
+
+    const setPrice = (amount: number) =>
+      http.request(`/api/shop/admin/variants/${variant.id}/price`, {
+        method: 'PUT',
+        headers: { origin: TEST_ORIGIN, 'content-type': 'application/json' },
+        body: JSON.stringify({ amount, currency: 'GBP' }),
+      });
+
+    expect((await setPrice(1000)).status).toBe(200);
+    // The window check demands effective_to > effective_from, so two changes
+    // inside one millisecond are refused rather than stored zero-width.
+    await new Promise((r) => setTimeout(r, 2));
+    expect((await setPrice(1500)).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 2));
+    expect((await setPrice(1200)).status).toBe(200);
+
+    const res = await http.get(`/api/shop/admin/variants/${variant.id}/prices`);
+    expect(res.status).toBe(200);
+    const { prices } = await json<{
+      prices: { amount: number; effectiveTo: number | null }[];
+    }>(res);
+
+    expect(prices.map((p) => p.amount)).toEqual([1200, 1500, 1000]);
+    // Exactly one is current; every superseded row has its window closed.
+    expect(prices.filter((p) => p.effectiveTo === null)).toHaveLength(1);
+    expect(prices[0].effectiveTo).toBeNull();
+    for (const p of prices.slice(1)) expect(p.effectiveTo).not.toBeNull();
+  });
+
+  it('is admin-only and 404s for a variant that does not exist', async () => {
+    expect((await http.get('/api/shop/admin/variants/var_nope/prices')).status).toBe(404);
+    http.clearCookies();
+    expect((await http.get('/api/shop/admin/variants/var_x/prices')).status).toBe(401);
+  });
+});

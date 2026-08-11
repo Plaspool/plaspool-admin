@@ -26,7 +26,7 @@ import {
   listVariantsWithPrices,
   updateVariant,
 } from './variants';
-import { setPrice } from './prices';
+import { priceHistory, setPrice } from './prices';
 import { adjustInventory, getInventory } from './inventory';
 import type { ProductPatch } from './types';
 
@@ -354,6 +354,27 @@ routes.put('/admin/variants/:id/price', auth, async (c) => {
   // malformed currency code before either reaches a column.
   const price = money(body.amount, body.currency);
   return c.json({ price: await setPrice(currentDb(c), pathParam(c, 'id'), price) });
+});
+
+/**
+ * The price history, newest first.
+ *
+ * NOT IN BRIEF §6'S LIST, AND ADDED ANYWAY. §2 justifies effective-dated price
+ * ROWS rather than a column on exactly one ground: "the catalog still needs to
+ * answer 'what did this cost on Tuesday' for reconciliation, and a column
+ * cannot". Storing the history and exposing no way to read it would leave the
+ * design's whole justification as a table nobody can query without psql — the
+ * "mechanism wired to no caller" shape both prior gauntlets kept finding.
+ *
+ * Admin-only: what a product used to cost is commercial information, and the
+ * storefront has no use for anything but the current price.
+ */
+routes.get('/admin/variants/:id/prices', auth, async (c) => {
+  const db = currentDb(c);
+  const id = pathParam(c, 'id');
+  const variant = await getVariant(db, id);
+  if (!variant) throw new NotFoundError(id);
+  return c.json({ prices: await priceHistory(db, id) });
 });
 
 routes.post('/admin/inventory/:variantId/adjust', auth, async (c) => {

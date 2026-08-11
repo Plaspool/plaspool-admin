@@ -50,13 +50,6 @@ export interface CreateVariantInput {
   backorderable?: boolean;
 }
 
-export async function listVariants(db: Db, productId: string): Promise<Variant[]> {
-  const res = await db.execute(sql`
-    SELECT ${sql.raw(VARIANT_COLUMNS.join(', '))} FROM shop_variants
-     WHERE product_id = ${productId} ORDER BY position ASC, id ASC`);
-  return res.rows.map(rowToVariant);
-}
-
 /**
  * Variants of one product, joined to the current price and the stock row.
  *

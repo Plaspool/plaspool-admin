@@ -77,61 +77,102 @@ export async function priceHistory(db: Db, variantId: string): Promise<PriceRow[
 }
 
 /**
- * Set the current price: close the open row, open a new one, in one statement.
+ * Set the current price: close the open row, then open a new one.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * TWO STATEMENTS, AND THIS IS THE ONE PLACE IN CATALOG THAT IS NOT ATOMIC.
+ * Everywhere else in this subsystem a mutation is a single statement with
+ * data-modifying CTEs. That is impossible here, and it was MEASURED rather than
+ * reasoned about:
+ *
+ *   WITH closed AS (UPDATE shop_prices SET effective_to = 200
+ *                    WHERE variant_id='v1' AND effective_to IS NULL RETURNING id),
+ *        opened AS (INSERT INTO shop_prices VALUES ('p2','v1',1500,200,NULL) …)
+ *   SELECT * FROM opened;
+ *   -->  ERROR, constraint = shop_prices_current_uq
+ *
+ * Every CTE in a statement sees the SAME SNAPSHOT, so the INSERT's uniqueness
+ * check still sees the row the UPDATE is closing, and the partial unique index
+ * refuses it. The whole statement rolls back — verified: the original row was
+ * left open and unchanged — so nothing is corrupted, but a shop whose SECOND
+ * price change is a permanent 400 is not a shop. No test caught it until one
+ * changed a price twice on the same variant.
+ *
+ * WHY NOT DROP THE INDEX INSTEAD. Because it is the thing that makes "at most
+ * one current price" true under concurrency, and without it two racing price
+ * changes leave two open rows — `quote()` then depends on which one the planner
+ * returns, i.e. the shop charges different customers differently for reasons
+ * nobody can reconstruct, silently. The index is worth more than the atomicity.
+ *
+ * SO THE FAILURE IS POINTED IN THE SAFE DIRECTION. Close FIRST, open SECOND. If
+ * the process dies between them the variant has NO current price, which
+ * `quote()` reads as "not sellable" — a variant that briefly cannot be bought.
+ * The other ordering would leave two open rows, or a moment where the old price
+ * and the new one are both current. Between "cannot sell for a moment" and "sold
+ * at an ambiguous price", only the first is recoverable by setting the price
+ * again, and only the first is visible.
+ * ═══════════════════════════════════════════════════════════════════════════
  *
  * `price` arrives as a `Money`, so the caller has already been through the one
- * constructor that refuses a non-integer amount and a malformed currency code —
- * there is no path from an HTTP body to this column that does not pass through
- * it. The database's own `amount >= 0` and `currency ~ '^[A-Z]{3}$'` checks are
- * the backstop for a backfill.
+ * constructor that refuses a non-integer amount and a malformed currency code.
+ * The column's `amount >= 0` and `currency ~ '^[A-Z]{3}$'` checks are the
+ * backstop for a backfill.
  */
 export async function setPrice(db: Db, variantId: string, price: Money): Promise<PriceRow> {
   const now = Date.now();
   const id = newCatalogId('prc_');
 
+  /*
+   * `effective_from < now` is not optional: `shop_prices_window_ck` demands
+   * `effective_to > effective_from`, so a price opened in this same millisecond
+   * cannot be closed at this millisecond. Such a change is refused below rather
+   * than stored as a zero-width window no "what did this cost at T" query could
+   * ever return.
+   */
+  const closed = await db.execute(sql`
+    UPDATE shop_prices SET effective_to = ${now}
+     WHERE variant_id = ${variantId}
+       AND effective_to IS NULL
+       AND effective_from < ${now}
+    RETURNING id`);
+
   const row = await db
     .execute(sql`
       WITH variant AS (
         SELECT id FROM shop_variants WHERE id = ${variantId}
-      ), closed AS (
-        UPDATE shop_prices SET effective_to = ${now}
-         WHERE variant_id = (SELECT id FROM variant)
-           AND effective_to IS NULL
-           -- A price opened in the same millisecond cannot be closed at that
-           -- millisecond: shop_prices_window_ck demands
-           -- effective_to > effective_from. Two price changes inside one
-           -- millisecond are refused here rather than violating the check --
-           -- which is the honest answer, since the two would otherwise produce
-           -- a zero-width window that no "what did this cost at T" query could
-           -- ever return.
-           AND effective_from < ${now}
-        RETURNING id
-      ), opened AS (
-        INSERT INTO shop_prices (id, variant_id, amount, currency, effective_from,
-                                 effective_to, created_at)
-        SELECT ${id}, variant.id, ${price.amount}, ${price.currency}, ${now}, NULL, ${now}
-          FROM variant
-        RETURNING id, variant_id, amount, currency, effective_from, effective_to, created_at
       )
-      SELECT * FROM opened`)
+      INSERT INTO shop_prices (id, variant_id, amount, currency, effective_from,
+                               effective_to, created_at)
+      SELECT ${id}, variant.id, ${price.amount}, ${price.currency}, ${now}, NULL, ${now}
+        FROM variant
+      RETURNING id, variant_id, amount, currency, effective_from, effective_to, created_at`)
     .then((res) => res.rows[0])
     .catch((err: unknown) => {
       /*
-       * `shop_prices_current_uq`. Reachable two ways, and both mean the same
-       * thing to a caller: a concurrent writer opened a price between this
-       * statement's snapshot and its write, or the existing open row was opened
-       * in this same millisecond and so could not be closed. Either way the
-       * answer is "try again", and it must not be a 500 — a 500 is retried five
-       * times by the client's policy with no reason to think the outcome
-       * changes, whereas this genuinely does succeed on a retry.
+       * `shop_prices_current_uq`: an open row still exists. Either a concurrent
+       * writer opened one between the two statements, or this call's own close
+       * matched nothing because the existing row was opened in this same
+       * millisecond. Both mean "try again", and neither may be a 500 — a 500 is
+       * transient by the client's retry policy and would be re-sent five times,
+       * whereas this genuinely does succeed on a retry a millisecond later.
        */
       if (String(err).includes('shop_prices_current_uq')) throw new ConcurrentPriceChangeError();
       throw err;
     });
 
-  // Empty `variant` CTE — the variant does not exist. A 404 rather than a
-  // foreign-key 500, and without a separate existence read that would let the
-  // variant be deleted in between.
-  if (!row) throw new NotFoundError(variantId);
+  if (!row) {
+    /*
+     * The `variant` CTE was empty — the variant does not exist. The close above
+     * matched nothing either (its predicate is the same variant id), so there is
+     * no half-applied state to undo: `closed.rows.length` is asserted to be zero
+     * rather than assumed, because a non-empty one here would mean a price was
+     * closed for a variant that is not there, and that is worth a loud failure
+     * rather than a quiet 404.
+     */
+    if (closed.rows.length > 0) {
+      throw new Error(`closed a price for variant ${variantId}, which does not exist`);
+    }
+    throw new NotFoundError(variantId);
+  }
   return rowToPrice(row);
 }
