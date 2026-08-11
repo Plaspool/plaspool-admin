@@ -34,9 +34,13 @@ export type { AppEnv } from './app-env';
 
 export interface AppDeps {
   /**
-   * The handle, or a function returning it. Defaulted to `getDb`, and CALLED
-   * PER REQUEST rather than at construction, so importing this module never
-   * demands `DATABASE_URL`.
+   * The handle, or a function returning it. Defaulted to `getDb`.
+   *
+   * NEVER CALLED AT CONSTRUCTION, and never eagerly per request either: it is
+   * invoked by the first `currentDb(c)` of a request and memoised for the rest
+   * of it. So importing this module does not demand `DATABASE_URL`, and neither
+   * does a request that has no reason to touch the database — see the note on
+   * `dbFactory` in `server/app-env.ts` for what that was measured to fix.
    */
   db?: Db | (() => Db);
   /** Exact-match allow-list. Defaults to `APP_ORIGINS` (spec §6). */
