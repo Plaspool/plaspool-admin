@@ -14,7 +14,14 @@ import { useEffect, useState } from 'react';
  * ARCHITECTURE.md § Settings sync.
  */
 
-export type ReadingTemplate = 'magazine' | 'minimal' | 'editorial' | 'technical';
+/**
+ * Re-exported, not redefined. A post can pin a layout (`Post.template`), so the
+ * union lives in `shared/types.ts` where both sides of the app can see it; this
+ * keeps every existing `from '../data/settings'` import working.
+ */
+export type { ReadingTemplate } from '../../shared/types';
+import type { ReadingTemplate } from '../../shared/types';
+
 export type ThemeSetting = 'system' | 'light' | 'dark';
 
 export interface Settings {

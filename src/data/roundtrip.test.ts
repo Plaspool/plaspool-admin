@@ -7,6 +7,7 @@ import { db, newId } from './db';
 import {
   archivePost,
   createPost,
+  duplicatePost,
   publishPost,
   savePost,
   sweepBlankDrafts,
@@ -229,5 +230,54 @@ describe('lifecycle changes leave a history entry', () => {
       'Moved back to drafts',
       'Archived',
     ]);
+  });
+});
+
+/**
+ * A new `Post` field has to land in four places — `shared/types.ts`,
+ * `PostPatch`, `createDraftShape`, and the `backup.ts` import path — or it is
+ * silently dropped. Import rebuilds every post through `createDraftShape`, so
+ * that function is the one that actually decides, and this is the test that
+ * notices.
+ */
+describe('per-post template override', () => {
+  it('defaults to null — no opinion, follow the blog', async () => {
+    const p = await createPost({ title: 'Plain' });
+    expect(p.template).toBeNull();
+  });
+
+  it('is patchable through savePost, and clearable back to the default', async () => {
+    const p = await createPost({ title: 'Essay' });
+    const pinned = await savePost(p.id, { template: 'editorial' });
+    expect(pinned.template).toBe('editorial');
+    const cleared = await savePost(p.id, { template: null });
+    expect(cleared.template).toBeNull();
+  });
+
+  it('survives an export → wipe → import round trip', async () => {
+    const pinned = await createPost({ title: 'Full bleed', template: 'editorial' });
+    const plain = await createPost({ title: 'Ordinary' });
+    const bundle = JSON.stringify(await exportBundle());
+
+    await db.posts.clear();
+    await db.revisions.clear();
+    await importBundle(bundle);
+
+    const restored = await db.posts.toArray();
+    const byTitle = (t: string) => restored.find((p) => p.title === t)!;
+    // The override is the thing at risk; `null` staying `null` matters just as
+    // much, because `undefined` would read as "no opinion" and then serialise
+    // out of the next bundle entirely.
+    expect(byTitle('Full bleed').template).toBe('editorial');
+    expect(byTitle('Ordinary').template).toBeNull();
+    expect(Object.hasOwn(byTitle('Ordinary'), 'template')).toBe(true);
+    expect(pinned.template).toBe('editorial');
+    expect(plain.template).toBeNull();
+  });
+
+  it('carries over when a post is duplicated', async () => {
+    const p = await createPost({ title: 'Source', template: 'technical' });
+    const copy = await duplicatePost(p.id);
+    expect(copy.template).toBe('technical');
   });
 });

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Download,
+  Keyboard,
   MoreHorizontal,
   Plus,
   Search,
@@ -35,6 +36,7 @@ import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../comp
 import { Skeleton, ProgressIndeterminate } from '../components/ui/Feedback';
 import { useDelayed } from '../components/ui/useDelayed';
 import { ConfirmDialog } from '../components/Dialog';
+import { openShortcuts } from '../components/ShortcutsDialog';
 import { useToast } from '../components/Toast';
 import type { Post } from '../data/types';
 import './dashboard.css';
@@ -54,6 +56,17 @@ const SORTS: { key: SortKey; label: string }[] = [
   { key: 'alphabetical', label: 'A–Z' },
   { key: 'drafts-first', label: 'Drafts first' },
 ];
+
+/**
+ * Radix throws outright on a Select item with `value=""`, so "no category
+ * filter" needs a sentinel rather than the empty string. Both directions of the
+ * mapping live here so they cannot drift apart, and `Query.category` stays
+ * `string | null` everywhere outside this control.
+ */
+const ALL_CATEGORIES = '__all__';
+const fromSelectValue = (v: string): string | null =>
+  v === ALL_CATEGORIES ? null : v;
+const toSelectValue = (c: string | null): string => c ?? ALL_CATEGORIES;
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -130,6 +143,37 @@ export default function Dashboard() {
     [all],
   );
 
+  // Each option carries the number of posts it would actually return, scoped by
+  // every filter except the category itself — a count that moved as soon as you
+  // picked a category would be answering a different question. "All categories"
+  // is the same query with the category dropped, so its number is exactly what
+  // the grid shows when it is chosen.
+  const categoryOptions = useMemo(() => {
+    const scoped = filterAndSort(all, {
+      status,
+      search,
+      category: null,
+      tag,
+      sort: 'updated',
+    });
+    // The selected category is pinned into the list even when nothing carries
+    // it any more — trash the last post in a category, or rename it in the
+    // editor, and `categories` drops it while the filter is still applied.
+    // Radix then renders a trigger with no matching item: a blank control above
+    // an empty grid, which reads as broken rather than as "0 results".
+    const listed =
+      category && !categories.includes(category)
+        ? [...categories, category].sort()
+        : categories;
+    return [
+      { value: ALL_CATEGORIES, label: `All categories (${scoped.length})` },
+      ...listed.map((c) => ({
+        value: c,
+        label: `${c} (${scoped.filter((p) => p.category === c).length})`,
+      })),
+    ];
+  }, [all, categories, category, status, search, tag]);
+
   const visible = useMemo(
     () => filterAndSort(all, { status, search, category, tag, sort }),
     [all, status, search, category, tag, sort],
@@ -155,7 +199,6 @@ export default function Dashboard() {
     <div className="dash">
       <header className="dash__masthead">
         <div className="dash__brand">
-          <span className="dash__mark" aria-hidden="true" />
           <div>
             <h1 className="dash__title">Blog Admin</h1>
             <p className="dash__sub">
@@ -235,6 +278,10 @@ export default function Dashboard() {
                 Export everything
               </MenuItem>
               <MenuSeparator />
+              {/* A shortcut nobody can find is a shortcut nobody has. */}
+              <MenuItem icon={<Keyboard className="ui-ic" />} onSelect={openShortcuts}>
+                Keyboard shortcuts
+              </MenuItem>
               <MenuItem icon={<SettingsIcon className="ui-ic" />} onSelect={() => navigate('/settings')}>
                 Settings
               </MenuItem>
@@ -336,6 +383,19 @@ export default function Dashboard() {
             )}
           </div>
 
+          {/* Single-select, deliberately. `Query.category` is `string | null`,
+              `filterAndSort` matches one category, and a post has exactly one
+              `category`. Multi-membership is what `tags` are for, and tags
+              already have their own filter interaction. */}
+          {(categories.length > 0 || category !== null) && (
+            <Select<string>
+              label="Filter by category"
+              value={toSelectValue(category)}
+              onChange={(v) => setCategory(fromSelectValue(v))}
+              options={categoryOptions}
+            />
+          )}
+
           <Select<SortKey>
             label="Sort posts"
             value={sort}
@@ -344,26 +404,6 @@ export default function Dashboard() {
           />
         </div>
       </div>
-
-      {categories.length > 0 && (
-        <div className="dash__cats">
-          <button
-            className={`catchip${category === null ? ' is-active' : ''}`}
-            onClick={() => setCategory(null)}
-          >
-            All categories
-          </button>
-          {categories.map((c) => (
-            <button
-              key={c}
-              className={`catchip${category === c ? ' is-active' : ''}`}
-              onClick={() => setCategory(category === c ? null : c)}
-            >
-              {c}
-            </button>
-          ))}
-        </div>
-      )}
 
       {tag && (
         <div className="dash__activefilter">

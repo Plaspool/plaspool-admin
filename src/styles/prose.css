@@ -86,6 +86,149 @@
   color: inherit;
 }
 
+/* highlight.js emits a fixed vocabulary of scope classes. Mapping them onto six
+   tokens rather than importing a stock theme is what keeps the code block part
+   of the design system instead of a rectangle borrowed from somewhere else —
+   and it is why the whole ramp could be measured against --code-bg. Anything
+   not listed inherits --code-ink, which is the highest-contrast value here. */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-type,
+.hljs-built_in,
+.hljs-name {
+  color: var(--code-kw);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-symbol,
+.hljs-quote,
+.hljs-addition {
+  color: var(--code-str);
+}
+.hljs-number,
+.hljs-deletion,
+.hljs-meta,
+.hljs-link {
+  color: var(--code-num);
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-title.class_,
+.hljs-section,
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable {
+  color: var(--code-fn);
+}
+.hljs-punctuation,
+.hljs-operator,
+.hljs-tag,
+.hljs-params,
+.hljs-selector-attr,
+.hljs-subst {
+  color: var(--code-punc);
+}
+.hljs-comment,
+.hljs-doctag {
+  color: var(--code-com);
+}
+.hljs-strong {
+  font-weight: 700;
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+
+/* ------------------------------------------------------------------ tables */
+
+/* The table scrolls, never the page. Without this a five-column table drags
+   the whole document sideways on a phone, and an article that scrolls sideways
+   is a broken article. `.tableWrapper` is the div ProseMirror's table view
+   builds in the editor and `.doc-table-wrap` is DocRenderer's; they are styled
+   together so the two surfaces behave identically. The wrapper is a tab stop
+   (see DocRenderer) because a scroll box a keyboard cannot reach is content a
+   keyboard cannot read. The scrollbar is the affordance; a permanent fade here
+   would dim the last column of every table that fits. */
+.doc-table-wrap,
+.tableWrapper {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.doc-table-wrap:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Keyed off the ELEMENT, not a class.
+   `TableKit.configure({ table: { HTMLAttributes: { class: 'doc-table' } } })`
+   looks like it would work and silently does not: TipTap's Table returns null
+   from `addNodeView()` whenever `resizable` is on, and the live element is then
+   built by columnResizing's own TableView, which never sees those attributes.
+   The class therefore reached the article and never the editor — one surface
+   styled, its twin bare, which is the exact failure this file exists to
+   prevent. Both surfaces are inside `.prose`; that is the thing they share. */
+.prose table {
+  border-collapse: collapse;
+  width: 100%;
+  /* Fixed layout is what makes column resizing in the editor mean anything;
+     without it the browser re-derives widths from content and the handles lie. */
+  table-layout: fixed;
+  font-family: var(--font-ui);
+  font-size: var(--step--1);
+  line-height: 1.5;
+}
+.prose :is(th, td) {
+  border: 1px solid var(--rule);
+  padding: var(--s2) var(--s3);
+  text-align: left;
+  vertical-align: top;
+  min-width: 4rem;
+  position: relative;
+}
+.prose th {
+  background: var(--paper-sunken);
+  font-weight: 600;
+  color: var(--ink);
+}
+.prose :is(th, td) > p {
+  margin: 0;
+}
+.prose :is(th, td) > p + p {
+  margin-top: 0.5em;
+}
+/* The cell a table command would act on. */
+.prose .selectedCell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--accent-soft);
+  pointer-events: none;
+}
+.prose .column-resize-handle {
+  position: absolute;
+  right: -2px;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--accent);
+  cursor: col-resize;
+}
+
+/* On a phone, dividing the measure by five columns produces five unreadable
+   columns. Below this width the table sizes to its content and the wrapper
+   scrolls instead — legible cells you can reach, rather than a grid you can
+   see all of and read none of. Any column the writer resized still wins,
+   because the colgroup is explicit. */
+@media (max-width: 640px) {
+  .prose table {
+    table-layout: auto;
+    width: max-content;
+    min-width: 100%;
+  }
+}
+
 .doc-quote {
   border-left: 3px solid var(--accent);
   padding: 0.15em 0 0.15em 1.35em;
@@ -148,27 +291,101 @@
   border: 1px solid var(--ink-4);
 }
 
+/* Checklists are the one block the editor draws with a node view, so their DOM
+   is fixed for us: li > label(input + span) + div. DocRenderer emits the same
+   shape, which is the only reason these rules can describe both surfaces.
+   Nothing below keys off `data-type`: TipTap puts it on the <ul> but the node
+   view leaves it off the <li>, so an `li[data-type]` selector would style the
+   article and quietly miss the editor. */
 .doc-tasks {
   list-style: none;
+  /* Two numbers for the whole control. The box, its tick, the offset that
+     centres it and the step a nested list indents by all derive from these. */
+  --task-box: 0.85em;
+  --task-gap: 0.6em;
+}
+/* `.prose ul` (0,1,1) out-specifies a bare `.doc-tasks` (0,1,0), so the bullet
+   gutter was landing on checklists too — and on nested ones on top of the
+   column they already sit inside. A checklist's indent IS its checkbox column,
+   so both depths take their left edge from the flex row and nothing else:
+   depth 1 hangs flush with the paragraphs around it, and a nested list, which
+   lives in its parent's content <div>, starts exactly one column
+   (--task-box + --task-gap = 1.45em) further in — under the first character of
+   the item it belongs to. */
+.prose .doc-tasks {
   padding-left: 0;
 }
+/* Same air above a nested list as between two sibling items. */
+.doc-tasks .doc-tasks {
+  margin-top: 0.45em;
+}
+
 .doc-tasks li {
   display: flex;
-  gap: 0.6em;
+  gap: var(--task-gap);
   align-items: flex-start;
 }
 .doc-tasks li::before {
   display: none;
 }
-.doc-tasks li > label {
-  flex: none;
-  margin-top: 0.42em;
+
+/* The content div is the line. With no basis it computes to `flex: 0 1 auto`,
+   so an empty item is zero wide: the caret has no box to paint in, and a click
+   to the right of the checkbox lands on the <li> instead of the text. */
+.doc-tasks li > div {
+  flex: 1 1 auto;
+  min-width: 0;
 }
+
+/* Sit the box on the FIRST line box — an item that wraps to three lines keeps
+   its checkbox against line one — by splitting the leading:
+       offset = (line box − box) ÷ 2
+   `1lh` is this element's own computed line-height, so the offset follows both
+   the prose size and the per-template line-height instead of being tuned for
+   one of them (0.42em was Magazine's, and it drifted everywhere else):
+       22px × 1.72 = 37.84 → (37.84 − 18.70)/2 = 9.57 → centre 18.92 = 37.84/2
+       18px × 1.72 = 30.96 → (30.96 − 15.30)/2 = 7.83 → centre 15.48 = 30.96/2
+       18px × 1.68 = 30.24 → (30.24 − 15.30)/2 = 7.47 → centre 15.12 = 30.24/2
+   Residual is 0 by construction at every size; measured against the
+   paragraph's own box it lands within 0.02px, which is the 1/64px layout grid.
+   Measured with a Range instead it reads ~0.9px high at 22px — a selection
+   rect is the font's ascent/descent anchored to the baseline, not the line
+   box, and it is not centred in it. That number is a property of the font, so
+   trimming it here would put a per-font magic number back.
+
+   `lh` is newer than most of this file but older than the `text-wrap: pretty`
+   the templates already depend on, so the declaration below it is only a floor
+   for engines that predate it: it assumes 1.72 and sits 0.36px high wherever
+   the line-height is 1.68. */
+.doc-tasks li > label {
+  /* Flex, so the label is exactly as tall as the box it holds. As a block it
+     would carry the 1.72 strut, and the empty <span> TipTap puts next to the
+     input would open a second line box under it. */
+  display: flex;
+  flex: none;
+  margin-top: calc((1.72em - var(--task-box)) / 2);
+}
+@supports (margin-top: 1lh) {
+  .doc-tasks li > label {
+    margin-top: calc((1lh - var(--task-box)) / 2);
+  }
+}
+
 .doc-tasks input[type='checkbox'] {
   appearance: none;
-  width: 1.05em;
-  height: 1.05em;
-  border: 1.5px solid var(--rule-strong);
+  flex: none;
+  /* The UA sheet ships `margin: 3px 3px 3px 4px` on a checkbox and nothing
+     here reset it. Of the 5px the box used to sit below the text, 3px was this
+     margin and 1.87px was the offset above being tuned for a 1.05em box. */
+  margin: 0;
+  width: var(--task-box);
+  height: var(--task-box);
+  /* An unchecked box IS its border — there is nothing else to see — so the
+     border is the "visual information required to identify the control" that
+     WCAG 1.4.11 puts a 3:1 floor under. --rule-strong measured 1.74:1 light /
+     2.01:1 dark on --paper: the twin of the tick contrast fixed above, missed
+     because only the checked state was looked at. --ink-4 is 5.4:1 / 5.5:1. */
+  border: 1.5px solid var(--ink-4);
   border-radius: 4px;
   display: grid;
   place-items: center;
@@ -182,14 +399,21 @@
   background: var(--accent);
   border-color: var(--accent);
 }
+/* The tick is a fraction of the box, never a fixed px, so it stays a tick and
+   not a smudge when the box follows the prose size. Its colour is the token
+   that means "legible ON accent": hardcoded white measured 2.30:1 against dark
+   mode's lighter accent — under the 3:1 floor for a non-text graphic — where
+   --accent-ink is 6.45:1 light / 7.72:1 dark. */
 .doc-tasks input[type='checkbox']:checked::after {
   content: '';
-  width: 0.3em;
-  height: 0.55em;
-  border: solid #fff;
-  border-width: 0 2px 2px 0;
-  transform: rotate(42deg) translate(-1px, -1px);
+  width: calc(var(--task-box) * 0.28);
+  height: calc(var(--task-box) * 0.52);
+  border: solid var(--accent-ink);
+  border-width: 0 calc(var(--task-box) * 0.1) calc(var(--task-box) * 0.1) 0;
+  transform: rotate(42deg)
+    translate(calc(var(--task-box) * -0.05), calc(var(--task-box) * -0.05));
 }
+/* Struck through but still read as text: 6.05:1 light / 6.33:1 dark on paper. */
 .doc-tasks li[data-checked='true'] > div {
   color: var(--ink-4);
   text-decoration: line-through;

@@ -7,7 +7,10 @@ import {
 import { useState } from 'react';
 import { StoredImg } from '../components/StoredImg';
 import { IDB_SCHEME } from '../data/doc';
+import { isAllowedImageSrc } from '../data/docguards';
+import { ImageError, storeImageFile } from '../data/images';
 import { Dialog } from '../components/Dialog';
+import { Spinner } from '../components/ui/Feedback';
 
 /**
  * Images are stored as `idb:<blobId>` so a post survives a reload — an
@@ -22,6 +25,43 @@ function ImageView({ node, updateAttributes, selected, deleteNode }: NodeViewPro
 
   const [altOpen, setAltOpen] = useState(false);
   const [altDraft, setAltDraft] = useState('');
+  /** Only ever true because the writer pressed the button — see below. */
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+
+  // A pasted image that still lives on someone else's server. It is kept rather
+  // than dropped (losing the picture is worse), but it is the one thing in a
+  // local-first app that reaches off this device, so it says so.
+  const remote = !blobId && isAllowedImageSrc(src);
+
+  /**
+   * Copy a remote image onto this device.
+   *
+   * Deliberately a button and never automatic: fetching on paste would put a
+   * network call — and a likely CORS failure — in the middle of a paste, in an
+   * app whose whole claim is that it needs no network. This is the only request
+   * the application itself ever makes, and only because it was asked to.
+   */
+  async function saveLocally() {
+    setSaving(true);
+    setSaveError('');
+    try {
+      const res = await fetch(src, { mode: 'cors', referrerPolicy: 'no-referrer' });
+      if (!res.ok) throw new Error(String(res.status));
+      const blob = await res.blob();
+      const name = src.split('/').pop()?.split('?')[0] || 'image';
+      const rec = await storeImageFile(new File([blob], name, { type: blob.type }));
+      updateAttributes({ src: `${IDB_SCHEME}${rec.id}` });
+    } catch (err) {
+      setSaveError(
+        err instanceof ImageError
+          ? err.message
+          : 'That site won’t allow the image to be copied. Download it and add it from your device.',
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <NodeViewWrapper
@@ -31,10 +71,28 @@ function ImageView({ node, updateAttributes, selected, deleteNode }: NodeViewPro
       <div className="editor-figure__frame">
         {blobId ? (
           <StoredImg blobId={blobId} alt={alt} className="doc-image" />
+        ) : remote ? (
+          // Matches DocRenderer exactly: same allow-list, same referrer policy,
+          // so displaying it leaks nothing about the writer either.
+          <img
+            className="doc-image"
+            src={src}
+            alt={alt}
+            loading="lazy"
+            referrerPolicy="no-referrer"
+          />
         ) : (
-          <img className="doc-image" src={src} alt={alt} />
+          <div className="img-missing" role="img" aria-label={alt || 'Image'}>
+            <span>Image unavailable</span>
+          </div>
         )}
         <div className="editor-figure__tools" contentEditable={false}>
+          {remote && (
+            <button className="cover__tool" onClick={saveLocally} disabled={saving}>
+              {saving ? <Spinner size={12} label="Saving image" /> : null}
+              {saving ? 'Saving…' : 'Save to this device'}
+            </button>
+          )}
           <button
             className="cover__tool"
             onClick={() => {
@@ -48,12 +106,16 @@ function ImageView({ node, updateAttributes, selected, deleteNode }: NodeViewPro
             Remove
           </button>
         </div>
-        {!alt && (
-          <span className="cover__flag" contentEditable={false}>
-            No alt text
-          </span>
-        )}
+        <div className="editor-figure__flags" contentEditable={false}>
+          {remote && <span className="cover__flag">On another site</span>}
+          {!alt && <span className="cover__flag">No alt text</span>}
+        </div>
       </div>
+      {saveError && (
+        <p className="editor-figure__error" contentEditable={false}>
+          {saveError}
+        </p>
+      )}
 
       <input
         className="editor-figure__caption"

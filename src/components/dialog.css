@@ -29,6 +29,20 @@
   padding: var(--s5);
   margin: var(--s4) 0;
   animation: dialog-in var(--dur-3) var(--ease-out);
+  /* A dialog taller than the window scrolled as one piece, taking its title and
+     its Close button off-screen with it — fine for the short dialogs that
+     existed before, useless for the shortcut sheet. Cap the panel and let only
+     the body scroll, so what the dialog is and how to leave it stay put.
+     No-ops for every dialog that already fits. */
+  max-height: calc(100dvh - var(--s6));
+  display: flex;
+  flex-direction: column;
+}
+.dialog__panel > .dialog__body {
+  overflow-y: auto;
+  /* Without this a flex child refuses to shrink below its content height and
+     the cap above does nothing. */
+  min-height: 0;
 }
 
 .dialog__title {
@@ -87,5 +101,86 @@
 @keyframes fade-in {
   from {
     opacity: 0;
+  }
+}
+
+/* ------------------------------------------------- keyboard cheatsheet */
+
+/* Two columns where there is room, because the list is long enough that one
+   column pushes Formatting below the fold on a laptop — and a cheatsheet you
+   have to scroll is one you close and guess instead. Groups never split across
+   a column break. */
+.keys {
+  columns: 2;
+  column-gap: var(--s6);
+}
+.keys__group {
+  break-inside: avoid;
+  margin-bottom: var(--s5);
+}
+.keys__title {
+  font-size: var(--step--2);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: var(--s2);
+}
+.keys__list {
+  display: grid;
+  gap: var(--s1);
+}
+.keys__row {
+  display: grid;
+  /* A fixed key column keeps every label on the same left edge, so the list
+     reads as a table rather than as ragged prose. */
+  grid-template-columns: 8.5rem 1fr;
+  gap: var(--s3);
+  align-items: baseline;
+}
+.keys__combo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  align-items: center;
+}
+/* A keycap has to read as a keycap. On --paper-raised, a --paper-sunken chip
+   measured 1.07:1 against the panel it sits on and its --rule-strong border
+   1.74:1 against itself — so the "key" was monospace text in a rectangle
+   nobody could see, in both themes. --paper-inset separates it from the panel
+   and --ink-5 draws an edge that is actually an edge. */
+.keys__kbd {
+  font-family: var(--font-mono);
+  font-size: var(--step--2);
+  line-height: 1.5;
+  color: var(--ink-2);
+  background: var(--paper-inset);
+  border: 1px solid var(--ink-5);
+  /* The heavier bottom edge is the whole trick: it reads as depth without a
+     shadow, and survives both themes because it is the same ink either way. */
+  border-bottom-width: 2px;
+  border-radius: var(--radius-s);
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.keys__then {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+}
+.keys__label {
+  font-size: var(--step--1);
+  color: var(--ink-2);
+  line-height: 1.45;
+}
+.keys__note {
+  color: var(--ink-4);
+}
+
+@media (max-width: 640px) {
+  .keys {
+    columns: 1;
+  }
+  .keys__row {
+    grid-template-columns: 7rem 1fr;
   }
 }

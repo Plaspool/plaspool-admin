@@ -250,7 +250,22 @@ const REGISTRY: Record<ReadingTemplate, (p: TemplateProps) => React.ReactElement
   technical: Technical,
 };
 
+/**
+ * The one place a layout is chosen.
+ *
+ * A post may pin its own (the essay that wants the full-bleed treatment);
+ * otherwise it follows the blog's default. `?? Magazine` stays as the floor for
+ * a document carrying a template name this build doesn't have — a real case
+ * once posts arrive from a server, and one that must render rather than throw.
+ */
+export function resolveTemplate(
+  post: Pick<Post, 'template'>,
+  settings: Settings,
+): ReadingTemplate {
+  return post.template ?? settings.template;
+}
+
 export function ArticleTemplate(props: TemplateProps) {
-  const Chosen = REGISTRY[props.settings.template] ?? Magazine;
+  const Chosen = REGISTRY[resolveTemplate(props.post, props.settings)] ?? Magazine;
   return <Chosen {...props} />;
 }

@@ -5,6 +5,7 @@ import { ChevronLeft } from 'lucide-react';
 import { db } from '../data/db';
 import { isValidDoc } from '../data/doc';
 import { useSettings, TEMPLATES, type ReadingTemplate } from '../data/settings';
+import { savePost } from '../data/posts';
 import { ArticleTemplate } from '../reader/templates';
 import { Select } from '../components/ui/Select';
 import { Skeleton } from '../components/ui/Feedback';
@@ -72,6 +73,8 @@ export default function Reader() {
   }
 
   const isPreview = post.status !== 'published';
+  const pinnedName =
+    TEMPLATES.find((t) => t.id === post.template)?.name ?? post.template;
 
   return (
     <div className="reader">
@@ -91,8 +94,11 @@ export default function Reader() {
 
         <div className="reader__bar-right">
           {isPreview && <span className="chip chip--draft">Preview</span>}
-          {/* Layout is switchable right here as well as in Settings —
-              choosing a template is a thing you do while looking at a post. */}
+          {/* The blog-wide default, switchable here as well as in Settings —
+              choosing a template is a thing you do while looking at a post.
+              Pinning ONE post to its own layout is a different decision and
+              lives in the editor's Details panel; the band below says so
+              whenever this control isn't the one deciding. */}
           <Select<ReadingTemplate>
             label="Reading layout"
             size="sm"
@@ -105,6 +111,29 @@ export default function Reader() {
           </Link>
         </div>
       </header>
+
+      {/*
+        Disclosure, not a second picker.
+        This post pins its own layout, so the control above is not the one
+        deciding what you are looking at — and a control that silently does
+        nothing is the failure this codebase keeps finding in its seams. Say so
+        where the confusion would happen, and offer the one action that resolves
+        it. Setting an override still belongs to the editor's Details panel.
+      */}
+      {post.template && (
+        <div className="reader__pinned" role="status">
+          <span>
+            This post is pinned to <strong>{pinnedName}</strong>, so the blog
+            default doesn’t apply to it.
+          </span>
+          <button
+            className="btn btn--outline btn--sm"
+            onClick={() => void savePost(post.id, { template: null })}
+          >
+            Use the default
+          </button>
+        </div>
+      )}
 
       <ArticleTemplate post={post} doc={doc} settings={settings} />
     </div>

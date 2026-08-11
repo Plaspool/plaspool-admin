@@ -44,6 +44,28 @@
   --code-bg: #1b1a14;
   --code-ink: #ece9dc;
 
+  /* Syntax scopes. Declared once, not per theme, because --code-bg is dark in
+     BOTH themes — that is the whole reason it exists — so one ramp is correct
+     everywhere and a second copy could only drift out of sync.
+
+     The existing ink ramp cannot be borrowed here: against the light theme's
+     --code-bg, --accent measures 2.70:1 and --ink-4 2.76:1. These are their own
+     values, each measured against the darker of the two code surfaces:
+       --code-kw    10.04:1 light / 11.14:1 dark
+       --code-str    9.21:1       /  10.22:1
+       --code-num    8.51:1       /   9.44:1
+       --code-fn     9.70:1       /  10.76:1
+       --code-punc   8.99:1       /   9.97:1
+       --code-com    6.37:1       /   7.06:1   <- the floor, still well over AA
+     Hue does the separating, not brightness, so the block stays legible for a
+     reader who cannot tell the hues apart. */
+  --code-kw: #8fd3ae;
+  --code-str: #d9b87c;
+  --code-num: #e3a97f;
+  --code-fn: #9fc7dd;
+  --code-punc: #c0baa8;
+  --code-com: #a39c88;
+
   /* type */
   --font-display: 'Spectral', 'Iowan Old Style', 'Palatino Linotype', Palatino,
     Georgia, 'Times New Roman', serif;

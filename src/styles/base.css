@@ -74,8 +74,7 @@ a {
 .input,
 .tabs__tab,
 .searchbox,
-.select select,
-.catchip {
+.select select {
   height: var(--ctl-h-lg);
   box-sizing: border-box;
 }
@@ -107,7 +106,6 @@ a {
 @media (pointer: coarse) {
   .btn::after,
   .tabs__tab::after,
-  .catchip::after,
   .bubble__btn::after,
   .card__act::after {
     content: '';
@@ -120,8 +118,7 @@ a {
   .bubble__btn,
   .blockmenu__plus,
   .card__act,
-  .tabs__tab,
-  .catchip {
+  .tabs__tab {
     position: relative;
   }
 }

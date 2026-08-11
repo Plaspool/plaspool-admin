@@ -3,11 +3,15 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../data/db';
 import { Dialog } from '../components/Dialog';
 import { deriveExcerpt, slugify } from '../data/doc';
+import { Select } from '../components/ui/Select';
+import { useSettings, TEMPLATES, type ReadingTemplate } from '../data/settings';
 import type { Post } from '../data/types';
 import type { PostPatch } from '../data/posts';
 
 const MAX_TAGS = 8;
 const TAG_MAX_LEN = 32;
+/** Radix rejects an Item with value="", so "no override" needs a sentinel. */
+const USE_DEFAULT = '__default__';
 
 export function MetaPanel({
   open,
@@ -24,6 +28,10 @@ export function MetaPanel({
   const [tags, setTags] = useState<string[]>(post.tags);
   const [tagDraft, setTagDraft] = useState('');
   const [excerpt, setExcerpt] = useState(post.excerpt);
+  const [template, setTemplate] = useState<string>(post.template ?? USE_DEFAULT);
+  const [settings] = useSettings();
+  const defaultName =
+    TEMPLATES.find((t) => t.id === settings.template)?.name ?? settings.template;
 
   // Re-seed from the store each time the panel opens, not on every keystroke.
   useEffect(() => {
@@ -31,6 +39,7 @@ export function MetaPanel({
     setCategory(post.category);
     setTags(post.tags);
     setExcerpt(post.excerptSource === 'author' ? post.excerpt : '');
+    setTemplate(post.template ?? USE_DEFAULT);
     setTagDraft('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -62,6 +71,7 @@ export function MetaPanel({
     const patch: PostPatch = {
       category: category.trim().slice(0, 40),
       tags,
+      template: template === USE_DEFAULT ? null : (template as ReadingTemplate),
     };
     // Only send the excerpt if the author actually changed it. Sending the
     // untouched value blanked derived excerpts just for opening this panel.
@@ -171,6 +181,24 @@ export function MetaPanel({
         />
         <p className="hint">
           Leave blank to track the opening of the post. {320 - excerpt.length} left.
+        </p>
+      </div>
+
+      <div>
+        <span className="label">Reading layout</span>
+        <Select<string>
+          label="Reading layout for this post"
+          value={template}
+          onChange={setTemplate}
+          options={[
+            { value: USE_DEFAULT, label: `Site default · ${defaultName}` },
+            ...TEMPLATES.map((t) => ({ value: t.id, label: t.name })),
+          ]}
+        />
+        <p className="hint">
+          {template === USE_DEFAULT
+            ? 'Follows the blog default, so changing that in Settings changes this post too.'
+            : 'Pinned to this post. The blog default no longer applies to it.'}
         </p>
       </div>
 

@@ -35,6 +35,32 @@
   gap: var(--s3);
 }
 
+/* Only present when this post overrides the blog default. Deliberately quiet —
+   it explains why the picker above isn't the thing deciding, it doesn't warn
+   about anything. Sits between the bar and the article so it reads as a note
+   about the controls rather than as part of the writing. */
+.reader__pinned {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  flex-wrap: wrap;
+  max-width: var(--shell-max);
+  margin: var(--s4) auto 0;
+  padding: var(--s2) var(--s4);
+  background: var(--paper-sunken);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  font-size: var(--step--1);
+  color: var(--ink-3);
+}
+
+@media (max-width: 640px) {
+  .reader__pinned {
+    margin-inline: var(--s4);
+  }
+}
+
 /* The editor's --measure is set for a 42rem text column; the reading view
    needs the same COLUMN, so it adds its own gutters on top rather than
    eating into them. Measured: 64 characters per line at 22px. */

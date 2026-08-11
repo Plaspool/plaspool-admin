@@ -3,8 +3,16 @@ import { useNavigate, useParams, Link } from 'react-router-dom';
 import { EditorContent, useEditor } from '@tiptap/react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../data/db';
-import { editorExtensions } from '../editor/extensions';
+import { DragHandle } from '@tiptap/extension-drag-handle-react';
+import { GripVertical } from 'lucide-react';
+import { createEditorExtensions } from '../editor/extensions';
+import { FindReplace } from '../editor/find';
 import { BlockMenu } from '../editor/BlockMenu';
+import { SlashMenu } from '../editor/SlashMenu';
+import { CodeLangPicker } from '../editor/CodeLangPicker';
+import { FindBar } from '../editor/FindBar';
+import { publishWarnings, type PublishWarning } from '../editor/publishCheck';
+import { isBlankDoc } from '../data/docguards';
 import { SelectionMenu } from '../editor/SelectionMenu';
 import { AutoTextarea } from '../editor/AutoTextarea';
 import { CoverPicker } from '../editor/CoverPicker';
@@ -49,6 +57,8 @@ export default function EditorRoute() {
   const [metaOpen, setMetaOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [confirmTrash, setConfirmTrash] = useState(false);
+  /** Non-null while the pre-publish checklist has something to say. */
+  const [checks, setChecks] = useState<PublishWarning[] | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
   const [stats, setStats] = useState({ words: 0, minutes: 0 });
@@ -61,9 +71,17 @@ export default function EditorRoute() {
   );
   const imageInput = useRef<HTMLInputElement>(null);
 
+  // Built once per post: the extensions carry a notice hook so a plugin (a
+  // paste that hotlinks an image, an upload that fails validation) can speak to
+  // the writer through the same toast everything else uses.
+  const extensions = useMemo(
+    () => [...createEditorExtensions({ onNotice: (m, tone) => notify(m, { tone }) }), FindReplace],
+    [notify],
+  );
+
   const editor = useEditor(
     {
-      extensions: editorExtensions,
+      extensions,
       content: undefined,
       autofocus: false,
       editorProps: {
@@ -90,7 +108,19 @@ export default function EditorRoute() {
     setSubtitle(post.subtitle);
     setCover(post.coverImage);
     setStats({ words: post.wordCount, minutes: post.readingTime });
-    editor.commands.setContent(post.content as never, { emitUpdate: false });
+    // `addToHistory: false` is not optional here. TipTap's setContent is an
+    // ordinary undoable step, so loading the post pushed "empty → your whole
+    // document" onto the undo stack: Ctrl+Z on a freshly opened post emptied
+    // the editor, and because undo is a real transaction, `onUpdate` then
+    // autosaved that empty document over the post. History grouping made it
+    // worse — typing within 500ms of hydration merged into the same event, so
+    // a single undo could take the first sentence *and* the entire document.
+    // Hydration is not an edit and must not be undoable.
+    editor
+      .chain()
+      .setContent(post.content as never, { emitUpdate: false })
+      .setMeta('addToHistory', false)
+      .run();
     setBaseRevision(post.revision);
     setLoadedId(post.id);
   }, [post, editor, loadedId]);
@@ -103,11 +133,14 @@ export default function EditorRoute() {
   // Mirrors what is on screen right now. The unmount cleanup below can run
   // while an autosave is still in flight, so we must NOT decide "blank" from
   // the store — it may not have caught up. The editor's own buffer is truth.
-  const liveState = useRef({ title: '', subtitle: '', words: 0, hasCover: false });
+  const liveState = useRef({ title: '', subtitle: '', empty: true, hasCover: false });
   liveState.current = {
     title,
     subtitle,
-    words: stats.words,
+    // NOT `words === 0`. An image or a divider is content with no words, and
+    // asking the wrong question here destroyed drafts that held only a picture.
+    // Same predicate `isBlankDraft` uses, so the two checks cannot disagree.
+    empty: isBlankDoc(editor?.getJSON() as DocNode | undefined),
     hasCover: cover != null,
   };
 
@@ -118,7 +151,7 @@ export default function EditorRoute() {
   useEffect(() => {
     const bail = () => {
       const s = liveState.current;
-      if (s.title.trim() || s.subtitle.trim() || s.words > 0 || s.hasCover) return;
+      if (s.title.trim() || s.subtitle.trim() || !s.empty || s.hasCover) return;
       void discardIfBlank(id);
     };
     window.addEventListener('pagehide', bail);
@@ -257,7 +290,8 @@ export default function EditorRoute() {
     [rebase],
   );
 
-  const doPublish = async () => {
+  const publishNow = useCallback(async () => {
+    setChecks(null);
     await flush();
     try {
       const next = await publishPost(id);
@@ -268,6 +302,26 @@ export default function EditorRoute() {
     } catch {
       notify('Publishing failed. Your draft is safe.', { tone: 'danger' });
     }
+  }, [flush, id, adopt, notify, navigate]);
+
+  /**
+   * Publishing runs the checklist first — and warns rather than blocks. A
+   * writer who wants to publish without an excerpt has a reason, and an editor
+   * that refuses is one people learn to route around. The point is to make the
+   * cost visible while it is still cheap to pay. With nothing to say, this is
+   * invisible and Publish behaves exactly as it always did.
+   */
+  const doPublish = async () => {
+    // Flush first so the checklist reads the document that is about to ship,
+    // not the one the store happens to be holding.
+    await flush();
+    const fresh = await db.posts.get(id);
+    const warnings = fresh ? publishWarnings(fresh) : [];
+    if (warnings.length) {
+      setChecks(warnings);
+      return;
+    }
+    await publishNow();
   };
 
   const doUnpublish = async () => {
@@ -493,12 +547,44 @@ export default function EditorRoute() {
         </div>
       )}
 
+      {checks && (
+        <div className="notice notice--warn" role="alert">
+          <div>
+            <strong>Before you publish.</strong> None of this stops you — it is
+            what a reader would notice.
+            <ul className="notice__list">
+              {checks.map((w) => (
+                <li key={w.id}>{w.message}</li>
+              ))}
+            </ul>
+          </div>
+          <div className="notice__actions">
+            <button className="btn btn--outline btn--sm" onClick={() => setChecks(null)}>
+              Keep editing
+            </button>
+            <button className="btn btn--primary btn--sm" onClick={publishNow}>
+              Publish anyway
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* No docked toolbar. Formatting appears on selection; block insertion
-          appears as a + beside the empty line the caret is on. */}
+          appears as a + beside the empty line the caret is on, or by typing /.
+          The grip beside it is the pointer route for reordering; Alt+↑/↓ is the
+          route that works without one, and on blocks a hover never reaches. */}
       {editor && (
         <>
           <SelectionMenu editor={editor} />
           <BlockMenu editor={editor} onInsertImage={insertImage} />
+          <SlashMenu editor={editor} onInsertImage={insertImage} />
+          <CodeLangPicker editor={editor} />
+          <FindBar editor={editor} />
+          <DragHandle editor={editor} className="draghandle">
+            <span className="draghandle__grip" aria-hidden="true">
+              <GripVertical className="ui-ic" />
+            </span>
+          </DragHandle>
         </>
       )}
 

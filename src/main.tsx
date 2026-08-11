@@ -9,6 +9,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { initTheme } from './components/ThemeToggle';
 import { RouteError } from './components/RouteError';
 import { TooltipProvider } from './components/ui/Switch';
+import { ShortcutsDialog } from './components/ShortcutsDialog';
 import Dashboard from './routes/Dashboard';
 import EditorRoute from './routes/Editor';
 import Reader from './routes/Reader';
@@ -45,6 +46,9 @@ createRoot(document.getElementById('root')!).render(
       <TooltipProvider>
         <ToastProvider>
           <RouterProvider router={router} />
+          {/* Above the router: the shortcuts it describes belong to the app,
+              not to whichever screen happens to be mounted. */}
+          <ShortcutsDialog />
         </ToastProvider>
       </TooltipProvider>
     </ErrorBoundary>

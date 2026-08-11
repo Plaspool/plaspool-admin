@@ -269,6 +269,24 @@
 .cover__tool:hover {
   background: rgba(22, 21, 15, 0.9);
 }
+/* An image can be flagged twice at once (remote AND missing alt text), so the
+   flags stack in a row rather than each claiming the same absolute corner. */
+.editor-figure__flags {
+  position: absolute;
+  left: var(--s3);
+  top: var(--s3);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+}
+.editor-figure__flags .cover__flag {
+  position: static;
+}
+.editor-figure__error {
+  margin-top: var(--s2);
+  font-size: var(--step--2);
+  color: var(--danger);
+}
 .cover__flag {
   position: absolute;
   left: var(--s3);
@@ -594,11 +612,20 @@
   cursor: pointer;
   color: var(--ink-2);
 }
+/* One highlight, three ways in. `is-active` is the keyboard's cursor through
+   the list — with `/` the caret stays in the document, so there is nothing
+   focused to show and the class has to carry it on its own. */
 .blockmenu__item:hover,
-.blockmenu__item:focus-visible {
+.blockmenu__item:focus-visible,
+.blockmenu__item.is-active {
   background: var(--paper-sunken);
   color: var(--ink);
   outline: none;
+}
+.blockmenu__empty {
+  padding: var(--s3);
+  font-size: var(--step--1);
+  color: var(--ink-3);
 }
 .blockmenu__icon {
   display: grid;
@@ -610,7 +637,8 @@
   background: var(--paper-sunken);
   color: var(--ink-3);
 }
-.blockmenu__item:hover .blockmenu__icon {
+.blockmenu__item:hover .blockmenu__icon,
+.blockmenu__item.is-active .blockmenu__icon {
   background: var(--accent-soft);
   color: var(--accent);
 }
@@ -753,4 +781,142 @@
   outline: none;
   border-bottom-color: var(--accent);
   color: var(--ink);
+}
+
+/* ------------------------------------------------------- slash palette */
+
+/* Anchored to the caret rather than to a gutter: by the time you have typed
+   "/h" the block is no longer empty, so the + menu's FloatingMenu has already
+   unmounted and there is nothing left to hang off. Fixed positioning keeps it
+   with the caret through a scroll without re-measuring on every frame. */
+.slashmenu {
+  position: fixed;
+  z-index: 60;
+  width: 17rem;
+}
+.slashmenu .blockmenu__pop {
+  position: static;
+  width: 100%;
+}
+
+/* ---------------------------------------------------------- drag handle */
+
+.draghandle {
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.6rem;
+  margin-right: var(--s1);
+  border-radius: var(--radius-s);
+  color: var(--ink-4);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+/* Visible on approach, not permanently: the page is the thing being read, and
+   a grip beside every paragraph turns a draft into a control panel. Keyboard
+   users never see it at all, which is why Alt+arrow exists rather than a
+   focusable handle nobody could aim. */
+.editor__page:hover .draghandle,
+.draghandle:hover,
+.draghandle:active {
+  opacity: 1;
+}
+.draghandle:hover {
+  background: var(--paper-sunken);
+  color: var(--ink-2);
+}
+.draghandle:active {
+  cursor: grabbing;
+}
+@media (pointer: coarse) {
+  /* No hover to reveal it, and a 24px grip is not a touch target. */
+  .draghandle {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------- code language picker */
+
+.codelang {
+  position: fixed;
+  z-index: 40;
+}
+/* The picker sits on the code block's own dark surface in both themes, so it
+   cannot take the page's control colours or it disappears into the block. */
+.codelang .ui-select {
+  background: color-mix(in srgb, var(--code-ink) 10%, transparent);
+  border-color: color-mix(in srgb, var(--code-ink) 26%, transparent);
+  color: var(--code-ink);
+}
+.codelang .ui-select:hover {
+  background: color-mix(in srgb, var(--code-ink) 18%, transparent);
+}
+
+/* ------------------------------------------------------------ find bar */
+
+.findbar {
+  position: sticky;
+  top: var(--s2);
+  z-index: 50;
+  display: grid;
+  gap: var(--s2);
+  width: min(30rem, calc(100% - var(--s5)));
+  margin: 0 auto;
+  padding: var(--s3);
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-3);
+}
+.findbar__row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.findbar__field {
+  flex: 1;
+  min-width: 0;
+}
+.findbar__count {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.findbar__case {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  font-size: var(--step--2);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+/* Every hit marked, the current one marked louder — a single highlight colour
+   makes "next" do nothing visible on a screen with six matches on it.
+   The tint alone was not a marker: --accent-soft on --paper measures 1.13:1
+   light / 1.26:1 dark, so with "1 of 4" on screen the other three were
+   invisible. The rule underneath is the part you can actually see — it is
+   --accent, which clears 3:1 against the page in both themes. */
+.find-hit {
+  background: var(--accent-soft);
+  box-shadow: inset 0 -2px 0 var(--accent);
+  border-radius: 2px;
+}
+.find-hit.is-current {
+  box-shadow: none;
+}
+.find-hit.is-current {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* ------------------------------------------------- publish checklist */
+
+.notice__list {
+  margin: var(--s2) 0 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: var(--s1);
 }
