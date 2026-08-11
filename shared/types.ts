@@ -12,6 +12,14 @@
 
 export type PostStatus = 'draft' | 'published' | 'archived';
 
+/**
+ * Reading layouts. Defined here rather than in `src/data/settings.ts` because
+ * a post can now pin one, which makes it part of the domain rather than a
+ * device preference — and a public renderer must be able to honour it without
+ * importing anything from the admin client.
+ */
+export type ReadingTemplate = 'magazine' | 'minimal' | 'editorial' | 'technical';
+
 /** TipTap/ProseMirror JSON document. Block-oriented by construction. */
 export interface DocNode {
   type: string;
@@ -57,6 +65,16 @@ export interface Post {
 
   category: string;
   tags: string[];
+
+  /**
+   * Layout override for this one post, or NULL to follow the blog's default.
+   *
+   * Nullable rather than defaulted: "no opinion" and "deliberately Magazine"
+   * are different states, and only the first should follow the default when it
+   * changes. Additive column, no migration needed — see ARCHITECTURE.md
+   * § Settings and presentation.
+   */
+  template: ReadingTemplate | null;
 
   status: PostStatus;
 
@@ -145,7 +163,14 @@ export type ListPost = Omit<Post, 'content'>;
 export type PostPatch = Partial<
   Pick<
     Post,
-    'title' | 'subtitle' | 'content' | 'coverImage' | 'category' | 'tags' | 'excerpt'
+    | 'title'
+    | 'subtitle'
+    | 'content'
+    | 'coverImage'
+    | 'category'
+    | 'tags'
+    | 'excerpt'
+    | 'template'
   >
 >;
 
