@@ -10,7 +10,13 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
-import type { CoverImage, DocNode, PostStatus, Revision } from '../../shared/types';
+import type {
+  CoverImage,
+  DocNode,
+  PostStatus,
+  ReadingTemplate,
+  Revision,
+} from '../../shared/types';
 
 /**
  * Seven tables, mirroring spec §3.
@@ -118,6 +124,16 @@ export const posts = pgTable(
       .array()
       .notNull()
       .default(sql`'{}'::text[]`),
+    /**
+     * Layout override for this one post, NULL to follow the blog's default.
+     *
+     * Nullable rather than defaulted: "no opinion" and "deliberately Magazine"
+     * are different states, and only the first should follow the default when
+     * it changes. It is a real domain field — `PostPatch` carries it and
+     * `createDraftShape` preserves it through an export/import round trip — so
+     * a server that dropped it would silently lose a writer's choice.
+     */
+    template: text('template').$type<ReadingTemplate>(),
     status: text('status').$type<PostStatus>().notNull(),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
     updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
@@ -139,6 +155,10 @@ export const posts = pgTable(
       sql`${t.excerptSource} IN ('derived', 'author')`,
     ),
     check('posts_revision_ck', sql`${t.revision} > 0`),
+    check(
+      'posts_template_ck',
+      sql`${t.template} IS NULL OR ${t.template} IN ('magazine', 'minimal', 'editorial', 'technical')`,
+    ),
     index('posts_status_updated_idx').on(t.status, t.updatedAt.desc()),
     index('posts_deleted_idx').on(t.deletedAt),
     index('posts_author_idx').on(t.authorId),

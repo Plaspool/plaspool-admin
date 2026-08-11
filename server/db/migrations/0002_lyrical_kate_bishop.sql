@@ -1,0 +1,2 @@
+ALTER TABLE "posts" ADD COLUMN "template" text;--> statement-breakpoint
+ALTER TABLE "posts" ADD CONSTRAINT "posts_template_ck" CHECK ("posts"."template" IS NULL OR "posts"."template" IN ('magazine', 'minimal', 'editorial', 'technical'));
