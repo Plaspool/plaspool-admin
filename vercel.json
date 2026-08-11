@@ -8,6 +8,12 @@
       "maxDuration": 30
     }
   },
+  "crons": [
+    {
+      "path": "/api/shop/admin/cart/maintenance",
+      "schedule": "17 4 * * *"
+    }
+  ],
   "rewrites": [
     {
       "source": "/api/(.*)",

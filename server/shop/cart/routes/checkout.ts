@@ -14,6 +14,7 @@ import {
 } from '../checkout/repo';
 import { extendReservations } from '../reservations/repo';
 import { runCartMaintenance } from '../events/consumer';
+import { assertCronRequest } from '../cron-auth';
 import { cartCookie } from '../identity/cookies';
 import { CHECKOUT_START_LIMIT, CHECKOUT_START_WINDOW_MS } from '../limits';
 import type { CheckoutConfig } from '../checkout/repo';
@@ -154,43 +155,58 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
   /**
    * Cart's housekeeping: DRAIN the outbox, then sweep expired holds (brief §4).
    *
-   * ONE ROUTE FOR BOTH, AND IN THAT ORDER. They are not independent: a
+   * ONE PATH, TWO METHODS, TWO CREDENTIALS.
+   *
+   * - **GET** is what Vercel's cron issues, authenticated by
+   *   `Authorization: Bearer $CRON_SECRET` (see `cron-auth.ts`). A GET that
+   *   mutates is not something to be pleased about; the platform issues nothing
+   *   else for a cron, and an endpoint it cannot invoke is an endpoint that does
+   *   nothing. `originGuard` waves every GET through, so that token is the only
+   *   thing in front of this — and it fails closed when unset.
+   * - **POST** is for an operator running it by hand, behind `requireAuth()` and
+   *   a session cookie, under `/admin/*` as contract §10 requires.
+   *
+   * Neither credential is accepted in place of the other: a leaked session must
+   * not become a way to drive maintenance, and the cron token must not become a
+   * general-purpose admin credential.
+   *
+   * ONE ROUTE FOR BOTH JOBS, AND IN THAT ORDER. They are not independent: a
    * `payment.captured` that arrives after the TTL has elapsed must still sell
    * the stock, so the drain has to run before the sweeper looks. The other way
    * round the sweeper releases units somebody has paid for and the capture then
    * finds nothing to commit. Splitting them into two routes would make the
    * ordering a caller's problem, and callers are cron entries nobody reads.
    *
-   * BEHIND `requireAuth()` and under `/admin/*` (contract §10). Not public:
-   * both halves reach `CatalogPort` once per row, so an anonymous caller could
-   * turn this into an amplifier.
-   *
    * A ROUTE AND NOT A TIMER, deliberately. Brief §4: "Do not build a background
    * timer. Sweep lazily on read plus on a cron route, the same shape the image
    * orphan sweep uses." A tight retry loop froze a tab in GAUNTLET I Round 1 #2;
    * a tight loop on a serverless platform does the same to a bill.
-   *
-   * NOTHING SCHEDULES THIS YET. `vercel.json` declares no crons and Orders'
-   * `/admin/sweep` is in the same state. Said out loud because a maintenance
-   * endpoint nobody calls is the "mechanism wired to no caller" finding waiting
-   * to happen — the lazy drain on the cart read is what keeps it working in the
-   * meantime.
    */
-  routes.post('/admin/cart/maintenance', requireAuth(), async (c) => {
+  routes.get(CRON_ROUTE, async (c) => {
+    assertCronRequest(c.req.header('Authorization'));
+    return c.json(await maintenance(c, deps, Number(c.req.query('limit')) || undefined));
+  });
+
+  routes.post(CRON_ROUTE, requireAuth(), async (c) => {
     const body = await readJsonOrEmpty(c, SweepBody);
-    const outcome = await runCartMaintenance(shopDb(c), deps.catalog, {
-      limit: body.limit,
-    });
-    /*
-     * `abandoned` and `failed` are reported rather than swallowed. A non-zero
-     * `abandoned` means a capture Cart could not read and has given up on —
-     * stock held for a sale that already happened. A non-zero `failed` means
-     * stock held for checkouts that are over. Neither has any other signal.
-     */
-    return c.json(outcome);
+    return c.json(await maintenance(c, deps, body.limit));
   });
 
   return routes;
+}
+
+/**
+ * The route both methods share, so the two credentials cannot drift into two
+ * behaviours.
+ *
+ * `abandoned` and `failed` are reported rather than swallowed. A non-zero
+ * `abandoned` means a capture Cart could not read and has given up on — stock
+ * held for a sale that already happened. A non-zero `failed` means stock held
+ * for checkouts that are over. Neither has any other signal, and Vercel does not
+ * retry a failed cron invocation.
+ */
+function maintenance(c: Context<ShopEnv>, deps: ShopCartDeps, limit?: number) {
+  return runCartMaintenance(shopDb(c), deps.catalog, { limit: limit ?? CRON_BATCH });
 }
 
 async function requireCart(c: Context<ShopEnv>, db: Db) {
@@ -202,6 +218,24 @@ async function requireCart(c: Context<ShopEnv>, db: Db) {
 }
 
 // -------------------------------------------------------------------- bodies
+
+/** The path within the shop app. `CRON_PATH` is the same thing as `vercel.json`
+ * spells it, and `cron.test.ts` asserts the two agree against the router's own
+ * table — Vercel runs a cron pointed at a nonexistent path forever, in silence. */
+const CRON_ROUTE = '/admin/cart/maintenance';
+export const CRON_PATH = `/api/shop${CRON_ROUTE}`;
+
+/**
+ * How much one invocation takes on.
+ *
+ * Smaller than the sweeper's own default of 200 because `vercel.json` caps these
+ * functions at `maxDuration: 30`, and every release or commit is a network round
+ * trip to Neon — two hundred of them is not obviously inside thirty seconds.
+ * Vercel does not retry a cron that times out, so an over-large batch is a batch
+ * that never completes rather than one that runs slowly. A backlog is drained
+ * over successive invocations, which is what the ordering makes safe.
+ */
+export const CRON_BATCH = 50;
 
 const Base = z.number().int().positive().optional();
 

@@ -200,12 +200,18 @@ async function view(
    * bound and best-effort: this is nobody's request, so a failure must not cost
    * a shopper their basket page.
    *
-   * THE LAZY DRAIN IS WHAT MAKES CAPTURES COMMIT WITHOUT A SCHEDULER. Nothing
-   * cron-like is wired to `/admin/cart/maintenance` yet, so if this were sweep
-   * only, a paid checkout's holds would expire and the shop would resell what it
-   * had already sold. Any shopper loading any basket now drains a few events,
-   * which is enough on a shop with traffic and is exactly the shape the image
-   * orphan sweep uses.
+   * THE LAZY DRAIN IS STILL LOAD-BEARING NOW THAT A CRON EXISTS, because of what
+   * the cron can be. `vercel.json` schedules `/api/shop/admin/cart/maintenance`,
+   * but **Vercel's Hobby plan caps a cron at ONCE PER DAY** — a more frequent
+   * expression fails the deployment outright — and invokes it anywhere inside
+   * the named hour. Against a 15-minute reservation TTL that is a backstop, not
+   * a mechanism: a capture landing at 09:00 would wait until the next morning.
+   *
+   * Any shopper loading any basket drains a few events, so on a shop with
+   * traffic a capture is committed within seconds. On a shop with none, nothing
+   * runs at all — which is safe rather than merely lucky, because the sweeper
+   * runs on the same call and therefore cannot expire a hold the drain has not
+   * had a chance to commit first. The daily cron then catches up.
    *
    * FIVE, not the drain's own 25: this runs on the page a storefront loads most,
    * and the cron route is where a backlog is supposed to be cleared.
