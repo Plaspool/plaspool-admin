@@ -1,9 +1,23 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { readJson, readJsonOrEmpty, readQuery } from '../middleware/errors';
-import { requireAuth } from '../middleware/session';
+import { requireAuth, requireOwner } from '../middleware/session';
 import { assertAuthorized } from '../authorize';
-import { createPost, getPost, savePost } from '../repo/posts';
+import {
+  archivePost,
+  createPost,
+  destroyPost,
+  duplicatePost,
+  emptyTrash,
+  getPost,
+  publishPost,
+  restorePost,
+  savePost,
+  sweepBlankDrafts,
+  trashPost,
+  unarchivePost,
+  unpublishPost,
+} from '../repo/posts';
 import { pruneAutosaves } from '../repo/revisions';
 import { listPosts } from '../repo/query';
 import { NotFoundError } from '../repo/errors';
@@ -13,10 +27,8 @@ import type { Db } from '../db/client';
 import type { DocNode, Post, PostPatch } from '../../shared/types';
 
 /**
- * Post read, create and the 409 contract (spec §5.2).
- *
- * Lifecycle, destroy and the maintenance sweeps are in `lifecycle.ts`, mounted
- * beside this one — split so a reviewer can reject one without the other.
+ * Every post route (spec §5.2, §5.4): read and create and the 409 contract,
+ * then lifecycle, destroy and the two maintenance sweeps.
  *
  * EVERY BODY IS PARSED WITH A `.strict()` SCHEMA. An unknown key is a 400, not
  * a silently ignored field, so a client cannot attempt to set a system field
@@ -237,3 +249,126 @@ routes.patch('/posts/:id', auth, async (c) => {
   await schedulePrune(db, post, kind ?? 'autosave');
   return c.json({ post });
 });
+
+// ---------------------------------------------------------------- lifecycle
+
+/**
+ * Publish, unpublish, archive, unarchive, trash, restore (spec §4.2, §5.2).
+ *
+ * NO `baseRevision` IN THE BODY, AND THAT IS THE CONTRACT, NOT AN OMISSION.
+ * These are server-derived: there is no human decision to surface, so the
+ * repository re-reads, re-derives and re-CASes up to three times, pinning the
+ * `lifecycle_generation` it first saw. A concurrent autosave therefore does not
+ * refuse a publish (the retry wins and re-derives from the newer text), and any
+ * concurrent LIFECYCLE change by anyone does (the pin cannot match), which is
+ * the only way a `trash` that lost to a deliberate `restore` fails instead of
+ * silently re-trashing a post somebody had just rescued.
+ *
+ * SO A 409 FROM HERE MEANS ONE OF TWO DIFFERENT THINGS, and they are different
+ * errors: `stale_write` is a lost race, `precondition_failed` is "the post is
+ * already published" with no race involved at all. Collapsed into one, the
+ * refusal arrives with `expected === actual` and no conflict banner can render
+ * it.
+ *
+ * EACH RETURNS THE NEW POST so the editor can adopt the bumped revision without
+ * a second request — without it the next autosave would carry a `baseRevision`
+ * the server has already passed and 409 against itself.
+ */
+const TRANSITIONS = {
+  publish: publishPost,
+  unpublish: unpublishPost,
+  archive: archivePost,
+  unarchive: unarchivePost,
+  trash: trashPost,
+  restore: restorePost,
+} as const;
+
+for (const [name, run] of Object.entries(TRANSITIONS)) {
+  routes.post(`/posts/:id/${name}`, auth, async (c) => {
+    const db = currentDb(c);
+    const user = currentUser(c);
+    const current = await requirePost(db, c.req.param('id'));
+    assertAuthorized(current, user, 'write');
+    return c.json({ post: await run(db, current.id, user) });
+  });
+}
+
+/**
+ * A copy, authored by whoever asked for it.
+ *
+ * `read` and not `write` on the SOURCE, deliberately: the source is not
+ * modified, everyone authenticated already reads everything (spec §6), and a
+ * duplicate is what a writer would otherwise do by selecting the text. The
+ * COPY is theirs — `duplicatePost` resets the author, the slug, the status and
+ * every timestamp, so this cannot be used to acquire someone else's published
+ * address.
+ */
+routes.post('/posts/:id/duplicate', auth, async (c) => {
+  const db = currentDb(c);
+  const user = currentUser(c);
+  const source = await requirePost(db, c.req.param('id'));
+  assertAuthorized(source, user, 'read');
+  return c.json({ post: await duplicatePost(db, source.id, user) }, 201);
+});
+
+// ------------------------------------------------------------------ destroy
+
+/**
+ * OWNER ONLY, and this is where spec §5.2 and spec §6 disagree — see the note
+ * in `server/authorize.ts`. §6 wins: `destroyPost` is the only irreversible
+ * operation in the application and it CASCADEs away every revision.
+ *
+ * `assertAuthorized(post, user, 'destroy')` rather than `requireOwner()`, so
+ * the rule lives in the one function spec §6 names and a later loosening is one
+ * edit rather than a search.
+ *
+ * Idempotent: destroying an already-destroyed post is a 404, because the read
+ * that authorizes it cannot find the row — and spec §8 answers absent and
+ * destroyed identically anyway.
+ */
+routes.delete('/posts/:id', auth, async (c) => {
+  const db = currentDb(c);
+  const post = await requirePost(db, c.req.param('id'));
+  assertAuthorized(post, currentUser(c), 'destroy');
+  await destroyPost(db, post.id);
+  return c.json({ ok: true });
+});
+
+// -------------------------------------------------------------- maintenance
+
+/**
+ * The two sweeps the client can no longer compute (spec §5.4).
+ *
+ * List responses carry no `content` and pagination means the browser cannot see
+ * every post, so "which drafts are blank" is not a question a dashboard can
+ * answer any more. It moves here.
+ */
+
+const SweepBody = z
+  .object({
+    /** The draft the caller is currently editing — never swept out from under them. */
+    exceptId: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+
+/**
+ * NOT owner-only, and that matches spec §5.4's table exactly: it marks
+ * `/images/collect-orphans` owner-only and leaves `/posts/sweep-blank`
+ * unmarked. A writer's dashboard is where this runs, and it destroys only
+ * drafts that are blank by `isBlankDoc`'s own reading — where an image-only,
+ * a divider-only and an UNPARSEABLE document all count as content — and only
+ * after a 60-second grace period.
+ */
+routes.post('/posts/sweep-blank', auth, async (c) => {
+  const { exceptId } = await readJsonOrEmpty(c, SweepBody);
+  return c.json({ swept: await sweepBlankDrafts(currentDb(c), exceptId) });
+});
+
+/**
+ * Owner only (spec §6). It hard-deletes every trashed post and CASCADEs away
+ * their revisions, so it is the one route that can destroy another writer's
+ * history in bulk.
+ */
+routes.post('/trash/empty', requireOwner(), async (c) =>
+  c.json({ emptied: await emptyTrash(currentDb(c)) }),
+);
