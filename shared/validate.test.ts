@@ -13,11 +13,19 @@ import { describe, expect, it } from 'vitest';
 import {
   ALLOWED_MARKS,
   ALLOWED_NODES,
+  ALLOWED_LINK_PROTOCOLS,
+  MAX_CATEGORY_BYTES,
   MAX_CONTENT_TEXT_BYTES,
   MAX_DOC_BYTES,
   MAX_DOC_DEPTH,
   MAX_DOC_NODES,
+  MAX_EXCERPT_BYTES,
+  MAX_SUBTITLE_BYTES,
+  MAX_TAGS,
+  MAX_TAG_BYTES,
+  MAX_TITLE_BYTES,
   checkDocSize,
+  checkPostMeta,
   utf8Bytes,
   validateDoc,
 } from './validate';
@@ -246,8 +254,104 @@ describe('validateDoc', () => {
   });
 
   it('rejects a href that hides its protocol behind whitespace or a control character', () => {
-    for (const href of [' javascript:alert(1)', 'java\nscript:alert(1)', 'JavaScript:alert(1)']) {
+    /*
+     * THIS IS LOAD-BEARING NOW IN A WAY IT WAS NOT BEFORE. A href that names no
+     * scheme is ACCEPTED (see below), so "the scheme regex did not match" can no
+     * longer mean "reject" — without stripping the invisibles first,
+     * `java\nscript:alert(1)` would be waved through as if it were `/about`.
+     */
+    for (const href of [
+      ' javascript:alert(1)',
+      'java\nscript:alert(1)',
+      'JavaScript:alert(1)',
+      'java\tscript:alert(1)',
+      'java script:alert(1)',
+      ' javascript:alert(1)',
+      'jav ascript:alert(1)',
+    ]) {
       expect(violation(marked({ type: 'link', attrs: { href } }))?.reason).toBe('bad_protocol');
+    }
+  });
+
+  it('accepts the scheme-less hrefs the editor writes', () => {
+    /*
+     * THE DEFECT THIS PINS. `ALLOWED_LINK_PROTOCOLS` required a scheme match and
+     * `protocolOf` returns null for anything not starting `scheme:`, so a
+     * footnote anchor, a root-relative path, a protocol-relative URL and a
+     * query-only href were all `bad_protocol`. `savePost` validates
+     * `patch.content` on EVERY save, so one such link made every subsequent save
+     * 422 — and spec §8 makes 422 a permanent stop in the client's retry policy,
+     * so the pending write is dropped rather than retried and the writer keeps
+     * typing into a post that can never be persisted.
+     *
+     * The editor half of this is pinned against a live `Editor` in
+     * `src/editor/schema-drift.test.tsx`, which is what stops the two drifting
+     * apart again.
+     */
+    for (const href of [
+      '#notes',
+      '/about',
+      '//cdn.example/x',
+      '?ref=1',
+      'archive/2026',
+      'page.html',
+      '',
+    ]) {
+      expect(violation(marked({ type: 'link', attrs: { href } })), href).toBeNull();
+    }
+  });
+
+  it('accepts a link mark with no href, which is inert rather than hostile', () => {
+    // `Link`'s `href` attribute defaults to `null` and `setMark('link', {})`
+    // leaves exactly that in the document — verified against a real Editor. A
+    // document holding one would have been unsavable forever, which is the same
+    // defect as refusing `#fn1`. `DocRenderer` renders it as text either way.
+    expect(violation(marked({ type: 'link', attrs: { href: null } }))).toBeNull();
+    expect(violation(marked({ type: 'link' }))).toBeNull();
+    expect(violation(marked({ type: 'link', attrs: {} }))).toBeNull();
+    // Still refused when the href is a value rather than an absence.
+    expect(violation(marked({ type: 'link', attrs: { href: 42 } }))?.reason).toBe('bad_protocol');
+  });
+
+  it('accepts the schemes TipTap admits, because the editor writes them', () => {
+    // `protocols: ['http','https','mailto']` only APPENDS to a hardcoded
+    // baseline in `@tiptap/extension-link` — http, https, ftp, ftps, mailto,
+    // tel, callto, sms, cid, xmpp — so a validator narrower than this list does
+    // not make the app safer, it makes the post unsavable.
+    for (const href of [
+      'https://example.com',
+      'http://example.com',
+      'mailto:a@b.co',
+      'tel:+15551234567',
+      'sms:+15551234567',
+      'ftp://files.example.com/x',
+      'ftps://files.example.com/x',
+      'callto:someone',
+      'cid:part1.abc',
+      'xmpp:someone@example.com',
+    ]) {
+      expect(violation(marked({ type: 'link', attrs: { href } })), href).toBeNull();
+    }
+    expect([...ALLOWED_LINK_PROTOCOLS].sort()).toEqual(
+      [
+        'callto:', 'cid:', 'ftp:', 'ftps:', 'http:', 'https:', 'mailto:', 'sms:', 'tel:', 'xmpp:',
+      ].sort(),
+    );
+  });
+
+  it('still refuses every scheme that is not on the list', () => {
+    for (const href of [
+      'javascript:alert(1)',
+      'data:text/html;base64,PHNjcmlwdD4=',
+      'vbscript:msgbox(1)',
+      'file:///etc/passwd',
+      'about:blank',
+      'blob:https://example.com/abc',
+      'chrome://settings',
+    ]) {
+      expect(violation(marked({ type: 'link', attrs: { href } }))?.reason, href).toBe(
+        'bad_protocol',
+      );
     }
   });
 
@@ -262,6 +366,26 @@ describe('validateDoc', () => {
     for (const src of ['asset:img_1', 'idb:img_1', 'https://cdn.example.com/a.png']) {
       expect(violation(image(src))).toBeNull();
     }
+  });
+
+  it('refuses a path-shaped image id, which would be a path-shaped object key', () => {
+    // Spec §3.6: `storage_key = images/<owner>/<id>`. `isStorableImageSrc` used
+    // to accept ANY non-empty suffix, so `asset:../../etc/passwd` validated and
+    // the id escaped its own prefix the moment anything joined it into a key.
+    for (const src of [
+      'asset:../../etc/passwd',
+      'idb:../secret',
+      'asset:img_a/../b',
+      'asset:/absolute',
+      'idb:img_a b',
+      'asset:notanimage',
+      'idb:',
+      'asset:',
+      `asset:img_${'x'.repeat(100)}`,
+    ]) {
+      expect(violation(image(src)), src).toEqual({ path: 'content[0]', reason: 'bad_protocol' });
+    }
+    expect(violation(image('asset:img_meyc0k9x8f2a1b3c4d5e6f7a8'))).toBeNull();
   });
 
   it('refuses an http: image src, which the client-side render guard still allows', () => {
@@ -353,6 +477,114 @@ describe('validateDoc', () => {
     expect(violation(wrap(a))?.reason).toBe('too_deep');
   });
 
+  it('bounds heading.level rather than storing whatever arrives', () => {
+    // `level` is the one attribute a renderer turns into a TAG NAME, so an
+    // unbounded one is an `<h999>` in spec §6's public renderer. Six and not the
+    // editor's configured [2,3]: an imported document legitimately carries 1,
+    // and refusing that loses the import rather than the attack.
+    for (const level of [999, 0, -1, 2.5, '2', null, {}]) {
+      const value = wrap({ type: 'heading', attrs: { level }, content: [] });
+      // `null` means "absent", which ProseMirror fills from the schema default.
+      if (level === null) expect(violation(value)).toBeNull();
+      else expect(violation(value), String(level)).toEqual({
+        path: 'content[0]',
+        reason: 'bad_attrs',
+      });
+    }
+    for (const level of [1, 2, 3, 6]) {
+      expect(violation(wrap({ type: 'heading', attrs: { level }, content: [] }))).toBeNull();
+    }
+  });
+
+  it('refuses an attribute no node or mark in the schema defines', () => {
+    // Inert against today's `DocRenderer`, which enumerates the attributes it
+    // reads — but spec §6's public renderer inherits whatever is stored, and
+    // "the renderer happens to ignore it" is not a property the database can
+    // rely on.
+    expect(
+      violation(marked({ type: 'link', attrs: { href: 'https://a.co', onclick: 'alert(1)' } })),
+    ).toEqual({ path: 'content[0].content[0].marks[0]', reason: 'bad_attrs' });
+
+    expect(violation(wrap({ type: 'paragraph', attrs: { onload: 'x' }, content: [] }))).toEqual({
+      path: 'content[0]',
+      reason: 'bad_attrs',
+    });
+
+    expect(
+      violation(wrap({ type: 'image', attrs: { src: 'idb:img_1', srcset: 'evil' } })),
+    ).toEqual({ path: 'content[0]', reason: 'bad_attrs' });
+  });
+
+  it('bounds a code block language, which reaches a class attribute', () => {
+    expect(
+      violation(
+        wrap({
+          type: 'codeBlock',
+          attrs: { language: '"><script>alert(1)</script>' },
+          content: [],
+        }),
+      ),
+    ).toEqual({ path: 'content[0]', reason: 'bad_attrs' });
+    for (const language of ['typescript', 'c++', 'objective-c', 'plaintext', null]) {
+      expect(violation(wrap({ type: 'codeBlock', attrs: { language }, content: [] }))).toBeNull();
+    }
+  });
+
+  it('keeps the attributes the editor actually writes', () => {
+    // The other half of the same coin: an attribute set narrower than the schema
+    // is the link-protocol defect again, one node type over. The live-schema
+    // version of this lives in `src/editor/schema-drift.test.tsx`.
+    const shapes: unknown[] = [
+      { type: 'heading', attrs: { level: 2 }, content: [] },
+      { type: 'orderedList', attrs: { start: 1, type: null }, content: [] },
+      {
+        type: 'taskList',
+        content: [{ type: 'taskItem', attrs: { checked: false }, content: [] }],
+      },
+      { type: 'codeBlock', attrs: { language: 'typescript' }, content: [] },
+      {
+        type: 'image',
+        attrs: { src: 'idb:img_1', alt: '', title: '', width: null, height: null },
+      },
+      {
+        type: 'table',
+        content: [
+          {
+            type: 'tableRow',
+            content: [
+              {
+                type: 'tableHeader',
+                attrs: { colspan: 1, rowspan: 1, colwidth: null, align: null },
+                content: [],
+              },
+              {
+                type: 'tableCell',
+                attrs: { colspan: 1, rowspan: 1, colwidth: null, align: null },
+                content: [],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    for (const shape of shapes) expect(violation(wrap(shape)), JSON.stringify(shape)).toBeNull();
+
+    expect(
+      violation(
+        marked({
+          type: 'link',
+          attrs: {
+            href: 'https://example.com',
+            target: '_blank',
+            rel: 'noopener noreferrer nofollow',
+            class: 'doc-link',
+            title: null,
+          },
+        }),
+      ),
+    ).toBeNull();
+  });
+
   it('the allow-lists are the ones the editor produces, and nothing else', () => {
     // Provenance, not decoration: StarterKit (headings 2-3, link and underline
     // off) + CodeBlockLowlight + TableKit + Underline + Link + StudioImage +
@@ -370,5 +602,91 @@ describe('validateDoc', () => {
     expect([...ALLOWED_MARKS].sort()).toEqual(
       ['bold', 'code', 'italic', 'link', 'strike', 'underline'].sort(),
     );
+  });
+});
+
+// --------------------------------------------------------------- checkPostMeta
+
+describe('checkPostMeta', () => {
+  /*
+   * The five other inputs to the same generated `search` tsvector.
+   *
+   * `MAX_CONTENT_TEXT_BYTES` bounded `content_text` and nothing else, so a
+   * 1.2 MB title raised the same SQLSTATE 54000 on the same statement — a
+   * `DbError` with no row in spec §8, i.e. a 500, which the client's retry
+   * policy treats as transient and retries forever for a request that can never
+   * succeed.
+   */
+  it('accepts everything the UI can produce', () => {
+    // TITLE_MAX 160 / SUBTITLE_MAX 220 (src/routes/Editor.tsx), category 40 and
+    // excerpt 320 (src/editor/MetaPanel.tsx), tags 32 characters each — every
+    // one of them at 4 bytes per character.
+    expect(
+      checkPostMeta({
+        title: '漢'.repeat(160),
+        subtitle: '漢'.repeat(220),
+        excerpt: '漢'.repeat(320),
+        category: '漢'.repeat(40),
+        tags: Array.from({ length: 32 }, () => '漢'.repeat(32)),
+      }),
+    ).toBeNull();
+  });
+
+  it('refuses each oversized field by name, so the 422 says which one', () => {
+    expect(checkPostMeta({ title: 'x'.repeat(MAX_TITLE_BYTES + 1) })).toEqual({
+      path: 'title',
+      reason: 'too_large',
+    });
+    expect(checkPostMeta({ subtitle: 'x'.repeat(MAX_SUBTITLE_BYTES + 1) })).toEqual({
+      path: 'subtitle',
+      reason: 'too_large',
+    });
+    expect(checkPostMeta({ excerpt: 'x'.repeat(MAX_EXCERPT_BYTES + 1) })).toEqual({
+      path: 'excerpt',
+      reason: 'too_large',
+    });
+    expect(checkPostMeta({ category: 'x'.repeat(MAX_CATEGORY_BYTES + 1) })).toEqual({
+      path: 'category',
+      reason: 'too_large',
+    });
+    expect(checkPostMeta({ tags: [`${'x'.repeat(MAX_TAG_BYTES + 1)}`] })).toEqual({
+      path: 'tags[0]',
+      reason: 'too_large',
+    });
+    expect(checkPostMeta({ tags: Array.from({ length: MAX_TAGS + 1 }, () => 't') })).toEqual({
+      path: 'tags',
+      reason: 'too_large',
+    });
+  });
+
+  it('counts bytes, not characters', () => {
+    const cjk = '漢'.repeat(MAX_TITLE_BYTES / 3 + 1);
+    expect(cjk.length).toBeLessThan(MAX_TITLE_BYTES);
+    expect(checkPostMeta({ title: cjk })).toEqual({ path: 'title', reason: 'too_large' });
+  });
+
+  it('checks only the fields present, exactly as savePost validates only the patch', () => {
+    // A stored value already over the line — an import, a backfill — must not
+    // make the post permanently unsavable. That is the whole reason spec §4.6
+    // validates `patch.content` and never the merge.
+    expect(checkPostMeta({})).toBeNull();
+    expect(checkPostMeta({ title: undefined, tags: undefined })).toBeNull();
+  });
+
+  it('reports a wrong type as malformed rather than coercing it', () => {
+    expect(checkPostMeta({ title: 42 })).toEqual({ path: 'title', reason: 'malformed' });
+    expect(checkPostMeta({ tags: 'a,b' })).toEqual({ path: 'tags', reason: 'malformed' });
+    expect(checkPostMeta({ tags: [1] })).toEqual({ path: 'tags[0]', reason: 'malformed' });
+  });
+
+  it('the metadata budget fits inside the headroom the content ceiling leaves', () => {
+    // The tsvector limit is MAXSTRPOS = 1 048 575 bytes and `content_text` at
+    // its ceiling was measured at 808 580 in the worst adversarial shape. The
+    // five metadata fields share what is left, so their worst-case sum has to
+    // be a small fraction of it.
+    const worst =
+      MAX_TITLE_BYTES + MAX_SUBTITLE_BYTES + MAX_EXCERPT_BYTES + MAX_CATEGORY_BYTES +
+      MAX_TAGS * MAX_TAG_BYTES;
+    expect(worst).toBeLessThan(1_048_575 - 808_580);
   });
 });

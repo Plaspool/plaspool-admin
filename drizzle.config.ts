@@ -23,6 +23,32 @@ import { defineConfig } from 'drizzle-kit';
  *
  * `generate` is safe by comparison: it only ever appends a new numbered file,
  * and the hand-written statements in the existing one are never revisited.
+ *
+ * ⚠️  AND THE SNAPSHOT CHAIN SKIPS 0001. `0001_bound_search_input` was written
+ *     by hand, so drizzle-kit never produced `meta/0001_snapshot.json` and
+ *     `meta/0002_snapshot.json` has `prevId` pointing straight back at 0000's
+ *     id. `generate` diffs the schema file against the LATEST snapshot, so
+ *     every future migration is generated as if 0001 never happened.
+ *
+ *     Today the two agree by luck: 0001 only drops and re-adds the generated
+ *     `search` column, which is absent from both snapshots anyway (see above).
+ *     The rule that keeps it that way — **a hand-written migration may only
+ *     touch objects drizzle-kit cannot model**. Anything else, and the next
+ *     `generate` will emit DDL to undo it.
+ *
+ *     If a hand-written migration ever has to touch a modelled object, generate
+ *     an empty migration first (`db:generate` with no schema change) so the
+ *     chain gets a snapshot to hang the hand-written statements off, and write
+ *     them into that file.
+ *
+ *     Both facts are asserted in `server/db/migrations.test.ts` so they cannot
+ *     rot into a comment nobody checks.
+ *
+ * ⚠️  APPLY MIGRATIONS WITH `npm run db:migrate` AND NOTHING ELSE. It runs the
+ *     ledger reconciliation in `server/db/replay.ts`; a bare
+ *     `drizzle-orm` migrator call will silently skip a migration whose `when`
+ *     is below the highest `created_at` a database has already recorded, and
+ *     exit 0 while doing it.
  */
 export default defineConfig({
   dialect: 'postgresql',

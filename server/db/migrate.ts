@@ -26,12 +26,27 @@ import { neon } from '@neondatabase/serverless';
 import { drizzle } from 'drizzle-orm/neon-http';
 import { migrate } from 'drizzle-orm/neon-http/migrator';
 import * as schema from './schema';
+import type { Db } from './client';
+import { migrateWithReplayCheck } from './replay';
 import { getEnv } from '../env';
 
 /** The one folder. `server/test/harness.ts` migrates PGlite from the same path. */
 export const MIGRATIONS_FOLDER = 'server/db/migrations';
 
 const db = drizzle(neon(getEnv().DATABASE_URL), { schema });
-await migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+
+/*
+ * NOT a bare `migrate()`. The migrator applies a migration only when the highest
+ * `created_at` already recorded is BELOW its `folderMillis`, so a database that
+ * recorded a future-dated `when` silently skips everything dated under it and
+ * this command still exits 0. `migrateWithReplayCheck` re-dates the ledger to
+ * match the journal first, and reconciles the two afterwards, so a skip is a
+ * failed command rather than a success message — see `server/db/replay.ts`.
+ */
+const healed = await migrateWithReplayCheck(db as unknown as Db, MIGRATIONS_FOLDER, migrate);
+for (const { tag, from, to } of healed) {
+  // eslint-disable-next-line no-console -- this is a CLI entrypoint
+  console.log(`re-dated ${tag} in drizzle.__drizzle_migrations: ${from} -> ${to}`);
+}
 // eslint-disable-next-line no-console -- this is a CLI entrypoint
 console.log(`applied migrations from ${MIGRATIONS_FOLDER}`);

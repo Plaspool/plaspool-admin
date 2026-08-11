@@ -55,13 +55,44 @@ export const MAX_DOC_NODES = 20_000;
  */
 export const MAX_CONTENT_TEXT_BYTES = 500_000;
 
+/**
+ * The other five inputs to the same `search` tsvector, and why they need
+ * ceilings of their own.
+ *
+ * `MAX_CONTENT_TEXT_BYTES` bounds `content_text` — one of SIX columns the
+ * generated column concatenates. `title`, `subtitle`, `excerpt`, `category` and
+ * `tags` are the other five and were unbounded, so a 1.2 MB title raises the
+ * same SQLSTATE 54000 on the same INSERT/UPDATE. That surfaces as a `DbError`
+ * with no row in spec §8 — a 500, which the client's retry policy treats as
+ * transient and retries forever, for a request that can never succeed.
+ *
+ * The numbers are the UI's own limits with room to spare, in BYTES rather than
+ * characters for the reason `MAX_CONTENT_TEXT_BYTES` documents: `TITLE_MAX` is
+ * 160 characters and `SUBTITLE_MAX` 220 (`src/routes/Editor.tsx`), category 40
+ * and excerpt 320 (`src/editor/MetaPanel.tsx`), tags 32 each — every one of
+ * which fits inside its ceiling here even at 4 bytes per character, so nothing
+ * a writer can type is refused. Their worst-case sum is ~34 KB against the
+ * ~240 KB of headroom left over `MAX_CONTENT_TEXT_BYTES`'s measured 808 580.
+ */
+export const MAX_TITLE_BYTES = 2_000;
+export const MAX_SUBTITLE_BYTES = 2_000;
+export const MAX_EXCERPT_BYTES = 4_000;
+export const MAX_CATEGORY_BYTES = 400;
+export const MAX_TAG_BYTES = 400;
+export const MAX_TAGS = 64;
+
 export interface DocViolation {
-  /** JSON path of the offending node, or `content` for a whole-document limit. */
+  /**
+   * JSON path of the offending node, `content` for a whole-document limit, or
+   * the field name (`title`, `tags`, …) for a metadata limit — spec §8's 422
+   * body is `{ error: 'invalid_document', path }` either way.
+   */
   path: string;
   reason:
     | 'unknown_node'
     | 'unknown_mark'
     | 'bad_protocol'
+    | 'bad_attrs'
     | 'too_deep'
     | 'too_large'
     | 'too_many_nodes'
@@ -123,6 +154,54 @@ function checkContentTextSize(doc: DocNode): DocViolation | null {
   return utf8Bytes(docToText(doc)) > MAX_CONTENT_TEXT_BYTES ? TOO_LARGE : null;
 }
 
+/** The five non-document fields that feed the same `search` tsvector. */
+export interface PostMetaInput {
+  title?: unknown;
+  subtitle?: unknown;
+  excerpt?: unknown;
+  category?: unknown;
+  tags?: unknown;
+}
+
+const META_LIMITS: [field: keyof PostMetaInput, max: number][] = [
+  ['title', MAX_TITLE_BYTES],
+  ['subtitle', MAX_SUBTITLE_BYTES],
+  ['excerpt', MAX_EXCERPT_BYTES],
+  ['category', MAX_CATEGORY_BYTES],
+];
+
+/**
+ * The metadata half of the tsvector bound (spec §4.6).
+ *
+ * Only the fields PRESENT on `meta` are checked, exactly as `savePost`
+ * validates `patch.content` and never the merge: a stored value already over
+ * the line — an import, a backfill — must not make the post permanently
+ * unsavable, which is the failure this whole ceiling exists to prevent.
+ *
+ * Returns the violation rather than throwing, so a route maps it straight onto
+ * the 422 of spec §8 instead of letting a 54000 arrive as a retryable 500.
+ */
+export function checkPostMeta(meta: PostMetaInput): DocViolation | null {
+  for (const [field, max] of META_LIMITS) {
+    const value = meta[field];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== 'string') return { path: field, reason: 'malformed' };
+    if (utf8Bytes(value) > max) return { path: field, reason: 'too_large' };
+  }
+
+  const tags = meta.tags;
+  if (tags === undefined || tags === null) return null;
+  if (!Array.isArray(tags)) return { path: 'tags', reason: 'malformed' };
+  if (tags.length > MAX_TAGS) return { path: 'tags', reason: 'too_large' };
+  for (let i = 0; i < tags.length; i += 1) {
+    if (typeof tags[i] !== 'string') return { path: `tags[${i}]`, reason: 'malformed' };
+    if (utf8Bytes(tags[i] as string) > MAX_TAG_BYTES) {
+      return { path: `tags[${i}]`, reason: 'too_large' };
+    }
+  }
+  return null;
+}
+
 // ------------------------------------------------------------- the allow-list
 
 /**
@@ -170,6 +249,124 @@ export const ALLOWED_MARKS: ReadonlySet<string> = new Set([
   'link',
 ]);
 
+// ----------------------------------------------------------------- attributes
+
+/**
+ * The attribute NAMES each node and mark type may carry.
+ *
+ * Attributes were not checked at all, so `{type:'heading', attrs:{level:999}}`,
+ * a link mark carrying `onclick`, and a code block whose `language` is
+ * `"><script>alert(1)</script>` all round-tripped into `jsonb`. Today's
+ * `DocRenderer` enumerates the attributes it reads and is therefore inert
+ * against every one of them — but spec §6's public renderer inherits whatever
+ * is stored, and "the renderer happens to ignore it" is not a property the
+ * database can rely on.
+ *
+ * READ THIS BEFORE ADDING AN EXTENSION. These sets are transcribed from the
+ * live ProseMirror schema, so an extension that adds an attribute — or a TipTap
+ * upgrade that adds one to an existing node — makes every document carrying it
+ * unsavable, which is the same class of defect as the link-protocol one above.
+ * `src/editor/schema-drift.test.tsx` drives a real `Editor` and fails on
+ * exactly that, before a writer can meet it. An empty set means the live schema
+ * defines no attributes for that type, not that the type was forgotten.
+ */
+const NODE_ATTRS: Record<string, ReadonlySet<string>> = {
+  doc: new Set(),
+  text: new Set(),
+  paragraph: new Set(),
+  heading: new Set(['level']),
+  blockquote: new Set(),
+  bulletList: new Set(),
+  orderedList: new Set(['start', 'type']),
+  listItem: new Set(),
+  taskList: new Set(),
+  taskItem: new Set(['checked']),
+  codeBlock: new Set(['language']),
+  horizontalRule: new Set(),
+  hardBreak: new Set(),
+  image: new Set(['src', 'alt', 'title', 'width', 'height']),
+  table: new Set(),
+  tableRow: new Set(),
+  tableHeader: new Set(['colspan', 'rowspan', 'colwidth', 'align']),
+  tableCell: new Set(['colspan', 'rowspan', 'colwidth', 'align']),
+};
+
+/** A type not in the tables above carries no attributes at all. */
+const EMPTY_ATTRS: ReadonlySet<string> = new Set();
+
+const MARK_ATTRS: Record<string, ReadonlySet<string>> = {
+  bold: new Set(),
+  italic: new Set(),
+  underline: new Set(),
+  strike: new Set(),
+  code: new Set(),
+  // `target`/`rel`/`class` are the Link extension's own attributes and are in
+  // every stored href — dropping them from this list would 422 every post that
+  // contains a link.
+  link: new Set(['href', 'target', 'rel', 'class', 'title']),
+};
+
+/**
+ * `heading.level` is bounded because it is the one attribute a renderer turns
+ * into a TAG NAME. Six, not the editor's configured `[2, 3]`: a document
+ * imported from elsewhere legitimately carries `1`, and refusing it would lose
+ * the import rather than the attack.
+ */
+const MAX_HEADING_LEVEL = 6;
+
+/**
+ * A code block's `language` reaches the highlighter and a `class` attribute.
+ * The editor only ever writes a registered grammar name, and the paste repair
+ * only keeps `[a-z0-9+#-]` out of a `language-*` class, so this charset refuses
+ * nothing the app produces.
+ */
+const CODE_LANGUAGE = /^[A-Za-z0-9+#._-]{1,32}$/;
+
+function checkAttrs(
+  node: Record<string, unknown>,
+  allowed: ReadonlySet<string>,
+  path: () => string,
+): DocViolation | null {
+  const attrs = node.attrs;
+  if (attrs === undefined || attrs === null) return null;
+  if (typeof attrs !== 'object' || Array.isArray(attrs)) {
+    return { path: path(), reason: 'malformed' };
+  }
+  for (const name of Object.keys(attrs)) {
+    if (!allowed.has(name)) return { path: path(), reason: 'bad_attrs' };
+  }
+  return null;
+}
+
+function checkAttrValues(
+  type: string,
+  attrs: Record<string, unknown>,
+  path: () => string,
+): DocViolation | null {
+  if (type === 'heading') {
+    const level = attrs.level;
+    // Absent is fine — ProseMirror fills the schema default and a renderer
+    // falls back the same way. A level that is PRESENT and out of range is the
+    // one that becomes `<h999>`.
+    if (
+      level != null &&
+      (typeof level !== 'number' ||
+        !Number.isInteger(level) ||
+        level < 1 ||
+        level > MAX_HEADING_LEVEL)
+    ) {
+      return { path: path(), reason: 'bad_attrs' };
+    }
+  }
+  if (type === 'codeBlock') {
+    const language = attrs.language;
+    if (language != null && (typeof language !== 'string' || !CODE_LANGUAGE.test(language))) {
+      return { path: path(), reason: 'bad_attrs' };
+    }
+  }
+  return null;
+}
+
 // ------------------------------------------------------------------- protocols
 
 /**
@@ -177,26 +374,87 @@ export const ALLOWED_MARKS: ReadonlySet<string> = new Set([
  *
  * Moved here from `src/data/docguards.ts` (which now re-exports it) because
  * `shared/` cannot import from `src/` and the server must apply exactly the
- * rule the editor and the reader apply — TipTap's Link `protocols` option only
- * *appends* to a hardcoded baseline containing `tel`, `ftp`, `xmpp` and `sms`,
- * so configuring it restricts nothing and this predicate is the real gate.
+ * rule the editor and the reader apply.
+ *
+ * WHY THE LIST IS THIS LONG. TipTap's Link `protocols` option only *appends* to
+ * a hardcoded baseline — `http https ftp ftps mailto tel callto sms cid xmpp`,
+ * read out of `@tiptap/extension-link`'s own `isAllowedUri` — so
+ * `protocols: ['http','https','mailto']` restricts nothing and the editor
+ * happily writes a `tel:` link. A validator narrower than the editor does not
+ * make the app safer; it makes the post **unsavable**, because `savePost`
+ * validates `patch.content` on every save and spec §8 makes 422 a permanent
+ * stop in the client's retry policy. So the two lists are the same list, and
+ * the drift guard in `src/editor/schema-drift.test.tsx` drives a real `Editor`
+ * to keep them that way.
+ *
+ * Widening this beyond what the editor admits is the only real hazard here, and
+ * `javascript:`, `data:` and `vbscript:` are absent by construction: it is an
+ * allow-list, not a deny-list.
  */
-export const ALLOWED_LINK_PROTOCOLS: readonly string[] = ['http:', 'https:', 'mailto:'];
+export const ALLOWED_LINK_PROTOCOLS: readonly string[] = [
+  'http:',
+  'https:',
+  'mailto:',
+  'ftp:',
+  'ftps:',
+  'tel:',
+  'callto:',
+  'sms:',
+  'cid:',
+  'xmpp:',
+];
 
 /**
- * Anchored and charset-restricted on the trimmed string, so neither a leading
- * space nor an embedded control character (` javascript:`, `java\nscript:`) can
- * smuggle a protocol past it.
+ * Everything a browser throws away before it parses a URL, and therefore
+ * everything that can hide a scheme from a naive `startsWith`.
+ *
+ * `value.trim()` was not enough: it removes nothing from the MIDDLE, so
+ * `java\nscript:alert(1)` used to survive only because it failed the scheme
+ * regex outright and fell into the reject branch. Now that a scheme-less href
+ * is ACCEPTED (see `isAllowedHref`), "no scheme matched" can no longer mean
+ * "reject", and a href that hides its colon behind a control character would be
+ * waved through as if it were `/about`. Stripping first is what keeps
+ * `java\nscript:` a `javascript:` — this is the same character class
+ * `@tiptap/extension-link` strips, plus the C1 controls and U+FEFF.
+ */
+// eslint-disable-next-line no-control-regex -- matching them IS the job here
+const URL_INVISIBLES = /[\u0000-\u0020\u007f-\u00a0\u1680\u180e\u2000-\u2029\u205f\u3000\ufeff]/g;
+
+/**
+ * Anchored and charset-restricted on the *de-obfuscated* string, so neither a
+ * leading space nor an embedded control character (` javascript:`,
+ * `java\nscript:`) can smuggle a protocol past it.
+ *
+ * `null` means "this href names no scheme at all" — a relative, root-relative,
+ * protocol-relative, fragment or query-only URL. It does NOT mean "unsafe".
  */
 export function protocolOf(value: unknown): string | null {
   if (typeof value !== 'string') return null;
-  const m = /^([a-z][a-z0-9+.-]*:)/i.exec(value.trim());
+  const m = /^([a-z][a-z0-9+.-]*:)/i.exec(value.replace(URL_INVISIBLES, ''));
   return m ? m[1].toLowerCase() : null;
 }
 
+/**
+ * What a stored link `href` may be.
+ *
+ * A SCHEME-LESS HREF IS VALID AND MUST STAY VALID. `#footnote`, `/about`,
+ * `//cdn.example/x` and `?ref=1` are all things the editor writes — verified by
+ * driving a real `Editor` in `src/editor/schema-drift.test.tsx` — and every one
+ * of them was refused as `bad_protocol` before, which made any post containing
+ * one permanently unsavable: `savePost` validates `patch.content` on every
+ * save, the 422 is a permanent stop in the client's retry policy (spec §8), and
+ * the pending write is dropped rather than retried. The writer keeps typing
+ * into a post that can never be persisted.
+ *
+ * The rule is therefore: a href that names a scheme must name an allowed one; a
+ * href that names no scheme is relative and is allowed. `protocolOf` does the
+ * de-obfuscation, so "names no scheme" cannot be faked.
+ */
 export function isAllowedHref(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
   const p = protocolOf(value);
-  return p !== null && ALLOWED_LINK_PROTOCOLS.includes(p);
+  if (p === null) return true;
+  return ALLOWED_LINK_PROTOCOLS.includes(p);
 }
 
 /**
@@ -216,9 +474,23 @@ export function isAllowedHref(value: unknown): boolean {
  */
 export function isStorableImageSrc(value: unknown): boolean {
   if (typeof value !== 'string') return false;
-  if (imageIdFromSrc(value) !== null) return true;
+  const id = imageIdFromSrc(value);
+  if (id !== null) return IMAGE_ID.test(id);
   return protocolOf(value) === 'https:';
 }
+
+/**
+ * The id shape `asset:` and `idb:` may carry, and the reason this is not simply
+ * "any non-empty suffix".
+ *
+ * Spec §3.6 makes `storage_key = images/<owner>/<id>`, so the id IS a path
+ * segment of an object key. `asset:../../etc/passwd` used to validate, which
+ * means a document could name an object outside its own prefix the moment
+ * anything joined the id into a key. Constrained to the frontend's `img_`
+ * convention — `newId('img_')` in `src/data/db.ts` is `img_` + base36 millis +
+ * 16 hex — so no separator, dot or slash can appear at all.
+ */
+const IMAGE_ID = /^img_[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 // ----------------------------------------------------------------- validateDoc
 
@@ -338,6 +610,15 @@ function checkNode(frame: Frame): DocViolation | null {
     return { path: pathOf(frame), reason: 'malformed' };
   }
 
+  const badAttrs = checkAttrs(node, NODE_ATTRS[type] ?? EMPTY_ATTRS, () => pathOf(frame));
+  if (badAttrs) return badAttrs;
+  const badValues = checkAttrValues(
+    type,
+    (node.attrs as Record<string, unknown>) ?? {},
+    () => pathOf(frame),
+  );
+  if (badValues) return badValues;
+
   const marks = node.marks;
   if (marks !== undefined) {
     if (!Array.isArray(marks)) return { path: pathOf(frame), reason: 'malformed' };
@@ -359,9 +640,24 @@ function checkMark(mark: unknown, path: () => string): DocViolation | null {
     return { path: path(), reason: 'malformed' };
   }
   if (!ALLOWED_MARKS.has(mark.type)) return { path: path(), reason: 'unknown_mark' };
+  const badAttrs = checkAttrs(mark, MARK_ATTRS[mark.type] ?? EMPTY_ATTRS, path);
+  if (badAttrs) return badAttrs;
   if (mark.type === 'link') {
     const href = (mark.attrs as Record<string, unknown>)?.href;
-    if (!isAllowedHref(href)) return { path: path(), reason: 'bad_protocol' };
+    /*
+     * A link mark with NO href is inert, not hostile — there is no protocol to
+     * refuse. It is also reachable: `Link`'s `href` attribute defaults to
+     * `null`, and `setMark('link', {})` leaves exactly that in the document
+     * (verified by driving a real Editor; TipTap itself throws on the way, but
+     * the mark still lands). Refusing it would make that document unsavable
+     * forever, which is the same defect as refusing `#fn1`.
+     *
+     * `''` takes the same path through `isAllowedHref`, and `DocRenderer`
+     * renders both as plain text rather than as an anchor.
+     */
+    if (href != null && !isAllowedHref(href)) {
+      return { path: path(), reason: 'bad_protocol' };
+    }
   }
   return null;
 }

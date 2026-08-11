@@ -4,6 +4,7 @@ import { migrate } from 'drizzle-orm/pglite/migrator';
 import { sql } from 'drizzle-orm';
 import * as schema from '../db/schema';
 import { guardDb } from '../db/client';
+import { migrateWithReplayCheck } from '../db/replay';
 import type { Db } from '../db/client';
 import type { AuthUser } from '../../shared/types';
 import { hashPassword } from '../repo/password';
@@ -51,7 +52,11 @@ export async function migratedDb(): Promise<RawCtx> {
   // Guarded exactly as `getDb()` guards the production handle, so a driver
   // error that would leak query parameters fails the suite instead of shipping.
   const db = guardDb(drizzle(client, { schema }) as unknown as Db);
-  await migrate(db as never, { migrationsFolder: 'server/db/migrations' });
+  // The same sequence `npm run db:migrate` runs, so every server suite pays the
+  // database-level replay check: if the journal and the applied set stop
+  // reconciling, every suite that boots a database says so, rather than the
+  // schema quietly differing from the one production has.
+  await migrateWithReplayCheck(db, 'server/db/migrations', migrate);
   return { db, close: () => client.close() };
 }
 

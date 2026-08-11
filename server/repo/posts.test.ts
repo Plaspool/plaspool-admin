@@ -11,6 +11,15 @@ import { sql } from 'drizzle-orm';
 import { freshDb, type TestCtx } from '../test/harness';
 import { createPost, getPost, savePost } from './posts';
 import { InvalidDocumentError, NotFoundError, StaleWriteError } from './errors';
+import {
+  MAX_CATEGORY_BYTES,
+  MAX_EXCERPT_BYTES,
+  MAX_SUBTITLE_BYTES,
+  MAX_TAGS,
+  MAX_TAG_BYTES,
+  MAX_TITLE_BYTES,
+  checkPostMeta,
+} from '../../shared/validate';
 import type { DocNode, Post, PostPatch } from '../../shared/types';
 
 const doc = (text: string): DocNode => ({
@@ -98,6 +107,73 @@ describe('createPost', () => {
     await expect(
       createPost(ctx.db, actor(), { content: { type: 'doc', content: [{ type: 'script' }] } }),
     ).rejects.toBeInstanceOf(InvalidDocumentError);
+    const res = await ctx.db.execute(sql`SELECT count(*)::int AS n FROM posts`);
+    expect(Number(res.rows[0].n)).toBe(0);
+  });
+
+  it('normalises the SHAPE of a supplied slug, not only its uniqueness', async () => {
+    /*
+     * `slug` becomes a URL path segment, and this function is what
+     * `duplicatePost` and `POST /import` go through — both of which carry a slug
+     * from outside. The uniqueness walk alone stored `../../admin` verbatim,
+     * which is not what "slugs are server-authoritative" (spec §4.5) means.
+     */
+    const traversal = await createPost(ctx.db, actor(), { slug: '../../admin', title: 'T' });
+    expect(traversal.slug).toBe('admin');
+
+    for (const [supplied, expected] of [
+      ['Not A Slug', 'not-a-slug'],
+      ['  spaced  out  ', 'spaced-out'],
+      // `ø` has no NFKD decomposition, so `slugify` drops it — the point here
+      // is the charset, not the transliteration.
+      ['Ünïcødé Ttl', 'unic-de-ttl'],
+      ['%2e%2e%2fetc', '2e-2e-2fetc'],
+      ['....', 'untitled'],
+    ] as const) {
+      const post = await createPost(ctx.db, actor(), { slug: supplied, title: 'T' });
+      expect(post.slug, supplied).toBe(expected);
+      expect((await rawPost(post.id)).slug, supplied).toBe(expected);
+    }
+  });
+
+  it('derives wordCount, readingTime and content_text rather than trusting the caller', async () => {
+    /*
+     * Spec §4.4: derivation is the server's. Untested, the INSERT could store
+     * `word_count = 0, reading_time = 0` and the whole suite stayed green —
+     * and `duplicatePost` and `POST /import` both come through here, so every
+     * imported post would list as a zero-minute read.
+     */
+    const body = Array.from({ length: 500 }, (_, i) => `word${i % 7}`).join(' ');
+    const post = await createPost(ctx.db, actor(), {
+      title: 'Derived',
+      content: doc(body),
+      // Supplied and deliberately wrong: the server's numbers must win.
+      wordCount: 9999,
+      readingTime: 9999,
+    });
+
+    expect(post.wordCount).toBe(500);
+    expect(post.readingTime).toBe(2);
+
+    const row = await rawPost(post.id);
+    expect(row.word_count).toBe(500);
+    expect(row.reading_time).toBe(2);
+    expect(row.content_text).toBe(body);
+
+    // An empty document is the other end: zero words, and zero minutes rather
+    // than the `Math.max(1, …)` floor.
+    const empty = await createPost(ctx.db, actor(), { content: { type: 'doc', content: [] } });
+    expect(empty.wordCount).toBe(0);
+    expect(empty.readingTime).toBe(0);
+    expect((await rawPost(empty.id)).content_text).toBe('');
+  });
+
+  it('refuses metadata too large for the search index instead of letting it 500', async () => {
+    const violation = await rejection<InvalidDocumentError>(
+      createPost(ctx.db, actor(), { title: 'x'.repeat(MAX_TITLE_BYTES + 1) }),
+    );
+    expect(violation).toBeInstanceOf(InvalidDocumentError);
+    expect(violation.path).toBe('title');
     const res = await ctx.db.execute(sql`SELECT count(*)::int AS n FROM posts`);
     expect(Number(res.rows[0].n)).toBe(0);
   });
@@ -439,6 +515,128 @@ describe('savePost', () => {
     // The retried write left exactly one revision, not one per attempt.
     expect(await countRevisions(a.id)).toBe(2);
     expect(await countRevisions(b.id)).toBe(2);
+  });
+
+  it.each([10, 25])(
+    '%i writers taking the same title all get a slug, none get a raw 23505',
+    async (n) => {
+      /*
+       * THE RETRY MUST DIVERSIFY, NOT RE-DERIVE.
+       *
+       * Three attempts is not the bound that matters. Every in-flight writer
+       * re-reads the same taken set and picks the same next candidate, so each
+       * round admits exactly one of them — N writers need N rounds, not three.
+       * Measured before the fix: N=3 all succeed, N=10 leaves seven rejected
+       * with `DbError code=23505 constraint=posts_slug_unique`, which spec §8
+       * has no row for and a route renders as a 500. The random-suffix fallback
+       * in `slug.ts` is unreachable from here — it only fires after 198
+       * COMMITTED collisions, not after three lost races.
+       *
+       * Deterministic, not luck: PGlite has one connection and a FIFO queue, so
+       * all N `uniqueSlug` reads run before any write (spec §9).
+       */
+      const posts = await Promise.all(Array.from({ length: n }, () => seeded()));
+      const settled = await Promise.allSettled(
+        posts.map((p) => savePost(ctx.db, p.id, { title: 'Shared Title' }, { actor: actor() })),
+      );
+
+      const rejected = settled.filter((r) => r.status === 'rejected');
+      expect(
+        rejected.map((r) => String((r as PromiseRejectedResult).reason)),
+        'spec §4.5: a unique_violation from a concurrent insert is retried, never surfaced',
+      ).toEqual([]);
+
+      const slugs = settled.map((r) => (r as PromiseFulfilledResult<Post>).value.slug);
+      // Every writer got a distinct, non-null slug derived from the title.
+      expect(new Set(slugs).size).toBe(n);
+      for (const slug of slugs) expect(slug).toMatch(/^shared-title(-|$)/);
+      // And the retry left one revision per post, not one per attempt.
+      for (const p of posts) expect(await countRevisions(p.id)).toBe(2);
+    },
+  );
+
+  it('refuses oversized metadata as a 422 and leaves the row untouched', async () => {
+    /*
+     * `title`, `subtitle`, `excerpt`, `category` and `tags` are the other five
+     * inputs to the same generated `search` tsvector that
+     * `MAX_CONTENT_TEXT_BYTES` bounds. Unbounded, each one reaches SQLSTATE
+     * 54000 on this statement — a `DbError` with no row in spec §8, i.e. a 500,
+     * which the client's retry policy treats as transient and retries forever
+     * for a write that can never succeed.
+     */
+    const post = await seeded({ title: 'Bounded', slug: 'bounded' });
+
+    const cases: [PostPatch, string][] = [
+      [{ title: 'x'.repeat(MAX_TITLE_BYTES + 1) }, 'title'],
+      [{ subtitle: 'x'.repeat(MAX_SUBTITLE_BYTES + 1) }, 'subtitle'],
+      [{ excerpt: 'x'.repeat(MAX_EXCERPT_BYTES + 1) }, 'excerpt'],
+      [{ category: 'x'.repeat(MAX_CATEGORY_BYTES + 1) }, 'category'],
+      [{ tags: ['x'.repeat(MAX_TAG_BYTES + 1)] }, 'tags[0]'],
+      [{ tags: Array.from({ length: MAX_TAGS + 1 }, () => 't') }, 'tags'],
+    ];
+
+    for (const [patch, path] of cases) {
+      const err = await rejection<InvalidDocumentError>(
+        savePost(ctx.db, post.id, patch, { actor: actor() }),
+      );
+      expect(err, path).toBeInstanceOf(InvalidDocumentError);
+      expect(err.path).toBe(path);
+    }
+
+    const after = (await getPost(ctx.db, post.id)) as Post;
+    expect(after.revision).toBe(post.revision);
+    expect(after.title).toBe('Bounded');
+    expect(await countRevisions(post.id)).toBe(1);
+  });
+
+  it('THE HAZARD ITSELF: an unbounded title is 54000 at the database', async () => {
+    /*
+     * Not a test of our code — a test of the database's limit, so the bound
+     * above is pinned to the reason it exists rather than to a round number.
+     * `to_tsvector` cannot produce more than MAXSTRPOS = 1 048 575 bytes of
+     * lexemes and positions, and the `search` column concatenates SIX inputs;
+     * bounding only `content_text` left the other five able to blow the same
+     * limit on the same statement.
+     */
+    const huge = Array.from({ length: 120_000 }, (_, i) => `t${i}`).join(' ');
+    const err = await rejection<{ code?: string }>(
+      ctx.db.execute(sql`
+        INSERT INTO posts (id, title, subtitle, slug, excerpt, excerpt_source, content,
+                           content_text, category, tags, status, created_at, updated_at,
+                           word_count, reading_time, author_id, revision)
+        VALUES ('p_54000', ${huge}, '', NULL, '', 'derived',
+                '{"type":"doc","content":[]}'::jsonb, '', '', '{}'::text[], 'draft',
+                ${Date.now()}, ${Date.now()}, 0, 0, ${actor().id}, 1)`),
+    );
+    expect(err.code).toBe('54000');
+    // And the validator refuses it long before the database is asked.
+    expect(checkPostMeta({ title: huge })).toEqual({ path: 'title', reason: 'too_large' });
+  });
+
+  it('maps a UNIQUE (post_id, revision) violation onto the 409, not a 500', async () => {
+    /*
+     * Spec §3.5's backstop, and the one the CAS cannot reach on its own: the
+     * revision row is inserted by `SELECT … FROM upd`, so a losing CAS inserts
+     * nothing. Under real parallelism — which PGlite's single connection cannot
+     * simulate (spec §9) — it is the database's last word on two writers
+     * reaching the same revision number, and `isSlugCollision` recognised only
+     * `posts_slug_unique`, so it fell through to a generic rethrow and a 500.
+     *
+     * Reached here by planting the revision row the next save is going to want.
+     */
+    const post = await seeded({ title: 'Backstop', slug: 'backstop' });
+    await ctx.db.execute(sql`
+      INSERT INTO revisions (id, post_id, revision, created_at, author_id,
+                             title, subtitle, content, word_count, kind, note)
+      VALUES ('r_planted', ${post.id}, ${post.revision + 1}, ${Date.now()}, ${actor().id},
+              'planted', '', '{"type":"doc","content":[]}'::jsonb, 0, 'manual', NULL)`);
+
+    const err = await rejection<StaleWriteError>(
+      savePost(ctx.db, post.id, { title: 'Next' }, { actor: actor() }),
+    );
+    expect(err).toBeInstanceOf(StaleWriteError);
+    expect(err.expected).toBe(post.revision);
+    expect(err.post?.id).toBe(post.id);
   });
 
   it('records the kind the caller asked for', async () => {
