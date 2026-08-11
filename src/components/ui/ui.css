@@ -1,0 +1,281 @@
+/* ---------------------------------------------------------------
+   Radix primitives, dressed in the design system.
+   Everything here must read correctly in BOTH themes — no hardcoded
+   colours, no exceptions.
+----------------------------------------------------------------- */
+
+.ui-ic {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+  stroke-width: 1.75;
+}
+
+/* --------------------------------------------------------------- select */
+
+.ui-select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  height: var(--ctl-h-lg);
+  padding: 0 var(--ctl-pad-x);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+  color: var(--ink-2);
+  font-size: var(--step--1);
+  cursor: pointer;
+  min-width: 11rem;
+  transition:
+    border-color var(--dur-1) var(--ease),
+    box-shadow var(--dur-1) var(--ease);
+}
+.ui-select--sm {
+  height: var(--ctl-h);
+  min-width: 9rem;
+}
+.ui-select:hover {
+  border-color: var(--rule-strong);
+}
+.ui-select[data-state='open'],
+.ui-select:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  outline: none;
+}
+.ui-select .ui-ic {
+  color: var(--ink-4);
+}
+
+/* ----------------------------------------------------------------- menu */
+
+.ui-menu {
+  min-width: var(--radix-dropdown-menu-trigger-width, 11rem);
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-3);
+  padding: var(--s1);
+  z-index: 300;
+  animation: ui-menu-in var(--dur-2) var(--ease-out);
+  max-height: var(--radix-select-content-available-height, 60vh);
+  overflow-y: auto;
+}
+.ui-menu[data-state='closed'] {
+  animation: ui-menu-out 120ms var(--ease) forwards;
+}
+@keyframes ui-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+@keyframes ui-menu-out {
+  to {
+    opacity: 0;
+    transform: translateY(-2px) scale(0.99);
+  }
+}
+
+.ui-menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  padding-left: 1.9rem;
+  border-radius: var(--radius-s);
+  font-size: var(--step--1);
+  color: var(--ink-2);
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+  position: relative;
+  white-space: nowrap;
+}
+.ui-menu__item[data-highlighted] {
+  background: var(--paper-sunken);
+  color: var(--ink);
+}
+.ui-menu__item[data-state='checked'] {
+  color: var(--ink);
+  font-weight: 500;
+}
+.ui-menu__item[data-disabled] {
+  color: var(--ink-5);
+  cursor: not-allowed;
+}
+.ui-menu__item--danger {
+  color: var(--danger);
+}
+.ui-menu__item--danger[data-highlighted] {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.ui-menu__check {
+  position: absolute;
+  left: var(--s3);
+  color: var(--accent);
+}
+.ui-menu__icon {
+  position: absolute;
+  left: var(--s3);
+  display: grid;
+  place-items: center;
+  color: var(--ink-4);
+}
+.ui-menu__item[data-highlighted] .ui-menu__icon {
+  color: inherit;
+}
+.ui-menu__label {
+  flex: 1;
+}
+.ui-menu__shortcut {
+  color: var(--ink-4);
+  font-size: var(--step--2);
+  font-variant-numeric: tabular-nums;
+  padding-left: var(--s4);
+}
+.ui-menu__sep {
+  height: 1px;
+  background: var(--rule);
+  margin: var(--s1) 0;
+}
+.ui-menu__grouplabel {
+  padding: var(--s2) var(--s3) var(--s1);
+  font-size: var(--step--2);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+
+/* ------------------------------------------------------------ feedback */
+
+.ui-spinner {
+  display: inline-block;
+  border-radius: 50%;
+  /* currentColor track so it inherits legible contrast from its context. */
+  border: 2px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-top-color: currentColor;
+  animation: ui-spin 620ms linear infinite;
+  vertical-align: -0.15em;
+}
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-spinner {
+    animation-duration: 1.6s;
+  }
+}
+
+.ui-skeleton {
+  display: block;
+  background: linear-gradient(
+    90deg,
+    var(--paper-sunken) 0%,
+    var(--paper-inset) 50%,
+    var(--paper-sunken) 100%
+  );
+  background-size: 200% 100%;
+  animation: ui-shimmer 1.4s var(--ease) infinite;
+  border-radius: var(--radius-s);
+}
+@keyframes ui-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+/* Stagger so a stack of placeholders breathes instead of pulsing in lockstep. */
+.ui-skeleton:nth-child(2) {
+  animation-delay: 120ms;
+}
+.ui-skeleton:nth-child(3) {
+  animation-delay: 240ms;
+}
+.ui-skeleton:nth-child(4) {
+  animation-delay: 360ms;
+}
+
+.ui-progress {
+  position: relative;
+  overflow: hidden;
+  height: 4px;
+  width: 100%;
+  border-radius: var(--radius-full);
+  background: var(--paper-inset);
+}
+.ui-progress__bar {
+  height: 100%;
+  width: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: transform var(--dur-3) var(--ease);
+}
+.ui-progress__bar--indeterminate {
+  width: 40%;
+  animation: ui-indeterminate 1.1s var(--ease) infinite;
+}
+@keyframes ui-indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(280%);
+  }
+}
+
+/* -------------------------------------------------------------- switch */
+
+.ui-switch {
+  width: 2.5rem;
+  height: 1.4rem;
+  background: var(--rule-strong);
+  border-radius: var(--radius-full);
+  position: relative;
+  border: 0;
+  cursor: pointer;
+  flex: none;
+  transition: background var(--dur-2) var(--ease);
+}
+.ui-switch[data-state='checked'] {
+  background: var(--accent);
+}
+.ui-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.ui-switch__thumb {
+  display: block;
+  width: 1.05rem;
+  height: 1.05rem;
+  background: var(--paper-raised);
+  border-radius: 50%;
+  box-shadow: var(--shadow-1);
+  transition: transform var(--dur-2) var(--ease);
+  transform: translateX(0.18rem);
+  will-change: transform;
+}
+.ui-switch__thumb[data-state='checked'] {
+  transform: translateX(1.27rem);
+}
+
+/* ------------------------------------------------------------- tooltip */
+
+.ui-tooltip {
+  background: var(--ink);
+  color: var(--paper);
+  font-size: var(--step--2);
+  padding: var(--s1) var(--s2);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow-2);
+  z-index: 400;
+  animation: ui-menu-in 120ms var(--ease-out);
+}
+.ui-tooltip__kbd {
+  opacity: 0.65;
+  padding-left: var(--s2);
+}

@@ -1,0 +1,233 @@
+/* ---------------------------------------------------------------
+   Prose. One stylesheet drives BOTH the editor surface and the
+   published article, so what you write is literally what you read.
+----------------------------------------------------------------- */
+
+.prose {
+  font-family: var(--font-display);
+  font-size: var(--step-2);
+  line-height: 1.72;
+  color: var(--ink);
+  letter-spacing: -0.003em;
+}
+
+.prose > * + * {
+  margin-top: 1.35em;
+}
+
+.prose p {
+  hyphens: auto;
+}
+
+.prose h2,
+.prose h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.018em;
+  line-height: 1.22;
+  color: var(--ink);
+}
+.prose h2 {
+  font-size: var(--step-4);
+  margin-top: 2em;
+}
+.prose h3 {
+  font-size: var(--step-3);
+  margin-top: 1.7em;
+}
+.prose h2 + p,
+.prose h3 + p {
+  margin-top: 0.7em;
+}
+
+.prose strong {
+  font-weight: 700;
+}
+.prose em {
+  font-style: italic;
+}
+
+.doc-link {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+  transition: color var(--dur-1) var(--ease);
+}
+.doc-link:hover {
+  color: var(--accent);
+}
+
+.prose code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--paper-inset);
+  padding: 0.12em 0.35em;
+  border-radius: var(--radius-s);
+}
+
+.doc-code {
+  font-family: var(--font-mono);
+  font-size: var(--step-0);
+  line-height: 1.65;
+  background: var(--code-bg);
+  color: var(--code-ink);
+  padding: var(--s4) var(--s5);
+  border-radius: var(--radius-m);
+  overflow-x: auto;
+  white-space: pre;
+  tab-size: 2;
+}
+.doc-code code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+  color: inherit;
+}
+
+.doc-quote {
+  border-left: 3px solid var(--accent);
+  padding: 0.15em 0 0.15em 1.35em;
+  font-style: italic;
+  color: var(--ink-2);
+  font-size: 1.06em;
+}
+.doc-quote p + p {
+  margin-top: 0.8em;
+}
+
+.doc-rule {
+  border: 0;
+  margin: 2.6em auto;
+  width: 6rem;
+  height: 1px;
+  background: none;
+  position: relative;
+}
+.doc-rule::after {
+  content: '· · ·';
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--ink-4);
+  letter-spacing: 0.5em;
+  font-size: var(--step-0);
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 1.3em;
+}
+.prose li + li {
+  margin-top: 0.45em;
+}
+.prose li p {
+  margin: 0;
+}
+.prose ul {
+  list-style: none;
+  padding-left: 1.25em;
+}
+.prose ul > li {
+  position: relative;
+}
+.prose ul > li::before {
+  content: '';
+  position: absolute;
+  left: -0.95em;
+  top: 0.72em;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ink-4);
+}
+.prose ul ul > li::before {
+  background: none;
+  border: 1px solid var(--ink-4);
+}
+
+.doc-tasks {
+  list-style: none;
+  padding-left: 0;
+}
+.doc-tasks li {
+  display: flex;
+  gap: 0.6em;
+  align-items: flex-start;
+}
+.doc-tasks li::before {
+  display: none;
+}
+.doc-tasks li > label {
+  flex: none;
+  margin-top: 0.42em;
+}
+.doc-tasks input[type='checkbox'] {
+  appearance: none;
+  width: 1.05em;
+  height: 1.05em;
+  border: 1.5px solid var(--rule-strong);
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.doc-tasks input[type='checkbox']:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.doc-tasks input[type='checkbox']:checked::after {
+  content: '';
+  width: 0.3em;
+  height: 0.55em;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(42deg) translate(-1px, -1px);
+}
+.doc-tasks li[data-checked='true'] > div {
+  color: var(--ink-4);
+  text-decoration: line-through;
+}
+
+.doc-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-m);
+  margin-inline: auto;
+}
+
+.img-missing {
+  display: grid;
+  place-items: center;
+  background: var(--paper-inset);
+  color: var(--ink-4);
+  font-family: var(--font-ui);
+  font-size: var(--step--2);
+  letter-spacing: 0.04em;
+  border-radius: var(--radius-m);
+  min-height: 6rem;
+}
+
+@media (max-width: 640px) {
+  .prose {
+    font-size: var(--step-1);
+    line-height: 1.68;
+  }
+  .prose h2 {
+    font-size: var(--step-3);
+  }
+  .prose h3 {
+    font-size: var(--step-2);
+  }
+  .doc-code {
+    padding: var(--s3);
+    font-size: var(--step--1);
+  }
+}

@@ -1,0 +1,643 @@
+.dash {
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  padding: var(--s7) var(--s5) var(--s9);
+}
+
+/* ------------------------------------------------------------ masthead */
+
+.dash__masthead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding-bottom: var(--s5);
+  border-bottom: 1px solid var(--rule);
+  flex-wrap: wrap;
+}
+.dash__masthead-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.dash__brand {
+  display: flex;
+  gap: var(--s4);
+  align-items: center;
+}
+.dash__mark {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 32% 30%, var(--accent) 0 38%, transparent 39%),
+    conic-gradient(from 210deg, var(--ink) 0 38%, var(--paper-inset) 38% 100%);
+  flex: none;
+  box-shadow: inset 0 0 0 1px var(--rule-strong);
+}
+/* The wordmark is identification, not headline. The posts are the headline —
+   so the brand sits at label scale and the content carries the weight. */
+.dash__title {
+  font-family: var(--font-display);
+  font-size: var(--step-0);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+}
+.dash__sub {
+  margin-top: 1px;
+  font-size: var(--step--1);
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+.dash__brand {
+  align-items: center;
+  gap: var(--s3);
+}
+
+/* ------------------------------------------------------------ controls */
+
+.dash__controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  margin-top: var(--s5);
+  flex-wrap: wrap;
+}
+
+.tabs {
+  display: flex;
+  gap: var(--s1);
+  overflow-x: auto;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+}
+.tabs > * {
+  scroll-snap-align: start;
+}
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+.tabs__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  padding: 0 var(--ctl-pad-x);
+  border-radius: var(--radius-m);
+  font-size: var(--step--1);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.tabs__tab:hover {
+  background: var(--paper-sunken);
+  color: var(--ink);
+}
+.tabs__tab.is-active {
+  background: var(--ink);
+  color: var(--paper);
+}
+.tabs__count {
+  font-size: var(--step--2);
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
+
+.dash__tools {
+  display: flex;
+  gap: var(--s2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.searchbox {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  padding: 0 var(--ctl-pad-x);
+  color: var(--ink-4);
+  min-width: 15rem;
+  transition: border-color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+}
+.searchbox:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.searchbox__input {
+  border: 0;
+  outline: none;
+  background: none;
+  flex: 1;
+  min-width: 0;
+  font-size: var(--step--1);
+  color: var(--ink);
+}
+.searchbox__input::-webkit-search-cancel-button {
+  display: none;
+}
+.searchbox__clear {
+  border: 0;
+  background: none;
+  cursor: pointer;
+  color: var(--ink-4);
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 0.15rem;
+}
+.searchbox__clear:hover {
+  color: var(--ink);
+}
+
+.select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.select select {
+  appearance: none;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  padding: 0 2rem 0 var(--ctl-pad-x);
+  font-size: var(--step--1);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.select select:hover {
+  border-color: var(--rule-strong);
+}
+.select .ic {
+  position: absolute;
+  right: 0.6rem;
+  pointer-events: none;
+  color: var(--ink-4);
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+.dash__cats {
+  display: flex;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  margin-top: var(--s4);
+}
+.catchip {
+  border: 1px solid var(--rule);
+  background: transparent;
+  border-radius: var(--radius-m);
+  padding: 0 var(--ctl-pad-x);
+  font-size: var(--step--1);
+  color: var(--ink-3);
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.catchip:hover {
+  border-color: var(--ink-4);
+  color: var(--ink);
+}
+.catchip.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-hover);
+  font-weight: 600;
+}
+
+.dash__activefilter {
+  margin-top: var(--s3);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--step--1);
+  color: var(--ink-3);
+}
+.dash__activefilter button {
+  border: 0;
+  background: var(--paper-sunken);
+  border-radius: 50%;
+  width: 1.2rem;
+  height: 1.2rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.trashbar {
+  margin-top: var(--s4);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  background: var(--paper-sunken);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  padding: var(--s3) var(--s4);
+  font-size: var(--step--1);
+  color: var(--ink-3);
+  flex-wrap: wrap;
+}
+
+/* ---------------------------------------------------------------- grid */
+
+.dash__grid {
+  margin-top: var(--s6);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
+  gap: var(--s5);
+  align-items: stretch;
+}
+
+/* Filtering is the dashboard's whole job, so it is the thing that gets the
+   motion budget: results settle in with a short stagger instead of teleporting.
+   Keyed on the active filter in JSX, so it replays on every change. */
+.dash__grid > .card {
+  animation: card-in var(--dur-3) var(--ease-out) backwards;
+  animation-delay: calc(var(--i, 0) * 22ms);
+}
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-l);
+  overflow: hidden;
+  transition:
+    border-color var(--dur-2) var(--ease),
+    box-shadow var(--dur-2) var(--ease),
+    transform var(--dur-2) var(--ease);
+}
+/* One hover signal, not three. The card lifts; the image sits still. */
+.card:hover {
+  border-color: var(--rule-strong);
+  box-shadow: var(--shadow-2);
+}
+.card:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+/* The accent marks what is live. Published posts carry a spine of it. */
+.card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: transparent;
+  transition: background var(--dur-2) var(--ease);
+  z-index: 3;
+}
+.card--published::before {
+  background: var(--accent);
+}
+.card--draft::before {
+  background: var(--rule-strong);
+}
+.card--trashed {
+  opacity: 0.72;
+}
+.card--trashed .card__media {
+  filter: grayscale(1);
+}
+.card--skeleton {
+  padding: 0 0 var(--s4);
+  display: grid;
+  gap: var(--s3);
+}
+.card--skeleton > .skeleton + .skeleton {
+  margin-inline: var(--s4);
+}
+
+/* Full-card click target that doesn't swallow the action buttons. */
+.card__hit {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+}
+.card__hit:focus-visible {
+  outline-offset: -3px;
+}
+
+.card__media {
+  aspect-ratio: 16 / 8;
+  background: var(--paper-sunken);
+  overflow: hidden;
+}
+.card__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Text-only posts get room for words instead of a placeholder rectangle. */
+.card--textonly .card__body {
+  padding-top: var(--s5);
+}
+.card--textonly .card__title {
+  font-size: var(--step-3);
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+.card--textonly .card__excerpt {
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
+}
+
+.card__body {
+  padding: var(--s4);
+  display: grid;
+  gap: var(--s2);
+  flex: 1;
+}
+
+.card__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+.card__cat {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.card__title {
+  font-family: var(--font-display);
+  font-size: var(--step-2);
+  font-weight: 600;
+  line-height: 1.28;
+  letter-spacing: -0.015em;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.card__title--untitled {
+  color: var(--ink-4);
+  font-style: italic;
+  font-weight: 400;
+}
+.card__subtitle {
+  font-family: var(--font-display);
+  font-size: var(--step-0);
+  color: var(--ink-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.card__excerpt {
+  font-size: var(--step--1);
+  color: var(--ink-3);
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card__tags {
+  display: flex;
+  gap: var(--s1);
+  flex-wrap: wrap;
+  position: relative;
+  z-index: 2;
+}
+.card__tag {
+  border: 0;
+  background: var(--paper-sunken);
+  color: var(--ink-3);
+  border-radius: var(--radius-full);
+  padding: var(--s1) var(--s2);
+  font-size: var(--step--2);
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.card__tag:hover {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+.card__tag--more {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.card__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-top: auto;
+  padding-top: var(--s2);
+  font-size: var(--step--2);
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+  flex-wrap: wrap;
+}
+.card__dot {
+  opacity: 0.5;
+}
+
+.card__actions {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  padding: var(--s2) var(--s3);
+  border-top: 1px solid var(--rule);
+  background: var(--paper);
+}
+.card__act {
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  font-size: var(--step--2);
+  font-weight: 500;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.card__act:hover {
+  background: var(--paper-sunken);
+  color: var(--ink);
+}
+.card__act--danger:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.card__act--icon {
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  padding: 0;
+}
+
+.menu {
+  position: relative;
+  margin-left: auto;
+}
+.menu__pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  min-width: 11rem;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-3);
+  padding: var(--s1);
+  display: grid;
+  z-index: 20;
+  animation: menu-in var(--dur-2) var(--ease-out);
+}
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+.menu__item {
+  text-align: left;
+  border: 0;
+  background: none;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--radius-s);
+  font-size: var(--step--1);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.menu__item:hover {
+  background: var(--paper-sunken);
+}
+.menu__item--danger {
+  color: var(--danger);
+}
+.menu__item--danger:hover {
+  background: var(--danger-soft);
+}
+.menu__sep {
+  height: 1px;
+  background: var(--rule);
+  margin: var(--s1) 0;
+}
+
+/* -------------------------------------------------------------- empty */
+
+.empty {
+  grid-column: 1 / -1;
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  gap: var(--s3);
+  padding: var(--s9) var(--s4);
+  color: var(--ink-3);
+}
+.empty__mark svg {
+  width: 4rem;
+  height: 4rem;
+  fill: none;
+  stroke: var(--rule-strong);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.empty__title {
+  font-family: var(--font-display);
+  font-size: var(--step-4);
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.02em;
+}
+.empty__body {
+  max-width: 32ch;
+  font-size: var(--step-0);
+  color: var(--ink-4);
+  line-height: 1.6;
+}
+.empty > .btn {
+  margin-top: var(--s2);
+}
+
+@media (max-width: 860px) {
+  /* Below this the tab strip genuinely overflows, so fade the trailing edge:
+     an off-screen tab must be visibly off-screen, not silently absent. */
+  .tabs {
+    mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
+  }
+}
+
+@media (max-width: 640px) {
+  .dash {
+    padding: var(--s5) var(--s4) var(--s8);
+  }
+  .dash__title {
+    font-size: var(--step-4);
+  }
+  .dash__masthead {
+    align-items: center;
+  }
+  .dash__grid {
+    grid-template-columns: 1fr;
+    gap: var(--s4);
+  }
+  .searchbox {
+    min-width: 0;
+    flex: 1;
+  }
+  .dash__tools {
+    width: 100%;
+  }
+}
+
+/* Long-running library work (import/export) — a bar, not a blocking modal. */
+.dash__busy {
+  display: grid;
+  gap: var(--s2);
+  margin-top: var(--s4);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+  font-size: var(--step--1);
+  color: var(--ink-3);
+}

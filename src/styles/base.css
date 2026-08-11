@@ -1,0 +1,296 @@
+/* Fonts are bundled, not fetched. The app claims to work offline and to talk
+   to no server; a Google Fonts request on every load would make both false. */
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/jetbrains-mono';
+@import '@fontsource/spectral/400.css';
+@import '@fontsource/spectral/400-italic.css';
+@import '@fontsource/spectral/600.css';
+@import '@fontsource/spectral/700.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: var(--step-0);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-wrap: anywhere;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure,
+blockquote,
+ul,
+ol {
+  margin: 0;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-s);
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+/* ------------------------------------------------------------- primitives */
+
+/* Every pill/field control derives its box from --ctl-* so a row of mixed
+   controls lines up exactly, instead of landing on 32.9 / 34.9 / 35.3px. */
+.btn,
+.input,
+.tabs__tab,
+.searchbox,
+.select select,
+.catchip {
+  height: var(--ctl-h-lg);
+  box-sizing: border-box;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-m);
+  padding: 0 var(--ctl-pad-x-lg);
+  font-size: var(--step--1);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  background: transparent;
+  position: relative;
+  transition:
+    background var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease),
+    transform var(--dur-1) var(--ease);
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* Hit area reaches the 44px minimum on touch without inflating the visual box. */
+@media (pointer: coarse) {
+  .btn::after,
+  .tabs__tab::after,
+  .catchip::after,
+  .bubble__btn::after,
+  .card__act::after {
+    content: '';
+    position: absolute;
+    inset: 50% 0 auto;
+    translate: 0 -50%;
+    height: var(--tap-min);
+    min-width: var(--tap-min);
+  }
+  .bubble__btn,
+  .blockmenu__plus,
+  .card__act,
+  .tabs__tab,
+  .catchip {
+    position: relative;
+  }
+}
+.btn:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.btn--primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn--ghost {
+  color: var(--ink-2);
+}
+.btn--ghost:hover:not(:disabled) {
+  background: var(--paper-sunken);
+  color: var(--ink);
+}
+
+.btn--outline {
+  border-color: var(--rule-strong);
+  color: var(--ink-2);
+  background: var(--paper-raised);
+}
+.btn--outline:hover:not(:disabled) {
+  border-color: var(--ink-4);
+  color: var(--ink);
+}
+
+.btn--danger {
+  color: var(--danger);
+}
+.btn--danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+
+.btn--sm {
+  height: var(--ctl-h);
+  padding: 0 var(--ctl-pad-x);
+  font-size: var(--step--1);
+}
+
+.input {
+  width: 100%;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  padding: 0 var(--ctl-pad-x);
+  font-size: var(--step-0);
+  transition: border-color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+}
+.input::placeholder {
+  color: var(--ink-4);
+}
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  border-radius: var(--radius-s);
+  padding: var(--s1) var(--s2);
+  font-size: var(--step--2);
+  text-transform: uppercase;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  background: var(--paper-sunken);
+  color: var(--ink-3);
+  border: 1px solid transparent;
+}
+.chip--draft {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.chip--published {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+.chip--archived {
+  background: var(--paper-inset);
+  color: var(--ink-3);
+}
+
+.label {
+  display: block;
+  font-size: var(--step--2);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: var(--s2);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Inline, non-blocking status band. Used for conflicts and storage trouble —
+   anything the writer must know but that must not interrupt typing. */
+.notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  flex-wrap: wrap;
+  margin: var(--s4) auto 0;
+  max-width: var(--shell-max);
+  padding: var(--s3) var(--s4);
+  border-radius: var(--radius-m);
+  border: 1px solid var(--rule);
+  font-size: var(--step--1);
+  line-height: 1.5;
+  animation: notice-in var(--dur-3) var(--ease-out);
+}
+.notice--warn {
+  background: var(--warn-soft);
+  border-color: color-mix(in srgb, var(--warn) 30%, transparent);
+  color: var(--ink-2);
+}
+.notice--danger {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 28%, transparent);
+  color: var(--ink-2);
+}
+.notice__actions {
+  display: flex;
+  gap: var(--s2);
+  flex: none;
+}
+@keyframes notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--paper-sunken) 0%,
+    var(--paper-inset) 50%,
+    var(--paper-sunken) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s var(--ease) infinite;
+  border-radius: var(--radius-s);
+}
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}

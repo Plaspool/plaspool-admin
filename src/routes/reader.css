@@ -1,0 +1,84 @@
+.reader {
+  min-height: 100dvh;
+  background: var(--paper);
+  padding-bottom: var(--s9);
+}
+
+.reader__progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  transform-origin: 0 50%;
+  z-index: 60;
+  will-change: transform;
+}
+
+.reader__bar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s3) var(--s5);
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: saturate(1.6) blur(12px);
+  border-bottom: 1px solid var(--rule);
+}
+.reader__bar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+
+/* The editor's --measure is set for a 42rem text column; the reading view
+   needs the same COLUMN, so it adds its own gutters on top rather than
+   eating into them. Measured: 64 characters per line at 22px. */
+
+/* Break the cover out of the text measure — it should feel like a plate. */
+
+@media (max-width: 640px) {
+
+  .reader__bar {
+    padding: var(--s2) var(--s3);
+  }
+}
+
+/* Article typography now lives in reader/templates.css so all four layouts
+   share one source. What stays here is the chrome around the article. */
+
+.reader__loading {
+  max-width: calc(var(--measure) + 2 * var(--s5));
+  margin: var(--s8) auto;
+  padding: 0 var(--s5);
+  display: grid;
+  gap: var(--s4);
+}
+
+.doc-caption {
+  margin-top: var(--s3);
+  text-align: center;
+  font-family: var(--font-ui);
+  font-size: var(--step--1);
+  color: var(--ink-4);
+  line-height: 1.5;
+}
+
+.doc-figure {
+  margin: 2em 0;
+}
+@media (min-width: 900px) {
+  .tpl__body .doc-figure {
+    width: calc(100% + 6rem);
+    margin-left: -3rem;
+  }
+  .tpl--technical .tpl__body .doc-figure,
+  .tpl--minimal .tpl__body .doc-figure {
+    width: 100%;
+    margin-left: 0;
+  }
+}

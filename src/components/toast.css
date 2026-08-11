@@ -1,0 +1,81 @@
+.toasts {
+  position: fixed;
+  bottom: var(--s5);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  z-index: 200;
+  pointer-events: none;
+  width: min(30rem, calc(100vw - 2rem));
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: var(--radius-m);
+  padding: 0.6rem 0.6rem 0.6rem 1rem;
+  font-size: var(--step--1);
+  box-shadow: var(--shadow-3);
+  animation: toast-in var(--dur-3) var(--ease-out);
+}
+.toast > span {
+  flex: 1;
+  min-width: 0;
+}
+.toast--danger {
+  background: var(--danger);
+}
+
+.toast__action {
+  background: rgba(255, 255, 255, 0.14);
+  border: 0;
+  color: inherit;
+  border-radius: var(--radius-full);
+  padding: 0.25rem 0.75rem;
+  font-size: var(--step--2);
+  font-weight: 600;
+  cursor: pointer;
+}
+.toast__action:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.toast__close {
+  background: none;
+  border: 0;
+  color: inherit;
+  opacity: 0.6;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.4rem;
+}
+.toast__close:hover {
+  opacity: 1;
+}
+
+/* Symmetric motion: what animates in animates out. A toast that vanishes on
+   a single frame after a 340ms entrance reads as a glitch. */
+.toast--leaving {
+  animation: toast-out 180ms var(--ease) forwards;
+  pointer-events: none;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+}
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}

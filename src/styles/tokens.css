@@ -1,0 +1,190 @@
+/* ---------------------------------------------------------------
+   Design system — the single source of truth.
+   Any third-party UI (TipTap, dialogs) is restyled to these tokens.
+   Warm paper + ink, one accent, generous type scale.
+----------------------------------------------------------------- */
+
+:root {
+  color-scheme: light dark;
+
+  /* surfaces */
+  --paper: #fbfaf7;
+  --paper-raised: #ffffff;
+  --paper-sunken: #f2f0ea;
+  --paper-inset: #e8e5da;
+
+  /* ink — every value below is >= 4.5:1 on --paper except --ink-5,
+     which is decorative only (rules, disabled glyphs, never body copy). */
+  --ink: #16150f; /* 17.6:1 */
+  --ink-2: #3a372d; /* 10.4:1 */
+  --ink-3: #5c584a; /*  6.4:1 */
+  --ink-4: #64604f; /*  5.4:1 on paper, 4.6:1 on the deepest inset */
+  --ink-5: #9a9384; /*  2.9:1 — decorative only */
+
+  /* lines */
+  --rule: #e2ded2;
+  --rule-strong: #c7c0ae;
+
+  /* accent — deep botanical green */
+  --accent: #1c6b4b;
+  --accent-hover: #17573d;
+  --accent-soft: #e4efe9;
+  --accent-line: #b6d4c5;
+  --accent-ink: #ffffff;
+
+  /* state */
+  --danger: #962c1c;
+  --danger-soft: #f8ebe8;
+  --warn: #7a5610;
+  --warn-soft: #f6eeda;
+
+  /* Code has its own surface. Using --ink as a background inverted in dark
+     mode and produced light text on a light block — the exact unreadable
+     case the rest of this file exists to prevent. */
+  --code-bg: #1b1a14;
+  --code-ink: #ece9dc;
+
+  /* type */
+  --font-display: 'Spectral', 'Iowan Old Style', 'Palatino Linotype', Palatino,
+    Georgia, 'Times New Roman', serif;
+  --font-ui: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* A real ramp: ~1.2 minor third through the UI range, widening for display.
+     No two adjacent steps sit inside 1px of each other. */
+  --step--2: 0.6875rem; /* 11 */
+  --step--1: 0.8125rem; /* 13 */
+  --step-0: 0.9375rem; /* 15 */
+  --step-1: 1.125rem; /* 18 */
+  --step-2: 1.375rem; /* 22 */
+  --step-3: 1.6875rem; /* 27 */
+  --step-4: 2.125rem; /* 34 */
+  --step-5: 2.625rem; /* 42 */
+  --step-6: clamp(2.5rem, 1.6rem + 3.6vw, 4rem);
+
+  /* space — 4px base */
+  --s1: 0.25rem;
+  --s2: 0.5rem;
+  --s3: 0.75rem;
+  --s4: 1rem;
+  --s5: 1.5rem;
+  --s6: 2rem;
+  --s7: 3rem;
+  --s8: 4rem;
+  --s9: 6rem;
+
+  /* controls — ONE height for every pill/field on a row, on the 4px grid.
+     Every control derives its padding from these; no per-component numbers. */
+  --ctl-h: 2rem; /* 32 */
+  --ctl-h-lg: 2.25rem; /* 36 */
+  --ctl-pad-x: 0.75rem;
+  --ctl-pad-x-lg: 1rem;
+  /* Coarse pointers get a 44px hit area without changing the visual box. */
+  --tap-min: 2.75rem;
+
+  --radius-s: 6px;
+  --radius-m: 10px;
+  --radius-l: 16px;
+  --radius-full: 999px;
+
+  --shadow-1: 0 1px 2px rgba(22, 21, 15, 0.05), 0 1px 1px rgba(22, 21, 15, 0.03);
+  --shadow-2: 0 4px 16px -4px rgba(22, 21, 15, 0.1), 0 2px 4px rgba(22, 21, 15, 0.04);
+  --shadow-3: 0 24px 60px -12px rgba(22, 21, 15, 0.22),
+    0 8px 20px -8px rgba(22, 21, 15, 0.12);
+
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 340ms;
+
+  --measure: 42rem;
+  --shell-max: 76rem;
+}
+
+/* ---------------------------------------------------------------
+   Dark. Not an inversion — a different paper. Warm near-black with
+   the same ink relationships, so contrast ratios carry over.
+----------------------------------------------------------------- */
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --paper: #14140f;
+    --paper-raised: #1c1c16;
+    --paper-sunken: #232219;
+    --paper-inset: #2c2a20;
+
+    --ink: #f4f1e6; /* 15.9:1 */
+    --ink-2: #ddd8c8;
+    --ink-3: #b3ad9b; /*  7.2:1 */
+    --ink-4: #9d9784; /*  5.5:1 on paper, 4.6:1 on the deepest inset */
+    --ink-5: #6b6659;
+
+    --rule: #33322a;
+    --rule-strong: #4a483d;
+
+    --accent: #5cbd90;
+    --accent-hover: #75cba3;
+    --accent-soft: #1c2c25;
+    --accent-line: #2f4c3e;
+    --accent-ink: #0d1b14;
+
+    --danger: #e88b78;
+    --danger-soft: #2e1d18;
+    --warn: #d9b164;
+    --warn-soft: #2b2418;
+
+    --code-bg: #0e0e0a;
+    --code-ink: #e6e2d4;
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-2: 0 4px 16px -4px rgba(0, 0, 0, 0.5), 0 2px 4px rgba(0, 0, 0, 0.3);
+    --shadow-3: 0 24px 60px -12px rgba(0, 0, 0, 0.6), 0 8px 20px -8px rgba(0, 0, 0, 0.4);
+  }
+}
+
+:root[data-theme='dark'] {
+  --paper: #14140f;
+  --paper-raised: #1c1c16;
+  --paper-sunken: #232219;
+  --paper-inset: #2c2a20;
+
+  --ink: #f4f1e6;
+  --ink-2: #ddd8c8;
+  --ink-3: #b3ad9b;
+  --ink-4: #9d9784;
+  --ink-5: #6b6659;
+
+  --rule: #33322a;
+  --rule-strong: #4a483d;
+
+  --accent: #5cbd90;
+  --accent-hover: #75cba3;
+  --accent-soft: #1c2c25;
+  --accent-line: #2f4c3e;
+  --accent-ink: #0d1b14;
+
+  --danger: #e88b78;
+  --danger-soft: #2e1d18;
+  --warn: #d9b164;
+  --warn-soft: #2b2418;
+
+  --code-bg: #0e0e0a;
+  --code-ink: #e6e2d4;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 4px 16px -4px rgba(0, 0, 0, 0.5), 0 2px 4px rgba(0, 0, 0, 0.3);
+  --shadow-3: 0 24px 60px -12px rgba(0, 0, 0, 0.6), 0 8px 20px -8px rgba(0, 0, 0, 0.4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
