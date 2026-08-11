@@ -26,14 +26,22 @@ import react from '@vitejs/plugin-react';
  * Two more things this encodes:
  *
  * - The `server` timeout bump exists because `freshDb()` boots PGlite, runs
- *   migrations and seeds users. `hookTimeout` is three times `testTimeout`
- *   because that boot happens in `beforeAll` and its cost is dominated by how
- *   many other workers are compiling WASM at the same moment, not by anything
- *   the suite does. Four server files now open their own database, and at
- *   20 000 ms the margin was thin enough to lose: measured, a single boot is
- *   ~1.5 s, but three suites racing on a loaded machine push it past 20 s and
- *   the file fails in `beforeAll` with every test in it reported as SKIPPED —
- *   which is a red bar with no failing assertion anywhere to explain it.
+ *   migrations and seeds users. `hookTimeout` is twice `testTimeout` because
+ *   that boot happens in `beforeAll` and its cost is dominated by how many
+ *   other workers are compiling WASM at the same moment, not by anything the
+ *   suite does. Four server files opening their own database already made
+ *   20 000 ms thin enough to lose: measured, a single boot is ~1.5 s, but
+ *   three suites racing on a loaded machine push it past 20 s and the file
+ *   fails in `beforeAll` with every test in it reported as SKIPPED — which is
+ *   a red bar with no failing assertion anywhere to explain it.
+ *
+ *   The HTTP surface added five more database-opening suites and the margin
+ *   went from thin to gone: `migrations.test.ts`, which boots several PGlite
+ *   instances INSIDE a test body rather than in a hook, timed out at 22.2 s
+ *   against the 20 000 ms ceiling with nothing wrong with it. Raised to
+ *   60 000 ms. This is a ceiling on machine contention, not on anything a
+ *   test is allowed to take: no suite here does 60 s of work, and a genuine
+ *   hang still fails, just later.
  * - Creating this file stops Vitest reading `vite.config.ts`, so the `ui`
  *   project has to declare the React plugin itself.
  *
@@ -84,8 +92,8 @@ export default defineConfig({
           ],
           environment: 'node',
           env: serverEnv,
-          testTimeout: 20000,
-          hookTimeout: 60000,
+          testTimeout: 60000,
+          hookTimeout: 120000,
         },
       },
       {

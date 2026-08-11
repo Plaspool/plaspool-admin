@@ -1,0 +1,112 @@
+import { randomUUID } from 'node:crypto';
+import { Hono } from 'hono';
+import { getDb } from './db/client';
+import type { Db } from './db/client';
+import { toResponse } from './middleware/errors';
+import { NotFoundError } from './repo/errors';
+import { originGuard } from './middleware/origin';
+import { sessionMiddleware } from './middleware/session';
+import type { AppEnv } from './app-env';
+
+export type { AppEnv } from './app-env';
+
+/**
+ * The app (spec §2).
+ *
+ * A FACTORY, NOT A MODULE-SCOPE SINGLETON WITH BAKED-IN DEPENDENCIES. Two
+ * things force it, and both are properties the plan asks to be proved:
+ *
+ * - the rate limiter must bound the DEPLOYMENT, not one instance, and the only
+ *   honest way to test that is to build two apps over one database and watch
+ *   the count carry across them. A singleton holding a module-level handle
+ *   cannot express the question.
+ * - every suite in this repository runs against its own PGlite. A `getDb()`
+ *   baked in at import time would dial Neon, or would need an environment
+ *   variable per test file.
+ *
+ * `export const app` still exists below for the two callers that want the real
+ * thing — the Vercel entrypoint and the dev server.
+ */
+
+export interface AppDeps {
+  /**
+   * The handle, or a function returning it. Defaulted to `getDb`, and CALLED
+   * PER REQUEST rather than at construction, so importing this module never
+   * demands `DATABASE_URL`.
+   */
+  db?: Db | (() => Db);
+  /** Exact-match allow-list. Defaults to `APP_ORIGINS` (spec §6). */
+  origins?: readonly string[];
+}
+
+/**
+ * The prefix, in one constant.
+ *
+ * Every route in this app is registered under `/api` — the Vercel catch-all
+ * passes the path through unmodified and the Vite dev proxy forwards `/api` to
+ * port 8787, so a route mounted at `/posts` would be reachable in neither.
+ */
+export const API_PREFIX = '/api';
+
+export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
+  const { db } = deps;
+  const resolveDb: () => Db =
+    typeof db === 'function' ? (db as () => Db) : db ? () => db : getDb;
+
+  const app = new Hono<AppEnv>();
+
+  /*
+   * FIRST, SO EVERYTHING AFTER IT HAS ONE. Spec §8: every response carries a
+   * `requestId`, logged alongside the stack, and a 500 never leaks the stack
+   * itself — the id is the only thread between what the caller saw and what the
+   * log holds.
+   *
+   * Minted here and never read from the request. Echoing a caller-supplied
+   * `X-Request-Id` would let anyone write arbitrary ids into the log and
+   * collide them with somebody else's incident.
+   */
+  app.use('*', async (c, next) => {
+    const requestId = randomUUID();
+    c.set('requestId', requestId);
+    await next();
+    c.res.headers.set('x-request-id', requestId);
+  });
+
+  app.onError((err, c) => toResponse(err, c.get('requestId') ?? ''));
+
+  /*
+   * An unrouted path answers with the same shape as everything else. `gone` is
+   * spec §8's only 404 and the client's retry policy stops on 404 either way,
+   * so a typo'd URL fails immediately instead of being retried five times as a
+   * transient error.
+   */
+  // `NotFoundError` carries an id only for its message, which is never sent —
+  // spec §8's 404 body is `{ error: 'gone' }` and nothing else.
+  app.notFound((c) =>
+    toResponse(new NotFoundError(c.req.path), c.get('requestId') ?? ''),
+  );
+
+  /*
+   * BEFORE the database middleware, deliberately. A liveness probe that cannot
+   * answer without `DATABASE_URL` reports the environment, not the process, and
+   * `server/dev.ts` is expected to serve it with no environment at all.
+   */
+  app.get(`${API_PREFIX}/health`, (c) => c.json({ ok: true }));
+
+  app.use(`${API_PREFIX}/*`, async (c, next) => {
+    c.set('db', resolveDb());
+    await next();
+  });
+
+  // Origin before session: a forged cross-origin write is refused before it
+  // costs a session lookup.
+  app.use(`${API_PREFIX}/*`, originGuard(deps.origins));
+  app.use(`${API_PREFIX}/*`, sessionMiddleware());
+
+  return app;
+}
+
+/** The real app, for `api/[[...route]].ts` and `server/dev.ts`. */
+export const app = createApp();
+
+export default app;

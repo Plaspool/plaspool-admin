@@ -1,32 +1,31 @@
 /**
  * The local API server. `npm run dev:api`, and half of `npm run dev:all`.
  *
- * `package.json` has pointed `dev:api` at this file since Task 1, but the file
- * did not exist — so `npm run dev:api` and `npm run dev:all` both died with
- * `Cannot find module server/dev.ts`, and `dev:all` took the Vite dev server
- * down with it under `concurrently`.
+ * It serves the REAL app — `server/index.ts`, the same object
+ * `api/[[...route]].ts` hands to Vercel — rather than a parallel copy of the
+ * route table. A dev server that assembles its own middleware chain is a second
+ * implementation of the thing most likely to be got wrong, and every
+ * disagreement between the two shows up as "works locally".
  *
- * Deliberately minimal, and deliberately not a placeholder that throws: Task 10
- * mounts the real router by replacing the single `app.route(...)` line below,
- * and every task before it needs `dev:all` to start. `/api/health` is the only
- * route, so this imports neither `./env` nor `./db/client` — a dev server that
- * demands `DATABASE_URL` and `SESSION_SECRET` before it will answer at all
- * would be a worse failure than the one being fixed.
+ * Two properties are load-bearing and both are pinned by `dev.test.ts`:
  *
- * The app is exported and `serve()` runs only when this file is the process
- * entrypoint, so `dev.test.ts` can drive it through `app.request()` without
- * binding a port.
+ * - **it does not import `./env`.** `getEnv()` is called per request, from the
+ *   middleware that needs it, so importing this module (or running it with an
+ *   empty `.env`) does not fail at boot. `/api/health` is registered before the
+ *   database middleware for the same reason: a liveness probe that demands
+ *   `DATABASE_URL` reports the environment rather than the process.
+ * - **importing it binds no port.** `serve()` runs only when this file is the
+ *   process entrypoint, so the suite can drive `app.request()` with no socket
+ *   to collide with and no teardown to leak.
  */
 import { pathToFileURL } from 'node:url';
 import { serve } from '@hono/node-server';
-import { Hono } from 'hono';
+import { app } from './index';
 
 /** Same port `vite.config.ts` proxies `/api` to. */
 export const DEV_PORT = 8787;
 
-export const app = new Hono();
-
-app.get('/api/health', (c) => c.json({ ok: true }));
+export { app };
 
 /**
  * Vercel serves this app from `api/[[...route]].ts` in production; this file is
