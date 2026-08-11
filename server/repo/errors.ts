@@ -29,6 +29,24 @@ export class StaleWriteError extends Error {
   }
 }
 
+/**
+ * 400 `{ error: 'bad_request', detail }`. A request the server can parse but
+ * cannot honour: a page limit outside its range, a cursor that does not decode.
+ *
+ * It exists so those cases are not 500s. A 500 is transient by the client's
+ * retry policy (spec §8) and would be retried five times with backoff for a
+ * request that can never succeed; a 400 stops immediately and names the field.
+ */
+export class BadRequestError extends Error {
+  readonly detail: string;
+
+  constructor(detail: string) {
+    super(detail);
+    this.name = 'BadRequestError';
+    this.detail = detail;
+  }
+}
+
 /** 404 `{ error: 'gone' }`. Absent or destroyed — the client cannot tell. */
 export class NotFoundError extends Error {
   readonly id: string;

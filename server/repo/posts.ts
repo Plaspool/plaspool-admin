@@ -146,6 +146,14 @@ export interface SavePostOptions {
   kind?: Revision['kind'];
   /** When set, refuse the write if the stored post has moved on. */
   baseRevision?: number;
+  /**
+   * Human-readable summary for the revision this save writes.
+   *
+   * Here rather than in a second CAS statement so `restoreRevision` can say
+   * which revision it restored while still going through the one write path —
+   * a parallel statement would be a second place for the CAS to be got wrong.
+   */
+  note?: string;
 }
 
 /**
@@ -257,7 +265,8 @@ export async function savePost(
       INSERT INTO revisions (id, post_id, revision, created_at, author_id,
                              title, subtitle, content, word_count, kind, note)
       SELECT ${revId}, upd.id, upd.revision, ${now}, ${opts.actor.id},
-             upd.title, upd.subtitle, upd.content, upd.word_count, ${kind}, NULL
+             upd.title, upd.subtitle, upd.content, upd.word_count, ${kind},
+             ${opts.note ?? null}
         FROM upd
       RETURNING 1
     )

@@ -6,6 +6,8 @@ import type {
   Post,
   PostStatus,
   ReadingTemplate,
+  Revision,
+  RevisionMeta,
 } from '../../shared/types';
 
 /**
@@ -112,6 +114,55 @@ export function rowToListPost(row: Record<string, unknown>, authorName: string):
 export function rowToPost(row: Record<string, unknown>, authorName: string): Post {
   return {
     ...rowToListPost(row, authorName),
+    content: json<DocNode>(row.content) ?? { type: 'doc', content: [] },
+  };
+}
+
+// ------------------------------------------------------------------ revisions
+
+/**
+ * Every column a `RevisionMeta` needs, enumerated for the same reason
+ * `POST_COLUMNS` is: `content` is the one column on this table that is
+ * unbounded, and history is unbounded in rows as well, so a `SELECT *` behind a
+ * list endpoint ships the entire document store to draw a sidebar.
+ */
+export const REVISION_META_COLUMNS: string[] = [
+  'id',
+  'post_id',
+  'revision',
+  'created_at',
+  'author_id',
+  'title',
+  'subtitle',
+  'word_count',
+  'kind',
+  'note',
+];
+
+/** The full snapshot — the only place `content` is read from this table. */
+export const REVISION_COLUMNS: string[] = [...REVISION_META_COLUMNS, 'content'];
+
+export function rowToRevisionMeta(row: Record<string, unknown>): RevisionMeta {
+  return {
+    id: String(row.id),
+    postId: String(row.post_id),
+    revision: Number(row.revision),
+    createdAt: toEpochMs(row.created_at),
+    // `not null` in the schema, so a server-written row always has one. Read
+    // defensively anyway: this mapper is also what an imported or backfilled
+    // row would come through.
+    authorId: row.author_id == null ? undefined : String(row.author_id),
+    title: String(row.title),
+    subtitle: String(row.subtitle),
+    wordCount: Number(row.word_count),
+    kind: row.kind as Revision['kind'],
+    note: row.note == null ? undefined : String(row.note),
+  };
+}
+
+export function rowToRevision(row: Record<string, unknown>): Revision {
+  return {
+    ...rowToRevisionMeta(row),
     content: json<DocNode>(row.content) ?? { type: 'doc', content: [] },
   };
 }

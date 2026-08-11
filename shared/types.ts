@@ -110,6 +110,21 @@ export interface Revision {
   postId: string;
   revision: number;
   createdAt: number;
+  /**
+   * `users.id` of whoever made this snapshot — `revisions.author_id`, which the
+   * schema declares `not null`, so every server-written revision carries it.
+   *
+   * OPTIONAL IN THE DOMAIN TYPE, AND DELIBERATELY. The plan asks for
+   * `authorId: string`; the spec (§3.5) is the narrower claim — `revisions`
+   * "mirrors `Revision`, **plus** `author_id`" — and the spec wins. Making it
+   * required would be a lie about the rows that already exist: the pre-cutover
+   * IndexedDB store writes revisions from three places in `src/data/posts.ts`
+   * and an import bundle carries a fourth, none of which has ever had a user
+   * to name. Until Project C's cutover, "who made this" is genuinely unknown
+   * for locally-written history, and a type that says otherwise just moves the
+   * lie somewhere a `!` hides it.
+   */
+  authorId?: string;
   title: string;
   subtitle: string;
   content: DocNode;
@@ -152,6 +167,14 @@ export interface AuthUser {
  * `GET /api/posts/:id`.
  */
 export type ListPost = Omit<Post, 'content'>;
+
+/**
+ * What `GET /api/posts/:id/revisions` returns, for the same reason `ListPost`
+ * exists and more sharply: history is unbounded, so a list that carried bodies
+ * would grow without limit while the panel only ever renders titles, word
+ * counts and kinds. Bodies come from `GET /api/revisions/:revId`.
+ */
+export type RevisionMeta = Omit<Revision, 'content'>;
 
 /**
  * Fields a caller may change. Everything else is derived or system-owned.
