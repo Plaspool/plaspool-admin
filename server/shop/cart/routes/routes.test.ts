@@ -394,6 +394,8 @@ describe('the maintenance cron route', () => {
       .toEqual({
         drain: { scanned: 2, applied: 0, ignored: 2, parked: 0, abandoned: 0 },
         sweep: { released: 0, failed: 0 },
+        passes: 2,
+        exhausted: false,
       });
   });
 });

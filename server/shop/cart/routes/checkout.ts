@@ -206,7 +206,18 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
  * retry a failed cron invocation.
  */
 function maintenance(c: Context<ShopEnv>, deps: ShopCartDeps, limit?: number) {
-  return runCartMaintenance(shopDb(c), deps.catalog, { limit: limit ?? CRON_BATCH });
+  return runCartMaintenance(shopDb(c), deps.catalog, {
+    limit: limit ?? CRON_BATCH,
+    /*
+     * UNTIL THE OUTBOX IS EMPTY, not one batch. Measured with the batch at 50
+     * against a day of 120 captures: one invocation applied 50 and left 70 —
+     * three days to clear one busy day, while more arrived. A scheduled job that
+     * drains a fixed slice does not catch up; it falls behind at the rate the
+     * shop succeeds. Bounded by wall clock instead, because `maxDuration` is what
+     * actually constrains this and Vercel does not retry a timed-out cron.
+     */
+    untilEmpty: true,
+  });
 }
 
 async function requireCart(c: Context<ShopEnv>, db: Db) {

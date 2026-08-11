@@ -369,6 +369,79 @@ describe('the capture beats the sweeper', () => {
   });
 });
 
+describe('one maintenance run clears the whole backlog', () => {
+  it('drains 120 captures in ONE invocation, not one batch of them', async () => {
+    /*
+     * WHY THE SCHEDULE WAS THE WRONG THING TO ARGUE ABOUT. With a fixed batch of
+     * 50 this was measured at: one invocation applies 50, leaves 70 — three days
+     * to clear a single busy day on a daily cron, while more arrive. The job
+     * falls behind at exactly the rate the shop succeeds.
+     *
+     * Draining until empty makes one run a real backstop, whatever the schedule.
+     */
+    const carts: string[] = [];
+    for (let i = 0; i < 120; i += 1) {
+      const cart = await createCart(db, { currency: TEST_CURRENCY });
+      carts.push(cart.id);
+      await emit('payment.captured', `pi_${i}`, { intentId: `pi_${i}`, checkoutId: cart.id });
+    }
+
+    const summary = await runCartMaintenance(db, catalog, { limit: 50, untilEmpty: true });
+
+    expect(summary.drain.scanned).toBe(120);
+    expect(summary.passes).toBeGreaterThan(1);
+    expect(summary.exhausted).toBe(false);
+    const left = await db.execute(sql`
+      SELECT count(*)::int AS n FROM commerce_events e
+       WHERE NOT EXISTS (SELECT 1 FROM shop_cart_event_consumptions c
+                          WHERE c.consumer = ${CART_CONSUMER} AND c.event_id = e.id)`);
+    expect(Number(left.rows[0].n)).toBe(0);
+  });
+
+  it('stops at the pass ceiling and SAYS it is still behind', async () => {
+    // `exhausted` is the signal that one invocation was not enough. A cron that
+    // reports it every night is a cron that is falling behind, and nothing else
+    // in the system would say so.
+    for (let i = 0; i < 30; i += 1) await emit('x.unknown', `s_${i}`, {});
+
+    const summary = await runCartMaintenance(db, catalog, {
+      limit: 5,
+      untilEmpty: true,
+      maxPasses: 2,
+    });
+
+    expect(summary.passes).toBe(2);
+    expect(summary.drain.scanned).toBe(10);
+    expect(summary.exhausted).toBe(true);
+  });
+
+  it('the LAZY path still takes exactly one small pass', async () => {
+    // A shopper's page load is not the place to clear a backlog.
+    for (let i = 0; i < 30; i += 1) await emit('x.unknown', `s_${i}`, {});
+
+    const summary = await runCartMaintenance(db, catalog, { limit: 5 });
+
+    expect(summary.passes).toBe(1);
+    expect(summary.drain.scanned).toBe(5);
+    expect(summary.exhausted).toBe(false);
+  });
+
+  it('terminates even when every event is PARKED and stays a candidate', async () => {
+    /*
+     * A parked event is deliberately still a candidate, so a pass that finds only
+     * parked events finds them again on the next one. They drop out after
+     * MAX_EVENT_ATTEMPTS, but the loop must not depend on that to terminate —
+     * hence the pass ceiling.
+     */
+    for (let i = 0; i < 3; i += 1) await emit('payment.captured', `pi_${i}`, { intentId: 'x' });
+
+    const summary = await runCartMaintenance(db, catalog, { limit: 10, untilEmpty: true });
+
+    expect(summary.passes).toBeLessThanOrEqual(MAX_EVENT_ATTEMPTS + 1);
+    expect(summary.drain.abandoned).toBe(3);
+  });
+});
+
 describe('the drain is bounded', () => {
   it('takes at most `limit` events per run, oldest first', async () => {
     // Unbounded, this runs on a cart read as well as on the cron route, and its

@@ -252,7 +252,29 @@ export async function drainCommerceEvents(
 export interface MaintenanceSummary {
   drain: DrainSummary;
   sweep: SweepOutcome;
+  /** How many drain passes ran. `1` on the lazy path; more on the cron. */
+  passes: number;
+  /** True when the drain stopped with work still outstanding — the budget or
+   * the pass ceiling was reached rather than the outbox being empty. A cron that
+   * reports this every night is a cron that is falling behind. */
+  exhausted: boolean;
 }
+
+/**
+ * How long one invocation may spend draining, and how many passes it may take.
+ *
+ * `vercel.json` caps these functions at `maxDuration: 30`, and Vercel does not
+ * retry a cron that times out — so an invocation that runs out of wall clock is
+ * an invocation that did nothing, not one that did less. Twenty seconds leaves
+ * room for the sweep afterwards and for a slow round trip on the last batch.
+ *
+ * The pass ceiling is not just belt-and-braces. A PARKED event stays in the
+ * candidate set by design, so a pass that finds only parked events finds them
+ * again on the next one; they drop out after `MAX_EVENT_ATTEMPTS`, but the loop
+ * must not depend on that for termination.
+ */
+export const MAINTENANCE_BUDGET_MS = 20_000;
+export const MAINTENANCE_MAX_PASSES = 40;
 
 /**
  * The two housekeeping jobs, **in this order**.
@@ -270,9 +292,67 @@ export interface MaintenanceSummary {
 export async function runCartMaintenance(
   db: Db,
   catalog: CatalogPort,
-  a: { limit?: number; now?: number } = {},
+  a: {
+    limit?: number;
+    now?: number;
+    /**
+     * Keep draining until the outbox holds nothing for Cart, or the budget runs
+     * out. The cron passes true; the lazy path on a cart read does NOT.
+     */
+    untilEmpty?: boolean;
+    budgetMs?: number;
+    maxPasses?: number;
+  } = {},
 ): Promise<MaintenanceSummary> {
-  const drain = await drainCommerceEvents(db, catalog, a);
+  /*
+   * ═══ WHY A SINGLE FIXED BATCH WAS NOT A BACKSTOP ═══
+   *
+   * Measured against a day of 120 captures with the batch at 50: one invocation
+   * applied 50 and left 70, i.e. THREE DAYS to clear one busy day — while more
+   * arrived. A daily cron that drains a fixed batch does not catch up; it falls
+   * behind at exactly the rate the shop is succeeding.
+   *
+   * So the cron drains until the outbox is empty, bounded by wall clock rather
+   * than by a row count. The lazy path on a cart read still takes ONE small
+   * pass: a shopper's page load is not the place to clear a backlog.
+   */
+  const started = Date.now();
+  const budget = a.budgetMs ?? MAINTENANCE_BUDGET_MS;
+  const ceiling = a.untilEmpty ? (a.maxPasses ?? MAINTENANCE_MAX_PASSES) : 1;
+
+  const drain: DrainSummary = {
+    scanned: 0,
+    applied: 0,
+    ignored: 0,
+    parked: 0,
+    abandoned: 0,
+  };
+  let passes = 0;
+  let exhausted = false;
+
+  for (let pass = 0; pass < ceiling; pass += 1) {
+    const one = await drainCommerceEvents(db, catalog, a);
+    passes += 1;
+    drain.scanned += one.scanned;
+    drain.applied += one.applied;
+    drain.ignored += one.ignored;
+    drain.parked += one.parked;
+    drain.abandoned += one.abandoned;
+
+    // Nothing left for Cart. The only clean way out of this loop.
+    if (one.scanned === 0) break;
+    if (pass + 1 >= ceiling || Date.now() - started >= budget) {
+      exhausted = a.untilEmpty === true;
+      break;
+    }
+  }
+
+  /*
+   * THE SWEEP RUNS EVEN WHEN THE DRAIN WAS EXHAUSTED, and that is safe now: the
+   * sweeper refuses to expire a hold whose cart has a capture in the outbox, so
+   * an undrained backlog cannot cost anybody their stock. Before that guard
+   * existed this line was the bug — see `sweepExpiredReservations`.
+   */
   const sweep = await sweepExpiredReservations(db, catalog, a);
-  return { drain, sweep };
+  return { drain, sweep, passes, exhausted };
 }

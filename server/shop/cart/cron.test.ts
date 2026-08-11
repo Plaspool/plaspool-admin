@@ -65,6 +65,10 @@ describe('the cron endpoint', () => {
     expect(await json<{ drain: unknown; sweep: unknown }>(res)).toEqual({
       drain: { scanned: 0, applied: 0, ignored: 0, parked: 0, abandoned: 0 },
       sweep: { released: 0, failed: 0 },
+      // ONE pass, because the outbox was already empty — the loop's only clean
+      // exit. `exhausted` false means it finished the work, not the budget.
+      passes: 1,
+      exhausted: false,
     });
   });
 
