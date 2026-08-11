@@ -15,12 +15,30 @@ export interface TestCtx {
   close(): Promise<void>;
 }
 
-export async function freshDb(): Promise<TestCtx> {
+/**
+ * A migrated database with no rows at all.
+ *
+ * Separate from `freshDb()` because the schema suite is testing the `users`
+ * table among others — seeding users before asserting on their constraints
+ * would be circular — and because Task 3's own tests create their users
+ * through `createUser`, which is the thing under test.
+ */
+export interface RawCtx {
+  db: Db;
+  close(): Promise<void>;
+}
+
+export async function migratedDb(): Promise<RawCtx> {
   const client = new PGlite();
   const db = drizzle(client, { schema }) as unknown as Db;
   await migrate(db as never, { migrationsFolder: 'server/db/migrations' });
+  return { db, close: () => client.close() };
+}
+
+export async function freshDb(): Promise<TestCtx> {
+  const { db, close } = await migratedDb();
   const users = await seedUsers(db);
-  return { db, users, close: () => client.close() };
+  return { db, users, close };
 }
 
 /**
