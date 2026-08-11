@@ -8,6 +8,7 @@ import type { Db } from '../db/client';
 import {
   SESSION_ABSOLUTE_MAX_MS,
   SESSION_TTL_MS,
+  DuplicateEmailError,
   UserInputError,
   acceptInvite,
   createInvite,
@@ -140,6 +141,27 @@ describe('sessions', () => {
     expect(after.expiresAt).toBe(before.expiresAt);
   });
 
+  it('the sliding window is 30 days and the absolute cap is three of them', async () => {
+    // Spec §6 fixes the number. Unpinned, `SESSION_TTL_MS` could be cut to a
+    // day — logging every writer out daily — with the whole suite still green,
+    // because every other test here uses the constant rather than a literal.
+    expect(SESSION_TTL_MS / (24 * 60 * 60 * 1000)).toBe(30);
+    expect(SESSION_ABSOLUTE_MAX_MS).toBe(3 * SESSION_TTL_MS);
+
+    // And it is the number `createSession` actually writes, not just a constant
+    // sitting next to the code that ignores it.
+    // Bracketed by two clock reads rather than compared to one: `createSession`
+    // takes its own `Date.now()`, so `expiresAt - before` is the TTL plus
+    // however long the insert took, and asserting `<= SESSION_TTL_MS` against a
+    // single reading fails whenever that is more than 0 ms.
+    const user = await owner();
+    const before = Date.now();
+    const { expiresAt } = await createSession(db, user.id);
+    const after = Date.now();
+    expect(expiresAt).toBeGreaterThanOrEqual(before + SESSION_TTL_MS);
+    expect(expiresAt).toBeLessThanOrEqual(after + SESSION_TTL_MS);
+  });
+
   it('stores the session id keyed by SESSION_SECRET, not as a bare digest', async () => {
     // A bare SHA-256 is offline-computable, so a stolen database dump can be
     // attacked with a precomputed table of candidate tokens and the winning row
@@ -242,6 +264,54 @@ describe('invites', () => {
     ).rejects.toThrow(/invite/i);
     // Nothing was created on the way to the rejection.
     expect(await findUserByEmail(db, invitee)).toBeNull();
+  });
+
+  /**
+   * The compensation path. `acceptInvite` claims the invite with a conditional
+   * UPDATE and only then creates the user, so a `createUser` failure leaves a
+   * claimed invite behind an account that does not exist. Deleting the
+   * `UPDATE invites SET accepted_at = NULL` that hands it back left the whole
+   * suite green, while any transient failure — a duplicate email, a dropped
+   * connection, a disk error — burned the invite permanently and the only
+   * remedy was for the owner to issue a new one.
+   */
+  it('hands the invite back when creating the user fails', async () => {
+    const inviter = await owner();
+    const taken = email();
+    await createUser(db, {
+      email: taken,
+      password: 'already-here-x',
+      displayName: 'Incumbent',
+      role: 'writer',
+    });
+
+    const { id, token } = await createInvite(db, {
+      email: taken,
+      role: 'writer',
+      invitedBy: inviter.id,
+    });
+
+    await expect(
+      acceptInvite(db, {
+        token,
+        password: 'a-long-enough-one',
+        displayName: 'Second',
+      }),
+    ).rejects.toBeInstanceOf(DuplicateEmailError);
+
+    // Claimed by the UPDATE on the way in, so it must have been released on the
+    // way out.
+    const row = await db.execute(sql`SELECT accepted_at FROM invites WHERE id = ${id}`);
+    expect(row.rows[0].accepted_at).toBeNull();
+
+    // Not merely NULL in the column — still spendable, which is the point.
+    await db.execute(sql`DELETE FROM users WHERE email = ${taken}`);
+    const user = await acceptInvite(db, {
+      token,
+      password: 'a-long-enough-one',
+      displayName: 'Second',
+    });
+    expect(user.email).toBe(taken);
   });
 
   it('an invitee cannot choose their own email or role', async () => {

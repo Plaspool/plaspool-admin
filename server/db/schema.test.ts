@@ -3,10 +3,16 @@
  * `.$type<>()` on a Drizzle column is compile-time only and buys nothing at
  * runtime — a bug anywhere could otherwise persist `role = 'admin'`.
  */
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { migratedDb } from '../test/harness';
 import type { Db } from './client';
+import {
+  MAX_CONTENT_TEXT_BYTES,
+  MAX_DOC_BYTES,
+  checkDocSize,
+} from '../../shared/validate';
 
 let db: Db;
 let close: (() => Promise<void>) | undefined;
@@ -35,6 +41,10 @@ async function mkUser(role = 'owner'): Promise<string> {
 interface PostOverrides {
   id?: string;
   title?: string;
+  subtitle?: string;
+  excerpt?: string;
+  category?: string;
+  contentText?: string;
   slug?: string | null;
   tags?: string[];
   status?: string;
@@ -50,9 +60,10 @@ async function mkPost(authorId: string, o: PostOverrides = {}): Promise<string> 
                        content_text, cover_image, category, tags, status,
                        created_at, updated_at, published_at, deleted_at,
                        word_count, reading_time, author_id, revision)
-    VALUES (${id}, ${o.title ?? ''}, '', ${o.slug ?? null}, '',
-            ${o.excerptSource ?? 'derived'},
-            ${'{"type":"doc","content":[]}'}::jsonb, '', NULL, '',
+    VALUES (${id}, ${o.title ?? ''}, ${o.subtitle ?? ''}, ${o.slug ?? null},
+            ${o.excerpt ?? ''}, ${o.excerptSource ?? 'derived'},
+            ${'{"type":"doc","content":[]}'}::jsonb, ${o.contentText ?? ''}, NULL,
+            ${o.category ?? ''},
             ${sql.param(o.tags ?? [])}, ${o.status ?? 'draft'},
             ${now}, ${now}, NULL, NULL, 0, 0, ${authorId}, ${o.revision ?? 1})`);
   return id;
@@ -192,6 +203,147 @@ describe('posts and revisions integrity', () => {
     expect(vec).toMatch(/'hello':1A/);
     expect(vec).toMatch(/'gamma':\d+C/);
   });
+
+  /**
+   * The other four contributions. Only title (A) and tags (C) were covered, so
+   * `coalesce(content_text,'')` could be replaced with `''` in the migration
+   * and the whole suite stayed green — deleting body-text search, which is the
+   * entire justification for storing a `content_text` column at all (spec §3.4).
+   * Subtitle, excerpt and category were equally free to delete.
+   */
+  it('the generated search column indexes body text, subtitle, excerpt and category', async () => {
+    const author = await mkUser();
+    const post = await mkPost(author, {
+      title: 'Titleword',
+      subtitle: 'Subtitleword',
+      excerpt: 'Excerptword',
+      category: 'Categoryword',
+      contentText: 'Bodyword appears only in the body text of this post',
+      tags: ['Tagword'],
+    });
+
+    // `ts_rank`'s weight array is {D,C,B,A}, so zeroing all but one scores only
+    // lexemes carrying that weight. Asserting presence alone would not catch a
+    // `setweight` dropped from the expression, and the weights ARE the ranking
+    // — a body match must never outrank a title match.
+    const res = await db.execute(sql`
+      SELECT search::text AS vec,
+             ts_rank('{1,0,0,0}', search, to_tsquery('english','bodyword'))     AS body_d,
+             ts_rank('{0,0,1,0}', search, to_tsquery('english','subtitleword')) AS subtitle_b,
+             ts_rank('{0,0,1,0}', search, to_tsquery('english','excerptword'))  AS excerpt_b,
+             ts_rank('{0,1,0,0}', search, to_tsquery('english','categoryword')) AS category_c,
+             ts_rank('{0,0,0,1}', search, to_tsquery('english','titleword'))    AS title_a,
+             ts_rank('{1,0,0,0}', search, to_tsquery('english','titleword'))    AS title_not_d
+        FROM posts WHERE id = ${post}`);
+    const row = res.rows[0];
+
+    expect(Number(row.body_d)).toBeGreaterThan(0);
+    expect(Number(row.subtitle_b)).toBeGreaterThan(0);
+    expect(Number(row.excerpt_b)).toBeGreaterThan(0);
+    expect(Number(row.category_c)).toBeGreaterThan(0);
+    expect(Number(row.title_a)).toBeGreaterThan(0);
+    // The weights are distinct, not all the same letter.
+    expect(Number(row.title_not_d)).toBe(0);
+
+    // Postgres omits the 'D' label when printing, because D is the default
+    // weight — so body text shows as a bare position. A, B and C do print.
+    const vec = String(row.vec);
+    expect(vec).toMatch(/'bodyword':\d+(?![ABC0-9])/);
+    expect(vec).toMatch(/'subtitleword':\d+B/);
+    expect(vec).toMatch(/'excerptword':\d+B/);
+    expect(vec).toMatch(/'categoryword':\d+C/);
+    expect(vec).toMatch(/'titleword':\d+A/);
+  });
+});
+
+/**
+ * THE 1 MB TSVECTOR CLIFF.
+ *
+ * A `tsvector` cannot hold more than MAXSTRPOS = 1 048 575 bytes of lexemes and
+ * positions; past that Postgres raises SQLSTATE 54000. Before migration 0001
+ * the generated column fed the whole of `content_text` in unbounded, so a
+ * document `shared/validate.ts` calls VALID — under the 2 MB serialised ceiling
+ * of spec §4.6 — was physically unwritable. Worse than a size limit in two
+ * ways: it is a cliff rather than a gradient (ordinary prose survives past 2 MB
+ * because lexemes dedupe), and it is retroactive — an existing post that grows
+ * past the line can no longer be saved at all, leaving a readable row that is
+ * permanently unwritable. Spec §8 has no mapping for 54000, so it would surface
+ * as a 500 rather than the 422 §4.6 promises.
+ */
+describe('the generated search column has a bounded input', () => {
+  /** `k` distinct terms, the shape that defeats lexeme deduplication. */
+  const glossary = (k: number) =>
+    Array.from({ length: k }, (_, i) => `term${i}`).join(' ');
+
+  it('a document at the validator ceiling saves, and is indexed whole', async () => {
+    const author = await mkUser();
+    // Exactly MAX_CONTENT_TEXT_BYTES, ending on a term boundary, with a marker
+    // at each end so truncation anywhere is visible.
+    const filler = glossary(60_000);
+    const head = 'openingmarker ';
+    const tail = ' closingmarker';
+    const body =
+      head +
+      filler.slice(0, MAX_CONTENT_TEXT_BYTES - head.length - tail.length) +
+      tail;
+    expect(Buffer.byteLength(body)).toBe(MAX_CONTENT_TEXT_BYTES);
+
+    const post = await mkPost(author, { contentText: body });
+    const res = await db.execute(sql`
+      SELECT (search @@ to_tsquery('english', 'openingmarker')) AS head,
+             (search @@ to_tsquery('english', 'closingmarker')) AS tail
+        FROM posts WHERE id = ${post}`);
+    // Not truncated at the ceiling: everything the validator accepts is indexed.
+    expect(res.rows[0].head).toBe(true);
+    expect(res.rows[0].tail).toBe(true);
+  });
+
+  it('the 80 000-term document is refused by the validator, not by the database', async () => {
+    const author = await mkUser();
+    const body = glossary(80_000);
+    // Spec-legal by §4.6's serialised ceiling — this is the whole problem.
+    expect(Buffer.byteLength(body)).toBeLessThan(MAX_DOC_BYTES);
+
+    // The validator is what rejects it, with a 422-shaped violation.
+    const doc = { type: 'doc', content: [{ type: 'text', text: body }] };
+    expect(checkDocSize(doc)).toEqual({ path: 'content', reason: 'too_large' });
+
+    // And if it ever reaches the database anyway — an import, a backfill,
+    // manual SQL — the row is written rather than rejected with 54000.
+    await expect(mkPost(author, { contentText: body })).resolves.toBeTruthy();
+  });
+
+  it('a multibyte document far past the ceiling saves too', async () => {
+    // The bound is on BYTES, not characters. `left(content_text, 600000)`
+    // counts characters, so it bounds nothing here: 600 000 CJK characters are
+    // 1.4 MB of lexemes and still raise 54000. Measured on PGlite 18.3.
+    const author = await mkUser();
+    const chars: string[] = [];
+    for (let i = 0; i < 20_000; i += 1) chars.push(String.fromCodePoint(0x4e00 + i));
+    const pairs: string[] = [];
+    for (let i = 0; i < 250_000; i += 1) {
+      pairs.push(chars[i % 20_000] + chars[(Math.floor(i / 20_000) * 7 + 3) % 20_000]);
+    }
+    const body = [...pairs.join(' ')].slice(0, 750_000).join('');
+    expect(Buffer.byteLength(body)).toBeGreaterThan(1_500_000);
+
+    await expect(mkPost(author, { contentText: body })).resolves.toBeTruthy();
+  });
+
+  it('the ceiling the validator enforces is the threshold the migration truncates at', async () => {
+    // One number in two places. If they drift apart the validator either starts
+    // accepting documents the index silently truncates, or rejects ones the
+    // database would have stored whole.
+    const migration = readFileSync(
+      'server/db/migrations/0001_bound_search_input.sql',
+      'utf8',
+    );
+    expect(migration).toContain(`octet_length(coalesce(content_text,'')) <= ${MAX_CONTENT_TEXT_BYTES}`);
+    // The truncation fallback must be at most the ceiling in bytes for ANY
+    // encoding, so it is expressed in characters at a quarter of it — UTF-8
+    // never exceeds four bytes per character.
+    expect(migration).toContain(`left(coalesce(content_text,''), ${MAX_CONTENT_TEXT_BYTES / 4})`);
+  });
 });
 
 /**
@@ -240,5 +392,20 @@ describe('migration properties', () => {
     const def = String(res.rows[0].indexdef);
     expect(def).toMatch(/USING gin/i);
     expect(def).toMatch(/\bsearch\b/);
+  });
+
+  it('posts_tags_idx exists and is a GIN index over tags', async () => {
+    // Spec §3.4 requires GIN on `tags` as well as on `search`, and this index
+    // is hand-appended DDL for the same reason — invisible to drizzle-kit, so a
+    // regenerate or a `push` drops it. Only its twin above was asserted, so
+    // rewriting this one to `USING btree (id)` left the suite green while
+    // Task 9's `?tag=` filter degraded to a sequential scan over every post.
+    const res = await db.execute(sql`
+      SELECT indexdef FROM pg_indexes
+       WHERE tablename = 'posts' AND indexname = 'posts_tags_idx'`);
+    expect(res.rows).toHaveLength(1);
+    const def = String(res.rows[0].indexdef);
+    expect(def).toMatch(/USING gin/i);
+    expect(def).toMatch(/\btags\b/);
   });
 });

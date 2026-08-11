@@ -51,7 +51,11 @@ export const users = pgTable(
 export const sessions = pgTable(
   'sessions',
   {
-    /** SHA-256 of the token, hex. The raw token is never stored. */
+    /**
+     * HMAC-SHA-256 of the token under `SESSION_SECRET`, hex — see `tokenId` in
+     * `server/repo/users.ts`. The raw token is never stored, and the digest is
+     * keyed so a stolen dump cannot be attacked offline (spec §3.2).
+     */
     id: text('id').primaryKey(),
     userId: uuid('user_id')
       .notNull()

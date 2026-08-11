@@ -26,7 +26,14 @@ import react from '@vitejs/plugin-react';
  * Two more things this encodes:
  *
  * - The `server` timeout bump exists because `freshDb()` boots PGlite, runs
- *   migrations and seeds users.
+ *   migrations and seeds users. `hookTimeout` is three times `testTimeout`
+ *   because that boot happens in `beforeAll` and its cost is dominated by how
+ *   many other workers are compiling WASM at the same moment, not by anything
+ *   the suite does. Four server files now open their own database, and at
+ *   20 000 ms the margin was thin enough to lose: measured, a single boot is
+ *   ~1.5 s, but three suites racing on a loaded machine push it past 20 s and
+ *   the file fails in `beforeAll` with every test in it reported as SKIPPED —
+ *   which is a red bar with no failing assertion anywhere to explain it.
  * - Creating this file stops Vitest reading `vite.config.ts`, so the `ui`
  *   project has to declare the React plugin itself.
  *
@@ -78,7 +85,7 @@ export default defineConfig({
           environment: 'node',
           env: serverEnv,
           testTimeout: 20000,
-          hookTimeout: 20000,
+          hookTimeout: 60000,
         },
       },
       {

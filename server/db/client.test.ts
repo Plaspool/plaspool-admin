@@ -15,10 +15,11 @@
  * other closes nothing.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { migratedDb } from '../test/harness';
 import { DbError, toEpochMs, toEpochMsOrNull, uniqueViolation } from './client';
 import type { Db } from './client';
+import { posts, users } from './schema';
 import {
   DuplicateEmailError,
   acceptInvite,
@@ -199,6 +200,258 @@ describe('driver errors carry no values', () => {
       }),
     ).rejects.toBe(boom);
     expect(uniqueViolation(boom)).toBeNull();
+  });
+});
+
+/**
+ * ONE CASE PER DRIVER-REACHING API.
+ *
+ * The guard used to be `if (prop !== 'execute') return value`, and every test
+ * above goes through `db.execute` — so `db.select`, `db.insert`, `db.update`,
+ * `db.delete`, `db.query.*` and `db.transaction` all handed the raw
+ * `DrizzleQueryError` to the caller, with the bound parameters in `message`, in
+ * `stack`, on `cause`, in `String(err)` and in
+ * `JSON.stringify(err, Object.getOwnPropertyNames(err))`. On `users` those
+ * parameters are an account email and a live scrypt hash. It was latent only
+ * because no production call site used the query builder yet, while `Db` is
+ * typed as the full `PgDatabase` and the docstring on `guardDb` promised the
+ * next ten repo modules that they were covered.
+ *
+ * These are deliberately one test per entry point rather than a loop: a loop
+ * that stops matching the guard's method list degrades silently, and the point
+ * of this block is that removing any single name from `GUARDED_METHODS` names
+ * itself in the failure output.
+ */
+describe('every driver-reaching API is guarded, not just execute', () => {
+  /** Run something that must fail, and assert nothing survived the scrub. */
+  async function scrubbed(run: () => Promise<unknown>, values: string[]) {
+    const err = await run().then(
+      () => {
+        throw new Error('expected the statement to be rejected, but it succeeded');
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(DbError);
+    const text = surface(err);
+    for (const value of values) expect(text).not.toContain(value);
+    expect(text).not.toMatch(HASH_PATTERN);
+    // Drizzle's own wrapper always opens with this, so its absence proves the
+    // original error was discarded rather than reworded.
+    expect(text).not.toContain('Failed query');
+    return err as DbError;
+  }
+
+  /**
+   * A live-looking hash, not a real one: these statements must fail on the
+   * constraint, and paying for scrypt in six tests to prove a proxy forwards a
+   * rejection would buy nothing. The value is what `HASH_PATTERN` looks for.
+   */
+  const DECOY_HASH = 'scrypt$32768$8$1$c2FsdA$TGl2ZUhhc2hIZXJl';
+
+  let seq = 0;
+  const addr = () => `guard${++seq}.${Date.now().toString(36)}@example.com`;
+
+  async function mkUser(email: string): Promise<string> {
+    const rows = await db
+      .insert(users)
+      .values({
+        email,
+        passwordHash: DECOY_HASH,
+        displayName: 'Guarded',
+        role: 'writer',
+        createdAt: Date.now(),
+      })
+      .returning({ id: users.id });
+    return rows[0].id;
+  }
+
+  it('insert', async () => {
+    const email = addr();
+    await mkUser(email);
+    const err = await scrubbed(
+      () =>
+        db.insert(users).values({
+          email,
+          passwordHash: DECOY_HASH,
+          displayName: 'Attacker',
+          role: 'writer',
+          createdAt: Date.now(),
+        }),
+      [email],
+    );
+    expect(err.code).toBe('23505');
+    expect(err.constraint).toBe('users_email_unique');
+  });
+
+  it('update', async () => {
+    const taken = addr();
+    await mkUser(taken);
+    const moverId = await mkUser(addr());
+    const err = await scrubbed(
+      () => db.update(users).set({ email: taken }).where(eq(users.id, moverId)),
+      [taken],
+    );
+    expect(err.code).toBe('23505');
+  });
+
+  it('delete', async () => {
+    // A user with a post cannot be deleted — `posts_author_id_users_id_fk` is
+    // NO ACTION — and the address in the WHERE clause is a bound parameter.
+    const email = addr();
+    const authorId = await mkUser(email);
+    const now = Date.now();
+    await db.insert(posts).values({
+      id: `p_guard_${seq}`,
+      title: '',
+      subtitle: '',
+      slug: null,
+      excerpt: '',
+      excerptSource: 'derived',
+      content: { type: 'doc', content: [] },
+      contentText: '',
+      coverImage: null,
+      category: '',
+      tags: [],
+      status: 'draft',
+      createdAt: now,
+      updatedAt: now,
+      publishedAt: null,
+      deletedAt: null,
+      wordCount: 0,
+      readingTime: 0,
+      authorId,
+      revision: 1,
+    });
+
+    const err = await scrubbed(
+      () => db.delete(users).where(eq(users.email, email)),
+      [email],
+    );
+    expect(err.code).toBe('23503');
+  });
+
+  it('select', async () => {
+    // `users.id` is uuid, so the driver reports `invalid input syntax for type
+    // uuid: "..."` — a message that quotes the offending value verbatim. This
+    // is the case a `SELECT`-only leak looks like: no write, no constraint,
+    // still a parameter in the log.
+    const probe = 'not-a-uuid-secret-9f3a';
+    const err = await scrubbed(
+      () => db.select().from(users).where(eq(users.id, probe)),
+      [probe],
+    );
+    expect(err.code).toBe('22P02');
+  });
+
+  it('query.<table>', async () => {
+    // Reached through a getter, not a method call, so it needs its own branch
+    // in the proxy — and `findFirst` is two hops down from `db`.
+    const probe = 'not-a-uuid-secret-7c11';
+    await scrubbed(
+      () => db.query.users.findFirst({ where: eq(users.id, probe) }),
+      [probe],
+    );
+  });
+
+  it('transaction, whose handle arrives as a callback argument', async () => {
+    // Spec §4.3a forbids `transaction` on the hot path — the Neon HTTP driver
+    // rejects it outright — but it works on PGlite, so an unguarded transacted
+    // handle would leak in the test suite.
+    const email = addr();
+    await mkUser(email);
+    await scrubbed(
+      () =>
+        db.transaction(async (tx) => {
+          await tx.insert(users).values({
+            email,
+            passwordHash: DECOY_HASH,
+            displayName: 'In A Transaction',
+            role: 'writer',
+            createdAt: Date.now(),
+          });
+        }),
+      [email],
+    );
+  });
+
+  it('and through .catch(), which delegates to the raw then()', async () => {
+    // `QueryPromise.catch` calls `this.then(undefined, onRejected)` on the RAW
+    // builder, so intercepting `then` alone leaves this path unscrubbed.
+    const email = addr();
+    await mkUser(email);
+    const err = await db
+      .insert(users)
+      .values({
+        email,
+        passwordHash: DECOY_HASH,
+        displayName: 'Caught',
+        role: 'writer',
+        createdAt: Date.now(),
+      })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DbError);
+    expect(surface(err)).not.toContain(email);
+  });
+
+  /**
+   * The other half of the fix, and the one a naive implementation breaks.
+   *
+   * `db.insert(t)` returns a `PgInsertBuilder` with no `.then` at all, so
+   * `Promise.resolve(...)` around it yields a promise wrapping the builder and
+   * `.values()` is gone. The thenable builders are still chainable after the
+   * fact, so resolving `db.select().from(t)` executes it immediately and loses
+   * `.where`/`.orderBy`/`.limit`. Without this test the guard could be
+   * "fixed" into something that scrubs perfectly and cannot run a query.
+   */
+  it('preserves lazy builder chaining on every API', async () => {
+    const email = addr();
+    const id = await mkUser(email);
+
+    const selected = await db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .where(eq(users.id, id))
+      .orderBy(users.createdAt)
+      .limit(1);
+    expect(selected).toEqual([{ id, email }]);
+
+    const updated = await db
+      .update(users)
+      .set({ displayName: 'Renamed' })
+      .where(eq(users.id, id))
+      .returning({ displayName: users.displayName });
+    expect(updated).toEqual([{ displayName: 'Renamed' }]);
+
+    const found = await db.query.users.findFirst({ where: eq(users.id, id) });
+    expect(found?.email).toBe(email);
+    expect(await db.query.users.findMany({ limit: 1 })).toHaveLength(1);
+
+    const deleted = await db
+      .delete(users)
+      .where(eq(users.id, id))
+      .returning({ id: users.id });
+    expect(deleted).toEqual([{ id }]);
+
+    // A resolved value is handed back untouched — not re-wrapped in a proxy —
+    // so `.rows` is the same array it always was.
+    const raw = await db.execute(sql`SELECT 1 AS n`);
+    expect(Array.isArray(raw.rows)).toBe(true);
+    expect(raw.rows[0].n).toBe(1);
+  });
+
+  it('still leaves a non-driver error alone on the builder path', async () => {
+    // The scrub sits on the same `then` every successful query goes through, so
+    // a bug in a repo must come back out with its own stack intact.
+    const boom = new TypeError('x is not a function');
+    await expect(
+      db
+        .select()
+        .from(users)
+        .limit(1)
+        .then(() => {
+          throw boom;
+        }),
+    ).rejects.toBe(boom);
   });
 });
 

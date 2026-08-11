@@ -177,28 +177,158 @@ export function uniqueViolation(err: unknown): string | null {
 }
 
 /**
+ * Every Drizzle entry point on a `Db` that can reach the driver.
+ *
+ * Guarding `execute` alone was one method wide. `db.insert(users).values(...)`
+ * rejects with the same `DrizzleQueryError` — `Failed query: insert into
+ * "users" ...\nparams: victim@example.com,scrypt$32768$...` — and it went
+ * straight past the proxy, so the account email and a live hash were still one
+ * `console.error` from the log. Measured against this schema before the fix:
+ * `select`, `insert`, `update`, `delete`, `query.*` and `transaction` all
+ * leaked; only `execute` did not.
+ *
+ * `transaction` is in the list for completeness even though spec §4.3a forbids
+ * it on the hot path (the Neon HTTP driver rejects it unconditionally): it
+ * works on PGlite, so an unguarded one would leak in tests. It is handled
+ * separately below because the handle to scrub arrives as a callback argument
+ * rather than as a return value.
+ */
+const GUARDED_METHODS: ReadonlySet<string> = new Set([
+  'execute',
+  'select',
+  'selectDistinct',
+  'selectDistinctOn',
+  'insert',
+  'update',
+  'delete',
+  'with',
+  '$count',
+  'refreshMaterializedView',
+]);
+
+type AnyFn = (...args: unknown[]) => unknown;
+type Rejector = (reason: unknown) => unknown;
+
+/**
+ * Wrap a lazy Drizzle builder so that whatever it eventually rejects with is
+ * scrubbed, without collapsing it into a promise.
+ *
+ * `Promise.resolve(builder)` is not an option here. `db.insert(t)` returns a
+ * `PgInsertBuilder` with no `.then` at all — resolving it would hand back a
+ * useless promise wrapping the builder and `.values()` would be gone. And the
+ * builders that *are* thenable (`PgSelectBase`, `PgInsertBase`, …) are still
+ * chainable after the fact: `Promise.resolve(db.select().from(t))` executes
+ * immediately and loses `.where`, `.orderBy`, `.limit`.
+ *
+ * So the wrapper preserves the whole surface instead, lazily:
+ *
+ * - a method call is forwarded to the raw target (so Drizzle's internals never
+ *   see the proxy and `this` stays correct) and its result re-wrapped, which is
+ *   what keeps a chain guarded end to end;
+ * - `then` is the only place a driver error can surface, so the rejection
+ *   handler is what gets wrapped. `catch`/`finally` are re-expressed through
+ *   that same guarded `then` — Drizzle's `QueryPromise.catch` delegates to
+ *   `this.then`, i.e. the *raw* one, so intercepting `then` alone would leave a
+ *   `.catch(...)` call unscrubbed;
+ * - a plain object is wrapped too, which is what carries the guard down
+ *   `db.query` → `db.query.users` → `.findMany()`;
+ * - a resolved value is never wrapped. `onFulfilled` is passed through
+ *   untouched, so `(await db.execute(...)).rows` is the same array it always
+ *   was.
+ */
+function guardLazy<T>(value: T): T {
+  if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+    return value;
+  }
+
+  const scrubbingRejector = (onRejected?: Rejector | null): Rejector => {
+    return (err: unknown) => {
+      const scrubbed = scrubDriverError(err);
+      if (onRejected) return onRejected(scrubbed);
+      throw scrubbed;
+    };
+  };
+
+  const proxy = new Proxy(value as object, {
+    get(target, prop) {
+      const inner: unknown = Reflect.get(target, prop);
+      if (typeof inner !== 'function') return guardLazy(inner);
+      const method = inner as AnyFn;
+
+      if (prop === 'then') {
+        return (onFulfilled?: unknown, onRejected?: Rejector | null) =>
+          method.call(target, onFulfilled, scrubbingRejector(onRejected));
+      }
+      if (prop === 'catch') {
+        return (onRejected?: Rejector | null) =>
+          (proxy as PromiseLike<unknown>).then(undefined, onRejected ?? undefined);
+      }
+      if (prop === 'finally') {
+        return (onFinally?: (() => void) | null) =>
+          (proxy as PromiseLike<unknown>).then(
+            (v: unknown) => {
+              onFinally?.();
+              return v;
+            },
+            (err: unknown) => {
+              onFinally?.();
+              throw err;
+            },
+          );
+      }
+
+      return (...args: unknown[]) => {
+        try {
+          return guardLazy(method.apply(target, args));
+        } catch (err) {
+          throw scrubDriverError(err);
+        }
+      };
+    },
+  });
+
+  return proxy as T;
+}
+
+/**
  * The seam. Every `Db` in this codebase — production and test — is built here
  * or in `server/test/harness.ts`, and both wrap the handle, so no call site has
  * to remember to catch. Scrubbing at each `try`/`catch` would be one forgotten
  * `throw err` away from re-opening the leak.
  *
- * Only `execute` is intercepted: it is the sole path every repo uses (the plan
- * mandates raw SQL for the CAS write path and enumerated column lists), and
- * narrowing the trap keeps Drizzle's own internals untouched. The wrapper
- * resolves Drizzle's lazy `PgRaw` thenable into a real promise, which is
- * invisible to `await` — the only way this codebase consumes it.
+ * The guard covers every driver-reaching entry point (`GUARDED_METHODS` plus
+ * the `query` getter and `transaction`), not just `execute`, and each one is
+ * pinned by its own case in `client.test.ts` so a later task cannot quietly
+ * reopen one of them. Drizzle's own internals are untouched: every forwarded
+ * call is applied to the raw handle, and only what is handed back to the caller
+ * is wrapped.
  */
 export function guardDb(db: Db): Db {
   return new Proxy(db, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (prop !== 'execute' || typeof value !== 'function') return value;
-      const execute = value as (...args: unknown[]) => unknown;
+    get(target, prop) {
+      const value: unknown = Reflect.get(target, prop);
+
+      // `db.query.users.findMany()` — a plain object of relational builders, so
+      // there is no call to intercept on the way in.
+      if (prop === 'query') return guardLazy(value);
+
+      if (typeof value !== 'function') return value;
+      const method = value as AnyFn;
+
+      // The transacted handle arrives as the callback's argument, so it is
+      // guarded on the way in rather than on the way out.
+      if (prop === 'transaction') {
+        return (callback: (tx: Db) => unknown, ...rest: unknown[]) =>
+          guardLazy(
+            method.apply(target, [(tx: Db) => callback(guardDb(tx)), ...rest]),
+          );
+      }
+
+      if (typeof prop !== 'string' || !GUARDED_METHODS.has(prop)) return value;
+
       return (...args: unknown[]) => {
         try {
-          return Promise.resolve(execute.apply(target, args)).catch((err: unknown) => {
-            throw scrubDriverError(err);
-          });
+          return guardLazy(method.apply(target, args));
         } catch (err) {
           throw scrubDriverError(err);
         }
