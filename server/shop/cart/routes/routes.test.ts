@@ -10,20 +10,23 @@
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { freshDb, resetShopTables, SEED_PASSWORD } from '../test/harness';
-import { fakeCatalog } from '../test/fake-catalog';
+import { standaloneShop } from '../test/standalone';
 import { httpClient, json } from '../../../test/http';
 import { CART_COOKIE } from '../identity/cookies';
-import { mountShopCart, shopCartRoutes } from './index';
+import { shopCartRoutes } from './index';
 import { mapsShopErrors } from './errors';
 import { CART_CREATE_LIMIT } from '../limits';
 import { DEFAULT_STORE_CURRENCY } from '../checkout/shipping';
-import type { CartFakeCatalog } from '../test/fake-catalog';
+import { seedSellable } from '../../catalog/test/catalog-harness';
+import { unpublishProduct } from '../../catalog/products';
 import type { HttpClient } from '../../../test/http';
 import type { TestCtx } from '../test/harness';
 
 let ctx: TestCtx;
 let client: HttpClient;
-let catalog: CartFakeCatalog;
+/** Real, published, priced variants — `server/shop/app.ts` injects the real port. */
+let tee: { id: string; productId: string };
+let scarce: { id: string; productId: string };
 
 const CURRENCY = DEFAULT_STORE_CURRENCY;
 
@@ -42,25 +45,42 @@ afterAll(() => ctx.close());
 beforeEach(async () => {
   await resetShopTables(ctx.db);
   await ctx.db.execute(sql`TRUNCATE auth_attempts`);
-  catalog = fakeCatalog([
-    {
-      variantId: 'var_tee',
-      sku: 'TEE-NAVY-M',
+  await ctx.db.execute(sql`TRUNCATE shop_products, shop_inventory_holds CASCADE`);
+
+  /*
+   * REAL CATALOG ROWS, and no `mountShopCart`. `server/shop/app.ts` mounts the
+   * cart router with the real `CatalogPort`, and `createApp()` mounts that — so
+   * `httpClient(db)` already serves `/api/shop/...`. Mounting a second router
+   * here would not override it: Hono resolves two routers claiming one path by
+   * registration order, so the app's own mount wins and a test would believe it
+   * had injected a fake while exercising the real one. That is not hypothetical;
+   * it is what these six tests did until they went red.
+   */
+  tee = (
+    await seedSellable(ctx.db, ctx.users.owner, {
       title: 'Navy Tee',
-      price: { amount: 1999, currency: CURRENCY },
       onHand: 10,
-    },
-    {
-      variantId: 'var_scarce',
-      sku: 'SCARCE',
+      amount: 1999,
+      currency: CURRENCY,
+    })
+  ).variant;
+  scarce = (
+    await seedSellable(ctx.db, ctx.users.owner, {
       title: 'Nearly gone',
-      price: { amount: 500, currency: CURRENCY },
       onHand: 1,
-    },
-  ]);
+      amount: 500,
+      currency: CURRENCY,
+    })
+  ).variant;
   client = httpClient(ctx.db);
-  mountShopCart(client.app, { catalog });
 });
+
+/** Catalog's counter, read straight out of its table. */
+async function reservedOf(variantId: string): Promise<number> {
+  const res = await ctx.db.execute(sql`
+    SELECT reserved FROM shop_inventory WHERE variant_id = ${variantId}`);
+  return Number(res.rows[0].reserved);
+}
 
 /** Every request carries an IP, so the per-IP buckets are per test, not shared. */
 const ip = (value: string) => ({ headers: { 'x-real-ip': value } });
@@ -99,7 +119,7 @@ describe('POST /api/shop/cart', () => {
      * which is the worst version of every failure in this brief.
      */
     const first = await newCart();
-    await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 1 });
+    await client.post('/api/shop/cart/lines', { variantId: tee.id, qty: 1 });
 
     const res = await client.post('/api/shop/cart', undefined, ip('10.0.0.1'));
     expect(res.status).toBe(200);
@@ -133,11 +153,11 @@ describe('GET /api/shop/cart', () => {
 
   it('resolves lines through CatalogPort and previews a total', async () => {
     await newCart();
-    await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 2 });
+    await client.post('/api/shop/cart/lines', { variantId: tee.id, qty: 2 });
 
     const view = await json<CartView>(await client.get('/api/shop/cart'));
     expect(view.lines[0]).toMatchObject({
-      variantId: 'var_tee',
+      variantId: tee.id,
       qty: 2,
       available: true,
       title: 'Navy Tee',
@@ -155,13 +175,10 @@ describe('GET /api/shop/cart', () => {
      * number that will change.
      */
     await newCart();
-    await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 1 });
-    catalog.seed({
-      variantId: 'var_tee',
-      price: { amount: 1999, currency: CURRENCY },
-      onHand: 10,
-      sellable: false,
-    });
+    await client.post('/api/shop/cart/lines', { variantId: tee.id, qty: 1 });
+    // Through Catalog's real lifecycle: "sellable" is Catalog's predicate, and
+    // this is the test that proves Cart asks the right question.
+    await unpublishProduct(ctx.db, tee.productId, ctx.users.owner);
 
     const view = await json<CartView>(await client.get('/api/shop/cart'));
     expect(view.lines).toHaveLength(1);
@@ -175,7 +192,7 @@ describe('line mutations', () => {
   it('adds, changes and removes', async () => {
     await newCart();
     const added = await json<CartView>(
-      await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 1 }),
+      await client.post('/api/shop/cart/lines', { variantId: tee.id, qty: 1 }),
     );
     const lineId = added.lines[0].id;
 
@@ -192,10 +209,10 @@ describe('line mutations', () => {
 
   it('answers 409 `stale_write` carrying the current cart when the revision has moved', async () => {
     const view = await newCart();
-    await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 1 });
+    await client.post('/api/shop/cart/lines', { variantId: tee.id, qty: 1 });
 
     const res = await client.post('/api/shop/cart/lines', {
-      variantId: 'var_scarce',
+      variantId: scarce.id,
       qty: 1,
       baseRevision: view.cart?.revision,
     });
@@ -213,7 +230,7 @@ describe('line mutations', () => {
   it('404s a line id belonging to somebody else’s cart', async () => {
     await newCart();
     const mine = await json<CartView>(
-      await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 1 }),
+      await client.post('/api/shop/cart/lines', { variantId: tee.id, qty: 1 }),
     );
 
     client.clearCookies();
@@ -227,7 +244,7 @@ describe('line mutations', () => {
   it('400s an unknown body key rather than ignoring it', async () => {
     await newCart();
     const res = await client.post('/api/shop/cart/lines', {
-      variantId: 'var_tee',
+      variantId: tee.id,
       qty: 1,
       price: 1,
     });
@@ -243,17 +260,34 @@ describe('line mutations', () => {
     const res = await client.del('/api/shop/cart/lines/%00');
     expect(res.status).toBe(400);
   });
+
+  it('400s it WITH NO CART COOKIE too, not 404', async () => {
+    /*
+     * The regression `server/nul-bytes.test.ts` found the moment these routes
+     * were mounted into the real app. The handler used to resolve the cart
+     * before reading `:id`, so a caller with no cart cookie got 404 — the wrong
+     * answer to the wrong question, and one Cart's own suite could never see
+     * because it always had a cart in hand.
+     *
+     * Both statuses stop the client's retry policy, so this was never a 500
+     * hazard; it was a route answering "you have no cart" to a request that was
+     * malformed on its face.
+     */
+    client.clearCookies();
+    expect((await client.del('/api/shop/cart/lines/%00')).status).toBe(400);
+    expect((await client.patch('/api/shop/cart/lines/%00', { qty: 1 })).status).toBe(400);
+  });
 });
 
 describe('the checkout flow, end to end', () => {
   it('start → addresses → shipping → freeze', async () => {
     await newCart();
-    await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 2 });
+    await client.post('/api/shop/cart/lines', { variantId: tee.id, qty: 2 });
 
     const started = await client.post('/api/shop/checkout/start');
     expect(started.status).toBe(200);
     expect((await json<{ reservations: unknown[] }>(started)).reservations).toHaveLength(1);
-    expect(catalog.stockOf('var_tee')).toEqual({ onHand: 10, reserved: 2 });
+    expect(await reservedOf(tee.id)).toBe(2);
 
     const addressed = await client.request('/api/shop/checkout/addresses', {
       method: 'PUT',
@@ -284,7 +318,7 @@ describe('the checkout flow, end to end', () => {
 
   it('409s a shortfall WITH THE NUMBER', async () => {
     await newCart();
-    await client.post('/api/shop/cart/lines', { variantId: 'var_scarce', qty: 5 });
+    await client.post('/api/shop/cart/lines', { variantId: scarce.id, qty: 5 });
 
     const res = await client.post('/api/shop/checkout/start');
 
@@ -292,30 +326,27 @@ describe('the checkout flow, end to end', () => {
     const body = await json<{ error: string; shortfalls: unknown[] }>(res);
     expect(body.error).toBe('insufficient_stock');
     expect(body.shortfalls).toEqual([
-      { variantId: 'var_scarce', requested: 5, available: 1 },
+      { variantId: scarce.id, requested: 5, available: 1 },
     ]);
   });
 
   it('409s a freeze whose line has become unavailable, naming the variant', async () => {
     await newCart();
-    await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 1 });
+    await client.post('/api/shop/cart/lines', { variantId: tee.id, qty: 1 });
     await client.request('/api/shop/checkout/addresses', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ shipping: UK }),
     });
-    catalog.seed({
-      variantId: 'var_tee',
-      price: { amount: 1999, currency: CURRENCY },
-      onHand: 10,
-      sellable: false,
-    });
+    // Through Catalog's real lifecycle: "sellable" is Catalog's predicate, and
+    // this is the test that proves Cart asks the right question.
+    await unpublishProduct(ctx.db, tee.productId, ctx.users.owner);
 
     const res = await client.post('/api/shop/checkout/freeze');
     expect(res.status).toBe(409);
     const body = await json<{ error: string; variantIds: string[] }>(res);
     expect(body.error).toBe('unavailable_lines');
-    expect(body.variantIds).toEqual(['var_tee']);
+    expect(body.variantIds).toEqual([tee.id]);
   });
 
   it('400s a lowercase country code before it can pick the wrong tax zone', async () => {
@@ -375,7 +406,7 @@ describe('every route maps this subsystem’s errors', () => {
      * wrapper is exactly the kind of thing the NEXT route forgets, so this walks
      * the registered table instead of trusting anyone to remember.
      */
-    const app = shopCartRoutes({ catalog });
+    const app = shopCartRoutes();
     expect(app.routes.length).toBeGreaterThan(10);
     const unwrapped = app.routes
       .filter((route) => !mapsShopErrors(route.handler))
@@ -386,7 +417,7 @@ describe('every route maps this subsystem’s errors', () => {
   it('turns a repo-level precondition into a 409 rather than a 500', async () => {
     // The end-to-end version of the same property, through the real stack.
     await newCart();
-    await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 1 });
+    await client.post('/api/shop/cart/lines', { variantId: tee.id, qty: 1 });
     await client.request('/api/shop/checkout/addresses', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -395,7 +426,7 @@ describe('every route maps this subsystem’s errors', () => {
     await client.post('/api/shop/checkout/freeze');
 
     // The cart is `converting` now, so a line write is refused, not raced.
-    const res = await client.post('/api/shop/cart/lines', { variantId: 'var_scarce', qty: 1 });
+    const res = await client.post('/api/shop/cart/lines', { variantId: scarce.id, qty: 1 });
     expect(res.status).toBe(409);
     const body = await json<{ error: string; operation: string; cart: { status: string } }>(res);
     expect(body.error).toBe('precondition_failed');
@@ -424,15 +455,17 @@ describe('every route maps this subsystem’s errors', () => {
 
   it('accepts the magic link when a deliverer IS injected, and never leaks the token', async () => {
     const delivered: Array<{ email: string; token: string }> = [];
-    const wired = httpClient(ctx.db);
-    mountShopCart(wired.app, {
-      catalog,
+    const wired = standaloneShop(ctx.db, {
       deliverMagicLink: async (a) => {
         delivered.push({ email: a.email, token: a.token });
       },
     });
 
-    const res = await wired.post('/api/shop/customer/session', { email: 'A@Test.Local' });
+    const res = await wired.request('/customer/session', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'A@Test.Local' }),
+    });
 
     expect(res.status).toBe(202);
     const body = await res.text();
@@ -453,7 +486,7 @@ describe('the storefront never demands an account', () => {
     // Contract §7: "Guest checkout is the default path. Do not require an
     // account to buy." Asserted by doing it.
     await newCart();
-    await client.post('/api/shop/cart/lines', { variantId: 'var_tee', qty: 1 });
+    await client.post('/api/shop/cart/lines', { variantId: tee.id, qty: 1 });
     await client.post('/api/shop/checkout/start');
     await client.request('/api/shop/checkout/addresses', {
       method: 'PUT',

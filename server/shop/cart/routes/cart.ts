@@ -96,26 +96,44 @@ export function cartRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
 
   routes.patch('/cart/lines/:id', async (c) => {
     const db = shopDb(c);
+    // THE PATH SEGMENT IS JUDGED FIRST — before the body, before the cookie,
+    // before any database read. See the note on `pathParam` below.
+    const lineId = pathParam(c, 'id');
     const body = await readJson(c, SetQtyBody);
     const cart = await requireCart(c, db);
     await limitWrites(c, cart.id);
     const { cart: after } = await setLineQty(db, {
       cartId: cart.id,
-      lineId: pathParam(c, 'id'),
+      lineId,
       qty: body.qty,
       baseRevision: body.baseRevision,
     });
     return c.json(await view(c, db, deps, after));
   });
 
+  /**
+   * `pathParam` FIRST, and this ordering is a fix rather than a preference.
+   *
+   * It used to resolve the cart before reading `:id`, so
+   * `DELETE /api/shop/cart/lines/%00` from a browser with no cart cookie
+   * answered 404 (no cart) instead of 400 (that is not a storable id). Found by
+   * `server/nul-bytes.test.ts` — which walks every REGISTERED route — the moment
+   * these routes were mounted into the real app, and by nothing before that,
+   * because Cart's own suite always had a cart in hand.
+   *
+   * The ordering is right independently of that test: a NUL in the URL is a 400
+   * whatever the caller's session state, and a malformed request should be
+   * refused on its own terms rather than after a database read it did not earn.
+   */
   routes.delete('/cart/lines/:id', async (c) => {
     const db = shopDb(c);
+    const lineId = pathParam(c, 'id');
     const body = await readJsonOrEmpty(c, BaseOnlyBody);
     const cart = await requireCart(c, db);
     await limitWrites(c, cart.id);
     const after = await removeLine(db, {
       cartId: cart.id,
-      lineId: pathParam(c, 'id'),
+      lineId,
       baseRevision: body.baseRevision,
     });
     return c.json(await view(c, db, deps, after));

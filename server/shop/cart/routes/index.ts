@@ -73,23 +73,41 @@ function mapErrors(src: Hono<ShopEnv>): Hono<ShopEnv> {
   return out;
 }
 
-/**
- * Mount into an existing app. THE ONLY PLACE THE ENV WIDENING HAPPENS.
+/*
+ * `mountShopCart(app, deps)` USED TO LIVE HERE AND HAS BEEN DELETED.
  *
- * `ShopEnv` extends `AppEnv` with one variable, so a `Hono<ShopEnv>` is
- * structurally a `Hono<AppEnv>` that also sets `customer` — but Hono's generics
- * are invariant in `Env`, so the assignment needs a cast. It is done here, once,
- * with this comment, rather than at each of the (eventually four) call sites:
- * a cast repeated is a cast nobody reads.
+ * It existed so Cart's suites could mount these routes into a real `createApp()`
+ * while `server/shop/app.ts` had no line for them. Now that it does, the helper
+ * had no production caller — and worse, calling it added a SECOND registration
+ * of every cart path. Hono resolves that by registration order rather than by
+ * refusing, so the app's own mount won and six route tests silently began
+ * exercising the real `CatalogPort` while believing they had injected a fake.
+ * They failed loudly, which is the only reason this was noticed.
  *
- * Registration order is why this works when called AFTER `createApp()` returns.
- * Hono matches in registration order, and `createApp` installs its `/api/*`
- * middlewares before any router, so a route added later still passes through all
- * of them.
+ * Tests now drive the real mount (`/api/shop/...` through `createApp()`), and a
+ * test that needs a dependency injected builds a standalone router with
+ * `shopCartRoutes(deps)` — see `test/standalone.ts`.
  */
-export function mountShopCart(
-  app: Hono<AppEnv>,
-  partial: Partial<ShopCartDeps> = {},
-): void {
-  app.route(SHOP_PREFIX, shopCartRoutes(partial) as unknown as Hono<AppEnv>);
+
+/**
+ * The cart router as `server/shop/app.ts` needs it: an `AppEnv` router, ready to
+ * mount at the shop app's root.
+ *
+ * `shopApp()` composes four subsystems into one `Hono<AppEnv>` and knows nothing
+ * about `ShopEnv`, so the widening happens HERE — in Cart's own file, once,
+ * beside the explanation — rather than in the shared composition root where it
+ * would be a bare cast three other agents have to read past.
+ *
+ * The DEPENDENCY still arrives from the composition root, which is the point of
+ * contract §5: `server/shop/app.ts` is the only module that knows both
+ * `CatalogPort` and its implementation, and nothing under `server/shop/cart/`
+ * imports `server/shop/catalog/` (R2). Called with no argument, this is a
+ * storefront wired to `unavailableCatalog()`, which refuses loudly.
+ */
+export function cartShopRoutes(partial: Partial<ShopCartDeps> = {}): Hono<AppEnv> {
+  return asAppRouter(shopCartRoutes(partial));
+}
+
+function asAppRouter(app: Hono<ShopEnv>): Hono<AppEnv> {
+  return app as unknown as Hono<AppEnv>;
 }

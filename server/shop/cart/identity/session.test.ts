@@ -21,7 +21,7 @@ import { httpClient, json, TEST_ORIGIN } from '../../../test/http';
 import { SESSION_COOKIE } from '../../../middleware/session';
 import { CART_COOKIE, SHOP_SESSION_COOKIE } from './cookies';
 import { createCustomer, createCustomerSession } from './customers';
-import { mountShopCart } from '../routes';
+
 import type { HttpClient } from '../../../test/http';
 import type { TestCtx } from '../test/harness';
 
@@ -35,8 +35,11 @@ afterAll(() => ctx.close());
 
 beforeEach(async () => {
   await ctx.db.execute(sql`TRUNCATE shop_customer_sessions, shop_customers CASCADE`);
+  // NO explicit mount: `server/shop/app.ts` mounts the cart router and
+  // `createApp()` mounts that, so `httpClient` already serves `/api/shop/...`.
+  // Mounting a second one would not override it — Hono resolves two routers
+  // claiming a path by registration order, not by refusing.
   client = httpClient(ctx.db);
-  mountShopCart(client.app);
 });
 
 /** Log in as the seeded owner, leaving `__Host-studio_session` in the jar. */

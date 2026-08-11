@@ -6,6 +6,9 @@ import {
   StaleProductWriteError,
 } from './catalog/errors';
 import { routes as catalog } from './catalog/routes';
+import { catalogPort } from './catalog/port';
+import { orders } from './orders/routes';
+import { cartShopRoutes } from './cart/routes';
 
 /**
  * The shop sub-app — everything under `/api/shop` (contract §10).
@@ -80,11 +83,29 @@ export function shopApp(): Hono<AppEnv> {
 
   shop.route('/', catalog);
 
+  shop.route('/', orders);
+
+  /*
+   * CART + CHECKOUT, with the REAL `CatalogPort` injected.
+   *
+   * THIS LINE IS THE COMPOSITION ROOT AND THE ONLY PLACE THAT KNOWS BOTH HALVES
+   * of the Catalog seam. Contract §5: a port is "consumed by injection, never by
+   * direct import of the implementation", and R2 forbids Cart importing anything
+   * from `server/shop/catalog/`. Nothing under `server/shop/cart/` does —
+   * `resolveShopCartDeps` defaults to `unavailableCatalog()`, which throws on
+   * every method, so a deployment that forgets this argument fails loudly rather
+   * than quoting prices it invented.
+   *
+   * Three lines rather than the marker's two, because the dependency is named
+   * here on purpose.
+   */
+  shop.route('/', cartShopRoutes({ catalog: catalogPort }));
+
   // ==========================================================================
-  // CART / PAYMENTS / ORDERS — append your two lines here.
+  // PAYMENTS — append your two lines here.
   //
-  //   import { routes as cart } from './cart/routes';
-  //   shop.route('/', cart);
+  //   import { routes as payments } from './payments/routes';
+  //   shop.route('/', payments);
   //
   // Mount at '/' like Catalog does, and give your own routes their full path
   // (`/checkout/...`, `/admin/payments/...`). Mounting at a sub-prefix would
