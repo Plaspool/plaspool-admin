@@ -7,10 +7,30 @@ import {
   readingTime,
   slugify,
 } from './doc';
-import { EMPTY_DOC, type DocNode, type Post, type PostStatus, type Revision } from './types';
+import {
+  EMPTY_DOC,
+  type DocNode,
+  type Post,
+  type PostPatch,
+  type Query,
+  type Revision,
+  type SaveOptions,
+} from './types';
 import { IDB_SCHEME } from './doc';
 
-const AUTHOR = 'You';
+/**
+ * The type aliases moved to `shared/types.ts` so `server/` shares them. They
+ * are re-exported here so `src/data/posts.ts` keeps its exact public surface.
+ */
+export type { PostPatch, SaveOptions, Query, StatusFilter, SortKey } from '../../shared/types';
+
+/**
+ * Placeholder identity until Task 3's real users exist. Every locally created
+ * post is authored by the single person using this browser; the server
+ * overwrites both fields from the session on cutover.
+ */
+const LOCAL_AUTHOR_ID = 'local';
+const LOCAL_AUTHOR_NAME = 'You';
 
 /**
  * Every write goes through this shape:
@@ -28,7 +48,7 @@ export function createDraftShape(partial: Partial<Post> = {}): Post {
     id: partial.id ?? newId('p_'),
     title: partial.title ?? '',
     subtitle: partial.subtitle ?? '',
-    slug: partial.slug ?? '',
+    slug: partial.slug ?? null,
     excerpt: partial.excerpt ?? '',
     excerptSource: partial.excerptSource ?? (partial.excerpt ? 'author' : 'derived'),
     content,
@@ -42,7 +62,8 @@ export function createDraftShape(partial: Partial<Post> = {}): Post {
     deletedAt: partial.deletedAt ?? null,
     wordCount: partial.wordCount ?? words,
     readingTime: partial.readingTime ?? readingTime(words),
-    author: partial.author ?? AUTHOR,
+    authorId: partial.authorId ?? LOCAL_AUTHOR_ID,
+    authorName: partial.authorName ?? LOCAL_AUTHOR_NAME,
     revision: partial.revision ?? 1,
   };
 }
@@ -54,28 +75,6 @@ export async function createPost(partial: Partial<Post> = {}): Promise<Post> {
     await appendRevision(post, 'manual');
   });
   return post;
-}
-
-/** Fields a caller may change. Everything else is derived or system-owned. */
-export type PostPatch = Partial<
-  Pick<
-    Post,
-    | 'title'
-    | 'subtitle'
-    | 'content'
-    | 'coverImage'
-    | 'category'
-    | 'tags'
-    | 'excerpt'
-    | 'slug'
-  >
->;
-
-export interface SaveOptions {
-  /** Snapshot kind. Autosaves are throttled + pruned; manual saves are kept. */
-  kind?: Revision['kind'];
-  /** When set, refuse the write if the stored post has moved on. */
-  baseRevision?: number;
 }
 
 export class StaleWriteError extends Error {
@@ -123,7 +122,8 @@ export async function savePost(
       status: current.status,
       publishedAt: current.publishedAt,
       deletedAt: current.deletedAt,
-      author: current.author,
+      authorId: current.authorId,
+      authorName: current.authorName,
       revision: current.revision + 1,
       updatedAt: Date.now(),
     };
@@ -139,7 +139,8 @@ export async function savePost(
     } else if (current.excerptSource !== 'author') {
       next.excerpt = deriveExcerpt(next.content);
     }
-    if (patch.slug === undefined && !current.slug && next.title) {
+    // Slugs are derived, never supplied — `PostPatch` has no `slug` key.
+    if (!current.slug && next.title) {
       next.slug = await uniqueSlug(slugify(next.title), current.id);
     }
 
@@ -406,7 +407,7 @@ export async function duplicatePost(id: string): Promise<Post> {
     ...src,
     id: undefined,
     title: src.title ? `${src.title} (copy)` : '',
-    slug: '',
+    slug: null,
     status: 'draft',
     publishedAt: null,
     deletedAt: null,
@@ -431,22 +432,6 @@ export async function emptyTrash(): Promise<number> {
 }
 
 // ---------------------------------------------------------------- queries
-
-export type StatusFilter = 'all' | PostStatus | 'trash';
-export type SortKey =
-  | 'updated'
-  | 'published'
-  | 'oldest'
-  | 'alphabetical'
-  | 'drafts-first';
-
-export interface Query {
-  status: StatusFilter;
-  search: string;
-  category: string | null;
-  tag: string | null;
-  sort: SortKey;
-}
 
 export function filterAndSort(posts: Post[], q: Query): Post[] {
   const needle = q.search.trim().toLowerCase();

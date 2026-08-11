@@ -24,7 +24,6 @@ export function MetaPanel({
   const [tags, setTags] = useState<string[]>(post.tags);
   const [tagDraft, setTagDraft] = useState('');
   const [excerpt, setExcerpt] = useState(post.excerpt);
-  const [slug, setSlug] = useState(post.slug);
 
   // Re-seed from the store each time the panel opens, not on every keystroke.
   useEffect(() => {
@@ -32,7 +31,6 @@ export function MetaPanel({
     setCategory(post.category);
     setTags(post.tags);
     setExcerpt(post.excerptSource === 'author' ? post.excerpt : '');
-    setSlug(post.slug);
     setTagDraft('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -64,7 +62,6 @@ export function MetaPanel({
     const patch: PostPatch = {
       category: category.trim().slice(0, 40),
       tags,
-      slug: slug.trim() ? slugify(slug) : '',
     };
     // Only send the excerpt if the author actually changed it. Sending the
     // untouched value blanked derived excerpts just for opening this panel.
@@ -181,15 +178,18 @@ export function MetaPanel({
         <label className="label" htmlFor="meta-slug">
           Slug
         </label>
+        {/* Read-only: slugs are server-authoritative (spec §4.5). Letting a
+            client set one bypasses uniqueness and turns a collision into a
+            500 rather than a `-2` suffix. */}
         <input
           id="meta-slug"
           className="input"
-          value={slug}
-          maxLength={80}
+          value={post.slug ?? ''}
+          readOnly
           placeholder={slugify(post.title || 'untitled')}
-          onChange={(e) => setSlug(e.target.value)}
           style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--step--1)' }}
         />
+        <p className="hint">Assigned automatically from the title on first save.</p>
       </div>
     </Dialog>
   );

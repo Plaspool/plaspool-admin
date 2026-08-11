@@ -12,7 +12,7 @@ export interface TemplateProps {
 }
 
 function Byline({ post, settings }: { post: Post; settings: Settings }) {
-  const author = settings.authorName || post.author;
+  const author = settings.authorName || post.authorName;
   const dateLine =
     post.status === 'published' && post.publishedAt
       ? new Date(post.publishedAt).toLocaleDateString(undefined, {
@@ -116,7 +116,7 @@ function Minimal({ post, doc, settings }: TemplateProps) {
         <h1 className="tpl__title">{post.title.trim() || 'Untitled'}</h1>
         {post.subtitle && <p className="tpl__subtitle">{post.subtitle}</p>}
         <p className="tpl__meta-line">
-          {settings.authorName || post.author}
+          {settings.authorName || post.authorName}
           {' · '}
           {post.status === 'published' && post.publishedAt
             ? new Date(post.publishedAt).toLocaleDateString(undefined, {
@@ -174,7 +174,7 @@ function Technical({ post, doc, settings }: TemplateProps) {
         <dl className="tpl__facts">
           <div>
             <dt>Author</dt>
-            <dd>{settings.authorName || post.author}</dd>
+            <dd>{settings.authorName || post.authorName}</dd>
           </div>
           <div>
             <dt>Status</dt>

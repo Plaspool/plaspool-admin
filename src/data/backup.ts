@@ -149,7 +149,7 @@ export async function importBundle(json: string): Promise<ImportResult> {
       ...p,
       id: fresh,
       // Slug uniqueness is re-derived on next save; clear to avoid collisions.
-      slug: '',
+      slug: null,
       content: remapImages(p.content, imageIdMap),
       coverImage: p.coverImage
         ? {
