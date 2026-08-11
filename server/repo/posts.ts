@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import type { Db } from '../db/client';
 import { DbError, uniqueViolation } from '../db/client';
 import { derive, nextExcerpt } from '../domain/derive';
 import { SLUG_ATTEMPTS, uniqueSlug } from '../domain/slug';
 import { POST_COLUMNS, postColumns, rowToPost } from './mapping';
 import { InvalidDocumentError, NotFoundError, StaleWriteError } from './errors';
-import { slugify } from '../../shared/doc';
+import { deriveExcerpt, slugify } from '../../shared/doc';
 import { checkPostMeta, validateDoc } from '../../shared/validate';
 import type {
   AuthUser,
@@ -295,6 +295,341 @@ export async function savePost(
    * is the display name that goes with it.
    */
   return rowToPost(row[0], current.authorName);
+}
+
+// ----------------------------------------------------------------- lifecycle
+
+/**
+ * Publish, unpublish, archive, unarchive, trash, restore (spec §4.2).
+ *
+ * TASK 6'S STATEMENT CANNOT SERVE THESE. Its `SET` list deliberately omits
+ * `status`, `published_at` and `deleted_at` — that is what stops a `PATCH` body
+ * smuggling a status change past the lifecycle rules — so each transition needs
+ * its own statement, differing only in what it assigns and what it demands.
+ *
+ * The two halves of the contract:
+ *
+ * - **No client base revision, so a bounded internal retry.** There is no human
+ *   decision to surface here; the derivation simply needs a fresh row. Three
+ *   attempts, then 409.
+ * - **The precondition rides in the CAS predicate, and is re-checked on every
+ *   re-read.** Retry answers "the row moved under me". It must never answer
+ *   "someone did the opposite thing on purpose": an `unpublish` that lost a
+ *   race and blindly retried would flip a post someone deliberately archived
+ *   back to draft, and a `trash` that blindly retried would overwrite the
+ *   trash timestamp of whoever actually put it there — the clock a retention
+ *   sweep reads before destroying the post and its whole history.
+ */
+export const LIFECYCLE_ATTEMPTS = 3;
+
+interface Transition {
+  /** The precondition, on the row this attempt derived from. */
+  holds(post: Post): boolean;
+  /** The same precondition, in the CAS predicate — this is the authoritative one. */
+  guard: SQL;
+  kind: Revision['kind'];
+  note: string | null;
+  /** What the transition assigns, beyond `revision` and `updated_at`. */
+  set(post: Post, now: number, slug: string | null): SQL;
+  /** Publish is the only transition that can assign a slug. */
+  slugs?: boolean;
+}
+
+async function transition(
+  db: Db,
+  id: string,
+  actor: AuthUser,
+  t: Transition,
+): Promise<Post> {
+  let base = 0;
+
+  for (let i = 0; i < LIFECYCLE_ATTEMPTS; i += 1) {
+    const current = await getPost(db, id);
+    if (!current) throw new NotFoundError(id);
+    base = current.revision;
+
+    /*
+     * Checked here as well as in the predicate, so an op that is already a
+     * no-op costs one read rather than a write attempt — and so the 409 for
+     * "someone did the opposite thing on purpose" is reached identically on the
+     * first attempt and on a retry. `expected === actual` on this path is not a
+     * mistake: nothing is stale, the request is simply refused.
+     */
+    if (!t.holds(current)) throw new StaleWriteError(base, base, current);
+
+    const now = Date.now();
+    const revId = newId('r_');
+
+    const row = await withSlugRetry(async (attempt) => {
+      /*
+       * A published post needs an address. `slugify('')` is already
+       * `'untitled'`, so the `|| 'untitled'` only makes the intent visible.
+       * Inside the slug retry and carrying the attempt index, for the same
+       * reason `savePost` is: `uniqueSlug` reads and then this statement
+       * writes, and the UNIQUE index — not the read — is the authority.
+       */
+      const slug =
+        t.slugs && !current.slug
+          ? await uniqueSlug(db, slugify(current.title || 'untitled'), id, attempt)
+          : current.slug;
+
+      const res = await db.execute(sql`
+        WITH upd AS (
+          UPDATE posts
+             SET ${t.set(current, now, slug)},
+                 revision = revision + 1, updated_at = ${now}
+           WHERE id = ${id} AND revision = ${base} AND ${t.guard}
+          RETURNING ${sql.raw(POST_COLUMNS.join(', '))}
+        ), rev AS (
+          INSERT INTO revisions (id, post_id, revision, created_at, author_id,
+                                 title, subtitle, content, word_count, kind, note)
+          SELECT ${revId}, upd.id, upd.revision, ${now}, ${actor.id},
+                 upd.title, upd.subtitle, upd.content, upd.word_count,
+                 ${t.kind}, ${t.note}
+            FROM upd
+          RETURNING 1
+        )
+        SELECT ${sql.raw(POST_COLUMNS.join(', '))} FROM upd`);
+      return res.rows[0];
+    }).catch((err: unknown) => {
+      if (isProgramLimitExceeded(err)) throw tooLargeForSearchIndex();
+      /*
+       * The `UNIQUE (post_id, revision)` backstop. Under real parallelism two
+       * writers can reach the same revision number even though the row-level
+       * CAS decided one of them lost — which means exactly what a lost CAS
+       * means, so it re-enters the loop rather than escaping as a 500.
+       */
+      if (isRevisionCollision(err)) return undefined;
+      throw err;
+    });
+
+    // `rows[0]`, never `affectedRows` — measured to be 0 even on a winning CAS.
+    // Undefined means the CAS matched nothing, so nothing at all was written:
+    // `INSERT … SELECT FROM upd` had no rows to insert.
+    if (row) return rowToPost(row, current.authorName);
+  }
+
+  /*
+   * Three attempts, three lost races. Bounded on purpose — an unbounded retry
+   * against a row that never settles is a hung request, not a resilient one.
+   */
+  const actual = await getPost(db, id);
+  if (!actual) throw new NotFoundError(id);
+  throw new StaleWriteError(base, actual.revision, actual);
+}
+
+/**
+ * The excerpt rule at publish time, from `src/data/posts.ts:283-286`.
+ *
+ * Deliberately not `nextExcerpt`: publishing re-derives when the source is
+ * 'author' but the text is empty, which `nextExcerpt` would leave blank. A
+ * published card advertising nothing is worse than one advertising the opening
+ * line. `excerpt_source` itself is not in the SET list — publishing is not the
+ * gesture that changes who owns the excerpt.
+ */
+function publishExcerpt(post: Post): string {
+  return post.excerptSource === 'author' && post.excerpt
+    ? post.excerpt
+    : deriveExcerpt(post.content);
+}
+
+const PUBLISH: Transition = {
+  holds: (p) => p.status !== 'published',
+  guard: sql`status <> 'published'`,
+  kind: 'publish',
+  note: null,
+  slugs: true,
+  set: (p, now, slug) => sql`
+    status = 'published',
+    published_at = ${p.publishedAt ?? now},
+    deleted_at = NULL,
+    slug = ${slug},
+    excerpt = ${publishExcerpt(p)}`,
+};
+
+const UNPUBLISH: Transition = {
+  holds: (p) => p.status === 'published',
+  guard: sql`status = 'published'`,
+  kind: 'status',
+  note: 'Moved back to drafts',
+  set: () => sql`status = 'draft'`,
+};
+
+const ARCHIVE: Transition = {
+  holds: (p) => p.status !== 'archived',
+  guard: sql`status <> 'archived'`,
+  kind: 'status',
+  note: 'Archived',
+  set: () => sql`status = 'archived'`,
+};
+
+const UNARCHIVE: Transition = {
+  holds: (p) => p.status === 'archived',
+  guard: sql`status = 'archived'`,
+  kind: 'status',
+  note: 'Restored from archive',
+  set: () => sql`status = 'draft'`,
+};
+
+/** Soft delete. The row and every revision stay intact. */
+const TRASH: Transition = {
+  holds: (p) => p.deletedAt == null,
+  guard: sql`deleted_at IS NULL`,
+  kind: 'status',
+  note: 'Moved to trash',
+  set: (_p, now) => sql`deleted_at = ${now}`,
+};
+
+const RESTORE: Transition = {
+  holds: (p) => p.deletedAt != null,
+  guard: sql`deleted_at IS NOT NULL`,
+  kind: 'status',
+  note: 'Restored from trash',
+  set: () => sql`deleted_at = NULL`,
+};
+
+export const publishPost = (db: Db, id: string, actor: AuthUser): Promise<Post> =>
+  transition(db, id, actor, PUBLISH);
+export const unpublishPost = (db: Db, id: string, actor: AuthUser): Promise<Post> =>
+  transition(db, id, actor, UNPUBLISH);
+export const archivePost = (db: Db, id: string, actor: AuthUser): Promise<Post> =>
+  transition(db, id, actor, ARCHIVE);
+export const unarchivePost = (db: Db, id: string, actor: AuthUser): Promise<Post> =>
+  transition(db, id, actor, UNARCHIVE);
+export const trashPost = (db: Db, id: string, actor: AuthUser): Promise<Post> =>
+  transition(db, id, actor, TRASH);
+export const restorePost = (db: Db, id: string, actor: AuthUser): Promise<Post> =>
+  transition(db, id, actor, RESTORE);
+
+/**
+ * A copy, authored by whoever asked for it.
+ *
+ * Everything system-owned is reset rather than copied: a duplicate is a new
+ * draft, not a second published post at the same address. `slug: null` because
+ * two posts cannot hold one slug and the copy has not earned an address yet —
+ * the first save with a title, or the first publish, assigns one.
+ */
+export async function duplicatePost(
+  db: Db,
+  id: string,
+  actor: AuthUser,
+): Promise<Post> {
+  const src = await getPost(db, id);
+  if (!src) throw new NotFoundError(id);
+  const now = Date.now();
+  return createPost(db, actor, {
+    ...src,
+    id: undefined,
+    title: src.title ? `${src.title} (copy)` : '',
+    slug: null,
+    status: 'draft',
+    publishedAt: null,
+    deletedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    revision: 1,
+  });
+}
+
+// ------------------------------------------------------------------- deletes
+
+/*
+ * THE THREE MULTI-ROW MUTATIONS, AND WHY NONE OF THEM IS A TRANSACTION.
+ *
+ * `db.transaction` throws unconditionally on the neon-http driver
+ * (`node_modules/drizzle-orm/neon-http/session.js`) while PGlite supports it —
+ * so a transaction here would pass every test in this repository and 500 on
+ * every production call. Spec §4.3a exists to stop exactly that, and the
+ * `ON DELETE CASCADE` already on `revisions.post_id` makes the separate
+ * revisions delete unnecessary anyway.
+ */
+
+/**
+ * The only destructive operation in the app, and it is idempotent: destroying an
+ * already-destroyed post is not an error, because the caller cannot tell the two
+ * apart and spec §8 answers both with `gone`.
+ */
+export async function destroyPost(db: Db, id: string): Promise<void> {
+  await db.execute(sql`DELETE FROM posts WHERE id = ${id}`);
+}
+
+/** All-or-nothing by construction: one statement either runs or it does not. */
+export async function emptyTrash(db: Db): Promise<number> {
+  const res = await db.execute(sql`
+    WITH gone AS (DELETE FROM posts WHERE deleted_at IS NOT NULL RETURNING id)
+    SELECT count(*)::int AS n FROM gone`);
+  return Number(res.rows[0].n);
+}
+
+/**
+ * The age guard from `src/data/posts.ts:401`. A draft someone is staring at in
+ * another tab is never pulled out from under them.
+ */
+const BLANK_DRAFT_GRACE_MS = 60_000;
+
+/**
+ * Sweep drafts left behind by an exit route the editor cannot see — browser
+ * Back, a closed tab, a crash.
+ *
+ * `word_count = 0` IS NOT EMPTINESS, and this is the frontend gauntlet's
+ * sharpest finding: an image-only or divider-only draft has no words at all, and
+ * treating that as blank destroyed the draft *and* its image bytes the moment
+ * the writer clicked away — no confirmation, no grace period, no undo. So the
+ * recursive term below walks the document exactly as `isBlankDoc` does and an
+ * unrecognised node counts as content, which is the safe direction to fail.
+ *
+ * Three things the SQL is careful about, each mirroring the JS predicate:
+ *
+ * - it descends through `content` arrays ONLY, never into `attrs` or `marks`,
+ *   so a paragraph carrying `attrs: { type: 'image' }` is still blank;
+ * - a node with no `type` at all counts as content (`coalesce(…,'')` is in no
+ *   allow-list), which is what makes a corrupt or foreign document survive;
+ * - `text` counts only when it really is a JSON string, matching
+ *   `typeof n.text === 'string'`.
+ *
+ * One statement, so a draft cannot be half-swept, and `WITH RECURSIVE` is legal
+ * around a data-modifying CTE as long as that CTE is not itself the recursive
+ * term.
+ */
+export async function sweepBlankDrafts(db: Db, exceptId?: string): Promise<number> {
+  const cutoff = Date.now() - BLANK_DRAFT_GRACE_MS;
+  const res = await db.execute(sql`
+    WITH RECURSIVE candidates AS (
+      SELECT id, content
+        FROM posts
+       WHERE status = 'draft'
+         AND deleted_at IS NULL
+         AND btrim(title) = ''
+         AND btrim(subtitle) = ''
+         AND word_count = 0
+         AND cover_image IS NULL
+         AND coalesce(array_length(tags, 1), 0) = 0
+         AND category = ''
+         AND updated_at < ${cutoff}
+         AND id IS DISTINCT FROM ${exceptId ?? null}::text
+    ), nodes AS (
+      SELECT id AS post_id, content AS node FROM candidates
+      UNION ALL
+      SELECT n.post_id, child
+        FROM nodes n
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN jsonb_typeof(n.node -> 'content') = 'array'
+               THEN n.node -> 'content'
+               ELSE '[]'::jsonb
+          END) AS child
+    ), occupied AS (
+      SELECT DISTINCT post_id
+        FROM nodes
+       WHERE coalesce(node ->> 'type', '') NOT IN ('doc', 'paragraph', 'text')
+          OR (jsonb_typeof(node -> 'text') = 'string' AND btrim(node ->> 'text') <> '')
+    ), gone AS (
+      DELETE FROM posts
+       WHERE id IN (SELECT id FROM candidates)
+         AND id NOT IN (SELECT post_id FROM occupied)
+      RETURNING id
+    )
+    SELECT count(*)::int AS n FROM gone`);
+  return Number(res.rows[0].n);
 }
 
 // ------------------------------------------------------------------- helpers
