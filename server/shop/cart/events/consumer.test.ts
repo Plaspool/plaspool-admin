@@ -24,7 +24,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedDb, resetShopTables, TEST_CURRENCY } from '../test/harness';
 import { fakeCatalog } from '../test/fake-catalog';
 import { addLine, createCart } from '../cart/repo';
-import { listReservations, reserveForCheckout } from '../reservations/repo';
+import {
+  listReservations,
+  reserveForCheckout,
+  sweepExpiredReservations,
+} from '../reservations/repo';
 import {
   CART_CONSUMER,
   MAX_EVENT_ATTEMPTS,
@@ -285,6 +289,70 @@ describe('the capture beats the sweeper', () => {
     // Sold, not handed back to somebody else.
     expect(catalog.stockOf('var_a')).toEqual({ onHand: 8, reserved: 0 });
     expect((await listReservations(db, cartId))[0].state).toBe('committed');
+  });
+
+  it('A BACKLOG BIGGER THAN THE DRAIN BATCH DOES NOT LOSE THE REST', async () => {
+    /*
+     * THE BUG THIS TEST WAS WRITTEN FOR, AND IT WAS A REAL ONE.
+     *
+     * "Drain before sweep" was originally the whole guarantee, and it is not
+     * enough, because the drain is BOUNDED. With more pending captures than one
+     * batch, the sweeper reached holds whose captures were still queued behind
+     * it. Measured before the fix — ten paid checkouts, drain batch of three:
+     *
+     *     drain {"scanned":3,"applied":3}  sweep {"released":3}
+     *     states [{"committed":3},{"expired":3},{"held":4}]
+     *
+     * Three paid units handed back to somebody else. The same "resells what it
+     * has already sold" failure the consumer exists to prevent, reintroduced by
+     * the bound that keeps the drain cheap.
+     *
+     * The fix is in the sweeper's own predicate rather than in the ordering: it
+     * refuses to expire a hold whose cart has a `payment.captured` in the
+     * outbox. The ordering is now an optimisation, and a caller that sweeps
+     * without draining is safe too.
+     */
+    const carts: string[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      const cartId = await heldCart(1);
+      carts.push(cartId);
+      await emit('payment.captured', `pi_${i}`, { intentId: `pi_${i}`, checkoutId: cartId });
+    }
+    await db.execute(sql`UPDATE shop_reservations SET expires_at = ${Date.now() - 1}`);
+
+    const summary = await runCartMaintenance(db, catalog, { limit: 3 });
+
+    // The drain only got to three of them, which is the whole point.
+    expect(summary.drain.applied).toBe(3);
+    // NOT ONE of the other seven was expired.
+    expect(summary.sweep.released).toBe(0);
+    const states = await db.execute(sql`
+      SELECT state, count(*)::int AS n FROM shop_reservations GROUP BY state ORDER BY state`);
+    expect(states.rows.map((r) => [String(r.state), Number(r.n)])).toEqual([
+      ['committed', 3],
+      ['held', 7],
+    ]);
+
+    // And successive runs drain the rest without ever losing one.
+    await runCartMaintenance(db, catalog, { limit: 3 });
+    await runCartMaintenance(db, catalog, { limit: 3 });
+    await runCartMaintenance(db, catalog, { limit: 3 });
+    const after = await db.execute(sql`
+      SELECT count(*)::int AS n FROM shop_reservations WHERE state = 'committed'`);
+    expect(Number(after.rows[0].n)).toBe(10);
+    expect(catalog.stockOf('var_a')).toEqual({ onHand: 0, reserved: 0 });
+  });
+
+  it('sweeping WITHOUT draining first is now safe too', async () => {
+    // The ordering is an optimisation, not the guarantee. A future caller that
+    // gets it wrong — or a direct call from an admin script — cannot resell a
+    // paid unit.
+    const cartId = await heldCart(2);
+    await emit('payment.captured', 'pi_1', captured(cartId));
+    await db.execute(sql`UPDATE shop_reservations SET expires_at = ${Date.now() - 1}`);
+
+    expect((await sweepExpiredReservations(db, catalog)).released).toBe(0);
+    expect((await listReservations(db, cartId))[0].state).toBe('held');
   });
 
   it('and an uncaptured expired checkout is still swept', async () => {

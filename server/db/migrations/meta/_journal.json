@@ -71,6 +71,13 @@
       "when": 1786600000301,
       "tag": "0121_cart_event_consumptions",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1786600000302,
+      "tag": "0122_captured_checkout_index",
+      "breakpoints": true
     }
   ]
 }

@@ -384,9 +384,31 @@ export async function sweepExpiredReservations(
   const res = await db.execute(sql`
     UPDATE shop_reservations SET state = 'expired'
      WHERE id IN (
-       SELECT id FROM shop_reservations
-        WHERE state = 'held' AND expires_at <= ${now}
-        ORDER BY expires_at
+       SELECT r.id FROM shop_reservations r
+        WHERE r.state = 'held' AND r.expires_at <= ${now}
+          -- NEVER EXPIRE A HOLD WHOSE CHECKOUT HAS BEEN PAID FOR.
+          --
+          -- This predicate is a BUG FIX, and the bug was mine. runCartMaintenance
+          -- drains the outbox before sweeping, and I took that ordering to be the
+          -- whole guarantee. It is not: the drain is BOUNDED, so with a backlog
+          -- larger than one batch the sweeper reached holds whose captures were
+          -- still queued behind it. Measured, ten paid checkouts against a drain
+          -- batch of three: 3 committed, 3 EXPIRED -- their stock handed back to
+          -- somebody else -- and 4 left held. Three units resold.
+          --
+          -- With this, the ordering is an optimisation rather than a correctness
+          -- requirement, and a caller that sweeps without draining is safe too.
+          --
+          -- A capture that is ABANDONED (an unreadable payload, five attempts)
+          -- leaves its holds stuck at held forever rather than expiring them.
+          -- That is the safe direction -- do not resell what was paid for -- and
+          -- the drain already reports abandoned loudly as needing a human.
+          AND NOT EXISTS (
+            SELECT 1 FROM commerce_events e
+             WHERE e.type = 'payment.captured'
+               AND e.payload ->> 'checkoutId' = r.cart_id
+          )
+        ORDER BY r.expires_at
         LIMIT ${a.limit ?? SWEEP_BATCH}
      )
     RETURNING ${sql.raw(COLUMNS)}`);

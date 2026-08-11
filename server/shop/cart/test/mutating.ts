@@ -62,6 +62,15 @@ export const GUARDS = {
   cartCas: /revision = \$\d+/,
   /** `status = 'open'` — the "you may still edit this cart" precondition. */
   cartOpen: /status = 'open'/,
-  /** `state = 'held'` — the reservation transition guard, both directions. */
-  reservationHeld: /state = 'held'/,
+  /**
+   * `state = 'held'` — the reservation transition guard, both directions.
+   *
+   * The optional `r.` qualifier is not cosmetic. The sweeper's SELECT gained a
+   * table alias when it also gained the "has this checkout been paid for?"
+   * subquery, and an unqualified pattern then rewrote `r.state = 'held'` into
+   * `r.true` — SQLSTATE 42703, a mutation test failing because the MUTANT was
+   * malformed rather than because the guard was doing its job. A mutation
+   * operator that produces invalid SQL proves nothing at all.
+   */
+  reservationHeld: /(?:\w+\.)?state = 'held'/,
 } as const;
