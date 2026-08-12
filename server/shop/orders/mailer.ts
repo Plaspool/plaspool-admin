@@ -2,13 +2,14 @@
  * Transactional email (brief §5): four messages, an interface, and a rendering
  * step that has nothing to do with delivery.
  *
- * ⚠️  **THE MAILER SHIPPED HERE DOES NOT SEND EMAIL.** `LoggingMailer` records the
- *     fully rendered message and returns. It exists so the whole path — state
- *     change → intent row → sweeper → rendered message — is real and tested, and
- *     so that wiring a provider later is one object, not a refactor. Nothing in
- *     this file will put a message in a customer's inbox. What the user has to
- *     authorize to change that is written out in the report and in
- *     `AMENDMENTS.md`; it is not something a non-interactive session can do.
+ * ⚠️  **`LoggingMailer` STILL DOES NOT SEND EMAIL, AND IS STILL THE DEFAULT.** It
+ *     records the fully rendered message and returns. What HAS changed is that
+ *     `portMailer` at the bottom of this file adapts this subsystem's `Mailer` to
+ *     `server/mail/port.ts`'s, and `server/index.ts` registers a real transport
+ *     through it at the composition root — so a deployment with `RESEND_API_KEY`
+ *     set now delivers order mail, while a test that registers nothing still gets
+ *     the honest logger. The name stays `LoggingMailer` for exactly the reason
+ *     given below.
  *
  * FOUR MESSAGES IN v1 AND NO MORE (brief §5): confirmation on `paid`, shipment on
  * `shipped` with tracking, cancellation, refund.
@@ -35,6 +36,20 @@ export interface RenderedEmail {
  * ONE METHOD, AND IT MAY REJECT. A `Mailer` that could not fail would let every
  * caller forget that the network exists; the sweeper's whole job is to record the
  * failure and leave the intent unsent, so the failure has to be expressible.
+ *
+ * ═══ THIS IS NOT `server/mail/port.ts`'S `Mailer`, AND IT STAYS THAT WAY ═══
+ * The port takes `{ to, subject, text, html }`; this takes `{ to, subject, body }`,
+ * because `body` is a COLUMN. Every message this subsystem sends was rendered and
+ * stored in `shop_order_email_intents.body` in the same statement as the state
+ * change that owed it (`repo/orders.ts`, `repo/fulfillments.ts`) — that is the
+ * whole design, and a two-part interface here would mean either a second column on
+ * a table with rows in it or an HTML part invented at delivery time and therefore
+ * absent from the record of what was sent.
+ *
+ * So the two shapes are reconciled by an ADAPTER (`portMailer`, at the foot of
+ * this file) rather than by making one of them the other. The intent row stays the
+ * single source of truth for what a customer was told; the port stays the one
+ * interface a transport implements.
  */
 export interface Mailer {
   send(message: RenderedEmail): Promise<void>;
@@ -194,4 +209,86 @@ export function renderRefund(view: RefundMailView, link: AccessLink | null): Ren
         : `The order is refunded in full.`) +
       accessFooter(view, link),
   };
+}
+
+// -------------------------------------------------------------- the adapter
+
+/**
+ * A `server/mail/port.ts` transport, seen as one of this subsystem's `Mailer`s.
+ *
+ * THIS IS THE OBJECT HANDOFF §1.11 SAYS IS MISSING. Two `Mailer` interfaces existed
+ * in this repository — `{ to, subject, body }` here, `{ to, subject, text, html }`
+ * there — and nothing adapted them, so a complete transactional outbox with dedupe
+ * keys and eight-attempt retries delivered precisely nothing, while a single
+ * password-reset route was the only real email the application sent. One function
+ * closes that, and `server/index.ts` registers it at the composition root.
+ *
+ * THE PLAIN-TEXT BODY IS THE ORIGINAL AND THE HTML IS DERIVED, NEVER THE OTHER WAY
+ * ROUND. `body` is what is stored in the intent row, what the admin order view
+ * shows and what a test asserts on; deriving text FROM html would make the record
+ * of what a customer was told a lossy round trip through a tag stripper.
+ *
+ * `assertConfigured` IS NOT FORWARDED, DELIBERATELY. This subsystem's `Mailer` has
+ * no such method and the sweeper has no use for one: it never asks "could this
+ * possibly work" ahead of time, because there is no caller to answer 501 to — the
+ * intent is already committed and a configuration failure is recorded on the row
+ * like any other refusal. The parameter type accepts a transport that has one so a
+ * `resendMailer()` can be passed straight in.
+ */
+export function portMailer(transport: {
+  send(msg: { to: string; subject: string; text: string; html: string }): Promise<void>;
+  assertConfigured?(): void;
+}): Mailer {
+  return {
+    send: (message) =>
+      transport.send({
+        to: message.to,
+        subject: message.subject,
+        text: message.body,
+        html: textToHtml(message.body),
+      }),
+  };
+}
+
+/**
+ * Plain text to the simplest HTML that renders it faithfully.
+ *
+ * ESCAPE FIRST, THEN LINKIFY, AND THE ORDER IS THE WHOLE CORRECTNESS ARGUMENT. The
+ * bodies passed through here are rendered from order snapshots, and a product title
+ * is a string somebody typed — `Mug <3` reaches this function verbatim. Escaping
+ * after linkifying would either double-escape the `&` in a URL or leave a title's
+ * `<` as markup; escaping first means the linkifier only ever sees text it produced
+ * itself, and `&amp;` inside an `href` is what HTML requires anyway.
+ *
+ * NO `<html>`, NO `<head>`, NO STYLE. Every mail client rewrites the document
+ * wrapper and most strip a `<style>` block, so anything beyond paragraphs and links
+ * is work discarded in transit. The one thing this must get right is that the guest
+ * access link is CLICKABLE: a bare URL in an HTML part is not a link in several
+ * clients, and an order confirmation whose "view your order" link is dead is a
+ * support ticket per order.
+ *
+ * DELIBERATELY LOCAL RATHER THAN SHARED WITH `server/email/render.ts`. That module
+ * belongs to the marketing subsystem; importing it here would couple Orders to a
+ * feature it has no business knowing about, for eight lines.
+ */
+function textToHtml(body: string): string {
+  const escaped = body
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+
+  const linked = escaped.replace(
+    // `[^\s<]` rather than a URL grammar: the input is already escaped, so the
+    // only way a `<` can appear is as `&lt;`, and stopping at whitespace is what
+    // keeps a trailing full stop out of the href.
+    /https?:\/\/[^\s<]+/g,
+    (url) => `<a href="${url}">${url}</a>`,
+  );
+
+  return linked
+    .split(/\n{2,}/)
+    .map((paragraph) => `<p>${paragraph.replaceAll('\n', '<br>')}</p>`)
+    .join('\n');
 }

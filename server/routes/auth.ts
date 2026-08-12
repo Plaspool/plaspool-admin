@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { z } from 'zod';
-import { readJson, str } from '../middleware/errors';
+import { pathParam, readJson, readQuery, str } from '../middleware/errors';
 import {
   clearSessionCookie,
   requireAuth,
@@ -18,13 +19,19 @@ import {
 } from '../repo/ratelimit';
 import { verifyPassword } from '../repo/password';
 import {
+  INVITE_TTL_MS,
   acceptInvite,
+  changePassword,
   createInvite,
   createSession,
   destroySession,
   findUserByEmail,
+  findUserById,
   listInvites,
+  listSessions,
   revokeInvite,
+  revokeSession,
+  updateDisplayName,
 } from '../repo/users';
 import { consumePasswordReset, createPasswordReset } from '../repo/password-reset';
 import { resendMailer } from '../mail/resend';
@@ -106,6 +113,24 @@ export const FORGOT_LIMIT = 5;
 export const FORGOT_WINDOW_MS = 15 * 60_000;
 
 /**
+ * The signed-in password-change bucket: five per fifteen minutes per USER.
+ *
+ * Keyed on the account and not on the IP, because the thing worth bounding here
+ * is not traffic — the caller is already authenticated — but guesses at the
+ * CURRENT password. A stolen or borrowed session (an unlocked laptop, a shared
+ * machine) is exactly the position from which someone would try to promote
+ * temporary access into permanent control by finding the existing password, and
+ * this route is the only place in the app that will tell them whether a guess is
+ * right. Five tries a quarter-hour makes that useless while leaving room for the
+ * ordinary typo.
+ *
+ * Named separately from `LOGIN_LIMIT` for the reason `FORGOT_LIMIT` is: tuning
+ * the login limiter should not silently retune this.
+ */
+export const CHANGE_PASSWORD_LIMIT = 5;
+export const CHANGE_PASSWORD_WINDOW_MS = 15 * 60_000;
+
+/**
  * Bounded before it is used as a primary key.
  *
  * The rate-limit key is `login:<ip>|<email>`, so an unbounded email is an
@@ -147,6 +172,54 @@ const InviteBody = z
   .object({
     email: Email,
     role: z.enum(['owner', 'writer']).default('writer'),
+  })
+  .strict();
+
+/**
+ * `PATCH /api/auth/me`.
+ *
+ * OPTIONAL, so `{}` is a no-op that returns the caller unchanged rather than a
+ * 400. The field is optional in the contract because this is the account patch
+ * and more of the account will land on it (an email change needs a
+ * confirmation round trip and is deliberately not here yet) — a schema that
+ * required the one field it currently has would have to loosen the day a
+ * second arrives, and every client would have to be told.
+ *
+ * `.min(1)` refuses `''`; it does NOT refuse `'   '`, which is why
+ * `updateDisplayName` calls `assertDisplayName` as well. 200 is the same
+ * ceiling `AcceptInviteBody` sets, so a name cannot be created at one length
+ * and edited to another.
+ */
+const MeBody = z
+  .object({
+    displayName: str().min(1).max(200).optional(),
+  })
+  .strict();
+
+const ChangePasswordBody = z
+  .object({
+    // Bounded like the login body, and for the same reason: nothing should be
+    // able to hand scrypt a 10 MB input, session or no session.
+    currentPassword: str().min(1).max(1024),
+    newPassword: str().min(1).max(1024),
+  })
+  .strict();
+
+/** The two history buckets `GET /api/invites?include=` can opt in to. */
+const INVITE_INCLUDES = ['accepted', 'expired'] as const;
+
+const InviteQuery = z
+  .object({
+    /**
+     * A comma-separated list, parsed below rather than by Zod.
+     *
+     * `z.enum` over a repeated `?include=a&include=b` would be the more Zod-ish
+     * shape, but `readQuery` is fed `c.req.query()`, which collapses repeats to
+     * the LAST value — so the second one would silently win and an owner asking
+     * for both buckets would get one. Bounded because it is caller-supplied and
+     * about to be split.
+     */
+    include: str().max(100).optional(),
   })
   .strict();
 
@@ -245,6 +318,157 @@ routes.post('/auth/logout', async (c) => {
 
 routes.get('/auth/me', requireAuth(), (c) => c.json({ user: currentUser(c) }));
 
+/**
+ * The account's own settings — one field today.
+ *
+ * NO BACKFILL RIDES ALONG WITH A RENAME, and that is a property of the schema
+ * rather than a decision taken here: `posts` has no `author_name` column at
+ * all. `server/repo/posts.ts:62`, `server/repo/query.ts:371`,
+ * `server/repo/backup.ts:44` and `server/repo/public.ts:212` each read
+ * `u.display_name AS author_name` through a live `JOIN users u ON u.id =
+ * p.author_id`, so the new name is on every post, every list, the export bundle
+ * and the public feed as soon as this UPDATE commits. Nothing is stale and there
+ * is nothing to migrate. Had the name been denormalised onto `posts`, this route
+ * would owe a second statement.
+ *
+ * The 404 is not reachable in practice — `requireAuth` resolved the row a
+ * moment ago — and is written anyway rather than a `!`, for the reason
+ * `currentUser` gives: a route that assumes a row it did not read is one schema
+ * change away from a confusing 500.
+ */
+routes.patch('/auth/me', requireAuth(), async (c) => {
+  const user = currentUser(c);
+  const { displayName } = await readJson(c, MeBody);
+  if (displayName === undefined) return c.json({ user });
+
+  const updated = await updateDisplayName(currentDb(c), user.id, displayName);
+  if (!updated) throw new NotFoundError(user.id);
+  return c.json({ user: updated });
+});
+
+/**
+ * `POST /api/auth/change-password` — the signed-in path the reset flow
+ * deliberately is not.
+ *
+ * `POST /api/auth/reset` ends EVERY session, because a reset is what somebody
+ * does when they think an intruder holds one and there is nobody worth keeping.
+ * This route keeps exactly one — the caller's — and ends the rest. That
+ * asymmetry is the entire reason it exists: a change that logged you out of the
+ * tab you typed it in would be unusable, and one that left the other thirty-day
+ * cookies alive would be cosmetic against precisely the person it is aimed at.
+ *
+ * A WRONG `currentPassword` IS A 400 NAMING THE FIELD, NOT A 401. The session is
+ * valid — that is what `requireAuth` just established — so 401 would be a lie
+ * about which credential failed, and an expensive one: `src/data/api.ts` turns
+ * every 401 into an `AuthExpiredError` and fires `auth-expired`, which raises
+ * the re-authentication overlay over whatever the writer was doing. A typo in
+ * one field would look exactly like a dead session. 400 with
+ * `detail: 'currentPassword'` is the §8 row for "a request the server can parse
+ * but cannot honour", and it names the field and never the value.
+ */
+routes.post('/auth/change-password', requireAuth(), async (c) => {
+  const db = currentDb(c);
+  const user = currentUser(c);
+
+  /*
+   * ABOVE THE PARSE, like the login route's IP bucket and for the same reason:
+   * a limiter cannot bound work it runs after itself. Unlike `forgot`'s narrow
+   * bucket it is free to sit here, because the key comes from the session the
+   * middleware has already resolved rather than from the body.
+   */
+  await limit(c, `chpw:${user.id}`, CHANGE_PASSWORD_LIMIT, CHANGE_PASSWORD_WINDOW_MS);
+
+  const { currentPassword, newPassword } = await readJson(c, ChangePasswordBody);
+
+  const found = await findUserById(db, user.id);
+  if (!found) throw new UnauthenticatedError();
+
+  /*
+   * VERIFIED FIRST, THEN JUDGED — the opposite order from `createUser`, and the
+   * swap is deliberate. `createUser` judges before hashing so a rejected
+   * password does not cost 200 ms of scrypt; here the derivation happens anyway
+   * (that is what verifying the CURRENT password is), so ordering by cost buys
+   * nothing, and ordering by usefulness does: somebody who mistypes their
+   * existing password AND picks a short new one should be told about the
+   * mistyped one, because that is the field the next attempt has to get right.
+   *
+   * `assertCredentials` on the new value lives inside `changePassword`, so the
+   * ten-character floor is enforced by the same function `acceptInvite` and the
+   * reset flow are bound by rather than by a copy of the rule here.
+   */
+  if (!(await verifyPassword(currentPassword, found.passwordHash))) {
+    throw new BadRequestError('currentPassword');
+  }
+
+  const otherSessionsEnded = await changePassword(db, {
+    userId: user.id,
+    newPassword,
+    // The RAW cookie. `changePassword` derives the id it must not delete, so
+    // this route never has to know that a session id is an HMAC.
+    keepSessionToken: sessionToken(c),
+  });
+
+  /*
+   * The narrow bucket is forgotten on success, exactly as a successful login
+   * forgets `login:<ip>|<email>`: somebody who mistyped their old password four
+   * times before getting it right must not then be locked out of changing it
+   * again for a quarter of an hour.
+   */
+  await forget(db, `chpw:${user.id}`);
+
+  // The count is in the body because the UI says "signed out N other devices",
+  // and a client that had to count them itself would need the list route and a
+  // second round trip to say anything more useful than "done".
+  return c.json({ ok: true, otherSessionsEnded });
+});
+
+// ---------------------------------------------------------------- sessions
+
+/**
+ * The caller's own live sessions.
+ *
+ * `sessions.user_agent` and `sessions.last_seen_at` have been written since the
+ * table was created, for a screen that did not exist — this is that screen's
+ * route. `last_seen_at` in particular is written on EVERY resolve rather than
+ * only when the sliding refresh fires (see `resolveSession`), precisely so the
+ * "last used" column here can be trusted.
+ *
+ * OWN SESSIONS ONLY, with no owner override. An owner who needs to end
+ * somebody else's sessions has `POST /api/users/:id/disable`, which is the
+ * honest way to do it — it revokes the account as well, rather than quietly
+ * signing a writer out and leaving them able to sign straight back in.
+ */
+routes.get('/auth/sessions', requireAuth(), async (c) =>
+  c.json({
+    items: await listSessions(currentDb(c), currentUser(c).id, sessionToken(c)),
+  }),
+);
+
+/**
+ * Revoke one of your own sessions, including the current one — which is a
+ * logout that leaves the cookie in the browser, so the next request 401s and
+ * the client clears it. Refusing to revoke the current one would be a rule the
+ * user has to learn for no benefit.
+ *
+ * SOMEBODY ELSE'S SESSION ID AND AN ID THAT NEVER EXISTED ARE THE SAME 404.
+ * `revokeSession` scopes the DELETE by `user_id`, so the two cases produce the
+ * same zero rows — which is also what stops this route being a probe for
+ * whether a given id belongs to somebody.
+ *
+ * `pathParam` and not `c.req.param`: a `%00` in the segment would otherwise
+ * reach a bound parameter and `server/nul-bytes.test.ts` walks every registered
+ * route looking for exactly that. No uuid check, because `sessions.id` is a
+ * `text` primary key — a malformed value matches nothing rather than raising
+ * SQLSTATE 22P02, so the 404 above already covers it.
+ */
+routes.delete('/auth/sessions/:id', requireAuth(), async (c) => {
+  const id = pathParam(c, 'id');
+  if (!(await revokeSession(currentDb(c), currentUser(c).id, id))) {
+    throw new NotFoundError(id);
+  }
+  return c.json({ ok: true });
+});
+
 // ----------------------------------------------------------- accept invite
 
 routes.post('/auth/accept-invite', async (c) => {
@@ -275,64 +499,62 @@ routes.post('/auth/accept-invite', async (c) => {
 // ----------------------------------------------------------------- invites
 
 /**
- * A uuid, or a 400.
+ * A path segment that is a uuid, or a 400.
  *
- * `invites.id` is a `uuid` column, so a path segment that is not one reaches
- * the driver as SQLSTATE 22P02 — scrubbed to a `DbError`, answered 500, and
- * then retried five times by the client's policy for a request that can never
- * succeed (spec §8).
+ * `invites.id` and `users.id` are `uuid` columns, so a segment that is not one
+ * reaches the driver as SQLSTATE 22P02 — scrubbed to a `DbError`, answered 500,
+ * and then retried five times by the client's policy for a request that can
+ * never succeed (spec §8).
+ *
+ * EXPORTED, because `server/routes/users.ts` has the same three uuid path
+ * params and the alternative is a second copy of this regex that nothing keeps
+ * in step with this one. It goes through `pathParam` first rather than
+ * `c.req.param` directly: the NUL check has to happen for every path parameter
+ * in the app (`server/nul-bytes.test.ts` walks the route table to prove it),
+ * and although this regex would reject a NUL anyway, a route that got its
+ * boundary check by accident is one loosened pattern away from not having one.
  */
 const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
-function requireUuid(value: string, field: string): string {
-  if (!UUID.test(value)) throw new BadRequestError(field);
+export function uuidParam(c: Context<AppEnv>, name: string): string {
+  const value = pathParam(c, name);
+  if (!UUID.test(value)) throw new BadRequestError(name);
   return value;
 }
 
-routes.post('/invites', requireOwner(), async (c) => {
-  const db = currentDb(c);
-  const { email, role } = await readJson(c, InviteBody);
-  const address = normaliseEmail(email);
-
-  /*
-   * Refused before the invite is minted rather than after it is spent. Without
-   * this the owner gets a URL that looks fine, the invitee sets a password, and
-   * `createUser` fails on `users_email_unique` — burning a round trip and a
-   * scrypt derivation to say something knowable now.
-   */
-  if (await findUserByEmail(db, address)) throw new BadRequestError('email');
-
-  const invite = await createInvite(db, {
-    email: address,
-    role,
-    invitedBy: currentUser(c).id,
+/**
+ * Outstanding invites by default; `?include=accepted,expired` for history.
+ *
+ * Until this, an invite that had been accepted or had expired was invisible to
+ * every route in the app even though the row survived — so "did we ever invite
+ * this address" was unanswerable through the API. The buckets are opt-in rather
+ * than always-on so the default stays the short list an owner acts on.
+ *
+ * An unknown member is a 400 naming the parameter, not a silently ignored word.
+ * The same rule `ListQueryParams` states for post filters: `?include=acepted`
+ * quietly returning the default list looks like a bug in the screen.
+ */
+routes.get('/invites', requireOwner(), async (c) => {
+  const { include } = readQuery(c, InviteQuery);
+  const wanted = (include ?? '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part !== '');
+  for (const part of wanted) {
+    if (!INVITE_INCLUDES.includes(part as (typeof INVITE_INCLUDES)[number])) {
+      throw new BadRequestError('include');
+    }
+  }
+  return c.json({
+    items: await listInvites(currentDb(c), {
+      accepted: wanted.includes('accepted'),
+      expired: wanted.includes('expired'),
+    }),
   });
-
-  /*
-   * The URL is built from the FIRST configured origin, not from the request's
-   * `Host` or `Origin` header. A host header is attacker-controlled on any
-   * deployment that does not pin it, and an invite URL built from one is a
-   * credential delivered to a domain the attacker chose.
-   */
-  const base = c.get('origins')[0] ?? '';
-  const url = `${base}${INVITE_PATH}?token=${encodeURIComponent(invite.token)}`;
-
-  return c.json(
-    {
-      // The token is returned exactly once, here, inside the URL. It is stored
-      // only as an HMAC, so there is no second chance to read it.
-      invite: { id: invite.id, email: address, role, expiresAt: invite.expiresAt, url },
-    },
-    201,
-  );
 });
 
-routes.get('/invites', requireOwner(), async (c) =>
-  c.json({ items: await listInvites(currentDb(c)) }),
-);
-
 routes.delete('/invites/:id', requireOwner(), async (c) => {
-  const id = requireUuid(c.req.param('id'), 'id');
+  const id = uuidParam(c, 'id');
   if (!(await revokeInvite(currentDb(c), id))) throw new NotFoundError(id);
   return c.json({ ok: true });
 });
@@ -351,15 +573,138 @@ export interface AuthRouteDeps {
 }
 
 /**
- * The auth router, including the reset routes that need a mailer.
+ * The auth router, including the routes that need a mailer.
  *
  * A FACTORY WRAPPING `routes` rather than a rewrite of it: everything above is
  * dependency-free and stays registered at module scope, and this adds only the
- * two routes that are not.
+ * three routes that are not. `POST /invites` joined them when the invite
+ * started arriving by email — it is registered here and NOT in `routes` above,
+ * so there is exactly one registration of it and no chance of the mailerless
+ * copy shadowing this one.
  */
 export function createAuthRoutes(deps: AuthRouteDeps = {}): Hono<AppEnv> {
   const mailer = deps.mailer ?? resendMailer();
   const app = new Hono<AppEnv>();
+
+  /**
+   * Mint an invite and, if this deployment can, mail it.
+   *
+   * THE URL STAYS IN THE RESPONSE WHETHER OR NOT THE MAIL WENT. An invite is
+   * the only way a second person ever gets into an invite-only instance, so
+   * making it depend on a working mail provider would mean a mail outage locks
+   * the team out of growing. `emailed` says which happened, and the owner can
+   * paste the link into whatever they like.
+   *
+   * @returns `true` if the provider accepted the message.
+   */
+  async function deliverInvite(
+    c: Context<AppEnv>,
+    to: string,
+    url: string,
+    inviterName: string,
+  ): Promise<boolean> {
+    /*
+     * "NOT CONFIGURED" IS ASKED SEPARATELY FROM "THE SEND FAILED", and the two
+     * get different treatment on purpose.
+     *
+     * A deployment with no `RESEND_API_KEY` is not having an incident; it is a
+     * deployment that hands invites over by hand, and logging an error every
+     * time an owner mints one would train whoever reads the logs to ignore
+     * them. `POST /api/auth/forgot` asks this same question for the opposite
+     * reason — there, an unconfigured mailer must surface as a 501 for EVERY
+     * address alike or the failure mode itself becomes a user-enumeration
+     * oracle. Here there is nobody to enumerate: the caller is the owner, they
+     * chose the address, and `emailed: false` in the response tells them more
+     * than a 501 could.
+     */
+    try {
+      mailer.assertConfigured?.();
+    } catch {
+      return false;
+    }
+
+    const days = Math.round(INVITE_TTL_MS / (24 * 60 * 60 * 1000));
+    try {
+      await mailer.send({
+        to,
+        subject: 'You have been invited to write',
+        text:
+          `${inviterName} invited you to write on their blog.\n\n` +
+          `${url}\n\n` +
+          `The link works once and expires in ${days} days. If you were not ` +
+          `expecting this, you can ignore this message.`,
+        html:
+          `<p>${inviterName} invited you to write on their blog.</p>` +
+          `<p><a href="${url}">Set up your account</a></p>` +
+          `<p>The link works once and expires in ${days} days. If you were not ` +
+          `expecting this, you can ignore this message.</p>`,
+      });
+      return true;
+    } catch (err) {
+      /*
+       * SWALLOWED FOR THE CALLER, NEVER FOR THE OPERATOR — the same shape
+       * `POST /api/auth/forgot` logs, and the same reasoning about what may
+       * appear in it: name and message only, because the URL carries the invite
+       * token and an error object can carry the request that held it.
+       *
+       * Not a 500: the invite row is already committed and the URL is already
+       * in the response, so failing the request would tell the owner to mint a
+       * SECOND live token for an address that already has one.
+       */
+      console.error(
+        '[api]',
+        JSON.stringify({
+          requestId: c.get('requestId') ?? '',
+          name: err instanceof Error ? err.name : 'Error',
+          message: err instanceof Error ? err.message : 'mail send failed',
+          route: 'POST /api/invites',
+        }),
+      );
+      return false;
+    }
+  }
+
+  app.post('/invites', requireOwner(), async (c) => {
+    const db = currentDb(c);
+    const { email, role } = await readJson(c, InviteBody);
+    const address = normaliseEmail(email);
+
+    /*
+     * Refused before the invite is minted rather than after it is spent. Without
+     * this the owner gets a URL that looks fine, the invitee sets a password, and
+     * `createUser` fails on `users_email_unique` — burning a round trip and a
+     * scrypt derivation to say something knowable now.
+     */
+    if (await findUserByEmail(db, address)) throw new BadRequestError('email');
+
+    const inviter = currentUser(c);
+    const invite = await createInvite(db, {
+      email: address,
+      role,
+      invitedBy: inviter.id,
+    });
+
+    /*
+     * The URL is built from the FIRST configured origin, not from the request's
+     * `Host` or `Origin` header. A host header is attacker-controlled on any
+     * deployment that does not pin it, and an invite URL built from one is a
+     * credential delivered to a domain the attacker chose.
+     */
+    const base = c.get('origins')[0] ?? '';
+    const url = `${base}${INVITE_PATH}?token=${encodeURIComponent(invite.token)}`;
+
+    const emailed = await deliverInvite(c, address, url, inviter.displayName);
+
+    return c.json(
+      {
+        // The token is returned exactly once, here, inside the URL. It is stored
+        // only as an HMAC, so there is no second chance to read it.
+        invite: { id: invite.id, email: address, role, expiresAt: invite.expiresAt, url },
+        emailed,
+      },
+      201,
+    );
+  });
 
   /**
    * `POST /api/auth/forgot` — ALWAYS 202, for any address.

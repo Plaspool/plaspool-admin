@@ -20,6 +20,7 @@ import {
   unpublishProduct,
 } from './products';
 import { listProducts } from './query';
+import { toStorefrontProduct } from './mapping';
 import {
   createVariant,
   getVariant,
@@ -199,10 +200,18 @@ const AdjustBody = z
  * Public, and deliberately so. A shop that requires a login to see what it sells
  * has no customers. `listProducts` without `includeUnpublished` applies the
  * storefront predicate — active, not trashed — inside the query rather than here.
+ *
+ * `toStorefrontProduct` ADDS `coverImageUrl` / `imageUrls` HERE AND NOT IN THE
+ * QUERY. The URLs point at `/api/public/images/:id`, which serves an image only
+ * while an ACTIVE product references it; the admin list below shares
+ * `listProducts` and sees drafts, where every one of those URLs would 404. Doing
+ * it in the mapper would put a guaranteed-broken link on the admin surface, so it
+ * is done on the two routes where the resolution is actually true.
  */
 routes.get('/products', async (c) => {
   const q = readQuery(c, ListQueryParams);
-  return c.json(await listProducts(currentDb(c), q));
+  const page = await listProducts(currentDb(c), q);
+  return c.json({ ...page, items: page.items.map(toStorefrontProduct) });
 });
 
 /**
@@ -218,7 +227,7 @@ routes.get('/products/:slug', async (c) => {
   const product = await getActiveProductBySlug(db, slug);
   if (!product) throw new NotFoundError(slug);
   const variants = await listVariantsWithPrices(db, product.id);
-  return c.json({ product: { ...product, variants } });
+  return c.json({ product: { ...toStorefrontProduct(product), variants } });
 });
 
 /**

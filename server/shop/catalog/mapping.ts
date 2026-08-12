@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { toEpochMs, toEpochMsOrNull } from '../../db/client';
+import { normalizeBlobId, publicImageUrl } from '../../repo/public-projection';
 import type { DocNode } from '../../../shared/types';
 import type {
   HoldState,
@@ -10,6 +11,7 @@ import type {
   InventoryHold,
   InventoryLevel,
   Product,
+  StorefrontProduct,
   Variant,
   VariantWithPrice,
 } from './types';
@@ -152,6 +154,43 @@ export function rowToProduct(row: Record<string, unknown>): Product {
     deletedAt: toEpochMsOrNull(row.deleted_at),
     authorId: String(row.author_id),
     revision: Number(row.revision),
+  };
+}
+
+/**
+ * A product, plus the public URL of each image it names (HANDOFF §2 A5.4).
+ *
+ * THE SAME RESOLUTION RULE AS `PublicCoverImage.url`, VIA THE SAME FUNCTION.
+ * `publicImageUrl` is described in `server/repo/public-projection.ts` as "ONE
+ * definition of the public URL for an image id, shared by the projection, the
+ * docs and the client", and a second one here would be a second thing to get
+ * wrong the day that path changes — the storefront would keep pointing at the old
+ * route with nothing failing to say so.
+ *
+ * NORMALISED FIRST, for the reason that file also records: the id is stored both
+ * bare and `asset:`/`idb:`-prefixed, and an unnormalised prefix produces
+ * `/api/public/images/asset:img_x`, which 404s on a live product.
+ *
+ * EMPTY IDS ARE DROPPED RATHER THAN RESOLVED. `/api/public/images/` is not the
+ * image route with a bad id; it is a different path entirely, and emitting it
+ * would put a URL in the response that cannot 404 in the way the client expects.
+ * Product writes refuse empty ids (`checkImageRefs`), so this only ever fires on
+ * rows written before that check existed.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO IS CHECK WHETHER THE URL WILL RESOLVE. Plan D4
+ * publishes the rule and lets the serving route decide; a projection that
+ * pre-flighted every id would be a query per image on the storefront's hottest
+ * response, and it would still be a guess by the time the browser asked.
+ */
+export function toStorefrontProduct(product: Product): StorefrontProduct {
+  const cover = product.coverImageId == null ? '' : normalizeBlobId(product.coverImageId);
+  return {
+    ...product,
+    coverImageUrl: cover === '' ? null : publicImageUrl(cover),
+    imageUrls: product.imageIds
+      .map(normalizeBlobId)
+      .filter((id) => id !== '')
+      .map(publicImageUrl),
   };
 }
 

@@ -9,6 +9,7 @@ import { routes as catalog } from './catalog/routes';
 import { catalogPort } from './catalog/port';
 import { orders } from './orders/routes';
 import { cartShopRoutes } from './cart/routes';
+import { shopAdminRoutes } from './admin/routes';
 
 /**
  * The shop sub-app — everything under `/api/shop` (contract §10).
@@ -100,6 +101,26 @@ export function shopApp(): Hono<AppEnv> {
    * here on purpose.
    */
   shop.route('/', cartShopRoutes({ catalog: catalogPort }));
+
+  /*
+   * THE DASHBOARD'S READ SURFACE — `/admin/stats`, `/admin/customers`,
+   * `/admin/inventory`, `/admin/categories` (HANDOFF §2 A4).
+   *
+   * MOUNTED LAST, AND THE POSITION IS NOT ARBITRARY. Hono resolves two routers
+   * claiming one path by registration order, and these four paths sit under the
+   * same `/admin` prefix Catalog and Orders already use — so they are registered
+   * after both, where a collision would be this router losing rather than this
+   * router shadowing an existing route. None of the four collides today
+   * (Catalog owns `/admin/products*` and `/admin/variants*`, Orders owns
+   * `/admin/orders*`, `/admin/fulfillments*` and `/admin/sweep`), which
+   * `server/shop/admin/routes.test.ts` asserts by calling the neighbours after
+   * this mount exists rather than by reading the list above and trusting it.
+   *
+   * NO DEPENDENCIES TO INJECT. Every route in it is a read over tables that
+   * already exist — no mailer, no payment port, no customer resolver — so unlike
+   * Cart and Orders there is nothing here for a composition root to decide.
+   */
+  shop.route('/', shopAdminRoutes);
 
   /*
    * ==========================================================================

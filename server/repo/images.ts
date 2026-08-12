@@ -3,6 +3,14 @@ import { sql } from 'drizzle-orm';
 import { toEpochMs, toEpochMsOrNull } from '../db/client';
 import type { Db } from '../db/client';
 import { BadRequestError } from './errors';
+/*
+ * `normalizeBlobId` is imported rather than re-spelled because there is already
+ * one JS definition of "strip the optional `asset:`/`idb:` prefix" and a second
+ * would be free to drift from it — the SQL copies below are unavoidable (a regex
+ * inside a statement cannot call a TypeScript function) and are quite enough
+ * duplication for one rule.
+ */
+import { normalizeBlobId } from './public-projection';
 import type { AuthUser } from '../../shared/types';
 
 /**
@@ -283,6 +291,49 @@ export async function getOwnedImage(
   return row ? toImage(row) : null;
 }
 
+/**
+ * Which of `ids` name a COMMITTED image — the existence check a write path runs
+ * before it stores an image id in a column that is not `images.id`.
+ *
+ * WHY IT IS NEEDED AT ALL. `shop_products.cover_image_id` and
+ * `shop_products.image_ids` are plain `text`/`text[]` with no foreign key —
+ * contract R3 forbids one across a subsystem boundary — so the column accepted
+ * any string at all, and a typo'd or invented id was stored, served and
+ * eventually rendered as a broken image with nothing anywhere reporting it.
+ *
+ * COMMITTED, NOT MERELY PRESENT. An uncommitted row is a presigned slot whose
+ * bytes nobody has magic-byte checked and which `sweepUncommitted` removes within
+ * 24 hours; referencing one stores an id that is on a countdown to not existing.
+ * `getPublicImage` applies the same `committed_at IS NOT NULL` conjunct, so a
+ * write that this admits is a write the public read can actually serve.
+ *
+ * DELIBERATELY NOT OWNER-SCOPED, for the reason `getImage` gives: reads are
+ * universal in this deployment, so a product built by one writer may legitimately
+ * use a photograph another writer uploaded. Scoping it would make the second
+ * writer's product unsavable with no way to explain why.
+ *
+ * NORMALISED FIRST, so an id written `asset:img_x` is checked against `img_x` —
+ * the same normalisation the reference walk above and `getPublicImage` apply. A
+ * check that skipped it would refuse exactly the prefixed form the rest of the
+ * system goes out of its way to accept.
+ *
+ * ONE STATEMENT for the whole list rather than one per id: a gallery may carry a
+ * hundred ids (`routes.ts`'s `imageIds` cap), and a hundred round trips on a
+ * Vercel function is the difference between a save and a timeout.
+ */
+export async function committedImageIds(
+  db: Db,
+  ids: readonly string[],
+): Promise<Set<string>> {
+  const wanted = [...new Set(ids.map(normalizeBlobId))].filter((id) => id !== '');
+  if (wanted.length === 0) return new Set();
+  const res = await db.execute(sql`
+    SELECT id FROM images
+     WHERE id = ANY(${sql.param(wanted)}::text[])
+       AND committed_at IS NOT NULL`);
+  return new Set(res.rows.map((row) => String(row.id)));
+}
+
 // ----------------------------------------------------------------- commit
 
 export interface CommitFacts {
@@ -479,6 +530,29 @@ export async function sweepUncommitted(
  * everything — which would turn every short string in every document into a
  * candidate id. The stripped form is unioned in as well, so a cover image
  * written as `asset:img_x` by a future client is matched either way.
+ *
+ * **`product_refs` walks `shop_products`, AND IT IS A BUG FIX RATHER THAN AN
+ * EXTENSION** (HANDOFF §1.10). `shop_products.cover_image_id` and
+ * `shop_products.image_ids` name rows of this same `images` table, and until this
+ * CTE existed the walk covered posts and revisions only — so an image uploaded
+ * for a product and placed nowhere else was "unreferenced" from the moment it was
+ * committed, and the delete pass destroyed its bytes 24 hours later while a live
+ * product page still pointed at it. The condition was live in production with no
+ * signal: `{collected: n}` looks the same whether the n rows were abandoned
+ * uploads or a shop's entire catalogue photography.
+ *
+ * It reads BOTH the bare and the stripped form for the same reason `cover_refs`
+ * does — the column is a plain `text` that has never been normalised on write, so
+ * a client is free to store `asset:img_x` in it and one already may have — and it
+ * DOES NOT FILTER `deleted_at` OR `status`, which is rule 4 applied to the shop:
+ * a trashed product is a product somebody can restore (`restoreProduct` exists
+ * precisely for that), and restoring one whose photographs were collected while
+ * it sat in the bin yields a product page full of dangling images. Being broad
+ * here costs disk; being narrow costs bytes nobody can re-upload.
+ *
+ * Note the DIRECTION this points, against `server/repo/public-images.ts`, which
+ * asks the opposite question about the same two columns and must stay narrow.
+ * Its header explains the split at length; do not unify the two.
  */
 /**
  * WHAT COUNTS AS "WE CANNOT READ THIS NODE" — one definition, two call sites.
@@ -545,10 +619,36 @@ const REFERENCE_SET = sql`
       FROM posts
      WHERE jsonb_typeof(cover_image -> 'blobId') = 'string'
        AND cover_image ->> 'blobId' <> ''
+  ), product_refs AS (
+    -- The product cover, both as stored and with the optional scheme stripped.
+    -- No deleted_at filter and no status filter: a trashed or draft product is
+    -- one somebody can publish, and its photographs must survive the wait.
+    SELECT DISTINCT cover_image_id AS id
+      FROM shop_products
+     WHERE cover_image_id IS NOT NULL AND cover_image_id <> ''
+    UNION
+    SELECT DISTINCT regexp_replace(cover_image_id, '^(asset|idb):', '')
+      FROM shop_products
+     WHERE cover_image_id IS NOT NULL AND cover_image_id <> ''
+    UNION
+    -- The gallery. unnest over an empty array yields no rows, so a product with
+    -- no gallery contributes nothing rather than a NULL that would have to be
+    -- filtered out of the referenced CTE afterwards.
+    SELECT DISTINCT g.ref
+      FROM shop_products
+      CROSS JOIN LATERAL unnest(image_ids) AS g(ref)
+     WHERE g.ref IS NOT NULL AND g.ref <> ''
+    UNION
+    SELECT DISTINCT regexp_replace(g.ref, '^(asset|idb):', '')
+      FROM shop_products
+      CROSS JOIN LATERAL unnest(image_ids) AS g(ref)
+     WHERE g.ref IS NOT NULL AND g.ref <> ''
   ), referenced AS (
     SELECT id FROM scheme_refs WHERE id IS NOT NULL
     UNION
     SELECT id FROM cover_refs WHERE id IS NOT NULL
+    UNION
+    SELECT id FROM product_refs WHERE id IS NOT NULL
     UNION
     -- An unwalkable row references EVERYTHING. Not "the ids we managed to see
     -- in it" — everything, because what we could not read is exactly what we

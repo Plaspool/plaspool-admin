@@ -648,6 +648,223 @@ describe('the admin surface', () => {
   });
 });
 
+// =========================================================== finding one order
+
+/**
+ * `?search=` and `/admin/orders/by-number/:orderNumber` (HANDOFF §2 A4).
+ *
+ * Until these existed the only admin filter was `?status=`, so an operator
+ * holding a customer's email or the number off their receipt had to page the
+ * whole list to reach the order. Both branches are exact matches against an
+ * index — the reasoning, including why no substring search is on offer, is in
+ * `server/shop/admin/orders.ts`.
+ */
+describe('the admin order search', () => {
+  /** An order for a named address, at a chosen instant. */
+  async function orderFor(email: string, key: string, at: number): Promise<OrderRead> {
+    await insertEvents(ctx.db, [
+      {
+        ...checkoutCompleted({ customerId: null, checkoutId: key, email }),
+        id: `evt_${key}`,
+        subjectId: key,
+        occurredAt: at,
+      },
+    ]);
+    await sweepCommerceEvents(ctx.db, DEPS, NOW);
+    return (await readOrderByCheckout(ctx.db, key))!;
+  }
+
+  it('finds one order by its exact number', async () => {
+    const mine = await paidOrder(CUSTOMER_A);
+    await secondOrder(CUSTOMER_B);
+    const owner = await login(ctx.users.owner);
+
+    const body = await json<{ items: { order: { id: string } }[]; nextCursor: string | null }>(
+      await owner.get(`/api/shop/admin/orders?search=${encodeURIComponent(mine.order.orderNumber)}`),
+    );
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0].order.id).toBe(mine.order.id);
+    expect(body.nextCursor).toBeNull();
+  });
+
+  it('finds a buyer’s orders by address, case-insensitively, and nobody else’s', async () => {
+    // The fixture's address is `Buyer@Example.test`; the operator types it in
+    // lower case, because that is how it appears in the email they were forwarded.
+    const mine = await paidOrder(CUSTOMER_A);
+    const theirs = await secondOrder(CUSTOMER_B);
+
+    const owner = await login(ctx.users.owner);
+    const body = await json<{ items: { order: { id: string; email: string } }[] }>(
+      await owner.get('/api/shop/admin/orders?search=buyer%40example.test'),
+    );
+    expect(body.items.map((item) => item.order.id)).toEqual([mine.order.id]);
+    expect(body.items.map((item) => item.order.id)).not.toContain(theirs.order.id);
+  });
+
+  it('a mistyped order number is a clean empty page, not a 400 and not the whole table', async () => {
+    /*
+     * THE DIFFERENCE FROM `/shop/orders/:orderNumber`, which answers 400 for the
+     * same string. There the number IS the request, so a failed check character
+     * means the request is malformed. Here it is a search term, and a box that
+     * turns red because somebody pasted a truncated number is worse than one that
+     * says "no orders". The term falls through to the address branch, where it
+     * matches nothing — an indexed comparison, not a scan.
+     */
+    await paidOrder(CUSTOMER_A);
+    await secondOrder(CUSTOMER_B);
+    const owner = await login(ctx.users.owner);
+
+    const good = formatOrderNumber(2026, 42);
+    const typo = `${good.slice(0, -1)}${good.endsWith('A') ? 'B' : 'A'}`;
+    const res = await owner.get(`/api/shop/admin/orders?search=${encodeURIComponent(typo)}`);
+    expect(res.status).toBe(200);
+    expect((await json<{ items: unknown[] }>(res)).items).toEqual([]);
+  });
+
+  it('an empty search is no filter at all, not a search for the empty string', async () => {
+    // The rule `listProducts` applies to `?category=`: an empty string means "no
+    // filter". A cleared search box must behave like no search box rather than
+    // emptying the list the operator was reading.
+    await paidOrder(CUSTOMER_A);
+    await secondOrder(CUSTOMER_B);
+    const owner = await login(ctx.users.owner);
+    const body = await json<{ items: unknown[] }>(await owner.get('/api/shop/admin/orders?search='));
+    expect(body.items).toHaveLength(2);
+  });
+
+  it('composes with the status filter', async () => {
+    const paid = await paidOrder(CUSTOMER_A); // Buyer@Example.test, paid
+    await orderFor('Buyer@Example.test', 'chk_same_buyer', T0 + 5); // pending
+    const owner = await login(ctx.users.owner);
+
+    const all = await json<{ items: unknown[] }>(
+      await owner.get('/api/shop/admin/orders?search=buyer%40example.test'),
+    );
+    expect(all.items).toHaveLength(2);
+
+    const onlyPaid = await json<{ items: { order: { id: string } }[] }>(
+      await owner.get('/api/shop/admin/orders?search=buyer%40example.test&status=paid'),
+    );
+    expect(onlyPaid.items.map((item) => item.order.id)).toEqual([paid.order.id]);
+  });
+
+  it('walks a buyer’s orders page by page, no row twice', async () => {
+    await orderFor('repeat@example.test', 'chk_rep_1', T0 + 1);
+    await orderFor('repeat@example.test', 'chk_rep_2', T0 + 2);
+    await orderFor('repeat@example.test', 'chk_rep_3', T0 + 3);
+    await secondOrder(CUSTOMER_B);
+    const owner = await login(ctx.users.owner);
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const at: string | null = cursor;
+      const url = `/api/shop/admin/orders?search=repeat%40example.test&limit=1${
+        at ? `&cursor=${encodeURIComponent(at)}` : ''
+      }`;
+      const body: { items: { order: { id: string } }[]; nextCursor: string | null } = await json(
+        await owner.get(url),
+      );
+      seen.push(...body.items.map((item) => item.order.id));
+      cursor = body.nextCursor;
+      pages += 1;
+      expect(pages).toBeLessThan(20);
+    } while (cursor !== null);
+
+    expect(seen).toHaveLength(3);
+    expect(new Set(seen).size).toBe(3);
+  });
+
+  it('a cursor from the unfiltered list is spendable on the search', async () => {
+    /*
+     * THIS IS WHAT MAKES THE DUPLICATED SORT KEY SAFE. `listOrders` keeps its
+     * `SORT_KEY` private, so `server/shop/admin/orders.ts` carries a second copy
+     * of the string `'placed'`. `requireCursor` refuses a cursor minted under any
+     * other ordering with a 400 — so the moment the two stop agreeing, this case
+     * goes red. The search is the same list with one more predicate, and a cursor
+     * has to cross between them.
+     */
+    await orderFor('cross@example.test', 'chk_cross_1', T0 + 1);
+    await orderFor('cross@example.test', 'chk_cross_2', T0 + 2);
+    const owner = await login(ctx.users.owner);
+
+    const first = await json<{ nextCursor: string | null }>(
+      await owner.get('/api/shop/admin/orders?limit=1'),
+    );
+    expect(first.nextCursor).not.toBeNull();
+
+    const res = await owner.get(
+      `/api/shop/admin/orders?search=cross%40example.test&limit=1&cursor=${encodeURIComponent(
+        first.nextCursor!,
+      )}`,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('an oversized term is a 400 that names the field', async () => {
+    const owner = await login(ctx.users.owner);
+    const res = await owner.get(`/api/shop/admin/orders?search=${'a'.repeat(400)}`);
+    expect(res.status).toBe(400);
+    expect(await json(res)).toMatchObject({ error: 'bad_request', detail: 'search' });
+  });
+
+  it('requires a session', async () => {
+    await paidOrder(CUSTOMER_A);
+    expect((await client().get('/api/shop/admin/orders?search=buyer%40example.test')).status).toBe(
+      401,
+    );
+  });
+});
+
+describe('GET /admin/orders/by-number/:orderNumber', () => {
+  it('answers with the same detail body as the id route', async () => {
+    /*
+     * It is also the assertion that the four-segment path is not shadowed by the
+     * three-segment `/admin/orders/:id` registered above it — if it were, this
+     * would be a lookup for an order whose id is literally "by-number" and a 404.
+     */
+    const read = await paidOrder(CUSTOMER_A);
+    const owner = await login(ctx.users.owner);
+
+    const byNumber = await json<{ order: { id: string }; emails: unknown[]; payment: unknown }>(
+      await owner.get(`/api/shop/admin/orders/by-number/${read.order.orderNumber}`),
+    );
+    const byId = await json<{ order: { id: string } }>(
+      await owner.get(`/api/shop/admin/orders/${read.order.id}`),
+    );
+
+    expect(byNumber.order.id).toBe(read.order.id);
+    expect(byNumber).toEqual(byId);
+    expect(byNumber.emails).toHaveLength(1);
+    expect(byNumber.payment).toBeNull();
+  });
+
+  it('a mistyped number is a 400 before any query runs', async () => {
+    const owner = await login(ctx.users.owner);
+    const good = formatOrderNumber(2026, 42);
+    const typo = `${good.slice(0, -1)}${good.endsWith('A') ? 'B' : 'A'}`;
+    const res = await owner.get(`/api/shop/admin/orders/by-number/${typo}`);
+    expect(res.status).toBe(400);
+    expect(await json(res)).toMatchObject({ error: 'bad_request', detail: 'orderNumber' });
+  });
+
+  it('a well-formed number nobody has is a 404', async () => {
+    const owner = await login(ctx.users.owner);
+    const res = await owner.get(
+      `/api/shop/admin/orders/by-number/${formatOrderNumber(2026, 999_999)}`,
+    );
+    expect(res.status).toBe(404);
+    expect(await json(res)).toMatchObject({ error: 'gone' });
+  });
+
+  it('requires a session — the number is guessable by construction', async () => {
+    const read = await paidOrder(CUSTOMER_A);
+    const res = await client().get(`/api/shop/admin/orders/by-number/${read.order.orderNumber}`);
+    expect(res.status).toBe(401);
+  });
+});
+
 // ================================================================ the sweepers
 
 describe('POST /admin/sweep is the caller both sweepers otherwise lack', () => {

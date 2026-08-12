@@ -12,12 +12,24 @@
  * draft's image (so the corpus really exercises the scope), and once that the
  * real function does not. Delete `PUBLIC_POST_PREDICATE` from
  * `publicImageRefExists` and the second half goes red by name.
+ *
+ * THE SECOND SCOPE — AN ACTIVE PRODUCT — GETS THE SAME TREATMENT (HANDOFF §2
+ * A5.3). A shop is public, so a product's cover and gallery must be servable to
+ * an anonymous customer; a DRAFT product's photography must not be, because it is
+ * a pre-announcement signal. Both halves are asserted, and the product mutation
+ * test at the bottom drops `ACTIVE_PRODUCT_PREDICATE` and watches the draft
+ * product's image become servable.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { freshDb, type TestCtx } from '../test/harness';
 import { archivePost, createPost, trashPost } from './posts';
-import { getPublicImage, isPubliclyReferencedImage, publicImageRefExists } from './public-images';
+import {
+  getPublicImage,
+  isPubliclyReferencedImage,
+  publicImageRefExists,
+  publicProductImageRefExists,
+} from './public-images';
 import type { AuthUser, CoverImage, DocNode, Post } from '../../shared/types';
 
 let ctx: TestCtx;
@@ -31,6 +43,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await ctx.db.execute(sql`DELETE FROM shop_products`);
   await ctx.db.execute(sql`DELETE FROM revisions`);
   await ctx.db.execute(sql`DELETE FROM images`);
   await ctx.db.execute(sql`DELETE FROM posts`);
@@ -99,6 +112,36 @@ async function seedRevision(postId: string, content: DocNode): Promise<void> {
 async function setContent(postId: string, content: unknown): Promise<void> {
   await ctx.db.execute(sql`
     UPDATE posts SET content = ${JSON.stringify(content)}::jsonb WHERE id = ${postId}`);
+}
+
+/**
+ * A product row written directly, so a test controls `status`, `deleted_at` and
+ * both image columns without going through Catalog's write path.
+ *
+ * Direct SQL for the reason `seedRevision` above gives about revisions: the
+ * question is about what the TABLE says, not about how a row got into it — and
+ * `createProduct` would refuse the ids the "already collected" cases need.
+ */
+interface SeedProduct {
+  id: string;
+  coverImageId?: string | null;
+  imageIds?: string[];
+  status?: 'draft' | 'active' | 'archived';
+  deletedAt?: number | null;
+}
+
+async function seedProduct(seed: SeedProduct): Promise<void> {
+  const now = Date.now();
+  await ctx.db.execute(sql`
+    INSERT INTO shop_products (id, slug, title, description, description_text, status,
+                               category, tags, cover_image_id, image_ids,
+                               created_at, updated_at, published_at, deleted_at,
+                               author_id, revision)
+    VALUES (${seed.id}, ${seed.id}, 'A Product', '{"type":"doc","content":[]}'::jsonb, '',
+            ${seed.status ?? 'active'}, '', '{}'::text[],
+            ${seed.coverImageId ?? null}, ${sql.param(seed.imageIds ?? [])},
+            ${now}, ${now}, ${seed.status === 'active' ? now : null},
+            ${seed.deletedAt ?? null}, ${owner().id}::uuid, 1)`);
 }
 
 const IMG = 'img_target';
@@ -224,6 +267,93 @@ describe('getPublicImage', () => {
   });
 });
 
+describe('the ACTIVE PRODUCT scope', () => {
+  it('is true for an active product’s COVER', async () => {
+    await seedImage(IMG);
+    await seedProduct({ id: 'prd_live', coverImageId: IMG });
+    expect(await isPubliclyReferencedImage(ctx.db, IMG)).toBe(true);
+  });
+
+  it('is true for an active product’s GALLERY', async () => {
+    await seedImage(IMG);
+    await seedProduct({ id: 'prd_gallery', imageIds: ['img_one', IMG, 'img_three'] });
+    expect(await isPubliclyReferencedImage(ctx.db, IMG)).toBe(true);
+  });
+
+  it('is true for an asset:-PREFIXED product cover, and for an idb: gallery entry', async () => {
+    // The columns are plain text and have never been normalised on write, so a
+    // narrow `cover_image_id = :id` would 404 a live product page.
+    await seedImage(IMG);
+    await seedProduct({ id: 'prd_prefixed', coverImageId: `asset:${IMG}` });
+    expect(await isPubliclyReferencedImage(ctx.db, IMG)).toBe(true);
+
+    await ctx.db.execute(sql`DELETE FROM shop_products`);
+    await seedProduct({ id: 'prd_idb', imageIds: [`idb:${IMG}`] });
+    expect(await isPubliclyReferencedImage(ctx.db, IMG)).toBe(true);
+  });
+
+  it.each([
+    ['DRAFT', { status: 'draft' as const }],
+    ['ARCHIVED', { status: 'archived' as const }],
+    ['TRASHED-but-active', { deletedAt: 1_700_000_000_000 }],
+  ])('is false for an image referenced only by a %s product', async (_name, extra) => {
+    /*
+     * The narrow direction, and the exact place this file points opposite to the
+     * orphan collector: all three of these KEEP the image's bytes alive over
+     * there (`images-product-refs.test.ts` asserts that) and none of them makes
+     * it servable here. Photography for an unannounced product is a
+     * pre-announcement signal, and unpublishing must take the pictures down in
+     * the same moment it takes the page down.
+     */
+    await seedImage(IMG);
+    await seedProduct({ id: 'prd_hidden', coverImageId: IMG, ...extra });
+    expect(await isPubliclyReferencedImage(ctx.db, IMG)).toBe(false);
+    expect(await getPublicImage(ctx.db, IMG)).toBeNull();
+  });
+
+  it('is false for the empty id, even against a product with no cover at all', async () => {
+    /*
+     * `regexp_replace('', …)` is `''` and `normalizeBlobId('')` is `''`, so
+     * without the `<> ''` guards this answers TRUE for every product in the
+     * catalogue. No image can have an empty id, so nothing would be SERVED — but
+     * a reference check that says yes to something that does not exist is one
+     * refactor away from being believed.
+     */
+    await seedProduct({ id: 'prd_bare' });
+    expect(await isPubliclyReferencedImage(ctx.db, '')).toBe(false);
+  });
+
+  it('serves the row for a committed image an active product names', async () => {
+    await seedImage(IMG);
+    await seedProduct({ id: 'prd_serving', coverImageId: IMG });
+    const row = await getPublicImage(ctx.db, IMG);
+    expect(row?.id).toBe(IMG);
+  });
+
+  it('refuses an UNCOMMITTED image an active product names', async () => {
+    // The reference is live; the bytes were never magic-byte checked. Same
+    // conjunct that protects the post half — one statement, one answer.
+    await seedImage(IMG, false);
+    await seedProduct({ id: 'prd_uncommitted', coverImageId: IMG });
+    expect(await isPubliclyReferencedImage(ctx.db, IMG)).toBe(true);
+    expect(await getPublicImage(ctx.db, IMG)).toBeNull();
+  });
+
+  it('survives the post scope: a product reference alone is enough', async () => {
+    /*
+     * The two scopes are OR-ed rather than merged. With no posts in the store at
+     * all, the post half finds nothing and the product half has to carry the
+     * answer on its own — which is what an image that has never appeared in a
+     * blog post looks like.
+     */
+    await seedImage(IMG);
+    await seedProduct({ id: 'prd_alone', coverImageId: IMG });
+    const posts = await ctx.db.execute(sql`SELECT count(*)::int AS n FROM posts`);
+    expect(posts.rows[0].n).toBe(0);
+    expect(await isPubliclyReferencedImage(ctx.db, IMG)).toBe(true);
+  });
+});
+
 describe('mutation test: the published scope is what excludes the draft', () => {
   /** The same fragment the production functions use, with its scope removed. */
   async function referencedUnscoped(imageId: string): Promise<boolean> {
@@ -245,5 +375,32 @@ describe('mutation test: the published scope is what excludes the draft', () => 
     // … (b) and the production predicate is what excludes it.
     expect(await isPubliclyReferencedImage(ctx.db, IMG)).toBe(false);
     expect(await getPublicImage(ctx.db, IMG)).toBeNull();
+  });
+});
+
+describe('mutation test: the active-product scope is what excludes the draft product', () => {
+  /** The product fragment the production check uses, with its scope removed. */
+  async function productRefUnscoped(imageId: string): Promise<boolean> {
+    const res = await ctx.db.execute(
+      sql`SELECT ${publicProductImageRefExists(imageId, sql`true`)} AS referenced`,
+    );
+    return res.rows[0]?.referenced === true;
+  }
+
+  it('finds the draft product’s image WITHOUT the scope, and refuses it WITH it', async () => {
+    await seedImage(IMG);
+    await seedProduct({ id: 'prd_draft_mutant', status: 'draft', coverImageId: IMG });
+    // (a) the corpus really exercises the scope — the fragment can see this row …
+    expect(await productRefUnscoped(IMG)).toBe(true);
+    // … (b) and `status = 'active' AND deleted_at IS NULL` is what excludes it.
+    expect(await isPubliclyReferencedImage(ctx.db, IMG)).toBe(false);
+    expect(await getPublicImage(ctx.db, IMG)).toBeNull();
+  });
+
+  it('does the same for the GALLERY half, which is a separate predicate', async () => {
+    await seedImage(IMG);
+    await seedProduct({ id: 'prd_trash_mutant', deletedAt: Date.now(), imageIds: [IMG] });
+    expect(await productRefUnscoped(IMG)).toBe(true);
+    expect(await isPubliclyReferencedImage(ctx.db, IMG)).toBe(false);
   });
 });

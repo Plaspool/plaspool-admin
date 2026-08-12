@@ -62,12 +62,20 @@ export interface OrdersDeps {
   /**
    * Where email actually goes.
    *
-   * ⚠️  **THE DEFAULT DOES NOT SEND EMAIL.** `LoggingMailer` records the rendered
-   *     message and returns. Registering a real provider is one line —
-   *     `registerOrdersDeps({ mailer: new ResendMailer(...) })` — and until somebody
-   *     does, the sweeper will mark intents delivered that nobody received. The
-   *     `sent` count in a sweep summary means "handed to the mailer", not
-   *     "delivered", and that is true of a real provider too.
+   * ⚠️  **THE DEFAULT STILL DOES NOT SEND EMAIL.** `LoggingMailer` records the
+   *     rendered message and returns, and it is what a suite that registers nothing
+   *     gets — deliberately, because a test that silently reached a real provider
+   *     would be worse than one that sends nothing.
+   *
+   * WHAT HAS CHANGED: `server/index.ts` now calls `registerOrdersDefaults({ mailer:
+   * portMailer(resendMailer()) })` at the composition root, so a deployment with
+   * `RESEND_API_KEY` set delivers order mail for real. `portMailer` is the adapter
+   * between this subsystem's `{ to, subject, body }` and `server/mail/port.ts`'s
+   * `{ to, subject, text, html }`; see `mailer.ts` for why the two shapes stay
+   * different rather than one becoming the other.
+   *
+   * The `sent` count in a sweep summary still means "handed to the mailer" and not
+   * "delivered", and that is true of a real provider too.
    */
   mailer?: Mailer;
 }
@@ -114,6 +122,33 @@ let registry: OrdersDeps = {};
  */
 export function registerOrdersDeps(deps: OrdersDeps): void {
   registry = { ...registry, ...deps };
+}
+
+/**
+ * Register only what nobody has registered yet. **For the composition root.**
+ *
+ * WHY THIS EXISTS RATHER THAN A SECOND `registerOrdersDeps` CALL. `server/index.ts`
+ * wires the real mailer inside `createApp()`, and `createApp()` is what
+ * `server/test/http.ts` builds for EVERY server suite in this repository — so a
+ * last-write-wins registration there would run after a suite had already registered
+ * its own fake and would silently replace it. The failure is invisible: the test
+ * still passes, having asserted on a recorder nothing ever called.
+ *
+ * Fill-only-absent makes the two orders of "build the app" and "register a fake"
+ * equivalent, which is the same property `resolveDeps` buys by reading the registry
+ * PER REQUEST rather than at construction. In production there is exactly one
+ * registration, so it wins; in a suite the explicit one wins, whenever it happened.
+ *
+ * `undefined` is the test for "absent" rather than `in`, so
+ * `registerOrdersDeps({ mailer: undefined })` — which is what an options object
+ * with an unset key produces — does not count as having claimed the slot.
+ */
+export function registerOrdersDefaults(deps: OrdersDeps): void {
+  const merged: OrdersDeps = { ...deps };
+  for (const [key, value] of Object.entries(registry)) {
+    if (value !== undefined) (merged as Record<string, unknown>)[key] = value;
+  }
+  registry = merged;
 }
 
 /** Forget everything registered. For tests, so one suite cannot leak into the next. */

@@ -7,11 +7,17 @@ import { NotFoundError } from './repo/errors';
 import { originGuard } from './middleware/origin';
 import { sessionMiddleware } from './middleware/session';
 import { createAuthRoutes } from './routes/auth';
+import { routes as users } from './routes/users';
 import { routes as posts } from './routes/posts';
 import { routes as revisions } from './routes/revisions';
 import { routes as backup } from './routes/backup';
+import { routes as categories } from './routes/categories';
 import { routes as images } from './routes/images';
+import { createEmailRoutes, createUnsubscribeRoutes } from './routes/email';
 import { createPublicRoutes } from './routes/public';
+import { portMailer } from './shop/orders/mailer';
+import { registerOrdersDefaults } from './shop/orders/ports';
+import { resendMailer } from './mail/resend';
 import { SHOP_PREFIX, shopApp } from './shop/app';
 import {
   createPaymentRoutes,
@@ -86,6 +92,31 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
     typeof db === 'function' ? (db as () => Db) : db ? () => db : getDb;
 
   const app = new Hono<AppEnv>();
+
+  /*
+   * ORDER EMAIL, WIRED TO A REAL TRANSPORT — the single line HANDOFF §1.11 calls
+   * the biggest gap in this repository.
+   *
+   * `server/shop/orders/*` has a complete transactional outbox: four message kinds,
+   * dedupe keys, intents INSERTed in the same statement as the state change, an
+   * eight-attempt retry and a CAS claim. It delivered NOTHING, because its default
+   * `Mailer` is `LoggingMailer` and nobody had ever called `registerOrdersDeps`.
+   * `portMailer` adapts that subsystem's `{ to, subject, body }` to the
+   * `{ to, subject, text, html }` shape `server/mail/port.ts` defines, so the
+   * transport the password-reset flow already uses now carries order mail too.
+   *
+   * `registerOrdersDefaults` AND NOT `registerOrdersDeps`, because this line runs
+   * inside every server suite: `server/test/http.ts` builds the real `createApp()`,
+   * so a last-write-wins registration here would replace a fake a suite had already
+   * registered and the suite would go on passing against a recorder nothing called.
+   *
+   * `deps.mailer ?? resendMailer()` — one transport for the whole deployment, so a
+   * suite injecting a recorder for the auth routes gets order mail through the same
+   * recorder rather than through a second, invisible one. Neither call reads the
+   * environment: `resendMailer()` is lazy by construction (see its header), so this
+   * still boots on a deployment with no mail configured.
+   */
+  registerOrdersDefaults({ mailer: portMailer(deps.mailer ?? resendMailer()) });
 
   /*
    * FIRST, SO EVERYTHING AFTER IT HAS ONE. Spec §8: every response carries a
@@ -171,6 +202,39 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
   app.route(API_PREFIX, paymentsWebhook);
 
   /*
+   * UNSUBSCRIBE, AND IT IS ABOVE `originGuard` FOR THE SAME REASON THE WEBHOOK IS.
+   *
+   * `POST /api/public/unsubscribe?token=` is a mutation with no `Origin` header to
+   * offer. RFC 8058 one-click unsubscribe is a server-to-server POST issued by the
+   * recipient's mail PROVIDER, and the guard below refuses exactly that on an
+   * unsafe method — mounted underneath it, the button in every message we send
+   * would be a 403.
+   *
+   * The exemption costs nothing an attacker can use, and it is the same argument
+   * the webhook above sets out. CSRF borrows a victim's AMBIENT authority — their
+   * cookie — and this route reads no cookie, resolves no session and trusts nothing
+   * about the caller: its entire authority is a 256-bit HMAC in the query string,
+   * which a cross-origin form post cannot produce, and anyone who already has the
+   * token can call the endpoint directly rather than through a victim's browser.
+   *
+   * IT IS DELIBERATELY NOT PART OF `createPublicRoutes` BELOW, despite sharing the
+   * `/api/public/` prefix. That router exists to be CACHEABLE — every response
+   * carries `Cache-Control: public`, which is only safe because the router is
+   * mounted above the session middleware and is therefore structurally incapable of
+   * varying by cookie (threat T6). A mutation inside it would put "may be stored by
+   * a shared cache" and "flips a column" in one file, which is the confusion that
+   * router was separated out to prevent. `server/routes/email.ts` carries the long
+   * version of this decision.
+   *
+   * BELOW THE DATABASE FACTORY, because it resolves a subscriber and writes one
+   * column. ABOVE `sessionMiddleware`, which is a property rather than an accident:
+   * `c.get('user')` is undefined here, so this route cannot come to depend on who is
+   * signed in — and the person clicking is, almost by definition, signed in to
+   * nothing.
+   */
+  app.route(API_PREFIX, createUnsubscribeRoutes());
+
+  /*
    * THE PUBLIC READING API, AND IT IS ABOVE `sessionMiddleware` DELIBERATELY.
    *
    * Every response under `/api/public/*` carries `Cache-Control: public`, so it
@@ -202,9 +266,27 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
   app.use(`${API_PREFIX}/*`, sessionMiddleware());
 
   app.route(API_PREFIX, createAuthRoutes({ mailer: deps.mailer }));
+  /*
+   * THE TEAM ROUTES, and they are a separate router from auth deliberately.
+   * `server/routes/auth.ts` is about the credential in front of you — who you
+   * are, what you may present, and the enumeration property that shapes every
+   * route in it. `/api/users` is about somebody ELSE's account, is owner-only
+   * throughout, and needs no mailer, so it takes no part in the factory above.
+   */
+  app.route(API_PREFIX, users);
   app.route(API_PREFIX, posts);
   app.route(API_PREFIX, revisions);
   app.route(API_PREFIX, backup);
+  /*
+   * MANAGED CATEGORIES, and it is the only router here that brings its own
+   * `onError` — one that renders a `precondition_failed` carrying a category
+   * rather than a post, and falls through to `toResponse` for every other row of
+   * the §8 table. `app.route()` wraps a sub-app's handlers in its error handler
+   * only when the sub-app has a non-default one, so this mount reads exactly like
+   * the four above it and behaves differently only for that one error class. The
+   * shop app is mounted below on the same principle.
+   */
+  app.route(API_PREFIX, categories);
   /*
    * Mounted like every other router, and note what that does NOT do: importing
    * this module builds no S3 client. `server/storage/r2.ts` constructs one on
@@ -213,6 +295,25 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * they fail with a named error rather than taking the import down.
    */
   app.route(API_PREFIX, images);
+
+  /*
+   * EMAIL MARKETING — templates, subscribers and broadcasts, under
+   * `/api/admin/email/*` and owner-only throughout.
+   *
+   * A FACTORY, LIKE `createAuthRoutes`, AND FOR THE SAME REASON: a route that
+   * delivers a message to an address cannot be tested by having it hand the message
+   * back, so the transport is a seam in the type and the suite supplies a recorder.
+   * It takes the SAME `deps.mailer` the auth routes take, so a deployment has one
+   * mail transport rather than three.
+   *
+   * It brings its own `onError`, like the categories router: one that renders a
+   * `precondition_failed` carrying a broadcast or a template rather than a post,
+   * falling through to `toResponse` for every other row of the §8 table.
+   *
+   * The PUBLIC half of this feature — the unsubscribe link — is a separate router
+   * mounted far above, next to the payments webhook. See the note there.
+   */
+  app.route(API_PREFIX, createEmailRoutes({ mailer: deps.mailer }));
 
   /*
    * PAYMENTS' STOREFRONT AND ADMIN ROUTES — behind the guard and the session,

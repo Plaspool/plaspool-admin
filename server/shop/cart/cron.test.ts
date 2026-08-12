@@ -21,7 +21,7 @@ import { sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { freshDb, resetShopTables, SEED_PASSWORD } from './test/harness';
 import { httpClient, json } from '../../test/http';
-import { shopApp } from '../app';
+import { createApp } from '../../index';
 import { CRON_PATH } from './routes/checkout';
 import type { HttpClient } from '../../test/http';
 import type { TestCtx } from './test/harness';
@@ -162,10 +162,17 @@ describe('vercel.json actually points at this route', () => {
      * forever, and does nothing, with a green tick beside it in the dashboard.
      *
      * Checked against the router's own table rather than against a string.
+     *
+     * WIDENED FROM `shopApp()` TO THE WHOLE APP when the email drain became the
+     * second cron. `vercel.json` is one list for the whole deployment, and this
+     * loop walks all of it — so while the registered set came from the shop
+     * sub-app alone, the blog-side entry below was a guaranteed failure here and
+     * the only way to add it was to make this assertion less true. A test that
+     * has to be weakened to let a correct change land is a test aimed at the
+     * wrong table. `createApp().routes` already carries full `/api/...` paths,
+     * which is why the `/api/shop` prefix this used to splice on is gone.
      */
-    const registered = new Set(
-      shopApp().routes.map((r) => `${r.method} /api/shop${r.path}`),
-    );
+    const registered = new Set(createApp().routes.map((r) => `${r.method} ${r.path}`));
     for (const cron of config.crons ?? []) {
       expect(registered, cron.path).toContain(`GET ${cron.path}`);
     }

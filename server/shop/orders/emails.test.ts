@@ -2,12 +2,16 @@
  * Email (brief §5): the intent is written transactionally, delivery is a sweeper, and
  * **a mailer failure never rolls back a paid order.**
  *
- * ⚠️  THE MAILER UNDER TEST DOES NOT SEND EMAIL. `LoggingMailer` records the rendered
- *     message. What these tests prove is that the PATH is real and correct — the intent
- *     lands in the same statement as the state change, the sweeper claims it exactly once,
- *     a failure is recorded rather than propagated — so that wiring a provider is one
- *     object. They do not prove anything about delivery, because nothing in this build
- *     delivers.
+ * ⚠️  MOST OF THIS SUITE DRIVES `LoggingMailer`, WHICH SENDS NOTHING. What those tests
+ *     prove is that the PATH is real and correct — the intent lands in the same statement
+ *     as the state change, the sweeper claims it exactly once, a failure is recorded
+ *     rather than propagated.
+ *
+ * The last two blocks are the other half, and they are new: `portMailer` adapts this
+ * subsystem's `Mailer` to `server/mail/port.ts`'s, and `server/index.ts` registers a real
+ * transport through it at the composition root. So "a paid order produces a real send" is
+ * now assertable, and it is asserted against an INJECTED RECORDER rather than a log line —
+ * which is the difference between a delivery test and a hope.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
@@ -18,9 +22,12 @@ import { sweepCommerceEvents, type ConsumerDeps } from './repo/consumer';
 import { markOrderPaid, readOrder, readOrderByCheckout } from './repo/orders';
 import { createFulfillment, shipFulfillment } from './repo/fulfillments';
 import { EMAIL_ATTEMPT_LIMIT, listIntents, sweepEmailIntents } from './repo/emails';
-import { LoggingMailer, formatAmount, type Mailer, type RenderedEmail } from './mailer';
+import { LoggingMailer, formatAmount, portMailer, type Mailer, type RenderedEmail } from './mailer';
+import { resetOrdersDeps, resolveDeps } from './ports';
+import { httpClient } from '../../test/http';
 import { verifyGuestToken } from './tokens';
 import { countingMutant, PREDICATE } from './test/mutate';
+import type { Mailer as PortMailer } from '../../mail/port';
 
 let ctx: RawCtx;
 const NOW = T0 + 10_000;
@@ -317,6 +324,130 @@ describe('what the customer would read', () => {
     expect(shipment!.body).toContain('Logo T-Shirt');
     // The mug is still in the warehouse. Telling the customer otherwise is a support call.
     expect(shipment!.body).not.toContain('Enamel Mug');
+  });
+});
+
+// ------------------------------------------------------------ real delivery
+
+/** A `server/mail/port.ts` transport that records the two-part message. */
+class PortRecorder implements PortMailer {
+  readonly sent: { to: string; subject: string; text: string; html: string }[] = [];
+  send(message: { to: string; subject: string; text: string; html: string }): Promise<void> {
+    this.sent.push(message);
+    return Promise.resolve();
+  }
+}
+
+describe('a paid order produces a REAL send, not a log line', () => {
+  it('reaches an injected transport as text AND html', async () => {
+    /*
+     * THE GAP HANDOFF §1.11 NAMES, CLOSED AND ASSERTED. A complete outbox — dedupe
+     * keys, eight-attempt retries, a CAS claim — delivered nothing, because this
+     * subsystem's `Mailer` (`{ to, subject, body }`) and `server/mail/port.ts`'s
+     * (`{ to, subject, text, html }`) were two interfaces with nothing between them.
+     */
+    await paidOrderWithLink();
+    const recorder = new PortRecorder();
+
+    const summary = await sweepEmailIntents(ctx.db, portMailer(recorder), NOW + 100);
+    expect(summary).toEqual({ sent: 1, failed: 0, skipped: 0 });
+    expect(recorder.sent).toHaveLength(1);
+
+    const message = recorder.sent[0];
+    expect(message.to).toBe('Buyer@Example.test');
+    // The stored body IS the text part, verbatim — deriving text from html would
+    // make the record of what a customer was told a lossy round trip.
+    expect(message.text).toContain('2 × Enamel Mug (MUG-NAVY)');
+    expect(message.text).toContain('Total: 54.00 USD');
+    // And the html is derived from it, with the access link made clickable: a bare
+    // URL in an HTML part is not a link in several clients, and a dead "view your
+    // order" link is a support ticket per order.
+    expect(message.html).toContain('<p>');
+    expect(message.html).toContain(`<a href="${ORIGIN}/shop/orders/`);
+  });
+
+  it('escapes a product title before it becomes markup', async () => {
+    /*
+     * A line title is a string somebody typed into the catalog, and it reaches the
+     * adapter verbatim. Escaping happens BEFORE linkifying so the linkifier only
+     * ever sees text it produced itself.
+     */
+    const read = await paidOrderWithLink();
+    await ctx.db.execute(sql`
+      UPDATE shop_order_email_intents
+         SET body = 'Mug <3 & "quoted" https://shop.test/x'
+       WHERE order_id = ${read.order.id}`);
+
+    const recorder = new PortRecorder();
+    await sweepEmailIntents(ctx.db, portMailer(recorder), NOW + 100);
+    const html = recorder.sent[0].html;
+    expect(html).toContain('Mug &lt;3 &amp; &quot;quoted&quot;');
+    expect(html).toContain('<a href="https://shop.test/x">');
+    expect(html).not.toContain('<3');
+  });
+
+  it('a transport that rejects is still recorded on the row, never thrown', async () => {
+    // The adapter must not swallow a rejection: the sweeper's whole job is to
+    // record the failure and leave the intent unsent.
+    const read = await paidOrderWithLink();
+    const broken: PortMailer = { send: () => Promise.reject(new Error('resend refused: HTTP 429')) };
+
+    expect(await sweepEmailIntents(ctx.db, portMailer(broken), NOW + 100)).toEqual({
+      sent: 0,
+      failed: 1,
+      skipped: 0,
+    });
+    const intents = await listIntents(ctx.db, read.order.id);
+    expect(intents[0]).toMatchObject({ sentAt: null, attempts: 1 });
+    expect(intents[0].lastError).toContain('HTTP 429');
+  });
+
+  it('THE COMPOSITION ROOT WIRES IT — building the app is what registers a transport', async () => {
+    /*
+     * The line that was missing entirely: `registerOrdersDeps` had zero production
+     * callers, so `resolveDeps().mailer` was always `LoggingMailer` and the sweeper
+     * marked intents delivered that nobody received.
+     *
+     * Asserted by building the REAL `createApp()` — which is all `httpClient` does
+     * here, no request is made — and then sweeping through whatever it registered.
+     * `resetOrdersDeps()` on both sides because the registry is module state, and a
+     * suite that leaves a transport in it leaks into the next file in the worker.
+     */
+    resetOrdersDeps();
+    try {
+      const recorder = new PortRecorder();
+      expect(resolveDeps().mailer).toBeInstanceOf(LoggingMailer);
+
+      httpClient(ctx.db, { mailer: recorder });
+      expect(resolveDeps().mailer).not.toBeInstanceOf(LoggingMailer);
+
+      await paidOrderWithLink();
+      const summary = await sweepEmailIntents(ctx.db, resolveDeps().mailer, NOW + 100);
+      expect(summary.sent).toBe(1);
+      expect(recorder.sent.map((m) => m.to)).toEqual(['Buyer@Example.test']);
+    } finally {
+      resetOrdersDeps();
+    }
+  });
+
+  it('does NOT clobber a transport a suite already registered', async () => {
+    /*
+     * Why the composition root calls `registerOrdersDefaults` and not
+     * `registerOrdersDeps`. `httpClient` builds the real app in EVERY server suite,
+     * so a last-write-wins registration there would replace a fake registered
+     * moments earlier — and the test would go on passing, having asserted on a
+     * recorder nothing ever called.
+     */
+    resetOrdersDeps();
+    try {
+      const mine = new LoggingMailer();
+      const { registerOrdersDeps } = await import('./ports');
+      registerOrdersDeps({ mailer: mine });
+      httpClient(ctx.db);
+      expect(resolveDeps().mailer).toBe(mine);
+    } finally {
+      resetOrdersDeps();
+    }
   });
 });
 

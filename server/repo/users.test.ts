@@ -5,19 +5,29 @@ import { SEED_PASSWORD, freshDb, migratedDb } from '../test/harness';
 import { verifyPassword } from './password';
 import { sessions } from '../db/schema';
 import type { Db } from '../db/client';
+import { createPasswordReset } from './password-reset';
 import {
   SESSION_ABSOLUTE_MAX_MS,
   SESSION_TTL_MS,
   DuplicateEmailError,
   UserInputError,
   acceptInvite,
+  changePassword,
+  countActiveOwners,
   createInvite,
   createSession,
   createUser,
   destroySession,
   disableUser,
+  enableUser,
   findUserByEmail,
+  findUserById,
+  listInvites,
+  listSessions,
+  listUsers,
   resolveSession,
+  revokeSession,
+  updateDisplayName,
 } from './users';
 
 let db: Db;
@@ -434,6 +444,19 @@ describe('users', () => {
     expect(await findUserByEmail(db, `nobody.${address}`)).toBeNull();
   });
 
+  it('findUserById returns the same three parts findUserByEmail does', async () => {
+    const user = await owner();
+    const found = await findUserById(db, user.id);
+    expect(found?.user).toEqual(user);
+    expect(found?.passwordHash).toMatch(/^scrypt\$/);
+    expect(found?.disabledAt).toBeNull();
+    // The hash is BESIDE the user, never on it — `AuthUser` is the only shape
+    // that crosses the HTTP boundary and it must not be able to carry one.
+    expect(JSON.stringify(found?.user)).not.toContain('scrypt');
+
+    expect(await findUserById(db, '00000000-0000-4000-8000-000000000000')).toBeNull();
+  });
+
   it('freshDb seeds an owner and a writer whose seeded password verifies', async () => {
     // Every task from 5 onward reads `ctx.users.owner.id`. If the seed regresses,
     // this is where it shows up rather than three layers down in a repo suite.
@@ -450,5 +473,435 @@ describe('users', () => {
     } finally {
       await ctx.close();
     }
+  });
+});
+
+// ---------------------------------------------------------- the account
+
+describe('display name', () => {
+  it('updates, trims, and refuses a blank one', async () => {
+    const user = await createUser(db, {
+      email: email(),
+      password: 'a-long-enough-one',
+      displayName: 'Original',
+      role: 'writer',
+    });
+
+    const renamed = await updateDisplayName(db, user.id, '  Renamed  ');
+    // Trimmed exactly as `createUser` trims it, so a name set here and a name
+    // set at accept-invite cannot differ by a space.
+    expect(renamed).toEqual({ ...user, displayName: 'Renamed' });
+    expect((await findUserById(db, user.id))?.user.displayName).toBe('Renamed');
+
+    // `UserInputError`, not a stored row of three spaces — Zod's `.min(1)` at
+    // the route accepts whitespace, so this is the check that refuses it.
+    const err = await updateDisplayName(db, user.id, '   ').then(
+      () => {
+        throw new Error('expected a blank display name to be refused');
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(UserInputError);
+    expect((err as UserInputError).field).toBe('displayName');
+    expect((await findUserById(db, user.id))?.user.displayName).toBe('Renamed');
+  });
+
+  it('returns null for an id that names nobody', async () => {
+    expect(
+      await updateDisplayName(db, '00000000-0000-4000-8000-000000000000', 'Ghost'),
+    ).toBeNull();
+  });
+});
+
+describe('changePassword', () => {
+  async function withTwoSessions() {
+    const user = await createUser(db, {
+      email: email(),
+      password: 'the-old-password',
+      displayName: 'Two Sessions',
+      role: 'writer',
+    });
+    const keep = await createSession(db, user.id, 'keep');
+    const other = await createSession(db, user.id, 'other');
+    return { user, keep, other };
+  }
+
+  it('keeps the named session and destroys every other one', async () => {
+    /*
+     * THE ASYMMETRY THE ROUTE EXISTS FOR. `consumePasswordReset` ends every
+     * session, because a reset is what somebody does when they believe an
+     * intruder holds one. This is the signed-in path: the person at the
+     * keyboard has just proved they know the old password, so signing them out
+     * of the tab they typed it in is a bug — and leaving the OTHER thirty-day
+     * cookies alive would make the change cosmetic against exactly the attacker
+     * it is aimed at.
+     */
+    const { user, keep, other } = await withTwoSessions();
+
+    const ended = await changePassword(db, {
+      userId: user.id,
+      newPassword: 'a-brand-new-password',
+      keepSessionToken: keep.token,
+    });
+    expect(ended).toBe(1);
+
+    expect(await resolveSession(db, keep.token)).toMatchObject({ id: user.id });
+    expect(await resolveSession(db, other.token)).toBeNull();
+
+    const found = await findUserById(db, user.id);
+    expect(await verifyPassword('a-brand-new-password', found!.passwordHash)).toBe(true);
+    expect(await verifyPassword('the-old-password', found!.passwordHash)).toBe(false);
+  });
+
+  it('with no session named, every session goes', async () => {
+    // The honest behaviour for a caller that cannot name one to keep: the
+    // sentinel matches no row, so the DELETE is unrestricted.
+    const { user, keep, other } = await withTwoSessions();
+    expect(await changePassword(db, { userId: user.id, newPassword: 'another-new-one' })).toBe(2);
+    expect(await resolveSession(db, keep.token)).toBeNull();
+    expect(await resolveSession(db, other.token)).toBeNull();
+  });
+
+  it('leaves other accounts entirely alone', async () => {
+    const { user, keep } = await withTwoSessions();
+    const bystander = await createUser(db, {
+      email: email(),
+      password: 'not-my-problem',
+      displayName: 'Bystander',
+      role: 'writer',
+    });
+    const theirs = await createSession(db, bystander.id, 'bystander');
+
+    await changePassword(db, {
+      userId: user.id,
+      newPassword: 'yet-another-password',
+      keepSessionToken: keep.token,
+    });
+
+    expect(await resolveSession(db, theirs.token)).toMatchObject({ id: bystander.id });
+    const found = await findUserById(db, bystander.id);
+    expect(await verifyPassword('not-my-problem', found!.passwordHash)).toBe(true);
+  });
+
+  it('refuses a short password before it hashes or touches a session', async () => {
+    const { user, keep, other } = await withTwoSessions();
+    await expect(
+      changePassword(db, { userId: user.id, newPassword: 'nine-char', keepSessionToken: keep.token }),
+    ).rejects.toBeInstanceOf(UserInputError);
+
+    // Both sessions survive and the old password still verifies: a rejected
+    // password must not half-apply.
+    expect(await resolveSession(db, keep.token)).not.toBeNull();
+    expect(await resolveSession(db, other.token)).not.toBeNull();
+    const found = await findUserById(db, user.id);
+    expect(await verifyPassword('the-old-password', found!.passwordHash)).toBe(true);
+  });
+
+  it('kills an outstanding reset link', async () => {
+    /*
+     * Somebody who asked for a reset, gave up, and then changed the password
+     * from inside the app has left a live credential sitting in a mailbox for
+     * the rest of its hour — and it would still work, because
+     * `consumePasswordReset` only asks whether the token is unspent.
+     */
+    const user = await createUser(db, {
+      email: email(),
+      password: 'the-old-password',
+      displayName: 'Changed Mind',
+      role: 'writer',
+    });
+    expect(await createPasswordReset(db, user.email)).not.toBeNull();
+
+    await changePassword(db, { userId: user.id, newPassword: 'chosen-in-the-app' });
+
+    const rows = await db.execute(sql`
+      SELECT count(*)::int AS n FROM password_resets
+       WHERE user_id = ${user.id}::uuid AND used_at IS NULL`);
+    expect(rows.rows[0].n).toBe(0);
+  });
+});
+
+describe('the sessions list', () => {
+  it('lists a user\'s own live sessions, newest use first, and marks the current one', async () => {
+    const user = await createUser(db, {
+      email: email(),
+      password: 'a-long-enough-one',
+      displayName: 'Lister',
+      role: 'writer',
+    });
+    const laptop = await createSession(db, user.id, 'Studio (laptop)');
+    const phone = await createSession(db, user.id, 'Studio (phone)');
+    // A different account's session, which must not appear.
+    const stranger = await owner();
+    await createSession(db, stranger.id, 'Studio (stranger)');
+
+    // Ordered by last use: backdate the laptop so the order is asserted rather
+    // than inherited from insertion.
+    await db.execute(sql`
+      UPDATE sessions SET last_seen_at = ${Date.now() - 60_000}
+       WHERE user_agent = 'Studio (laptop)'`);
+
+    const items = await listSessions(db, user.id, phone.token);
+    expect(items.map((s) => s.userAgent)).toEqual(['Studio (phone)', 'Studio (laptop)']);
+    expect(items.map((s) => s.current)).toEqual([true, false]);
+    expect(items[0].expiresAt).toBe(phone.expiresAt);
+    expect(items[1].expiresAt).toBe(laptop.expiresAt);
+    // Numbers, not the strings a bigint arrives as under the Neon-like parser.
+    for (const s of items) {
+      expect(typeof s.lastSeenAt).toBe('number');
+      expect(typeof s.createdAt).toBe('number');
+    }
+  });
+
+  it('omits an expired session rather than offering it for revocation', async () => {
+    // `resolveSession` deletes one the next time it is presented, so an expired
+    // row is a session that has already ended. Listing it would invite somebody
+    // to revoke something that is not there, and the revoke would 404.
+    const user = await createUser(db, {
+      email: email(),
+      password: 'a-long-enough-one',
+      displayName: 'Expiring',
+      role: 'writer',
+    });
+    const live = await createSession(db, user.id, 'live');
+    const dead = await createSession(db, user.id, 'dead');
+    await db.execute(sql`
+      UPDATE sessions SET expires_at = ${Date.now() - 1} WHERE user_agent = 'dead'`);
+
+    const items = await listSessions(db, user.id, live.token);
+    expect(items).toHaveLength(1);
+    expect(items[0].userAgent).toBe('live');
+    expect(dead.token).not.toBe(live.token);
+  });
+
+  it('a session with no user agent is listed with null rather than skipped', async () => {
+    const user = await createUser(db, {
+      email: email(),
+      password: 'a-long-enough-one',
+      displayName: 'Headless',
+      role: 'writer',
+    });
+    await createSession(db, user.id);
+    const items = await listSessions(db, user.id);
+    expect(items).toHaveLength(1);
+    expect(items[0].userAgent).toBeNull();
+    // Nothing was named as current, so nothing claims to be.
+    expect(items[0].current).toBe(false);
+  });
+
+  it('revokeSession is scoped by user, so a foreign id changes nothing', async () => {
+    /*
+     * `user_id` IS IN THE WHERE CLAUSE, not in a prior read. Scoping by a
+     * SELECT first would leave a route free to forget the comparison, and the
+     * failure mode of forgetting it is one writer signing another writer out.
+     */
+    const mine = await createUser(db, {
+      email: email(),
+      password: 'a-long-enough-one',
+      displayName: 'Mine',
+      role: 'writer',
+    });
+    const theirs = await owner();
+    const myToken = await createSession(db, mine.id, 'mine');
+    await createSession(db, theirs.id, 'theirs');
+
+    const foreign = (await listSessions(db, theirs.id))[0];
+    expect(await revokeSession(db, mine.id, foreign.id)).toBe(false);
+    expect((await listSessions(db, theirs.id))).toHaveLength(1);
+
+    const own = (await listSessions(db, mine.id, myToken.token))[0];
+    expect(await revokeSession(db, mine.id, own.id)).toBe(true);
+    expect(await resolveSession(db, myToken.token)).toBeNull();
+    // Twice is `false`, so the route answers 404 rather than pretending.
+    expect(await revokeSession(db, mine.id, own.id)).toBe(false);
+  });
+});
+
+// ------------------------------------------------------------------- team
+
+describe('the team list', () => {
+  it('lists accounts oldest first with their post counts, trashed included', async () => {
+    const ctx = await freshDb();
+    try {
+      const now = Date.now();
+      const post = async (authorId: string, id: string, deletedAt: number | null) =>
+        ctx.db.execute(sql`
+          INSERT INTO posts (id, title, subtitle, excerpt, excerpt_source, content,
+                             content_text, category, status, created_at, updated_at,
+                             deleted_at, word_count, reading_time, author_id, revision)
+          VALUES (${id}, 'T', '', '', 'derived', ${'{"type":"doc","content":[]}'}::jsonb,
+                  '', '', 'draft', ${now}, ${now}, ${deletedAt}, 0, 0, ${authorId}, 1)`);
+
+      await post(ctx.users.writer.id, 'p_kept', null);
+      await post(ctx.users.writer.id, 'p_binned', now);
+
+      const items = await listUsers(ctx.db);
+      expect(items.map((u) => u.email)).toEqual(['owner@test.local', 'writer@test.local']);
+
+      const writer = items.find((u) => u.id === ctx.users.writer.id)!;
+      // A trashed post is restorable until somebody empties the trash, so it is
+      // still theirs and still comes back — the count answers "what does
+      // disabling this person leave behind".
+      expect(writer.postCount).toBe(2);
+      expect(writer.disabledAt).toBeNull();
+      expect(typeof writer.createdAt).toBe('number');
+
+      // A LEFT JOIN: the account with nothing written must still appear.
+      expect(items.find((u) => u.id === ctx.users.owner.id)?.postCount).toBe(0);
+
+      // No `SELECT *` on a table with a secret in it.
+      expect(JSON.stringify(items)).not.toContain('scrypt');
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('reports disabledAt once an account is revoked', async () => {
+    const user = await createUser(db, {
+      email: email(),
+      password: 'a-long-enough-one',
+      displayName: 'Revoked',
+      role: 'writer',
+    });
+    await disableUser(db, user.id);
+    const row = (await listUsers(db)).find((u) => u.id === user.id)!;
+    expect(typeof row.disabledAt).toBe('number');
+    expect(row.disabledAt).toBeGreaterThan(0);
+  });
+});
+
+describe('enableUser and countActiveOwners', () => {
+  it('enabling clears disabled_at and does not resurrect a session', async () => {
+    /*
+     * The reason `disableUser` DELETEs the sessions rather than relying on the
+     * column: if the rows survived, clearing it would bring back every cookie
+     * ever issued — including the one on the laptop that prompted the
+     * revocation.
+     */
+    const user = await createUser(db, {
+      email: email(),
+      password: 'a-long-enough-one',
+      displayName: 'Reinstated',
+      role: 'writer',
+    });
+    const { token } = await createSession(db, user.id);
+    await disableUser(db, user.id);
+
+    expect(await enableUser(db, user.id)).toBe(true);
+    expect((await findUserById(db, user.id))?.disabledAt).toBeNull();
+    expect(await resolveSession(db, token)).toBeNull();
+
+    // A brand new session works, which is the whole of what enabling restores.
+    const fresh = await createSession(db, user.id);
+    expect(await resolveSession(db, fresh.token)).toMatchObject({ id: user.id });
+  });
+
+  it('enabling an id that names nobody is false', async () => {
+    expect(await enableUser(db, '00000000-0000-4000-8000-000000000000')).toBe(false);
+  });
+
+  it('counts only owners who can still sign in', async () => {
+    const ctx = await freshDb();
+    try {
+      // The seed is one owner and one writer.
+      expect(await countActiveOwners(ctx.db)).toBe(1);
+
+      const second = await createUser(ctx.db, {
+        email: 'second.owner@test.local',
+        password: 'a-long-enough-one',
+        displayName: 'Second Owner',
+        role: 'owner',
+      });
+      expect(await countActiveOwners(ctx.db)).toBe(2);
+
+      // A revoked owner is not holding the door open — the check has to look at
+      // `disabled_at` and not at `role` alone.
+      await disableUser(ctx.db, second.id);
+      expect(await countActiveOwners(ctx.db)).toBe(1);
+
+      await enableUser(ctx.db, second.id);
+      expect(await countActiveOwners(ctx.db)).toBe(2);
+    } finally {
+      await ctx.close();
+    }
+  });
+});
+
+// ------------------------------------------------------- the invite history
+
+describe('listInvites', () => {
+  async function threeStates() {
+    const inviter = await createUser(db, {
+      email: email(),
+      password: 'a-long-enough-one',
+      displayName: 'The Inviter',
+      role: 'owner',
+    });
+    const open = await createInvite(db, { email: email(), role: 'writer', invitedBy: inviter.id });
+    const accepted = await createInvite(db, {
+      email: email(),
+      role: 'writer',
+      invitedBy: inviter.id,
+    });
+    await db.execute(
+      sql`UPDATE invites SET accepted_at = ${Date.now()} WHERE id = ${accepted.id}`,
+    );
+    const expired = await createInvite(db, {
+      email: email(),
+      role: 'writer',
+      invitedBy: inviter.id,
+    });
+    await db.execute(
+      sql`UPDATE invites SET expires_at = ${Date.now() - 1} WHERE id = ${expired.id}`,
+    );
+    return { inviter, open, accepted, expired };
+  }
+
+  const idsFor = async (include: { accepted?: boolean; expired?: boolean }, inviterId: string) =>
+    (await listInvites(db, include))
+      .filter((i) => i.invitedBy === inviterId)
+      .map((i) => i.id);
+
+  it('returns open invites by default and each history bucket on request', async () => {
+    const { inviter, open, accepted, expired } = await threeStates();
+
+    expect(await idsFor({}, inviter.id)).toEqual([open.id]);
+    expect((await idsFor({ accepted: true }, inviter.id)).sort()).toEqual(
+      [open.id, accepted.id].sort(),
+    );
+    expect((await idsFor({ expired: true }, inviter.id)).sort()).toEqual(
+      [open.id, expired.id].sort(),
+    );
+    expect((await idsFor({ accepted: true, expired: true }, inviter.id)).sort()).toEqual(
+      [open.id, accepted.id, expired.id].sort(),
+    );
+  });
+
+  it('labels the state and resolves the inviter, and accepted beats expired', async () => {
+    const { inviter, open, accepted, expired } = await threeStates();
+    // Spent AND past its seven days: history, not a missed opportunity.
+    await db.execute(
+      sql`UPDATE invites SET expires_at = ${Date.now() - 1} WHERE id = ${accepted.id}`,
+    );
+
+    const byId = new Map(
+      (await listInvites(db, { accepted: true, expired: true })).map((i) => [i.id, i]),
+    );
+    expect(byId.get(open.id)?.state).toBe('open');
+    expect(byId.get(accepted.id)?.state).toBe('accepted');
+    expect(byId.get(expired.id)?.state).toBe('expired');
+
+    expect(byId.get(open.id)?.invitedBy).toBe(inviter.id);
+    expect(byId.get(open.id)?.invitedByName).toBe('The Inviter');
+    expect(byId.get(open.id)?.acceptedAt).toBeNull();
+    expect(byId.get(accepted.id)?.acceptedAt).toBeGreaterThan(0);
+  });
+
+  it('never returns a token hash', async () => {
+    const { inviter } = await threeStates();
+    const items = await listInvites(db, { accepted: true, expired: true });
+    expect(items.length).toBeGreaterThan(0);
+    expect(JSON.stringify(items)).not.toContain('token');
+    expect(items.some((i) => i.invitedBy === inviter.id)).toBe(true);
   });
 });

@@ -42,6 +42,7 @@ import {
   shipFulfillment,
 } from './repo/fulfillments';
 import { listIntents, sweepEmailIntents } from './repo/emails';
+import { MAX_SEARCH_LENGTH, readOrderByNumber, searchOrders } from '../admin/orders';
 
 /**
  * The HTTP surface (brief §6).
@@ -102,6 +103,16 @@ const AdminPageQuery = PageQuery.extend({
   status: z
     .enum(['pending', 'paid', 'fulfilled', 'cancelled', 'refunded', 'partially_refunded'])
     .optional(),
+  /**
+   * An EXACT order number or an EXACT email address, and nothing else. The two
+   * branches, why neither is a substring match, and why a mistyped order number
+   * is an empty page rather than a 400 are all in `server/shop/admin/orders.ts`.
+   *
+   * Bounded here as well as there so an oversized term is refused by the schema
+   * that already refuses every other malformed parameter, with `detail: 'search'`
+   * from the same `zodDetail` path as the rest.
+   */
+  search: str().max(MAX_SEARCH_LENGTH).optional(),
 }).strict();
 
 const LookupQuery = z
@@ -246,35 +257,60 @@ function registerAdminRoutes(
   deps: Deps,
   auth: ReturnType<typeof requireAuth>,
 ): void {
-  /** Keyset, filter by status. `server/repo/cursor.ts` verbatim (brief §6). */
+  /**
+   * Keyset, filter by status, and — since HANDOFF §2 A4 — find one order.
+   * `server/repo/cursor.ts` verbatim (brief §6).
+   *
+   * `?search=` DISPATCHES TO A DIFFERENT QUERY RATHER THAN ADDING A PREDICATE
+   * HERE, because the term has to be classified (order number or address) before
+   * a statement can be chosen. `server/shop/admin/orders.ts` holds both branches
+   * and the reasoning for each.
+   *
+   * AN EMPTY `?search=` IS NO FILTER AT ALL, not a search for the empty string.
+   * The same rule `listProducts` applies to `?category=` — "an empty string is
+   * 'no filter', not 'products with no category'" — and it is what makes a
+   * cleared search box behave like no search box, rather than emptying the list
+   * the operator was reading.
+   */
   routes.get('/admin/orders', auth, async (c) => {
     const q = readQuery(c, AdminPageQuery);
-    return c.json(await listAllOrders(currentDb(c), q));
+    const db = currentDb(c);
+    const search = q.search?.trim();
+    if (search === undefined || search === '') return c.json(await listAllOrders(db, q));
+    return c.json(await searchOrders(db, { ...q, search }));
   });
 
   routes.get('/admin/orders/:id', auth, async (c) => {
     const db = currentDb(c);
     const read = await requireOrder(db, pathParam(c, 'id'));
-    return c.json({
-      order: read.order,
-      lines: read.lines,
-      fulfillments: await listFulfillments(db, read.order.id),
-      timeline: await listTimeline(db, read.order.id),
-      /*
-       * THE EMAIL INTENTS ARE PART OF THE ADMIN VIEW, and brief §5 says why: "an email you
-       * cannot prove you sent is a support ticket you cannot answer." What a customer
-       * received, when, and whether a send failed is the first question support asks.
-       */
-      emails: await listIntents(db, read.order.id),
-      /*
-       * READ-ONLY, FOR DISPLAY, AND ABSENT UNTIL PAYMENTS LANDS. Contract §5 gives Orders no
-       * port into Payments for state changes; this is the whole of what it may know.
-       */
-      payment:
-        deps().payments && read.order.paymentIntentId
-          ? await deps().payments!.status(db, read.order.paymentIntentId)
-          : null,
-    });
+    return c.json(await orderDetail(db, read, deps()));
+  });
+
+  /**
+   * The same view, addressed by the number on the customer's receipt.
+   *
+   * THE SAME BODY AS `/admin/orders/:id`, DELIBERATELY, and assembled by the same
+   * function rather than by a similar one. An operator who reaches an order by
+   * pasting a number and an operator who reaches it from the list are looking at
+   * the same screen, and two assemblies of it would drift the first time a field
+   * was added to one.
+   *
+   * `requireOrderNumber` FIRST, so a mistyped number is a 400 that says the check
+   * character failed — and 22 of every 23 guesses never reach a statement. This
+   * is the opposite of `?search=`, where a bad number is an empty page: there the
+   * number is a search term, here it IS the request, and a 404 for a typo would
+   * be indistinguishable from an order that does not exist.
+   *
+   * FOUR PATH SEGMENTS, so it cannot be shadowed by the three-segment
+   * `/admin/orders/:id` above whatever the registration order — but the test
+   * suite asserts that rather than leaving it to a reading of Hono's matcher.
+   */
+  routes.get('/admin/orders/by-number/:orderNumber', auth, async (c) => {
+    const db = currentDb(c);
+    const orderNumber = requireOrderNumber(pathParam(c, 'orderNumber'));
+    const read = await readOrderByNumber(db, orderNumber);
+    if (!read) throw new NotFoundError(orderNumber);
+    return c.json(await orderDetail(db, read, deps()));
   });
 
   routes.post('/admin/orders/:id/fulfillments', auth, async (c) => {
@@ -400,6 +436,36 @@ async function requireOrder(db: Db, id: string): Promise<OrderRead> {
   const read = await readOrder(db, id);
   if (!read) throw new NotFoundError(id);
   return read;
+}
+
+/**
+ * THE support view: one order and everything about it.
+ *
+ * A FUNCTION RATHER THAN AN INLINE BODY because two routes answer with it — by
+ * id and by order number — and a second, hand-copied assembly would be one
+ * screen missing whatever the next field added is, with no error anywhere.
+ */
+async function orderDetail(db: Db, read: OrderRead, deps: ResolvedDeps) {
+  return {
+    order: read.order,
+    lines: read.lines,
+    fulfillments: await listFulfillments(db, read.order.id),
+    timeline: await listTimeline(db, read.order.id),
+    /*
+     * THE EMAIL INTENTS ARE PART OF THE ADMIN VIEW, and brief §5 says why: "an email you
+     * cannot prove you sent is a support ticket you cannot answer." What a customer
+     * received, when, and whether a send failed is the first question support asks.
+     */
+    emails: await listIntents(db, read.order.id),
+    /*
+     * READ-ONLY, FOR DISPLAY, AND ABSENT UNTIL PAYMENTS LANDS. Contract §5 gives Orders no
+     * port into Payments for state changes; this is the whole of what it may know.
+     */
+    payment:
+      deps.payments && read.order.paymentIntentId
+        ? await deps.payments.status(db, read.order.paymentIntentId)
+        : null,
+  };
 }
 
 /**

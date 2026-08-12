@@ -92,6 +92,20 @@
       "when": 1786600000500,
       "tag": "0006_password_resets",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1786600000600,
+      "tag": "0007_managed_categories",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1786600000700,
+      "tag": "0008_email_marketing",
+      "breakpoints": true
     }
   ]
 }

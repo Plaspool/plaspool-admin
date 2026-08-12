@@ -1,7 +1,9 @@
 import { sql, type SQL } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { uniqueViolation } from '../../db/client';
-import { InvalidDocumentError, NotFoundError } from '../../repo/errors';
+import { BadRequestError, InvalidDocumentError, NotFoundError } from '../../repo/errors';
+import { committedImageIds } from '../../repo/images';
+import { normalizeBlobId } from '../../repo/public-projection';
 import { ProductPreconditionFailedError, StaleProductWriteError } from './errors';
 import { docToText, slugify } from '../../../shared/doc';
 import { checkPostMeta, validateDoc } from '../../../shared/validate';
@@ -116,6 +118,7 @@ export async function createProduct(
 
   const description = validatedOrThrow(input.description ?? { type: 'doc', content: [] });
   checkMeta({ title: input.title, category: input.category, tags: input.tags });
+  await checkImageRefs(db, input);
 
   const title = input.title ?? '';
   const supplied = input.slug ? input.slug : null;
@@ -204,6 +207,15 @@ export async function saveProduct(
   const description =
     patch.description !== undefined ? validatedOrThrow(patch.description) : current.description;
   checkMeta({ title: patch.title, category: patch.category, tags: patch.tags });
+  /*
+   * THE PATCH, NEVER THE MERGE — the same rule `patch.description` follows, four
+   * lines up, and for the identical reason. A product whose stored gallery
+   * already holds an id that has since been collected must stay editable; if the
+   * merged value were checked, that one dead id would refuse every future save
+   * and the writer would lose everything they typed next with no way to fix it,
+   * because the only route that could clear the bad id is the one being refused.
+   */
+  await checkImageRefs(db, patch);
 
   const next = {
     title: patch.title ?? current.title,
@@ -605,6 +617,57 @@ function validatedOrThrow(description: unknown): DocNode {
 function checkMeta(meta: { title?: unknown; category?: unknown; tags?: unknown }): void {
   const violation = checkPostMeta(meta);
   if (violation) throw new InvalidDocumentError(violation);
+}
+
+/**
+ * Every image id this patch supplies names a COMMITTED image, or a 400 naming
+ * the FIELD (HANDOFF §2 A5.2).
+ *
+ * WHAT THIS REPLACED. `cover_image_id` and `image_ids` were shape-validated and
+ * nothing more: `routes.ts` bounded their length and this file stored whatever
+ * arrived. So `{"coverImageId":"not-an-image"}` was accepted, persisted, shipped
+ * on the storefront response, and rendered as a broken image — with no error
+ * anywhere at any point, because the first thing that could have noticed is a
+ * customer's browser.
+ *
+ * 400 AND NOT 422. `InvalidDocumentError` is about a DOCUMENT failing
+ * `shared/validate.ts`; this is a field whose value does not name a row, which is
+ * §8's `bad_request` line. `detail` is the field NAME and never the id, per the
+ * error contract — and it is `coverImageId` or `imageIds` rather than a merged
+ * `images`, because a form has two separate controls and has to know which one to
+ * mark.
+ *
+ * THIS IS ADVISORY, AND SAYING SO IS THE POINT. It is a read followed by a write,
+ * so an image committed-then-collected in the microseconds between the two lands
+ * anyway — exactly the stale-read shape this file's CAS discipline exists to
+ * distrust. It is not written as a SQL predicate because a zero-row result from
+ * the mutation statement already means "the CAS lost", and `saveProduct` reads
+ * that zero as a 409 carrying the current product; adding a second reason for
+ * zero rows would make every failed image reference look like a lost race. A
+ * foreign key would be the real answer and contract R3 forbids one across the
+ * subsystem boundary. What actually protects the bytes is the other half of this
+ * task: `REFERENCE_SET` now counts products, so an image a product names is not
+ * collected in the first place, and this check exists to stop a typo becoming a
+ * broken page rather than to hold a referential invariant it cannot hold.
+ *
+ * AN EMPTY STRING IS NOT AN ID, in either field. `null` is how a cover is
+ * cleared, and an empty slot in a gallery is a hole every consumer downstream
+ * already skips — `rowToPublicCoverImage`, the orphan collector's `<> ''` guards
+ * and `publicProductImageRefExists` all ignore it — so storing one would be
+ * accepting a value that provably means nothing.
+ */
+async function checkImageRefs(db: Db, patch: ProductPatch): Promise<void> {
+  const cover = patch.coverImageId == null ? [] : [patch.coverImageId];
+  const gallery = patch.imageIds ?? [];
+  if (cover.length === 0 && gallery.length === 0) return;
+
+  // ONE round trip for both fields. A gallery may carry a hundred ids and a
+  // Vercel function has a wall clock.
+  const known = await committedImageIds(db, [...cover, ...gallery]);
+  const unknown = (id: string): boolean => !known.has(normalizeBlobId(id));
+
+  if (cover.some(unknown)) throw new BadRequestError('coverImageId');
+  if (gallery.some(unknown)) throw new BadRequestError('imageIds');
 }
 
 function isSlugCollision(err: unknown): boolean {

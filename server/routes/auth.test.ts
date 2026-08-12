@@ -16,6 +16,8 @@ import { LOGIN_IP_LIMIT, LOGIN_LIMIT } from '../repo/ratelimit';
 import { hashPassword } from '../repo/password';
 import { MIN_PASSWORD_LENGTH, createInvite } from '../repo/users';
 import type { AuthUser } from '../../shared/types';
+import type { AppDeps } from '../index';
+import type { Mailer } from '../mail/port';
 
 let ctx: TestCtx;
 
@@ -43,8 +45,16 @@ afterEach(async () => {
   );
 });
 
-const client = (ip = '203.0.113.1') => {
-  const base = httpClient(ctx.db);
+/**
+ * `deps` is threaded through because `POST /api/invites` now mails the link,
+ * and the transport is injected exactly as the reset flow's is — a route that
+ * delivers a credential must not be testable by having it hand the credential
+ * back (`server/mail/port.ts` has the long version). Every case that does not
+ * care about mail leaves it defaulted, which lands on `resendMailer()` with no
+ * key configured and therefore sends nothing.
+ */
+const client = (ip = '203.0.113.1', deps: Partial<AppDeps> = {}) => {
+  const base = httpClient(ctx.db, deps);
   const withIp = (init: RequestInit = {}): RequestInit => {
     const headers = new Headers(init.headers);
     headers.set('x-real-ip', ip);
@@ -60,8 +70,8 @@ const client = (ip = '203.0.113.1') => {
 };
 
 /** Log in as a seeded user and return the still-authenticated client. */
-async function loggedIn(user: AuthUser, ip = '203.0.113.9') {
-  const c = client(ip);
+async function loggedIn(user: AuthUser, ip = '203.0.113.9', deps: Partial<AppDeps> = {}) {
+  const c = client(ip, deps);
   const res = await c.post('/api/auth/login', {
     email: user.email,
     password: SEED_PASSWORD,
@@ -651,5 +661,244 @@ describe('the invite routes', () => {
     expect((await json(res)).detail).toBe('email');
     const rows = await ctx.db.execute(sql`SELECT count(*)::int AS n FROM invites`);
     expect(Number(rows.rows[0].n)).toBe(0);
+  });
+});
+
+// ----------------------------------------------------- the invite email
+
+interface Sent {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+}
+
+/** A mailer that records instead of sending. No `assertConfigured` — it is. */
+function fakeMailer(): { mailer: Mailer; sent: Sent[] } {
+  const sent: Sent[] = [];
+  return { sent, mailer: { async send(msg) { sent.push(msg); } } };
+}
+
+describe('POST /api/invites and the mail it sends', () => {
+  it('mails the link and says so, and the mailed link is the one in the body', async () => {
+    /*
+     * THE MAILED URL AND THE RETURNED URL MUST BE THE SAME STRING. They are
+     * built once and handed to two places, and the failure mode of building
+     * them twice is silent: an invitee follows a link with a token that was
+     * never stored, gets `detail: 'invite'`, and the owner — looking at a
+     * perfectly good URL in their own screen — has no way to see why.
+     */
+    const { mailer, sent } = fakeMailer();
+    const owner = await loggedIn(ctx.users.owner, '192.0.2.40', { mailer });
+
+    const res = await owner.post('/api/invites', { email: 'Mailed@Test.Local' });
+    expect(res.status).toBe(201);
+    const body = await json<{ invite: { url: string }; emailed: boolean }>(res);
+    expect(body.emailed).toBe(true);
+
+    expect(sent).toHaveLength(1);
+    // Lowercased, exactly as the row is stored: a link mailed to a
+    // differently-cased address than the invite names is one bounce away from
+    // being unexplainable.
+    expect(sent[0].to).toBe('mailed@test.local');
+    expect(sent[0].text).toContain(body.invite.url);
+    expect(sent[0].html).toContain(body.invite.url);
+    // The inviter is named, which is why the response resolves display names at
+    // all — "somebody invited you" is a phishing email.
+    expect(sent[0].text).toContain(ctx.users.owner.displayName);
+  });
+
+  it('with no mailer configured it still mints the link and says emailed:false', async () => {
+    /*
+     * An invite is the ONLY way a second person gets into an invite-only
+     * instance. Making it depend on a working mail provider would mean a mail
+     * outage — or a deployment that never configured one — locks the team out
+     * of growing. So the URL stays in the response and `emailed` says which
+     * happened.
+     *
+     * The default mailer is `resendMailer()`, and the suite environment sets no
+     * `RESEND_API_KEY`, so this is the unconfigured deployment for real rather
+     * than a fake standing in for one.
+     */
+    const owner = await loggedIn(ctx.users.owner, '192.0.2.41');
+    const res = await owner.post('/api/invites', { email: 'nomail@test.local' });
+    expect(res.status).toBe(201);
+    const body = await json<{ invite: { url: string }; emailed: boolean }>(res);
+    expect(body.emailed).toBe(false);
+    expect(body.invite.url).toContain(`${TEST_ORIGIN}${INVITE_PATH}?token=`);
+
+    // The row exists and the token in that URL redeems, so hand delivery works.
+    const token = new URL(new URL(body.invite.url).hash.substring(1), 'http://router.invalid')
+      .searchParams.get('token')!;
+    const accepted = await client('192.0.2.42').post('/api/auth/accept-invite', {
+      token,
+      password: 'a-long-enough-password',
+      displayName: 'Hand Delivered',
+    });
+    expect(accepted.status).toBe(201);
+  });
+
+  it('a failed send is swallowed for the caller and the invite survives', async () => {
+    // Swallowed for the CALLER, never for the operator — the same shape
+    // `POST /api/auth/forgot` uses. Not a 500: the row is already committed and
+    // the URL is already in the response, so failing would tell the owner to
+    // mint a SECOND live token for an address that already has one.
+    const broken: Mailer = {
+      async send() {
+        throw new Error('resend refused the message: HTTP 422');
+      },
+    };
+    const owner = await loggedIn(ctx.users.owner, '192.0.2.43', { mailer: broken });
+    const res = await owner.post('/api/invites', { email: 'broken@test.local' });
+    expect(res.status).toBe(201);
+    expect((await json<{ emailed: boolean }>(res)).emailed).toBe(false);
+
+    const rows = await ctx.db.execute(
+      sql`SELECT count(*)::int AS n FROM invites WHERE email = 'broken@test.local'`,
+    );
+    expect(Number(rows.rows[0].n)).toBe(1);
+  });
+
+  it('the response never carries the token outside the url', async () => {
+    const { mailer } = fakeMailer();
+    const owner = await loggedIn(ctx.users.owner, '192.0.2.44', { mailer });
+    const res = await owner.post('/api/invites', { email: 'shape@test.local' });
+    const body = await json<{ invite: Record<string, unknown> }>(res);
+    expect(Object.keys(body.invite).sort()).toEqual([
+      'email',
+      'expiresAt',
+      'id',
+      'role',
+      'url',
+    ]);
+  });
+});
+
+// ------------------------------------------------------- the invite history
+
+describe('GET /api/invites?include=', () => {
+  /** An accepted invite, an expired one and an open one, in that order. */
+  async function threeInvites() {
+    const accepted = await createInvite(ctx.db, {
+      email: 'accepted@test.local',
+      role: 'writer',
+      invitedBy: ctx.users.owner.id,
+    });
+    await ctx.db.execute(
+      sql`UPDATE invites SET accepted_at = ${Date.now()} WHERE id = ${accepted.id}`,
+    );
+    const expired = await createInvite(ctx.db, {
+      email: 'expired@test.local',
+      role: 'writer',
+      invitedBy: ctx.users.writer.id,
+    });
+    await ctx.db.execute(
+      sql`UPDATE invites SET expires_at = ${Date.now() - 1} WHERE id = ${expired.id}`,
+    );
+    await createInvite(ctx.db, {
+      email: 'open@test.local',
+      role: 'owner',
+      invitedBy: ctx.users.owner.id,
+    });
+  }
+
+  interface InviteItem {
+    email: string;
+    state: 'open' | 'accepted' | 'expired';
+    invitedBy: string;
+    invitedByName: string;
+    acceptedAt: number | null;
+  }
+
+  const list = async (query: string): Promise<InviteItem[]> => {
+    const owner = await loggedIn(ctx.users.owner, '192.0.2.50');
+    const res = await owner.get(`/api/invites${query}`);
+    expect(res.status).toBe(200);
+    return (await json<{ items: InviteItem[] }>(res)).items;
+  };
+
+  it('defaults to open invites only', async () => {
+    await threeInvites();
+    expect((await list('')).map((i) => i.email)).toEqual(['open@test.local']);
+  });
+
+  it('include=accepted and include=expired each add exactly their bucket', async () => {
+    await threeInvites();
+    expect((await list('?include=accepted')).map((i) => i.email).sort()).toEqual([
+      'accepted@test.local',
+      'open@test.local',
+    ]);
+    expect((await list('?include=expired')).map((i) => i.email).sort()).toEqual([
+      'expired@test.local',
+      'open@test.local',
+    ]);
+    expect((await list('?include=accepted,expired')).map((i) => i.email).sort()).toEqual([
+      'accepted@test.local',
+      'expired@test.local',
+      'open@test.local',
+    ]);
+  });
+
+  it('labels each row, and accepted beats expired', async () => {
+    /*
+     * A spent invite whose seven days have since elapsed is history, not a
+     * missed opportunity. Labelled "expired" it would tell an owner to re-send
+     * an invite to somebody who already has an account — and
+     * `POST /api/invites` would then refuse it with `detail: 'email'`, which
+     * reads as a bug in the screen.
+     */
+    const stale = await createInvite(ctx.db, {
+      email: 'accepted.then.expired@test.local',
+      role: 'writer',
+      invitedBy: ctx.users.owner.id,
+    });
+    await ctx.db.execute(sql`
+      UPDATE invites SET accepted_at = ${Date.now() - 10}, expires_at = ${Date.now() - 1}
+       WHERE id = ${stale.id}`);
+    await threeInvites();
+
+    const byEmail = new Map(
+      (await list('?include=accepted,expired')).map((i) => [i.email, i]),
+    );
+    expect(byEmail.get('open@test.local')?.state).toBe('open');
+    expect(byEmail.get('accepted@test.local')?.state).toBe('accepted');
+    expect(byEmail.get('expired@test.local')?.state).toBe('expired');
+    expect(byEmail.get('accepted.then.expired@test.local')?.state).toBe('accepted');
+
+    expect(byEmail.get('accepted@test.local')?.acceptedAt).toBeGreaterThan(0);
+    expect(byEmail.get('open@test.local')?.acceptedAt).toBeNull();
+  });
+
+  it('resolves invitedBy to a name and keeps the uuid beside it', async () => {
+    // A bare uuid is unreadable, and the only route that could turn one into a
+    // name is `GET /api/users` — owner-only, and a whole second request to
+    // render one cell.
+    await threeInvites();
+    const items = await list('?include=expired');
+    const open = items.find((i) => i.email === 'open@test.local')!;
+    const expired = items.find((i) => i.email === 'expired@test.local')!;
+
+    expect(open.invitedBy).toBe(ctx.users.owner.id);
+    expect(open.invitedByName).toBe(ctx.users.owner.displayName);
+    expect(expired.invitedByName).toBe(ctx.users.writer.displayName);
+  });
+
+  it('an unknown include member is a 400 naming the parameter', async () => {
+    // Silently ignoring it would return the default list for a query that asked
+    // for something else, which looks like a bug in the screen rather than in
+    // the request — the rule `ListQueryParams` states for post filters.
+    const owner = await loggedIn(ctx.users.owner, '192.0.2.51');
+    const res = await owner.get('/api/invites?include=acepted');
+    expect(res.status).toBe(400);
+    expect(await json(res)).toMatchObject({ error: 'bad_request', detail: 'include' });
+
+    const unknownParam = await owner.get('/api/invites?includes=accepted');
+    expect(unknownParam.status).toBe(400);
+    expect((await json(unknownParam)).detail).toBe('includes');
+  });
+
+  it('is still owner-only', async () => {
+    const writer = await loggedIn(ctx.users.writer, '192.0.2.52');
+    expect((await writer.get('/api/invites?include=accepted,expired')).status).toBe(403);
   });
 });

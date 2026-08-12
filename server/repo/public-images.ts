@@ -33,6 +33,34 @@ import type { ImageRow } from './images';
  *    unwalkable row references every image (it cannot make a claim, so it makes
  *    no deletion). Here the same absence of a claim must mean "do not serve": a
  *    malformed document is not evidence that an image is public.
+ *
+ * THE SECOND SCOPE — AN ACTIVE PRODUCT — FAILS THE SAME WAY (HANDOFF §2 A5.3).
+ *
+ * A shop is public, so a product's cover and gallery must be servable to an
+ * anonymous customer or every product page renders broken images. The scope is
+ * `status = 'active' AND deleted_at IS NULL`: the SAME predicate
+ * `getActiveProductBySlug`, `listProducts`' storefront branch and `quote()`
+ * apply, so an image is servable exactly when the page that would show it is
+ * reachable. A third dialect of "on sale" is a third thing to disagree with the
+ * cart.
+ *
+ * Its failure direction is the narrow one, matching the post scope and opposing
+ * the collector's, and the two consequences above have exact counterparts here:
+ *
+ * 1. **A draft, archived or trashed product is not a reference.** Photography for
+ *    an unannounced product is a pre-announcement signal — the same reason
+ *    `public.ts` keeps drafts out of the taxonomy counts — and unpublishing must
+ *    take the pictures down in the same moment it takes the page down. The
+ *    collector counts every product in every state precisely so those bytes
+ *    survive the wait; if this check did too, one afternoon as `active` would
+ *    make an image public forever.
+ * 2. **A product revision is not a reference.** `shop_product_revisions` snapshots
+ *    title, description and status; it is history for the same reason `revisions`
+ *    is, and it is absent here for the same reason `revisions` is absent above.
+ *
+ * The two scopes are OR-ed, not merged: an image may be a post's cover, a
+ * product's cover, or both, and losing either reference must not un-publish it
+ * while the other still stands.
  */
 
 /**
@@ -73,8 +101,62 @@ const SCHEME_PATTERN = '(?:asset|idb):([A-Za-z0-9_.-]+)';
 const COVER_PREFIX = '^(asset|idb):';
 
 /**
- * The reference check as a boolean SQL fragment, so `isPubliclyReferencedImage`
- * and `getPublicImage` ask exactly the same question in exactly one place.
+ * "On sale" — the storefront predicate, restated for `shop_products` under the
+ * alias this file uses.
+ *
+ * NOT IMPORTED FROM `server/shop/catalog/query.ts`, which builds the same two
+ * conjuncts inline for the list. Catalog owns that tree and this file is the
+ * blog's; the header's whole argument is that a reference check must be free to
+ * be narrower than anything it resembles, and importing a filter written for a
+ * LIST would tie the public image surface to a query somebody may one day widen
+ * for a perfectly good reason of its own.
+ *
+ * Named and exported so a mutation test can drop it and watch a draft product's
+ * image become servable — the same device `PUBLIC_POST_CONJUNCTS` provides for
+ * the post half.
+ */
+export const ACTIVE_PRODUCT_PREDICATE: SQL = sql`sp.status = 'active' AND sp.deleted_at IS NULL`;
+
+/**
+ * The PRODUCT half of the reference check.
+ *
+ * `cover_image_id` is a scalar and `image_ids` is a `text[]`; both are plain text
+ * columns that have never been normalised on write, so both are compared with the
+ * scheme stripped, exactly as the post cover is.
+ *
+ * THE `<> ''` GUARDS ARE LOAD-BEARING AND NOT TIDINESS. `regexp_replace('', …)`
+ * is `''`, and `normalizeBlobId('')` is `''` too — so without them a request for
+ * the empty id would match every product that has no cover at all, and
+ * `isPubliclyReferencedImage('')` would answer TRUE. `getPublicImage` would still
+ * find no row (no image has an empty id), but a reference check that says yes to
+ * a thing that does not exist is one refactor away from being believed.
+ */
+export function publicProductImageRefExists(
+  imageId: string,
+  scope: SQL = ACTIVE_PRODUCT_PREDICATE,
+): SQL {
+  const id = normalizeBlobId(imageId);
+  return sql`EXISTS (
+    SELECT 1
+      FROM shop_products sp
+     WHERE ${scope}
+       AND (
+             (
+               sp.cover_image_id IS NOT NULL
+               AND sp.cover_image_id <> ''
+               AND regexp_replace(sp.cover_image_id, ${COVER_PREFIX}, '') = ${id}
+             )
+          OR EXISTS (
+               SELECT 1
+                 FROM unnest(sp.image_ids) AS g(ref)
+                WHERE g.ref <> ''
+                  AND regexp_replace(g.ref, ${COVER_PREFIX}, '') = ${id})
+           )
+     LIMIT 1)`;
+}
+
+/**
+ * The POST half of the reference check.
  *
  * `scope` exists for the mutation tests and DEFAULTS to the real predicate.
  * Production never passes it. `public-images.test.ts` passes `sql\`true\`` to
@@ -83,7 +165,7 @@ const COVER_PREFIX = '^(asset|idb):';
  * the list, and for the same reason: a test that transcribes its own weakened
  * copy of the SQL is asserting against itself.
  */
-export function publicImageRefExists(
+export function publicPostImageRefExists(
   imageId: string,
   scope: SQL = PUBLIC_POST_PREDICATE,
 ): SQL {
@@ -131,10 +213,34 @@ export function publicImageRefExists(
 }
 
 /**
- * TRUE only if `imageId` is referenced by the CURRENT content or cover of a post
- * matching `PUBLIC_POST_PREDICATE`.
+ * The whole check, so `isPubliclyReferencedImage` and `getPublicImage` ask
+ * exactly the same question in exactly one place.
  *
- * Drafts, archived posts, trashed posts and revisions all answer FALSE.
+ * TWO SCOPES, OR-ED, NEVER MERGED INTO ONE QUERY. They read different tables with
+ * different notions of "live", and folding them together would mean one predicate
+ * that has to be widened whenever either surface changes — which is how the
+ * narrow side loses. Each half keeps its own default scope and its own test
+ * lever.
+ *
+ * The signature keeps `scope` second so the existing post mutation test —
+ * `publicImageRefExists(id, sql\`true\`)` — still names the post half.
+ */
+export function publicImageRefExists(
+  imageId: string,
+  scope: SQL = PUBLIC_POST_PREDICATE,
+  productScope: SQL = ACTIVE_PRODUCT_PREDICATE,
+): SQL {
+  return sql`(${publicPostImageRefExists(imageId, scope)}
+              OR ${publicProductImageRefExists(imageId, productScope)})`;
+}
+
+/**
+ * TRUE only if `imageId` is referenced by the CURRENT content or cover of a post
+ * matching `PUBLIC_POST_PREDICATE`, or by the cover or gallery of a product
+ * matching `ACTIVE_PRODUCT_PREDICATE`.
+ *
+ * Drafts, archived posts, trashed posts, post revisions, draft/archived/trashed
+ * products and product revisions all answer FALSE.
  */
 export async function isPubliclyReferencedImage(db: Db, imageId: string): Promise<boolean> {
   const res = await db.execute(sql`SELECT ${publicImageRefExists(imageId)} AS referenced`);

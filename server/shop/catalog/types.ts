@@ -41,6 +41,49 @@ export interface Product {
   revision: number;
 }
 
+/**
+ * A product as an ANONYMOUS CUSTOMER sees it: the row, plus its image ids
+ * resolved to public URLs.
+ *
+ * WHY THE URLS ARE A SEPARATE SHAPE AND NOT TWO MORE FIELDS ON `Product`. The
+ * URLs point at `/api/public/images/:id`, which serves an image only while an
+ * ACTIVE product (or a published post) references it — see
+ * `server/repo/public-images.ts`. On a draft or archived product every one of
+ * them 404s, so putting them on `Product` would ship a guaranteed-broken URL to
+ * the admin surface and invite a form to render it. The storefront routes are the
+ * only place the resolution is true, so the storefront shape is the only place it
+ * belongs.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THERE IS NO `FIELD_DISPOSITION` FOR THIS SHAPE, AND THAT IS A GAP, NOT A
+ * DECISION.
+ *
+ * `server/repo/public-projection.ts` classifies every key of `Post` as
+ * `'public' | 'private'` in an exhaustive `Record`, so adding a field to `Post`
+ * is a COMPILE ERROR until somebody decides in writing whether an anonymous
+ * reader may see it. Catalog has no such control: the storefront routes return
+ * the whole `Product`, which today means `authorId`, `revision` and `deletedAt`
+ * are on the public wire, and the next field added to `Product` joins them
+ * silently. `coverImageUrl` and `imageUrls` are deliberately public — they are
+ * the reason this type exists — but they are extending a surface that is
+ * allow-listed by nothing.
+ *
+ * Closing it means an allow-list mapper here of the kind `rowToPublicPost` is,
+ * which changes what the storefront already returns and therefore belongs to
+ * whoever owns that contract. Recorded here so the absence is a known one.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+export interface StorefrontProduct extends Product {
+  /** `null` when the product has no cover, or its cover id is empty. */
+  coverImageUrl: string | null;
+  /**
+   * Positionally parallel to `imageIds` MINUS any empty entry, which names no
+   * image and would resolve to `/api/public/images/` — a URL that is not a 404
+   * but the collection route with a trailing slash.
+   */
+  imageUrls: string[];
+}
+
 export interface Variant {
   id: string;
   productId: string;
