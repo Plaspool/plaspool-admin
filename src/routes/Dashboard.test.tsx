@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 
 /**
  * The dashboard after the cutover (plan §4, §5).
@@ -65,6 +65,21 @@ vi.mock('../data/api', () => ({
   },
 }));
 
+/**
+ * Mocked separately from `../data/api` even though it is the same request
+ * function underneath: `api-categories.ts` is a module of its own precisely so
+ * four concurrent writers cannot lose each other's blocks in `api.ts`, and a
+ * mock that reached through it would have to be kept in step with both.
+ */
+vi.mock('../data/api-categories', () => ({
+  categoriesApi: {
+    list: vi.fn(),
+    create: vi.fn(),
+    rename: vi.fn(),
+    remove: vi.fn(),
+  },
+}));
+
 vi.mock('../data/session', () => ({
   getSession: () => fixture.session,
   subscribe: () => () => undefined,
@@ -87,10 +102,13 @@ vi.mock('../data/migrate', () => ({
 }));
 
 import { api } from '../data/api';
+import { categoriesApi } from '../data/api-categories';
 import { db, type CachedListPost, type LocalPost, type PendingWrite } from '../data/db';
 import { surveyLocalPosts } from '../data/migrate';
 import { setActiveUser } from '../data/posts';
+import { resetCategories } from '../data/useCategories';
 import { TooltipProvider } from '../components/ui/Switch';
+import { brand } from '../brand';
 import Dashboard from './Dashboard';
 import type { ListPost, Post } from '../data/types';
 
@@ -177,6 +195,57 @@ function draw() {
   );
 }
 
+/**
+ * The URL, and the browser's own Back button, on every route.
+ *
+ * `draw()` renders the dashboard alone, which is enough for everything above
+ * but cannot express a round trip: the filters live in the search params now,
+ * so the assertions that matter are about where the address bar ends up after
+ * a navigation and about which navigations are on the history stack at all.
+ */
+function Chrome() {
+  const { pathname, search } = useLocation();
+  const navigate = useNavigate();
+  return (
+    <div>
+      <div data-testid="here">{pathname + search}</div>
+      <button data-testid="go-back" onClick={() => navigate(-1)}>
+        Browser back
+      </button>
+    </div>
+  );
+}
+
+/**
+ * STANDING IN FOR THE EDITOR, and only for its exit.
+ *
+ * `Editor.tsx` mounts TipTap, the autosave loop and the drag handle; rendering
+ * all of that to assert one navigation would be a test of ProseMirror. What
+ * this copies is the line the editor's "Posts" button runs when there IS an
+ * in-app entry behind it — `navigate(-1)` — which is the half of the round trip
+ * this file can prove. The `location.key === 'default'` fallback for a pasted
+ * `/#/edit/:id` lives in `Editor.tsx` and is not exercised here.
+ */
+function StubEditor() {
+  const navigate = useNavigate();
+  return <button onClick={() => navigate(-1)}>Back to posts</button>;
+}
+
+function drawRouted(entries: string[]) {
+  return render(
+    <MemoryRouter initialEntries={entries}>
+      <TooltipProvider>
+        <Chrome />
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/edit/:id" element={<StubEditor />} />
+          <Route path="/elsewhere" element={<p>Somewhere else entirely</p>} />
+        </Routes>
+      </TooltipProvider>
+    </MemoryRouter>,
+  );
+}
+
 /** A few macrotask turns, for asserting that something did NOT happen. */
 async function settle(): Promise<void> {
   for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
@@ -186,6 +255,10 @@ beforeEach(async () => {
   stubBrowserGaps();
   vi.clearAllMocks();
   emptyList();
+  // The category list is a module-scoped store — it outlives an unmount on
+  // purpose, so it outlives a test too unless it is emptied between them.
+  resetCategories();
+  vi.mocked(categoriesApi.list).mockResolvedValue([]);
   vi.mocked(surveyLocalPosts).mockResolvedValue({
     pending: [],
     migrated: [],
@@ -446,14 +519,20 @@ describe('controls that would 403', () => {
   const trashed = () =>
     listRow({ id: 'p_binned', title: 'Binned', deletedAt: Date.now(), status: 'draft' });
 
+  /**
+   * `link`, not `button`: the status tabs became `<Link>`s when the filters
+   * moved into the URL, so that middle-click and ⌘-click open a tab in a new
+   * browser tab the way a row of tabs implies. The role is the only thing about
+   * them these tests care about.
+   */
   async function openTrashTab(): Promise<void> {
-    await userEvent.click(screen.getByRole('button', { name: /^Trash/ }));
+    await userEvent.click(screen.getByRole('link', { name: /^Trash/ }));
   }
 
   it('are hidden from a writer, and their absence is explained', async () => {
     await db.postList.put(trashed());
     draw();
-    await waitFor(() => expect(screen.getByRole('button', { name: /^Trash/ })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('link', { name: /^Trash/ })).toBeTruthy());
     await openTrashTab();
 
     await waitFor(() => expect(screen.getByText('Binned')).toBeTruthy());
@@ -470,7 +549,7 @@ describe('controls that would 403', () => {
     };
     await db.postList.put(trashed());
     draw();
-    await waitFor(() => expect(screen.getByRole('button', { name: /^Trash/ })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('link', { name: /^Trash/ })).toBeTruthy());
     await openTrashTab();
 
     await waitFor(() => expect(screen.getByText('Binned')).toBeTruthy());
@@ -514,16 +593,29 @@ describe('the pre-backend library', () => {
 // ------------------------------------------------------------------ sign out
 
 describe('sign out', () => {
-  it('is reachable from the masthead menu', async () => {
+  it('has left this menu for the sidebar footer, and left nothing else behind', async () => {
     draw();
     await waitFor(() => expect(screen.getByLabelText('Library actions')).toBeTruthy());
 
     await userEvent.click(screen.getByLabelText('Library actions'));
+    await waitFor(() => expect(screen.getByText('Keyboard shortcuts')).toBeTruthy());
 
-    // Before this it existed only inside the re-auth prompt, which a signed-in
-    // writer never sees — so the app had no way to sign out at all, which on a
-    // shared machine is the whole of its access control.
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Sign out' })).toBeTruthy());
+    /*
+     * It lived here while this menu was the only chrome the app had. The shell
+     * has a sidebar now and sign-out belongs next to the identity it signs out,
+     * where it is reachable from the editor and from Settings too — see
+     * `Sidebar.test.tsx`. Two copies would be strictly worse than either: the
+     * unsent-work confirmation lives in `SignOutButton`, and two buttons asking
+     * that question are two chances to answer it wrongly.
+     */
+    expect(screen.queryByRole('button', { name: 'Sign out' })).toBeNull();
+
+    // Everything else in the menu stayed exactly where it was. Removing a
+    // separator's worth of markup is the kind of edit that takes a neighbour
+    // with it and is never noticed.
+    expect(screen.getByText('Import a backup')).toBeTruthy();
+    expect(screen.getByText('Export everything')).toBeTruthy();
+    expect(screen.getByText('Settings')).toBeTruthy();
   });
 });
 
@@ -545,5 +637,192 @@ describe('copy that stopped being true at the cutover', () => {
     await waitFor(() => expect(screen.getByText('A blank page, on purpose')).toBeTruthy());
     expect(screen.queryByText(/no account, no server/)).toBeNull();
     expect(screen.getByText(/goes to the blog as you type/)).toBeTruthy();
+  });
+});
+
+// -------------------------------------------------------- the category filter
+
+/**
+ * The options came from `db.postList` until now (HANDOFF §4 C3), which made the
+ * control describe THIS BROWSER'S CACHE rather than the blog: a machine that
+ * had synced a different slice of the library offered a different set of
+ * categories, and a fresh one offered none at all. `GET /api/categories`
+ * answers with the managed list unioned with everything in use, drafts
+ * included — the same list the editor's Details panel now picks from.
+ */
+describe('the category filter comes from the blog', () => {
+  const trigger = () => screen.getByLabelText('Filter by category');
+
+  it('offers a category that no cached post carries', async () => {
+    await db.postList.put(listRow({ title: 'Alpha', category: '' }));
+    vi.mocked(categoriesApi.list).mockResolvedValue([
+      { id: 'c_fiction', name: 'Fiction', count: 3, managed: true },
+    ]);
+
+    draw();
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeTruthy());
+
+    // Under the old derivation this fixture produced no control at all: a blog
+    // with three posts under Fiction, and a browser that had cached none of
+    // them, showed a writer a library with no categories in it.
+    await waitFor(() => expect(trigger()).toBeTruthy());
+    await userEvent.click(trigger());
+
+    // `(0)` rather than the server's `3`: the number answers "how many would
+    // this grid show", which the tag, status and search filters also decide.
+    await waitFor(() => expect(screen.getByText('Fiction (0)')).toBeTruthy());
+  });
+
+  it('falls back to this device’s posts when the route does not answer', async () => {
+    await db.postList.bulkPut([
+      listRow({ id: 'p_essay', title: 'Alpha', category: 'Essays' }),
+      listRow({ id: 'p_plain', title: 'Beta', category: '' }),
+    ]);
+    /*
+     * `GET /api/categories` is landing in a parallel workstream and 404s until
+     * it does — and any device can be offline at any time. An empty picker here
+     * would be the app claiming this blog has no categories on the strength of
+     * a request that never got an answer, which is the same class of lie as the
+     * search empty state's "nothing matches".
+     */
+    vi.mocked(categoriesApi.list).mockRejectedValue(new Error('gone'));
+
+    draw();
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeTruthy());
+
+    await waitFor(() => expect(trigger()).toBeTruthy());
+    await userEvent.click(trigger());
+    await waitFor(() => expect(screen.getByText('Essays (1)')).toBeTruthy());
+  });
+});
+
+// -------------------------------------------------------- the filters in the URL
+
+/**
+ * All five filters became search params (HANDOFF §4 C1). Before this they were
+ * five `useState`s and opening a post unmounts this screen, so the trip into
+ * the editor and back reset the tab, the query, the sort, the category and the
+ * tag every single time — silently, and with no way for a writer to get any of
+ * them back except by redoing all five.
+ */
+describe('the filters live in the URL', () => {
+  const url = () => screen.getByTestId('here').textContent;
+  const box = () => screen.getByLabelText('Search posts') as HTMLInputElement;
+
+  it('comes back from the editor on the tab and in the search the writer left', async () => {
+    const live = () => listRow({ id: 'p_live', title: 'Live one', status: 'published' });
+    await db.postList.put(live());
+    // The query in the box is re-run against the blog on the way back in, so
+    // the server has to keep answering "foo" with the same row.
+    vi.mocked(api.listPosts).mockImplementation(async (q) => ({
+      items: q?.status === 'trash' ? [] : [live()],
+      nextCursor: null,
+    }));
+
+    drawRouted(['/?status=published&q=foo']);
+
+    await waitFor(() => expect(screen.getByText('Live one')).toBeTruthy());
+    expect(box().value).toBe('foo');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Live one' }));
+    await waitFor(() => expect(screen.getByText('Back to posts')).toBeTruthy());
+    await userEvent.click(screen.getByText('Back to posts'));
+
+    /*
+     * THE ACCEPTANCE TEST, and the whole reason for the change. What used to
+     * happen here is that the dashboard remounted with five fresh `useState`s
+     * and the writer landed on All with an empty box — having lost the tab and
+     * the query by clicking one of their own results.
+     */
+    await waitFor(() => expect(box()).toBeTruthy());
+    expect(box().value).toBe('foo');
+    expect(screen.getByRole('link', { name: /^Published/ }).getAttribute('aria-current')).toBe(
+      'page',
+    );
+    expect(url()).toBe('/?status=published&q=foo');
+  });
+
+  it('keeps `/` clean, writing only the filters that are not at their default', async () => {
+    await db.postList.put(listRow({ title: 'Alpha' }));
+    drawRouted(['/']);
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeTruthy());
+    expect(url()).toBe('/');
+
+    await userEvent.click(screen.getByRole('link', { name: /^Drafts/ }));
+    await waitFor(() => expect(url()).toBe('/?status=draft'));
+
+    // And back off again: a default is DELETED rather than written, or one
+    // click on a tab would leave `?status=all&sort=updated` in the address bar
+    // and in every link the writer copied out of it thereafter.
+    await userEvent.click(screen.getByRole('link', { name: /^All/ }));
+    await waitFor(() => expect(url()).toBe('/'));
+  });
+
+  it('pushes a tab change and replaces a search', async () => {
+    await db.postList.put(listRow({ title: 'Alpha' }));
+    drawRouted(['/elsewhere', '/']);
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeTruthy());
+
+    await userEvent.click(screen.getByRole('link', { name: /^Drafts/ }));
+    await waitFor(() => expect(url()).toBe('/?status=draft'));
+
+    // Pushed: Back walks the tab history, which is what a tab strip implies.
+    await userEvent.click(screen.getByTestId('go-back'));
+    await waitFor(() => expect(url()).toBe('/'));
+
+    await userEvent.type(box(), 'alpha');
+    await waitFor(() => expect(url()).toBe('/?q=alpha'));
+
+    /*
+     * Replaced: Back leaves the dashboard entirely rather than unwinding the
+     * word one pause at a time. Five history entries for "alpha" would make the
+     * browser's Back button useless on the one screen a writer lives on.
+     */
+    await userEvent.click(screen.getByTestId('go-back'));
+    await waitFor(() => expect(url()).toBe('/elsewhere'));
+  });
+
+  it('falls back silently when the URL was typed by hand', async () => {
+    await db.postList.put(listRow({ title: 'Alpha', status: 'draft' }));
+    drawRouted(['/?status=publised&sort=chronological']);
+
+    // Neither an error screen nor an empty grid: two typos in somebody's
+    // address bar are not something the app should make a fuss about.
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeTruthy());
+    expect(screen.getByRole('link', { name: /^All/ }).getAttribute('aria-current')).toBe('page');
+    // Left as typed rather than rewritten underneath them — a URL that edits
+    // itself the instant it loads is its own small horror.
+    expect(url()).toBe('/?status=publised&sort=chronological');
+  });
+
+  it('reads the tag chip out of the URL, and clearing it drops the param', async () => {
+    await db.postList.bulkPut([
+      listRow({ id: 'p_tagged', title: 'Alpha', tags: ['ideas'] }),
+      listRow({ id: 'p_plain', title: 'Beta', tags: [] }),
+    ]);
+    drawRouted(['/?tag=ideas']);
+
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeTruthy());
+    expect(screen.queryByText('Beta')).toBeNull();
+
+    await userEvent.click(screen.getByLabelText('Clear tag filter'));
+
+    await waitFor(() => expect(url()).toBe('/'));
+    expect(screen.getByText('Beta')).toBeTruthy();
+  });
+
+  it('puts the tab in the window title and hands it back on the way out', async () => {
+    const before = document.title;
+    await db.postList.put(listRow({ title: 'Alpha', status: 'draft' }));
+    drawRouted(['/?status=draft']);
+
+    // Two dashboards open in two browser tabs are two different URLs now, so
+    // they can stop being two identical entries in the window switcher.
+    await waitFor(() => expect(document.title).toBe(`Drafts · ${brand.name}`));
+
+    // `brand.ts` owns the title everywhere else, so this hands it back rather
+    // than reconstructing that string and drifting from it.
+    cleanup();
+    expect(document.title).toBe(before);
   });
 });

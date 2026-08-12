@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams, Link } from 'react-router-dom';
+import { useLocation, useNavigate, useParams, Link } from 'react-router-dom';
 import { EditorContent, useEditor } from '@tiptap/react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../data/db';
@@ -38,10 +38,74 @@ import '../editor/editor.css';
 const TITLE_MAX = 160;
 const SUBTITLE_MAX = 220;
 
+/**
+ * THE GRIP TAKES THE RIGHT GUTTER; THE `+` KEEPS THE LEFT.
+ *
+ * Both used to hang off the left margin. The `+` is placed `left-start` on
+ * screens ≥720px (`BlockMenu.tsx`'s FloatingMenu options), and `left-start` is
+ * also this package's default — `defaultComputePositionConfig` in
+ * `@tiptap/extension-drag-handle` is `{ placement: 'left-start', strategy:
+ * 'absolute' }`, and passing no config took it. So hovering an EMPTY top-level
+ * paragraph, the one case where both affordances are shown at once, drew them
+ * in the same spot and whichever lost the stacking order could not be clicked.
+ *
+ * They do different jobs, so they get a gutter each: the `+` marks where new
+ * text will be inserted (and matches where `/` puts its palette), the grip
+ * moves a block that already exists. Nothing else lives on the right, and
+ * `.editor__page` is `max-width: var(--measure); margin: 0 auto`, so the right
+ * gutter is exactly as wide as the left one — the grip is no closer to the
+ * prose than it was, only mirrored.
+ *
+ * Below 720px there is no gutter on either side to sit in, which this changes
+ * rather than fixes: the `+` moves above the line at that width, and a narrow
+ * window driven by a mouse now gets the grip crowding the opposite edge instead
+ * of this one. A touch device gets no grip at all — the coarse-pointer rule in
+ * `editor.css` removes it, which is why that width is not worth more than this.
+ *
+ * Hoisted out of the render deliberately. `<DragHandle>` lists
+ * `computePositionConfig` in the dependency array of the effect that calls
+ * `editor.registerPlugin`, and this component re-renders on every keystroke
+ * (`onUpdate` sets the word count), so a fresh object literal in the JSX would
+ * unregister and re-register the drag-handle plugin on each one.
+ *
+ * The keyboard route is untouched: Alt+↑/↓ (`BlockMove` in `extensions.ts`)
+ * remains the only way to move a block without a pointer, which is what makes
+ * moving this control — and hiding it on touch — safe rather than a regression.
+ */
+const DRAG_HANDLE_POSITION = { placement: 'right-start' } as const;
+
 export default function EditorRoute() {
   const { id = '' } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { notify } = useToast();
+
+  /**
+   * BACK TO WHERE THEY CAME FROM, NOT TO `/`.
+   *
+   * The dashboard keeps its five filters in its own URL now
+   * (`/?status=published&q=…`), so `navigate('/')` threw the tab, the search,
+   * the sort and the scroll position away every time a writer closed a post —
+   * the exact complaint this replaces. Going back one entry lands on the
+   * dashboard the writer actually left, filters and all, and `Reader.tsx:90`
+   * has done the same thing all along.
+   *
+   * The fallback is for the entry this editor was opened AS: a pasted or
+   * bookmarked `/#/edit/:id`, where there is nothing of ours behind us and `-1`
+   * would walk the browser out of the app. React Router stamps `'default'` on
+   * the entry the app booted into and only on that one, so it is exactly the
+   * test for "did we arrive here from inside".
+   *
+   * Read ONCE, at mount, rather than on every render: "Save as a new post"
+   * further down `replace`s this route with a different id, and a replace mints
+   * a fresh key without unmounting anything — so reading it live would turn a
+   * pasted `/#/edit/:id` into a `-1` that walks the browser off the app.
+   */
+  const cameFromInside = useRef(location.key !== 'default');
+  const leaveEditor = useCallback(() => {
+    if (cameFromInside.current) navigate(-1);
+    else navigate('/');
+  }, [navigate]);
 
   // Wrapped so we can tell "still loading" (undefined) from "no such post"
   // (result.post === undefined) — useLiveQuery collapses both otherwise.
@@ -377,7 +441,7 @@ export default function EditorRoute() {
               // Don't leave an empty Untitled row behind for a post that was
               // opened and abandoned without a single character typed.
               await discardIfBlank(id);
-              navigate('/');
+              leaveEditor();
             }}
           >
             <svg viewBox="0 0 24 24" className="ic">
@@ -570,9 +634,11 @@ export default function EditorRoute() {
       )}
 
       {/* No docked toolbar. Formatting appears on selection; block insertion
-          appears as a + beside the empty line the caret is on, or by typing /.
-          The grip beside it is the pointer route for reordering; Alt+↑/↓ is the
-          route that works without one, and on blocks a hover never reaches. */}
+          appears as a + in the left gutter beside the empty line the caret is
+          on, or by typing /. The grip in the OPPOSITE gutter is the pointer
+          route for reordering (see DRAG_HANDLE_POSITION for why they are on
+          different sides); Alt+↑/↓ is the route that works without a pointer,
+          and on blocks a hover never reaches. */}
       {editor && (
         <>
           <SelectionMenu editor={editor} />
@@ -580,7 +646,11 @@ export default function EditorRoute() {
           <SlashMenu editor={editor} onInsertImage={insertImage} />
           <CodeLangPicker editor={editor} />
           <FindBar editor={editor} />
-          <DragHandle editor={editor} className="draghandle">
+          <DragHandle
+            editor={editor}
+            className="draghandle"
+            computePositionConfig={DRAG_HANDLE_POSITION}
+          >
             <span className="draghandle__grip" aria-hidden="true">
               <GripVertical className="ui-ic" />
             </span>
@@ -669,7 +739,7 @@ export default function EditorRoute() {
           notify('Moved to trash', {
             action: { label: 'Undo', run: () => void restorePost(id) },
           });
-          navigate('/');
+          leaveEditor();
         }}
       />
     </div>

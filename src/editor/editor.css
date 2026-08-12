@@ -801,12 +801,19 @@
 
 /* ---------------------------------------------------------- drag handle */
 
+/* `margin-left`, not `margin-right`, because the handle sits in the RIGHT
+   gutter now (`DRAG_HANDLE_POSITION` in Editor.tsx sets placement
+   `right-start`). It shared the left gutter with the + until that change, and
+   on an empty paragraph the two drew on top of each other. This margin is the
+   gap between the grip and the prose, so it had to cross the page with the
+   grip: left where it was, the gap opens into empty page and the grip presses
+   against the text it belongs to. */
 .draghandle {
   display: grid;
   place-items: center;
   width: 1.5rem;
   height: 1.6rem;
-  margin-right: var(--s1);
+  margin-left: var(--s1);
   border-radius: var(--radius-s);
   color: var(--ink-4);
   cursor: grab;

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Download,
   HardDrive,
@@ -28,7 +28,8 @@ import {
 } from '../data/backup';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { OfflineBanner, useOnline } from '../components/OfflineBanner';
-import { SignOutButton, useSession } from '../components/RequireAuth';
+import { useSession } from '../components/RequireAuth';
+import { useCategories } from '../data/useCategories';
 import {
   createPost,
   destroyPost,
@@ -74,6 +75,124 @@ const SORTS: { key: SortKey; label: string }[] = [
   { key: 'drafts-first', label: 'Drafts first' },
 ];
 
+// ------------------------------------------------------- the filters, in the URL
+
+/**
+ * ALL FIVE FILTERS LIVE IN THE SEARCH PARAMS, AND THAT IS THE FIX FOR "BACK
+ * FROM THE EDITOR LOSES MY TAB".
+ *
+ * They were five `useState`s. Opening a post unmounts this screen, so every
+ * trip into the editor reset them to `all / '' / updated / null / null` — a
+ * writer who had filtered to Published, searched for a name and sorted oldest
+ * first lost all three by clicking one of the results, and got no hint that
+ * they had.
+ *
+ * Nothing about the filtering itself moves: `filterAndSort`, the counts and the
+ * category options below are the code they always were. Only the place the five
+ * values are READ FROM changes, from component state to `?status=…&q=…`.
+ *
+ * `q` rather than `search` for the query, because this is a URL a writer may
+ * end up pasting into a message and the short spelling is the conventional one.
+ */
+interface Filters {
+  status: StatusFilter;
+  search: string;
+  sort: SortKey;
+  category: string | null;
+  tag: string | null;
+}
+
+const PARAM: Record<keyof Filters, string> = {
+  status: 'status',
+  search: 'q',
+  sort: 'sort',
+  category: 'category',
+  tag: 'tag',
+};
+
+/**
+ * What each filter means when its param is absent — and therefore the one value
+ * that must never be WRITTEN. `/?status=all&sort=updated` and `/` are the same
+ * screen, and the first is the one nobody wants in their address bar, in their
+ * history or in a link they send someone. So `writeFilters` deletes a default
+ * rather than setting it, and `/` stays clean.
+ */
+const DEFAULTS: Filters = {
+  status: 'all',
+  search: '',
+  sort: 'updated',
+  category: null,
+  tag: null,
+};
+
+const TAB_KEYS = TABS.map((t) => t.key);
+const SORT_KEYS = SORTS.map((s) => s.key);
+
+/**
+ * INVALID VALUES FALL BACK SILENTLY, on purpose. The only way to get
+ * `?status=publised` into the bar is to type it or to follow a link somebody
+ * typed, and answering that with an error screen would be the app making a
+ * fuss about its own URL. The grid shows All, and the next click writes
+ * something legal over it.
+ */
+function readFilters(params: URLSearchParams): Filters {
+  const oneOf = <T extends string>(name: string, legal: T[], fallback: T): T => {
+    const raw = params.get(name);
+    return legal.includes(raw as T) ? (raw as T) : fallback;
+  };
+  return {
+    status: oneOf(PARAM.status, TAB_KEYS, DEFAULTS.status),
+    search: params.get(PARAM.search) ?? '',
+    sort: oneOf(PARAM.sort, SORT_KEYS, DEFAULTS.sort),
+    /*
+     * `''` IS NOT A CATEGORY. `posts.category = ''` is what uncategorised means
+     * on the server, this control has no way to ask for it, and `filterAndSort`
+     * reads a falsy category as "no category filter" — so `?category=` is no
+     * filter at all rather than a filter that matches nothing.
+     */
+    category: params.get(PARAM.category) || null,
+    tag: params.get(PARAM.tag) || null,
+  };
+}
+
+/** The same params with `patch` applied, defaults dropped rather than written. */
+function writeFilters(base: URLSearchParams, patch: Partial<Filters>): URLSearchParams {
+  const next = new URLSearchParams(base);
+  for (const key of Object.keys(patch) as (keyof Filters)[]) {
+    const value = patch[key];
+    if (value == null || value === '' || value === DEFAULTS[key]) next.delete(PARAM[key]);
+    else next.set(PARAM[key], value);
+  }
+  return next;
+}
+
+/** `?a=b`, or `''` when nothing is set — the shape `<Link to={{ search }}>` wants. */
+function asSearch(params: URLSearchParams): string {
+  const qs = params.toString();
+  return qs === '' ? '' : `?${qs}`;
+}
+
+// ------------------------------------------------------------------ scroll
+
+/**
+ * SCROLL POSITION, KEPT LOCALLY AND DELIBERATELY SO.
+ *
+ * The data router ships `<ScrollRestoration>` and it is the stock answer, but it
+ * mounts inside the router in `src/main.tsx`, which another workstream owns this
+ * run — so the same job is done here, for this one screen. If `main.tsx` ever
+ * grows a `<ScrollRestoration>`, delete this map and the two effects that use
+ * it; two mechanisms fighting over the same scroll offset is worse than
+ * neither.
+ *
+ * Keyed by `location.key` rather than by the URL: two visits to
+ * `/?status=draft` are two entries in the history stack, and the offset a
+ * writer left on the second is not the offset they left on the first. The map
+ * is module-scoped so it outlives the unmount that opening a post causes, and
+ * capped so a long session cannot grow it without bound.
+ */
+const SCROLL_BY_ENTRY = new Map<string, number>();
+const SCROLL_ENTRIES_KEPT = 30;
+
 /**
  * Radix throws outright on a Select item with `value=""`, so "no category
  * filter" needs a sentinel rather than the empty string. Both directions of the
@@ -113,6 +232,12 @@ const SEARCH_MAX_PAGES = 200;
  * below the point a typist notices and above the gap between characters, and
  * the effect's cleanup cancels the timer, so an abandoned prefix never reaches
  * the network at all.
+ *
+ * The timer now guards the URL rather than the fetch — the box types into local
+ * state and this is how long it waits before writing `?q=`, after which the
+ * search fires off the param. Same 250 ms, one fewer place for the two to
+ * disagree, and an abandoned prefix reaches neither the network nor the address
+ * bar.
  */
 const SEARCH_DEBOUNCE_MS = 250;
 
@@ -248,11 +373,71 @@ export default function Dashboard() {
     };
   }, [userId]);
 
-  const [status, setStatus] = useState<StatusFilter>('all');
-  const [search, setSearch] = useState('');
-  const [sort, setSort] = useState<SortKey>('updated');
-  const [category, setCategory] = useState<string | null>(null);
-  const [tag, setTag] = useState<string | null>(null);
+  const [params, setParams] = useSearchParams();
+  const { status, search, sort, category, tag } = readFilters(params);
+
+  /**
+   * Every filter write that is not a tab, and every one of them REPLACES.
+   *
+   * A writer who narrows by category and then by tag wants Back to leave the
+   * dashboard, not to unwind four filter changes one click at a time — and the
+   * search box would otherwise put one history entry in per pause. Tabs are the
+   * exception, and they are `<Link>`s below precisely so they push.
+   */
+  const setFilters = useCallback(
+    (patch: Partial<Filters>) => {
+      setParams((prev) => writeFilters(prev, patch), { replace: true });
+    },
+    [setParams],
+  );
+
+  /**
+   * The box types into local state; a timer copies it into `?q=`.
+   *
+   * Both halves are load-bearing. Writing the param on every keystroke would
+   * re-render the grid five times for the word "hello" and leave five entries
+   * behind under any router that did not replace; holding the query only in
+   * state is the bug this whole change exists to undo. So the param is the
+   * truth and `draft` is the 250 ms of typing that has not reached it yet.
+   */
+  const [draft, setDraft] = useState(search);
+  /**
+   * The last value this box itself put in the URL. Without it the adopting
+   * effect below cannot tell "`?q=` moved under us — Back, or a hand-edited
+   * address" from "our own timer just fired", and adopting our own write would
+   * clobber whatever was typed during the 250 ms it was in flight.
+   */
+  const pushedSearch = useRef(search);
+
+  useEffect(() => {
+    if (search === pushedSearch.current) return;
+    pushedSearch.current = search;
+    setDraft(search);
+  }, [search]);
+
+  useEffect(() => {
+    if (draft === pushedSearch.current) return;
+    const timer = window.setTimeout(() => {
+      pushedSearch.current = draft;
+      setFilters({ search: draft });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [draft, setFilters]);
+
+  /** Typing waits for the timer. A button that empties the box does not. */
+  const clearSearch = useCallback(() => {
+    pushedSearch.current = '';
+    setDraft('');
+    setFilters({ search: '' });
+  }, [setFilters]);
+
+  /** Search, category and tag dropped in ONE navigation rather than three. */
+  const clearFilters = useCallback(() => {
+    pushedSearch.current = '';
+    setDraft('');
+    setFilters({ search: '', category: null, tag: null });
+  }, [setFilters]);
+
   const [confirm, setConfirm] = useState<
     | { kind: 'destroy'; post: ListPost }
     | { kind: 'empty-trash'; count: number }
@@ -267,6 +452,12 @@ export default function Dashboard() {
   const [searchIds, setSearchIds] = useState<Set<string> | null>(null);
   const [searchState, setSearchState] = useState<'idle' | 'running' | 'failed'>('idle');
 
+  /*
+   * NO TIMER HERE ANY MORE — the debounce moved up to the box, which now writes
+   * `?q=` on the pause rather than on the keystroke. A second 250 ms wait on
+   * this side would have made every search half a second late for no gain, and
+   * would have been a second place for the two intervals to drift apart.
+   */
   useEffect(() => {
     const query = search.trim();
     if (!query || !userId) {
@@ -276,30 +467,27 @@ export default function Dashboard() {
     }
     let alive = true;
     setSearchState('running');
-    const timer = window.setTimeout(() => {
-      void (async () => {
-        try {
-          const ids = await searchServer(userId, query);
-          if (!alive) return;
-          setSearchIds(ids);
-          setSearchState('idle');
-        } catch {
-          if (!alive) return;
-          /*
-           * An empty set AND a `failed` flag. The set is what stops stale
-           * results from a previous query being shown as if they answered this
-           * one; the flag is what stops the grid saying "nothing matches",
-           * which would be a claim about the library rather than about the
-           * connection.
-           */
-          setSearchIds(new Set());
-          setSearchState('failed');
-        }
-      })();
-    }, SEARCH_DEBOUNCE_MS);
+    void (async () => {
+      try {
+        const ids = await searchServer(userId, query);
+        if (!alive) return;
+        setSearchIds(ids);
+        setSearchState('idle');
+      } catch {
+        if (!alive) return;
+        /*
+         * An empty set AND a `failed` flag. The set is what stops stale
+         * results from a previous query being shown as if they answered this
+         * one; the flag is what stops the grid saying "nothing matches",
+         * which would be a claim about the library rather than about the
+         * connection.
+         */
+        setSearchIds(new Set());
+        setSearchState('failed');
+      }
+    })();
     return () => {
       alive = false;
-      window.clearTimeout(timer);
     };
   }, [search, userId]);
 
@@ -352,25 +540,38 @@ export default function Dashboard() {
   }, [scoped, category, tag]);
 
   /*
-   * Deliberately from `all` rather than from `scoped`. The dropdown lists which
-   * categories EXIST; its numbers say how many posts each would return under
-   * the current query. That is what it did before search moved to the server,
-   * and scoping the list too would make categories vanish and reappear as a
-   * writer types, which reads as the control breaking.
+   * FROM THE BLOG, NOT FROM THIS DEVICE'S CACHE (HANDOFF §4 C3).
+   *
+   * This was `[...new Set(all.map(p => p.category))]` — the categories on the
+   * rows this browser happened to be holding — which meant the filter offered a
+   * different set of categories on a machine that had synced a different slice
+   * of the library, and could not offer one at all until something had been
+   * cached. `GET /api/categories` answers with the managed list UNIONed with
+   * every value actually in use, drafts included, so the list is the same on
+   * every device and the same one the editor's Details panel picks from.
+   *
+   * `useCategories` keeps the old derivation as its fallback for the case where
+   * that route does not answer, so an offline boot still gets its filter.
+   *
+   * Deliberately NOT scoped by the search, then or now. The dropdown lists
+   * which categories EXIST; its numbers say how many posts each would return
+   * under the current query. Scoping the list too would make categories vanish
+   * and reappear as a writer types, which reads as the control breaking.
    */
-  const categories = useMemo(
-    () =>
-      [...new Set(all.filter((p) => p.deletedAt == null).map((p) => p.category))]
-        .filter(Boolean)
-        .sort(),
-    [all],
-  );
+  const { names: categories } = useCategories(userId);
 
   // Each option carries the number of posts it would actually return, scoped by
   // every filter except the category itself — a count that moved as soon as you
   // picked a category would be answering a different question. "All categories"
   // is the same query with the category dropped, so its number is exactly what
   // the grid shows when it is chosen.
+  //
+  // COUNTED HERE RATHER THAN TAKEN FROM `CategorySummary.count`, even though
+  // the route now sends one. The server's number is the whole blog; this one is
+  // what this grid would show under the tag, the status and the search that are
+  // active right now, and those are different questions. A managed category
+  // with nothing under the current filters therefore reads `(0)`, which is the
+  // true answer to the question the dropdown is asking.
   const categoryOptions = useMemo(() => {
     const withoutCategory = filterAndSort(scoped, {
       status,
@@ -384,6 +585,10 @@ export default function Dashboard() {
     // editor, and `categories` drops it while the filter is still applied.
     // Radix then renders a trigger with no matching item: a blank control above
     // an empty grid, which reads as broken rather than as "0 results".
+    //
+    // Moving the list to the server made this arm MORE load-bearing, not less:
+    // `?category=…` can now be a value typed into the address bar, or one the
+    // route has simply not answered with yet, and both land here.
     const listed =
       category && !categories.includes(category)
         ? [...categories, category].sort()
@@ -430,7 +635,13 @@ export default function Dashboard() {
     }
   }
 
-  const filtersActive = search.trim() !== '' || category !== null || tag !== null;
+  /*
+   * `draft`, not `search`: what a writer has typed counts as an active filter
+   * from the keystroke, not from 250 ms later. Reading the param here would
+   * leave the empty state offering "start something new" for a quarter of a
+   * second after someone typed a query, which reads as the box being ignored.
+   */
+  const filtersActive = draft.trim() !== '' || category !== null || tag !== null;
   /** The store answered AND the first list walk finished. Both, or skeletons. */
   const loading = posts === undefined || !listSynced;
   const showSkeletons = useDelayed(loading, 220);
@@ -446,6 +657,60 @@ export default function Dashboard() {
     const t = window.setTimeout(() => setStalled(true), 5000);
     return () => window.clearTimeout(t);
   }, [loading]);
+
+  /**
+   * THE TAB IN THE WINDOW TITLE.
+   *
+   * Two dashboards open — Drafts in one browser tab, Published in another — are
+   * now two different URLs, so they can be two different titles instead of two
+   * identical ones. `syncDocumentBrand` owns the title everywhere else and its
+   * exact wording lives in `brand.ts`; the All tab therefore sets nothing at all
+   * and the cleanup restores whatever was there, rather than this file
+   * reconstructing that string and drifting from it.
+   */
+  useEffect(() => {
+    if (status === 'all') return;
+    const previous = document.title;
+    document.title = `${TABS.find((t) => t.key === status)?.label ?? ''} · ${brand.name}`;
+    return () => {
+      document.title = previous;
+    };
+  }, [status]);
+
+  /** The history entry this screen's scroll offset is filed under. */
+  const entryKey = useLocation().key;
+  const restoredEntry = useRef<string | null>(null);
+
+  /*
+   * Restore only once the grid exists. `window.scrollTo` against a document
+   * that is still three skeletons tall does nothing at all, and the cache
+   * normally answers a frame or two after mount — so this waits for `loading`
+   * to clear and then fires once per history entry, which is what the ref
+   * guards.
+   */
+  useEffect(() => {
+    if (loading || restoredEntry.current === entryKey) return;
+    restoredEntry.current = entryKey;
+    const saved = SCROLL_BY_ENTRY.get(entryKey);
+    if (saved) window.scrollTo(0, saved);
+  }, [loading, entryKey]);
+
+  useEffect(() => {
+    const save = () => {
+      // Delete-then-set so the key moves to the end of the insertion order,
+      // which is what makes dropping the FIRST key drop the least recently
+      // used entry rather than an arbitrary one.
+      SCROLL_BY_ENTRY.delete(entryKey);
+      SCROLL_BY_ENTRY.set(entryKey, window.scrollY);
+      while (SCROLL_BY_ENTRY.size > SCROLL_ENTRIES_KEPT) {
+        const oldest = SCROLL_BY_ENTRY.keys().next().value;
+        if (oldest === undefined) break;
+        SCROLL_BY_ENTRY.delete(oldest);
+      }
+    };
+    window.addEventListener('scroll', save, { passive: true });
+    return () => window.removeEventListener('scroll', save);
+  }, [entryKey]);
 
   return (
     <div className="dash">
@@ -571,17 +836,17 @@ export default function Dashboard() {
               <MenuItem icon={<SettingsIcon className="ui-ic" />} onSelect={() => navigate('/settings')}>
                 Settings
               </MenuItem>
-              <MenuSeparator />
               {/*
-                THE ONLY WAY OUT OF THE APP. `SignOutButton` existed only inside
-                the re-auth prompt, which a signed-in writer never sees — so
-                until now the app had no sign-out at all, which on a shared
-                machine is the whole of its access control. The component is
-                reused rather than reimplemented because it owns the
-                unsent-work confirmation: `session.logout()` refuses to proceed
-                without `confirmed`, and this is the button that asks.
+                SIGN OUT USED TO BE HERE AND HAS MOVED TO THE SIDEBAR FOOTER,
+                next to the identity it signs out. It was in this menu because
+                for a while this menu was the only chrome the app had; now that
+                there is a shell, a control that appears on one route and
+                nowhere else is a control a writer cannot find from the editor
+                or from Settings. Two copies would be worse than either: the
+                unsent-work confirmation lives in `SignOutButton`, and two
+                buttons asking that question are two chances to answer it
+                wrongly. `Sidebar.tsx` renders the one that remains.
               */}
-              <SignOutButton className="ui-menu__item ui-menu__item--danger" label="Sign out" />
             </MenuContent>
           </Menu>
           <button
@@ -740,17 +1005,38 @@ export default function Dashboard() {
       )}
 
       <div className="dash__controls">
+        {/*
+          LINKS, NOT BUTTONS, AND THE ONLY FILTER THAT PUSHES.
+
+          A row of things that look like tabs promises middle-click and
+          ⌘-click — a button delivers neither, and "open Drafts in a new tab"
+          is a reasonable thing to want from a library screen. Pushing rather
+          than replacing is the other half: switching tab is a navigation, so
+          Back should walk Published → Drafts, while narrowing by category or
+          typing in the box should not put anything in the history stack at
+          all (see `setFilters`).
+
+          `pathname: '/'` rather than a bare `search`, because `*` also renders
+          this screen: a tab clicked from a mistyped path should land on the
+          dashboard's own URL rather than pinning the filters to the typo.
+
+          The inline `textDecoration` belongs in `.tabs__tab` in
+          `dashboard.css`, which another workstream owns this run — `base.css`
+          resets an anchor's colour but not its underline, so without this the
+          active tab is underlined white-on-black.
+        */}
         <nav className="tabs" aria-label="Filter by status">
           {TABS.map((t) => (
-            <button
+            <Link
               key={t.key}
               className={`tabs__tab${status === t.key ? ' is-active' : ''}`}
-              onClick={() => setStatus(t.key)}
-              aria-current={status === t.key}
+              style={{ textDecoration: 'none' }}
+              to={{ pathname: '/', search: asSearch(writeFilters(params, { status: t.key })) }}
+              aria-current={status === t.key ? 'page' : undefined}
             >
               {t.label}
               <span className="tabs__count">{counts[t.key] ?? 0}</span>
-            </button>
+            </Link>
           ))}
         </nav>
 
@@ -760,18 +1046,18 @@ export default function Dashboard() {
             <input
               className="searchbox__input"
               type="search"
-              value={search}
+              value={draft}
               /* The placeholder is where the change gets stated. Search is a
                  `tsvector` match now, so "whole words" is the one-line version
                  of the two regressions the empty state spells out. */
               placeholder="Search whole words in titles, tags and text…"
               aria-label="Search posts"
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => setDraft(e.target.value)}
             />
-            {search && (
+            {draft && (
               <button
                 className="searchbox__clear"
-                onClick={() => setSearch('')}
+                onClick={clearSearch}
                 aria-label="Clear search"
               >
                 <X className="ui-ic" aria-hidden="true" />
@@ -787,7 +1073,7 @@ export default function Dashboard() {
             <Select<string>
               label="Filter by category"
               value={toSelectValue(category)}
-              onChange={(v) => setCategory(fromSelectValue(v))}
+              onChange={(v) => setFilters({ category: fromSelectValue(v) })}
               options={categoryOptions}
             />
           )}
@@ -795,16 +1081,18 @@ export default function Dashboard() {
           <Select<SortKey>
             label="Sort posts"
             value={sort}
-            onChange={setSort}
+            onChange={(v) => setFilters({ sort: v })}
             options={SORTS.map((s) => ({ value: s.key, label: s.label }))}
           />
         </div>
       </div>
 
+      {/* Reads `?tag=`, and clearing it drops the param — so the chip and the
+          URL can never disagree about what the grid is showing. */}
       {tag && (
         <div className="dash__activefilter">
           Tagged <strong>{tag}</strong>
-          <button onClick={() => setTag(null)} aria-label="Clear tag filter">
+          <button onClick={() => setFilters({ tag: null })} aria-label="Clear tag filter">
             ×
           </button>
         </div>
@@ -849,16 +1137,12 @@ export default function Dashboard() {
           <EmptyState
             status={status}
             filtersActive={filtersActive}
-            searching={search.trim() !== ''}
+            searching={draft.trim() !== ''}
             searchState={searchState}
             localOnly={localOnly}
             canWrite={online}
             onNew={newPost}
-            onClear={() => {
-              setSearch('');
-              setCategory(null);
-              setTag(null);
-            }}
+            onClear={clearFilters}
           />
         ) : (
           visible.map((p, i) => (
@@ -868,7 +1152,7 @@ export default function Dashboard() {
               key={`${status}:${sort}:${p.id}`}
               index={i}
               post={p}
-              onTag={setTag}
+              onTag={(t) => setFilters({ tag: t })}
               // `DELETE /api/posts/:id` is owner-only, so for a writer this
               // button is a confirmation dialog in front of a 403.
               canDestroy={isOwner}

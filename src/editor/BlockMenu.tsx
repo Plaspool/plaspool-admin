@@ -331,6 +331,14 @@ export function BlockMenu({
 
   // Wide screens have a left gutter to hang the + in. Narrow ones don't, so
   // it sits above the line instead of off-canvas.
+  //
+  // LEFT is load-bearing rather than incidental. The drag handle defaulted to
+  // the same `left-start` and the two drew in the same spot on an empty
+  // paragraph, which is the only state that shows both. The handle took the
+  // right gutter (`DRAG_HANDLE_POSITION` in Editor.tsx) and the + kept this
+  // side, because it marks where the new block will land and that is also
+  // where `/` opens its palette. Placing this on the right brings the overlap
+  // back, in the other gutter.
   const [narrow, setNarrow] = useState(
     () => typeof window !== 'undefined' && window.innerWidth < 720,
   );
