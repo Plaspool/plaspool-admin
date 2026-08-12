@@ -87,6 +87,10 @@ export default defineConfig({
           name: 'server',
           include: [
             'server/**/*.{test,spec}.{ts,tsx}',
+            // `scripts/` holds the owner bootstrap, which mints a password hash
+            // the login route has to accept. Without this line its test file is
+            // collected by nothing and passes by not running.
+            'scripts/**/*.{test,spec}.{ts,tsx}',
             'api/**/*.{test,spec}.{ts,tsx}',
             '*.{test,spec}.{ts,tsx}',
           ],
