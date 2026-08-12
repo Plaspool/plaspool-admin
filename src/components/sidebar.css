@@ -1,0 +1,332 @@
+/* ---------------------------------------------------------------
+   The shell: a fixed icon rail and the column the routes live in.
+
+   Metrics are declared here, on .shell, rather than in tokens.css.
+   Nothing outside this file has an opinion about how wide the rail
+   is, and tokens.css carries values three theme scopes have to keep
+   in agreement — a layout number copied into all three would be
+   three chances for them to drift with no theme reason to exist.
+----------------------------------------------------------------- */
+
+.shell {
+  --rail-w: 3.5rem; /* 56 */
+  --rail-w-open: 15rem;
+}
+
+.shell__main {
+  margin-left: var(--rail-w);
+  transition: margin-left var(--dur-2) var(--ease);
+}
+
+/* PINNING IS THE ONLY THING THAT MOVES THE CONTENT. Peeking overlays instead,
+   because reflowing a grid of post cards every time a pointer crosses the left
+   edge of the window is how a hover affordance becomes a hazard. `:has()`
+   rather than a class on .shell so the pinned state has exactly one owner —
+   the settings object the sidebar reads — instead of two that can disagree. */
+.shell:has(.sidebar[data-pinned='true']) .shell__main {
+  margin-left: var(--rail-w-open);
+}
+
+/* ---------------------------------------------------------------- the rail */
+
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 50;
+  width: var(--rail-w);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s3) var(--s2);
+  background: var(--paper-raised);
+  border-right: 1px solid var(--rule);
+  overflow: hidden;
+  transition:
+    width var(--dur-2) var(--ease),
+    transform var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease),
+    /* Visibility is a step, not a ramp, so transitioning it holds `visible`
+       for the length of the slide instead of blanking the drawer and then
+       animating an empty box off screen. */ visibility var(--dur-2);
+}
+/* The rail is a container, not a control. Focusing it to open the drawer must
+   not draw the focus ring a real widget earns. */
+.sidebar:focus {
+  outline: none;
+}
+
+/* Pinned: held open, and part of the layout. It casts no shadow because
+   `.shell__main` has moved out from under it — there is nothing there to cast
+   one onto. */
+.sidebar[data-expanded='true'] {
+  width: var(--rail-w-open);
+}
+
+/* THE PEEK LIVES HERE AND NOT IN REACT. A `hovered` flag in state would swap
+   the tooltip wrapper off every item the moment the pointer crossed the panel
+   edge, which unmounts and rebuilds the link the pointer is heading for. CSS
+   does the same job and touches nothing — see the header of Sidebar.tsx.
+
+   Gated on a real hover-capable pointer: on a touchscreen `:hover` latches
+   after a tap and the rail would simply stay open, having been asked nothing. */
+@media (hover: hover) and (pointer: fine) {
+  .sidebar[data-mode='rail']:hover {
+    width: var(--rail-w-open);
+    box-shadow: var(--shadow-2);
+  }
+  .sidebar[data-mode='rail']:hover .sidebar__label {
+    opacity: 1;
+  }
+}
+
+/* The keyboard's equivalent of the same peek, outside the hover query on
+   purpose: tabbing into the rail has to show the words on a touchscreen too,
+   and there is no pointer involved to gate it on. */
+.sidebar[data-mode='rail']:focus-within {
+  width: var(--rail-w-open);
+  box-shadow: var(--shadow-2);
+}
+.sidebar[data-mode='rail']:focus-within .sidebar__label {
+  opacity: 1;
+}
+.sidebar[data-mode='rail'][data-pinned='true'] {
+  box-shadow: none;
+}
+
+.sidebar__head {
+  display: flex;
+  min-height: var(--ctl-h-lg);
+}
+
+.sidebar__nav {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.sidebar__nav::-webkit-scrollbar {
+  display: none;
+}
+
+.sidebar__list {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+.sidebar__list--foot {
+  margin-top: auto;
+  padding-top: var(--s3);
+}
+
+/* ------------------------------------------------------------------- items */
+
+/* One box for links, the pin toggle and sign-out, so the rail is a single
+   column of identically placed glyphs rather than three that nearly line up.
+   var(--s3) + 1rem icon + var(--s3) = 2.5rem, which is exactly the rail's
+   width less its own padding. */
+.sidebar__item,
+.sidebar__toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  height: var(--ctl-h-lg);
+  padding: 0 var(--s3);
+  border: 0;
+  border-radius: var(--radius-m);
+  background: none;
+  color: var(--ink-3);
+  font-family: inherit;
+  font-size: var(--step--1);
+  font-weight: 500;
+  text-decoration: none;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.sidebar__item:hover,
+.sidebar__toggle:hover {
+  background: var(--paper-sunken);
+  color: var(--ink);
+}
+.sidebar__icon,
+.sidebar__toggle .ui-ic {
+  flex: none;
+}
+
+/* The accent marks what is live everywhere else in this app — a published
+   post's spine, a checked menu row — so it marks where you are here too.
+   Measured on both themes: --accent-hover on --accent-soft is 7.2:1 light and
+   7.5:1 dark, well past AA for the 13px this text is set at. */
+.sidebar__item.is-active {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  font-weight: 600;
+}
+
+/* Sign-out is the one destructive thing in the rail and reads as one only on
+   approach — a permanently red item in a navigation column is an alarm nobody
+   can turn off. */
+.sidebar__foot .sidebar__item--signout:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* CLIPPED, NEVER REMOVED. `display: none` and `visibility: hidden` both take
+   the word out of the accessibility tree, which would leave every item in the
+   collapsed rail with no accessible name — the exact failure the tooltips are
+   there to paper over for sighted users only. */
+.sidebar__label {
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease);
+}
+.sidebar[data-expanded='true'] .sidebar__label {
+  opacity: 1;
+}
+
+/* ---------------------------------------------------------------- identity */
+
+.sidebar__foot {
+  display: grid;
+  gap: 2px;
+  padding-top: var(--s3);
+  border-top: 1px solid var(--rule);
+}
+
+/* The avatar is 1.5rem inside 0.5rem of padding, which is 2.5rem — the same
+   inner column the 1rem icons are centred in, so the identity sits on the
+   rail's one vertical axis instead of half a step off it. */
+.sidebar__id {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 2.75rem;
+  padding: 0 var(--s2);
+  min-width: 0;
+}
+
+/* Initials, not an avatar image. The rail has to paint on an offline boot from
+   cache, and a remote portrait would be a hole in the one piece of chrome that
+   must always render. */
+.sidebar__avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: var(--radius-full);
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  font-size: var(--step--2);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.sidebar__idtext {
+  display: grid;
+  min-width: 0;
+  line-height: 1.35;
+}
+.sidebar__name,
+.sidebar__email {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar__name {
+  font-size: var(--step--1);
+  font-weight: 500;
+  color: var(--ink-2);
+}
+.sidebar__email {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+}
+
+/* -------------------------------------------------------------- the drawer */
+
+.sidebar[data-mode='drawer'] {
+  width: var(--rail-w-open);
+  transform: translateX(-100%);
+  visibility: hidden;
+  box-shadow: var(--shadow-3);
+}
+.sidebar[data-mode='drawer'][data-open='true'] {
+  transform: none;
+  visibility: visible;
+}
+
+.shell__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 49;
+  background: color-mix(in srgb, var(--ink) 46%, transparent);
+  animation: shell-scrim-in var(--dur-2) var(--ease);
+}
+@keyframes shell-scrim-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* The handle. Below the scrim on purpose: when the drawer is open the handle
+   has nothing left to offer, but it stays mounted so closing can put focus
+   back on the control the drawer was opened from. */
+.shell__pull {
+  position: fixed;
+  left: 0;
+  top: 50%;
+  translate: 0 -50%;
+  z-index: 48;
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 3.5rem;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-left: 0;
+  border-radius: 0 var(--radius-m) var(--radius-m) 0;
+  background: var(--paper-raised);
+  color: var(--ink-3);
+  box-shadow: var(--shadow-2);
+  cursor: pointer;
+}
+.shell__pull:hover {
+  color: var(--ink);
+}
+/* A 24px-wide tab is the right visual weight and the wrong hit area. The
+   invisible half reaches the 44px minimum without widening what is drawn over
+   the content. */
+.shell__pull::after {
+  content: '';
+  position: absolute;
+  inset: 50% auto auto 0;
+  translate: 0 -50%;
+  width: var(--tap-min);
+  height: var(--tap-min);
+}
+
+@media (max-width: 719px) {
+  /* 56px out of 375 is 15% of the screen given to navigation nobody asked
+     for, so under this width the rail leaves entirely and the drawer is the
+     only shape. */
+  .shell__main,
+  .shell:has(.sidebar[data-pinned='true']) .shell__main {
+    margin-left: 0;
+  }
+}
+
+/* Belt and braces against a stale media-query listener: above the breakpoint
+   the drawer's two accessories can never be correct, whatever React thinks. */
+@media (min-width: 720px) {
+  .shell__pull,
+  .shell__scrim {
+    display: none;
+  }
+}

@@ -1,0 +1,705 @@
+/* ---------------------------------------------------------------
+   The shop's four screens share one frame: masthead, section tabs,
+   body. The frame is here so a screen can be rewritten without
+   taking the shop's shape with it.
+
+   WHAT IS BORROWED AND WHAT IS NOT.
+
+   Borrowed from `base.css`, which `main.tsx` loads before anything
+   renders: `.btn`, `.input`, `.label`, `.chip`, `.notice`,
+   `.skeleton`. Borrowed from `dashboard.css`: `.empty`, which is
+   already what an empty library, a missing post and a failed search
+   all look like, and growing a second empty-state vocabulary for the
+   shop would be a second thing to keep in sync.
+
+   NOT borrowed: `.hint` and `.tagfield`, which live in
+   `editor.css`. They are in the bundle today only because
+   `main.tsx` imports the editor route statically — a build change
+   away from not being. A shop screen that silently loses its field
+   hints because somebody lazy-loaded the editor is not a trade
+   worth thirty lines, so the shop declares its own.
+
+   Money is `font-variant-numeric: tabular-nums` EVERYWHERE it
+   appears. A column of prices in proportional figures does not line
+   up at the decimal point, and a column of prices that does not
+   line up is one an operator has to read digit by digit.
+----------------------------------------------------------------- */
+
+.shopscr {
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  padding: var(--s7) var(--s5) var(--s9);
+}
+
+.shopscr__head {
+  padding-bottom: var(--s5);
+  border-bottom: 1px solid var(--rule);
+}
+/* Title left, primary action right, and both wrap onto their own line before
+   either is allowed to push the other off a 375px screen. */
+.shopscr__headrow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s4);
+  flex-wrap: wrap;
+}
+.shopscr__title {
+  font-family: var(--font-display);
+  font-size: var(--step-4);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: var(--ink);
+}
+.shopscr__lede {
+  margin-top: var(--s2);
+  max-width: 52ch;
+  font-size: var(--step--1);
+  line-height: 1.6;
+  color: var(--ink-4);
+}
+
+/* Same metrics as the dashboard's tab strip, including the scroll-snap: a
+   section row that silently cuts a tab off at 375px is a section nobody
+   knows exists. */
+.shopscr__nav {
+  display: flex;
+  gap: var(--s1);
+  margin-top: var(--s5);
+  overflow-x: auto;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+}
+.shopscr__nav::-webkit-scrollbar {
+  display: none;
+}
+.shopscr__tab {
+  display: inline-flex;
+  align-items: center;
+  height: var(--ctl-h-lg);
+  padding: 0 var(--ctl-pad-x);
+  border-radius: var(--radius-m);
+  scroll-snap-align: start;
+  color: var(--ink-3);
+  font-size: var(--step--1);
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.shopscr__tab:hover {
+  background: var(--paper-sunken);
+  color: var(--ink);
+}
+.shopscr__tab[aria-current='page'] {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.shopscr__body {
+  margin-top: var(--s6);
+}
+
+/* --------------------------------------------------------------- money */
+
+.num {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------- filters */
+
+.shopfilters {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  margin-top: var(--s5);
+}
+/* A category name is author-written and unbounded, and this row still has to
+   fit 375px — cap the trigger and let the label ellipsise inside it, exactly
+   as `.dash__tools` does for the same control. */
+.shopfilters .ui-select {
+  max-width: min(14rem, 100%);
+}
+.shopfilters .ui-select > :first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shopfilters .searchbox {
+  min-width: 14rem;
+  flex: 1;
+}
+
+/* Status tabs above a list. Same shape as `.tabs` on the dashboard, declared
+   here because that one lives in `dashboard.css` and carries the grid's
+   count semantics with it. */
+.shoptabs {
+  display: flex;
+  gap: var(--s1);
+  margin-top: var(--s5);
+  overflow-x: auto;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+}
+.shoptabs::-webkit-scrollbar {
+  display: none;
+}
+.shoptabs__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  height: var(--ctl-h);
+  padding: 0 var(--ctl-pad-x);
+  border-radius: var(--radius-m);
+  scroll-snap-align: start;
+  color: var(--ink-3);
+  font-size: var(--step--1);
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.shoptabs__tab:hover {
+  background: var(--paper-sunken);
+  color: var(--ink);
+}
+.shoptabs__tab.is-active {
+  background: var(--ink);
+  color: var(--paper);
+}
+/* NO COUNT BADGE, unlike the dashboard's tabs. The order list is keyset-paged
+   on the server and there is no per-status aggregate on the list route, so a
+   number here could only ever count the rows this page happens to hold — and a
+   tab reading "Paid 50" over a shop with four hundred paid orders is worse than
+   a tab reading "Paid". */
+
+/* --------------------------------------------------------------- tiles */
+
+/* `auto-fit` rather than a fixed count: four tiles at 1280px, two at tablet,
+   one at 375px, with no breakpoint arithmetic to get wrong. */
+.stattiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: var(--s4);
+}
+.stat {
+  display: grid;
+  gap: var(--s1);
+  align-content: start;
+  padding: var(--s4);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-l);
+  background: var(--paper-raised);
+}
+.stat__label {
+  font-size: var(--step--2);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.stat__value {
+  font-family: var(--font-display);
+  font-size: var(--step-3);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.stat__note {
+  font-size: var(--step--1);
+  color: var(--ink-4);
+  line-height: 1.5;
+}
+/* The one tile that should catch an eye across the room. */
+.stat--alert {
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+  background: var(--warn-soft);
+}
+.stat--alert .stat__value {
+  color: var(--warn);
+}
+
+/* -------------------------------------------------------------- panels */
+
+.panel {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-l);
+  background: var(--paper-raised);
+  overflow: hidden;
+}
+.panel + .panel,
+.stattiles + .panel,
+.panel + .shopgrid {
+  margin-top: var(--s5);
+}
+.panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--rule);
+  flex-wrap: wrap;
+}
+.panel__title {
+  font-size: var(--step--1);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.panel__body {
+  padding: var(--s4);
+}
+.panel__body--flush {
+  padding: 0;
+}
+.panel__note {
+  font-size: var(--step--1);
+  color: var(--ink-4);
+  line-height: 1.55;
+}
+
+/* --------------------------------------------------------------- table */
+
+/* The scroller, not the table, owns the overflow — a table that widens the
+   PAGE makes every other screen scroll sideways too, which is the failure
+   this wrapper exists to prevent at 375px. */
+.dtable__scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.dtable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--step--1);
+}
+.dtable th {
+  text-align: left;
+  font-size: var(--step--2);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+}
+.dtable td {
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-2);
+  vertical-align: top;
+}
+.dtable tr:last-child td {
+  border-bottom: 0;
+}
+.dtable tbody tr:hover {
+  background: var(--paper-sunken);
+}
+.dtable__num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.dtable__strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+.dtable__sub {
+  display: block;
+  font-size: var(--step--2);
+  color: var(--ink-4);
+}
+.dtable__link {
+  color: var(--ink);
+  font-weight: 500;
+  text-decoration: none;
+}
+.dtable__link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.dtable__empty {
+  padding: var(--s6) var(--s4);
+  text-align: center;
+  color: var(--ink-4);
+}
+
+/* -------------------------------------------------------------- status */
+
+/* Shop statuses on top of `base.css`'s `.chip`. No new colours: every one of
+   these is a token that already means what the status means. */
+.chip--paid,
+.chip--active,
+.chip--delivered {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+.chip--pending,
+.chip--shipped,
+.chip--partially_refunded,
+.chip--authorized,
+.chip--requires_payment {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.chip--cancelled,
+.chip--refunded,
+.chip--failed,
+.chip--trash,
+.chip--discontinued {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.chip--fulfilled,
+.chip--captured {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+
+/* --------------------------------------------------------------- forms */
+
+.shopform {
+  display: grid;
+  gap: var(--s5);
+}
+.shopform__field {
+  display: grid;
+  gap: var(--s2);
+}
+.shopform__row {
+  display: flex;
+  gap: var(--s2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+.shopform__hint {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+  line-height: 1.5;
+}
+.shopform__error {
+  font-size: var(--step--2);
+  color: var(--danger);
+  line-height: 1.5;
+}
+.shopform__actions {
+  display: flex;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+/* Two columns where there is room, one where there is not. The form is
+   readable at 375px because it stops being two columns, not because
+   anything shrinks. */
+.shopform__split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s4);
+}
+
+/* Tags, the shop's own copy. Same visual language as the editor's, declared
+   here for the reason at the top of this file. */
+.shoptags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  align-items: center;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  padding: 0.4rem 0.5rem;
+  background: var(--paper-raised);
+  min-height: 2.5rem;
+}
+.shoptags:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.shoptags__tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  background: var(--paper-inset);
+  border-radius: var(--radius-full);
+  padding: 0.1rem 0.3rem 0.1rem 0.65rem;
+  font-size: var(--step--1);
+}
+.shoptags__tag button {
+  border: 0;
+  background: none;
+  cursor: pointer;
+  color: var(--ink-4);
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 0.25rem;
+}
+.shoptags__tag button:hover {
+  color: var(--danger);
+}
+.shoptags__input {
+  border: 0;
+  outline: none;
+  background: none;
+  flex: 1;
+  min-width: 7rem;
+  font-size: var(--step-0);
+}
+
+/* ------------------------------------------------- description (TipTap) */
+
+/*
+  THE EDITOR IS BOUNDED HERE AND NOWHERE ELSE (HANDOFF §3 B3: "REUSE the
+  TipTap editor in a bounded height"). The post editor is a writing surface
+  that owns its whole screen; a product description is one field among a
+  dozen, and an unbounded one pushes the variants table — the part with the
+  prices in it — below the fold on every product with three paragraphs.
+*/
+.proddesc {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+  transition:
+    border-color var(--dur-1) var(--ease),
+    box-shadow var(--dur-1) var(--ease);
+}
+.proddesc:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.proddesc__surface {
+  min-height: 8rem;
+  max-height: 24rem;
+  overflow-y: auto;
+  padding: var(--s3) var(--s4);
+  outline: none;
+}
+/* The prose scale belongs to an article. Inside a form field it would make a
+   heading in a product description larger than the form's own title. */
+.proddesc__surface.prose {
+  font-size: var(--step-0);
+}
+.proddesc__surface.prose > * + * {
+  margin-top: var(--s3);
+}
+
+/* -------------------------------------------------------------- images */
+
+.imgpick {
+  display: flex;
+  gap: var(--s3);
+  flex-wrap: wrap;
+}
+.imgpick__tile {
+  position: relative;
+  width: 7rem;
+  height: 7rem;
+  border-radius: var(--radius-m);
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  background: var(--paper-sunken);
+  flex: none;
+}
+.imgpick__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.imgpick__drop {
+  position: absolute;
+  inset: auto 0 0 0;
+  border: 0;
+  background: color-mix(in srgb, var(--ink) 72%, transparent);
+  color: var(--paper);
+  font-size: var(--step--2);
+  padding: var(--s1) 0;
+  cursor: pointer;
+}
+.imgpick__add {
+  width: 7rem;
+  height: 7rem;
+  flex: none;
+  display: grid;
+  place-items: center;
+  gap: var(--s1);
+  border: 1px dashed var(--rule-strong);
+  border-radius: var(--radius-m);
+  background: none;
+  color: var(--ink-4);
+  font-size: var(--step--2);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.imgpick__add:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.imgpick__add:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+/* -------------------------------------------------------- order detail */
+
+/* The lines and the timeline are the reading order on a narrow screen; the
+   address and payment panels are reference. Two columns only where both fit
+   without either being squeezed. */
+.shopgrid {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: var(--s5);
+  align-items: start;
+}
+.shopgrid__col {
+  display: grid;
+  gap: var(--s5);
+  min-width: 0;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--s2) var(--s4);
+  font-size: var(--step--1);
+}
+.kv__k {
+  color: var(--ink-4);
+  white-space: nowrap;
+}
+.kv__v {
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.kv__v--total {
+  color: var(--ink);
+  font-weight: 600;
+  font-size: var(--step-0);
+}
+.kv__rule {
+  grid-column: 1 / -1;
+  height: 1px;
+  background: var(--rule);
+}
+
+/* `pre-line`, because the address is assembled as newline-separated lines from
+   a JSON blob whose fields vary — a <br> per line would mean the assembler
+   returning markup instead of a string. */
+.addr {
+  font-size: var(--step--1);
+  color: var(--ink-2);
+  line-height: 1.6;
+  font-style: normal;
+  white-space: pre-line;
+}
+
+.timeline {
+  display: grid;
+  gap: var(--s3);
+  font-size: var(--step--1);
+}
+.timeline__item {
+  display: grid;
+  gap: 2px;
+  padding-left: var(--s4);
+  position: relative;
+  color: var(--ink-2);
+}
+.timeline__item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.45em;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--rule-strong);
+}
+.timeline__item:first-child::before {
+  background: var(--accent);
+}
+.timeline__when {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+
+/* An email that failed must not look like an email that is merely waiting. */
+.mailrow {
+  display: grid;
+  gap: 2px;
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: var(--step--1);
+}
+.mailrow:last-child {
+  border-bottom: 0;
+}
+.mailrow__meta {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+}
+.mailrow__err {
+  font-size: var(--step--2);
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+/* -------------------------------------------------------------- pager */
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  margin-top: var(--s5);
+  flex-wrap: wrap;
+}
+.pager__note {
+  font-size: var(--step--1);
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------- responsive */
+
+@media (max-width: 900px) {
+  .shopgrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .shopscr {
+    padding: var(--s5) var(--s4) var(--s8);
+  }
+  .shopscr__title {
+    font-size: var(--step-3);
+  }
+  .shopform__split {
+    grid-template-columns: 1fr;
+  }
+  .shopfilters .searchbox {
+    min-width: 0;
+    width: 100%;
+  }
+  /* Below this the section row genuinely overflows, so fade the trailing
+     edge: an off-screen tab must be visibly off-screen, not silently
+     absent. Same treatment `.tabs` gets on the dashboard. */
+  .shopscr__nav,
+  .shoptabs {
+    mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
+  }
+}

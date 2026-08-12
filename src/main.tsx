@@ -1,6 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { createHashRouter, RouterProvider } from 'react-router-dom';
+import { createHashRouter, Navigate, RouterProvider } from 'react-router-dom';
 import './styles/tokens.css';
 import './styles/base.css';
 import './styles/prose.css';
@@ -23,6 +23,13 @@ import Forgot from './routes/Forgot';
 import Reset from './routes/Reset';
 import Recover from './routes/Recover';
 import MigrateRoute from './routes/Migrate';
+import Shop from './routes/Shop';
+import ShopProducts from './routes/ShopProducts';
+import ShopOrders from './routes/ShopOrders';
+import ShopCustomers from './routes/ShopCustomers';
+import EmailTemplates from './routes/EmailTemplates';
+import EmailBroadcasts from './routes/EmailBroadcasts';
+import EmailSubscribers from './routes/EmailSubscribers';
 
 // Hash routing: this app is pure static and must work from file:// or any
 // host without server rewrite rules.
@@ -130,6 +137,33 @@ const router = createHashRouter([
       },
       { path: '/settings', element: <SettingsRoute />, errorElement: <RouteError /> },
       { path: '/recover', element: <Recover />, errorElement: <RouteError /> },
+      /*
+       * The shop and the email surface, both inside the guard: every screen
+       * under them reads or writes the store on this account's behalf, and
+       * `/emails` in particular can reach people who are not users of this app
+       * at all.
+       *
+       * Flat rather than nested, deliberately. A parent route with an `<Outlet/>`
+       * would need a layout component to render it, and the only chrome these
+       * screens share is the section row each one already draws — one that
+       * knows which of its own entries is current. A layout that existed purely
+       * to hold a `<Outlet/>` would be a component with nothing in it.
+       */
+      { path: '/shop', element: <Shop />, errorElement: <RouteError /> },
+      { path: '/shop/products', element: <ShopProducts />, errorElement: <RouteError /> },
+      { path: '/shop/orders', element: <ShopOrders />, errorElement: <RouteError /> },
+      { path: '/shop/customers', element: <ShopCustomers />, errorElement: <RouteError /> },
+      /*
+       * `/emails` is a redirect and not a screen of its own — there is no
+       * overview worth the click, and `replace` keeps it out of the back stack
+       * so Back from Templates leaves the section instead of bouncing through
+       * the redirect again. The sidebar links straight to `/emails/templates`
+       * for the same reason; this entry exists for a hand-typed URL.
+       */
+      { path: '/emails', element: <Navigate to="/emails/templates" replace />, errorElement: <RouteError /> },
+      { path: '/emails/templates', element: <EmailTemplates />, errorElement: <RouteError /> },
+      { path: '/emails/broadcasts', element: <EmailBroadcasts />, errorElement: <RouteError /> },
+      { path: '/emails/subscribers', element: <EmailSubscribers />, errorElement: <RouteError /> },
       /*
        * Inside the guard, unlike `/accept-invite`: this screen uploads the
        * pre-backend library under the CURRENT account's name, so it has no

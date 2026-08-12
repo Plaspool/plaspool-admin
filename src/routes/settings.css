@@ -248,3 +248,320 @@
     width: 100%;
   }
 }
+
+/* ---------------------------------------------------------------
+   The server-backed half: Account, Team and Categories.
+
+   Everything below is additive. `.settings__row`, `.settings__rows`,
+   `.settings__label` and `.settings__hint` are also read by
+   `src/routes/Migrate.tsx`, which built its whole screen out of this
+   file's vocabulary — so those rules are left exactly as they were
+   and the new pieces take their own `.set*` names. A tidying pass
+   that "unified" them would silently restyle a screen that is not
+   in this file.
+----------------------------------------------------------------- */
+
+/* Several bordered blocks inside one section. */
+.settings__stack {
+  display: grid;
+  gap: var(--s4);
+}
+
+/*
+  The line that tells the closing footnote what it is about.
+
+  Uppercase eyebrow rather than another `<h2>`: the three sections below it
+  keep their own headings, and a fourth heading level would claim they had been
+  demoted into a subsection when all that has happened is that a boundary got
+  named.
+*/
+.settings__grouplabel {
+  /*
+   * Mirrors `.settings__page`'s own grid gap, and has to: the label is a grid
+   * item, so it inherits the full section-to-section gap on BOTH sides and
+   * would end up equidistant from the half it names and the half it does not —
+   * which is the one thing a boundary marker must never be. The negative margin
+   * pulls it down onto the group it labels. Declared as a variable so the
+   * narrow breakpoint, where the page gap drops to `--s7`, stays correct.
+   */
+  --gap: var(--s8);
+  font-size: var(--step--2);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  border-top: 1px solid var(--rule);
+  padding-top: var(--s5);
+  margin-bottom: calc(var(--s5) - var(--gap));
+}
+
+.setblock {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+  overflow: hidden;
+}
+.setblock__head {
+  padding: var(--s4);
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper-sunken);
+}
+.setblock__title {
+  font-size: var(--step-0);
+  font-weight: 600;
+  color: var(--ink);
+}
+.setblock__hint {
+  margin-top: var(--s1);
+  font-size: var(--step--1);
+  line-height: 1.5;
+  color: var(--ink-4);
+  max-width: 56ch;
+}
+
+/* ------------------------------------------------------------------ forms */
+
+.setform {
+  display: grid;
+  gap: var(--s4);
+  padding: var(--s4);
+}
+.setfield {
+  display: grid;
+  gap: var(--s2);
+  max-width: 26rem;
+}
+/* `.label` already carries its own bottom margin for the auth screens; inside
+   a grid that margin becomes a second gap. */
+.setfield > .label {
+  margin-bottom: 0;
+}
+.setform__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+/* A control and its button on one line, with room for an error underneath. */
+.setinline {
+  display: grid;
+  gap: var(--s2);
+  justify-items: end;
+}
+.setinline__ctl {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.sethint {
+  font-size: var(--step--1);
+  line-height: 1.5;
+  color: var(--ink-4);
+}
+.seterr {
+  font-size: var(--step--1);
+  line-height: 1.5;
+  color: var(--danger);
+}
+/* The one that is about the whole block rather than about one field. */
+.seterr--block {
+  margin: var(--s4) var(--s4) 0;
+  padding: var(--s3) var(--s4);
+  border-radius: var(--radius-m);
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+  color: var(--ink-2);
+}
+
+/* ------------------------------------------------------------------ lists */
+
+.setlist {
+  list-style: none;
+}
+.setitem {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding: var(--s3) var(--s4);
+}
+.setitem + .setitem {
+  border-top: 1px solid var(--rule);
+}
+/* `min-width: 0` is what lets the email addresses and user-agent strings below
+   wrap instead of forcing the row wider than a 375px screen. */
+.setitem__main {
+  min-width: 0;
+}
+.setitem__name {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  font-size: var(--step-0);
+  font-weight: 500;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.setitem__meta {
+  margin-top: 2px;
+  font-size: var(--step--1);
+  color: var(--ink-4);
+  overflow-wrap: anywhere;
+}
+.setitem__acts {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex: none;
+}
+/*
+  Why a row is untouchable, in place of the button it does not have. Held to a
+  narrow measure so it reads as an aside rather than as the row's own content.
+*/
+.setitem__why {
+  max-width: 26ch;
+  text-align: right;
+  font-size: var(--step--2);
+  line-height: 1.45;
+  color: var(--ink-4);
+}
+/* The raw user-agent string, shown whole because nothing parses it. Clamped so
+   one long header cannot become five lines of a sessions list. */
+.setua {
+  margin-top: var(--s1);
+  font-family: var(--font-mono);
+  font-size: var(--step--2);
+  line-height: 1.4;
+  color: var(--ink-4);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.setcount {
+  font-variant-numeric: tabular-nums;
+}
+
+.setempty {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s4);
+  font-size: var(--step--1);
+  line-height: 1.5;
+  color: var(--ink-4);
+  /* A loading row has no text, and a block that collapsed to nothing would
+     make the whole card jump when the answer arrives. */
+  min-height: calc(var(--ctl-h-lg) + var(--s4));
+}
+.setempty--err {
+  color: var(--danger);
+}
+
+/* A filter or toggle above a list. */
+.setbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  flex-wrap: wrap;
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--rule);
+}
+.setbar__ctl {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+/* --------------------------------------------------------- minted invite */
+
+.setmint {
+  display: grid;
+  gap: var(--s3);
+  margin: 0 var(--s4) var(--s4);
+  padding: var(--s4);
+  border-radius: var(--radius-m);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  color: var(--ink-2);
+}
+.setmint__said {
+  font-size: var(--step--1);
+  line-height: 1.55;
+}
+.setcopy {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.setcopy__url {
+  font-family: var(--font-mono);
+  font-size: var(--step--2);
+  min-width: 0;
+}
+
+/* ------------------------------------------------------- destructive panel */
+
+.setdanger {
+  display: grid;
+  gap: var(--s3);
+  justify-items: start;
+  margin: var(--s4);
+  padding: var(--s4);
+  border-radius: var(--radius-m);
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+  color: var(--ink-2);
+}
+.setdanger__title {
+  font-size: var(--step-0);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+@media (max-width: 640px) {
+  .settings__grouplabel {
+    --gap: var(--s7);
+  }
+  .settings__stack {
+    gap: var(--s3);
+  }
+  .setfield {
+    max-width: none;
+  }
+  /* The control drops under its label, so the button must not stay pinned to
+     the right edge of a row that is now full width. */
+  .setinline {
+    justify-items: stretch;
+    width: 100%;
+  }
+  .setinline__ctl {
+    width: 100%;
+  }
+  .setinline__ctl .settings__input {
+    flex: 1;
+  }
+  .setitem {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--s3);
+  }
+  .setitem__acts {
+    flex-wrap: wrap;
+  }
+  .setitem__why {
+    max-width: none;
+    text-align: left;
+  }
+  .setcopy {
+    flex-wrap: wrap;
+  }
+  .setcopy__url {
+    width: 100%;
+  }
+}

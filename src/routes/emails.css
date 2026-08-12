@@ -1,0 +1,497 @@
+/* ---------------------------------------------------------------
+   The email surface's three screens, in the same frame the shop
+   uses. A separate file rather than a shared one on purpose: these
+   two areas are built and rewritten independently, and a single
+   stylesheet between them would mean neither can be changed without
+   reading the other.
+
+   Empty states reuse `.empty` from dashboard.css — the app already
+   has one way of saying "nothing here yet".
+----------------------------------------------------------------- */
+
+.mailscr {
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  padding: var(--s7) var(--s5) var(--s9);
+}
+
+.mailscr__head {
+  padding-bottom: var(--s5);
+  border-bottom: 1px solid var(--rule);
+}
+.mailscr__title {
+  font-family: var(--font-display);
+  font-size: var(--step-4);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: var(--ink);
+}
+.mailscr__lede {
+  margin-top: var(--s2);
+  max-width: 52ch;
+  font-size: var(--step--1);
+  line-height: 1.6;
+  color: var(--ink-4);
+}
+
+.mailscr__nav {
+  display: flex;
+  gap: var(--s1);
+  margin-top: var(--s5);
+  overflow-x: auto;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+}
+.mailscr__nav::-webkit-scrollbar {
+  display: none;
+}
+.mailscr__tab {
+  display: inline-flex;
+  align-items: center;
+  height: var(--ctl-h-lg);
+  padding: 0 var(--ctl-pad-x);
+  border-radius: var(--radius-m);
+  scroll-snap-align: start;
+  color: var(--ink-3);
+  font-size: var(--step--1);
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.mailscr__tab:hover {
+  background: var(--paper-sunken);
+  color: var(--ink);
+}
+.mailscr__tab[aria-current='page'] {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.mailscr__body {
+  margin-top: var(--s6);
+  display: grid;
+  gap: var(--s5);
+}
+
+.mailscr__actions {
+  display: flex;
+  gap: var(--s2);
+  justify-content: flex-end;
+}
+
+.mailscr__loading {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s6) 0;
+  color: var(--ink-4);
+  font-size: var(--step--1);
+}
+
+/* --------------------------------------------------------------- lists
+
+   One row shape for templates, broadcasts and subscribers. They carry
+   different things but they are the same object to the eye: a name, a
+   line of detail under it, a state on the right and the actions last. */
+
+.maillist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+  overflow: hidden;
+}
+.maillist__row {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  padding: var(--s4);
+}
+.maillist__row + .maillist__row {
+  border-top: 1px solid var(--rule);
+}
+.maillist__main {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+.maillist__name {
+  display: block;
+  font-size: var(--step-0);
+  font-weight: 500;
+  color: var(--ink);
+}
+.maillist__meta {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--step--1);
+  color: var(--ink-4);
+}
+.maillist__acts {
+  display: flex;
+  gap: var(--s2);
+  flex: none;
+}
+
+/* ------------------------------------------------------- template editor */
+
+.mailtpl {
+  display: grid;
+  gap: var(--s4);
+}
+.mailtpl__meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: var(--s4);
+}
+.mailtpl__field {
+  min-width: 0;
+}
+
+.mailtpl__tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  flex-wrap: wrap;
+}
+.mailtpl__tab {
+  height: var(--ctl-h);
+  padding: 0 var(--ctl-pad-x);
+  border: 1px solid transparent;
+  border-radius: var(--radius-m);
+  background: transparent;
+  color: var(--ink-3);
+  font-size: var(--step--1);
+  font-weight: 500;
+  cursor: pointer;
+}
+.mailtpl__tab:hover {
+  background: var(--paper-sunken);
+  color: var(--ink);
+}
+.mailtpl__tab[aria-pressed='true'] {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* The variable chips sit at the right end of the tab row: they act on the
+   pane below, so they have to be visibly attached to it rather than floating
+   somewhere near the fields at the top. */
+.mailtpl__vars {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+.mailtpl__varslabel {
+  font-size: var(--step--2);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-4);
+}
+.mailtpl__var {
+  height: var(--ctl-h);
+  padding: 0 var(--s2);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-s);
+  background: var(--paper-raised);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: var(--step--2);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.mailtpl__var:hover {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+.mailtpl__split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s4);
+  align-items: stretch;
+}
+
+.mailtpl__source {
+  width: 100%;
+  min-height: 24rem;
+  resize: vertical;
+  padding: var(--s3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--code-bg);
+  color: var(--code-ink);
+  font-family: var(--font-mono);
+  font-size: var(--step--1);
+  line-height: 1.6;
+  tab-size: 2;
+}
+.mailtpl__source:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.mailtpl__source--full {
+  min-height: 18rem;
+}
+
+/* The preview is WHITE IN BOTH THEMES and that is not an oversight: it shows
+   what the recipient's mail client will draw, and no mail client knows about
+   this app's dark theme. Tinting it would make a template that is unreadable
+   on white look fine here. */
+.mailtpl__preview {
+  width: 100%;
+  min-height: 24rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: #ffffff;
+}
+
+.mailtpl__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s2);
+  border-top: 1px solid var(--rule);
+  padding-top: var(--s4);
+}
+
+/* ------------------------------------------------------------ broadcasts */
+
+.mailbc {
+  display: grid;
+  gap: var(--s4);
+  justify-items: stretch;
+}
+.mailbc__back {
+  justify-self: start;
+}
+.mailbc__step {
+  font-family: var(--font-display);
+  font-size: var(--step-2);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.mailbc__hint {
+  margin-top: calc(var(--s3) * -1);
+  font-size: var(--step--1);
+  color: var(--ink-4);
+  max-width: 56ch;
+}
+
+.mailbc__pick {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+.mailbc__pick input {
+  accent-color: var(--accent);
+  flex: none;
+}
+.mailbc__pick input:disabled {
+  cursor: not-allowed;
+}
+
+.mailbc__audience {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s6);
+  padding: var(--s4);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+}
+.mailbc__aud {
+  display: grid;
+  gap: 2px;
+}
+.mailbc__audn {
+  font-family: var(--font-display);
+  font-size: var(--step-3);
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.mailbc__audl {
+  font-size: var(--step--1);
+  color: var(--ink-4);
+}
+
+.mailbc__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s5);
+  padding: var(--s4);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+}
+
+/* The number in the confirm dialog. It is display-sized because it is the
+   whole decision: everything else in that dialog is a sentence about it. */
+.mailbc__countbox {
+  display: grid;
+  gap: var(--s2);
+}
+.mailbc__count {
+  font-family: var(--font-display);
+  font-size: var(--step-6);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  color: var(--danger);
+  font-variant-numeric: tabular-nums;
+}
+.mailbc__countl {
+  font-size: var(--step-1);
+  color: var(--ink);
+}
+.mailbc__warn {
+  font-size: var(--step--1);
+  color: var(--ink-3);
+  line-height: 1.6;
+}
+
+/* ----------------------------------------------------------- subscribers */
+
+.mailsub__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  flex-wrap: wrap;
+}
+.mailsub__add {
+  display: flex;
+  gap: var(--s2);
+  margin-left: auto;
+}
+.mailsub__add .input {
+  width: 18rem;
+}
+
+.mailsub__import {
+  display: grid;
+  gap: var(--s4);
+  padding: var(--s4);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+}
+.mailsub__importhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s5);
+}
+.mailsub__summary {
+  font-size: var(--step-0);
+  color: var(--ink);
+}
+.mailsub__note {
+  font-size: var(--step--1);
+  color: var(--ink-4);
+  line-height: 1.6;
+}
+
+/* The table scrolls inside its own box. A long address must not be able to
+   push the page sideways — at 375px one paste of a 60-character address
+   otherwise takes the whole screen with it. */
+.mailsub__tablewrap {
+  overflow-x: auto;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+}
+.mailsub__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--step--1);
+}
+.mailsub__table th,
+.mailsub__table td {
+  text-align: left;
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+}
+.mailsub__table th {
+  font-size: var(--step--2);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  background: var(--paper-sunken);
+}
+.mailsub__table tr:last-child td {
+  border-bottom: 0;
+}
+.mailsub__addr {
+  font-family: var(--font-mono);
+  color: var(--ink-2);
+}
+/* Not colour alone: the row also says what happens to it in words, because a
+   red tint is the one signal a colour-blind reader may not get. */
+.mailsub__table tr.is-rejected td {
+  background: var(--danger-soft);
+  color: var(--ink-3);
+}
+
+@media (max-width: 860px) {
+  /* Source and preview stop being side by side well before the phone
+     breakpoint: two 50% columns of monospace at ~700px is 40 characters
+     each, which is narrower than the HTML being written. */
+  .mailtpl__split {
+    grid-template-columns: 1fr;
+  }
+  .mailtpl__meta {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .mailscr {
+    padding: var(--s5) var(--s4) var(--s8);
+  }
+  .mailscr__title {
+    font-size: var(--step-3);
+  }
+  .maillist__row,
+  .mailbc__row,
+  .mailsub__importhead {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--s3);
+  }
+  .maillist__acts {
+    width: 100%;
+  }
+  .mailsub__add {
+    margin-left: 0;
+    width: 100%;
+  }
+  .mailsub__add .input {
+    width: auto;
+    flex: 1;
+  }
+  .mailbc__audience {
+    gap: var(--s4);
+  }
+  .mailtpl__source {
+    min-height: 16rem;
+  }
+  .mailtpl__preview {
+    min-height: 16rem;
+  }
+}

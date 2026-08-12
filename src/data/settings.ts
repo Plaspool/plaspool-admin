@@ -34,6 +34,15 @@ export interface Settings {
   showReadingTime: boolean;
   /** Author name printed on articles. */
   authorName: string;
+  /**
+   * The sidebar is held open instead of peeking on hover.
+   *
+   * It lives here rather than in its own key because this object is already
+   * the app's per-device preference document and already survives a reload
+   * before first paint — and the rail's width decides how much room the route
+   * underneath gets, so a value read one frame late is a visible jump.
+   */
+  sidebarPinned: boolean;
   updatedAt: number;
 }
 
@@ -70,6 +79,12 @@ export const DEFAULT_SETTINGS: Settings = {
   readingProgress: true,
   showReadingTime: true,
   authorName: 'You',
+  /*
+   * Collapsed is the default, and it is a claim about what this app is for:
+   * the widest thing on screen should be the writing, not the navigation. A
+   * writer who wants the rail open says so once and it stays said.
+   */
+  sidebarPinned: false,
   updatedAt: 0,
 };
 

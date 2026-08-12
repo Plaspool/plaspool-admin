@@ -44,6 +44,7 @@ vi.mock('../data/api', () => ({
 
 import { logout } from '../data/session';
 import { revalidate } from '../data/sync';
+import { TooltipProvider } from './ui/Switch';
 import { AppShell, SignOutButton } from './RequireAuth';
 
 /**
@@ -75,7 +76,16 @@ const WRITER = {
   role: 'writer' as const,
 };
 
-/** The app, as a data router — `useBlocker` requires one. */
+/**
+ * The app, as a data router — `useBlocker` requires one.
+ *
+ * `TooltipProvider` is not decoration. On every route that is not `/edit/:id`
+ * or `/read/:id` the shell now draws the sidebar, whose collapsed icons are
+ * wrapped in the app's `Tooltip`; Radix's tooltip THROWS when it cannot find a
+ * provider above it, so without this wrapper the `/settings` cases fail on an
+ * empty document for a reason that has nothing to do with the guard. `main.tsx`
+ * has had the provider at the root all along.
+ */
 function mount(initial = '/edit/p_1') {
   const router = createMemoryRouter(
     [
@@ -97,7 +107,11 @@ function mount(initial = '/edit/p_1') {
     ],
     { initialEntries: [initial] },
   );
-  render(<RouterProvider router={router} />);
+  render(
+    <TooltipProvider>
+      <RouterProvider router={router} />
+    </TooltipProvider>,
+  );
   return router;
 }
 

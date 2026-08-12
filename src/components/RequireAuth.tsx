@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Outlet, useBlocker, useLocation } from 'react-router-dom';
-import { WifiOff } from 'lucide-react';
+import { LogOut, WifiOff } from 'lucide-react';
 import {
   getSession,
   initSession,
@@ -10,6 +10,7 @@ import {
 } from '../data/session';
 import { revalidate } from '../data/sync';
 import { ConfirmDialog } from './Dialog';
+import { Sidebar } from './Sidebar';
 import Login, { SignInForm } from '../routes/Login';
 import '../routes/auth.css';
 
@@ -127,9 +128,50 @@ export function AppShell() {
     void revalidate(userId, pathname);
   }, [userId, pathname]);
 
+  /**
+   * THE TWO POST ROUTES GET NO SHELL, and `POST_ROUTE` is reused rather than
+   * copied because the set really is the same one: `/edit/:id` and `/read/:id`
+   * are the routes where a document is the interface. The editor and the
+   * reader draw their own bars for that reason, `.editor__page` does its own
+   * width arithmetic against the viewport, and a 56px rail inset would fight
+   * both. The two rules arrive at the same list from different directions —
+   * one about double-fetching, one about chrome — and a third post route would
+   * want both answers, so they are deliberately not allowed to drift apart.
+   */
+  const chromeless = POST_ROUTE.test(pathname);
+
   return (
     <RequireAuth>
-      <Outlet />
+      {chromeless ? (
+        <Outlet />
+      ) : (
+        <div className="shell">
+          <Sidebar
+            user={session.status === 'unknown' ? null : (session.user ?? null)}
+            /*
+             * The existing button, not a second one. It owns the unsent-work
+             * confirmation (`session.logout()` refuses to proceed without
+             * `confirmed`), and the label is passed as markup so the collapsed
+             * rail can show a glyph while the word stays in the accessibility
+             * tree — `sidebar.css` clips it rather than removing it.
+             */
+            signOut={
+              <SignOutButton
+                className="sidebar__item sidebar__item--signout"
+                label={
+                  <>
+                    <LogOut className="ui-ic sidebar__icon" aria-hidden="true" />
+                    <span className="sidebar__label">Sign out</span>
+                  </>
+                }
+              />
+            }
+          />
+          <div className="shell__main">
+            <Outlet />
+          </div>
+        </div>
+      )}
     </RequireAuth>
   );
 }
@@ -218,7 +260,13 @@ export function SignOutButton({
   label = 'Sign out',
 }: {
   className?: string;
-  label?: string;
+  /**
+   * `ReactNode` rather than `string` so the sidebar can pass an icon beside
+   * the word. The word itself must stay in the markup wherever this is used —
+   * it is the button's accessible name, and every caller that hides it
+   * visually is responsible for hiding it in a way screen readers ignore.
+   */
+  label?: ReactNode;
 }) {
   const [confirming, setConfirming] = useState<number | null>(null);
 
