@@ -24,6 +24,8 @@ import {
   webhookRoutes as paymentsWebhook,
 } from './shop/payments/routes';
 import { checkoutPort } from './shop/cart/port';
+import { resolveShopCustomer } from './shop/cart/identity/customers';
+import { paymentPort } from './shop/payments/port';
 import type { Mailer } from './mail/port';
 import type { AppEnv } from './app-env';
 
@@ -116,7 +118,47 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * environment: `resendMailer()` is lazy by construction (see its header), so this
    * still boots on a deployment with no mail configured.
    */
-  registerOrdersDefaults({ mailer: portMailer(deps.mailer ?? resendMailer()) });
+  /*
+   * THE OTHER TWO THIRDS OF THE SAME GAP, wired in the same call.
+   *
+   * `OrdersDeps` has three seams and this line used to fill one. The other two
+   * defaulted to absent, and "absent" is not inert:
+   *
+   * - `customer` fell back to `NO_CUSTOMER`, so `GET /api/shop/orders` threw
+   *   `UnauthenticatedError` for EVERY caller — including one holding a valid
+   *   `__Host-shop_session`. A customer could place an order and then never see
+   *   it. `resolveShopCustomer` is Cart's, reading the same cookie through the
+   *   same `resolveCustomerSession` as `shopSessionMiddleware`, so a session
+   *   slides its expiry identically on both paths.
+   * - `payments` fell back to `null`, so `orderDetail` short-circuited before it
+   *   read `paymentIntentId` and the admin payment panel was null on every order
+   *   ever placed. That one is worse than a missing feature: an operator reads a
+   *   null panel as "never paid" rather than as "never wired".
+   *
+   * THIS FILE IS ALLOWED TO KNOW ALL THREE and nothing else is. Contract §2 R3
+   * forbids Orders importing Cart or Payments directly, which is exactly why the
+   * three arrive as ports; the composition root is where the halves are joined,
+   * as the `createPaymentRoutes({ checkout: checkoutPort() })` line below already
+   * does for Cart and Payments.
+   *
+   * `registerOrdersDefaults` AND NOT `registerOrdersDeps`, because this line runs
+   * inside every server suite: `server/test/http.ts` builds the real `createApp()`,
+   * so a last-write-wins registration here would replace a fake a suite had already
+   * registered and the suite would go on passing against a recorder nothing called.
+   * Fill-only-absent keeps `server/shop/orders/test/app.ts`'s own resolver winning.
+   *
+   * `deps.mailer ?? resendMailer()` — one transport for the whole deployment, so a
+   * suite injecting a recorder for the auth routes gets order mail through the same
+   * recorder rather than through a second, invisible one. Neither call reads the
+   * environment: `resendMailer()` is lazy by construction (see its header), so this
+   * still boots on a deployment with no mail configured, and `paymentPort` is a
+   * plain object that dials nothing until `status()` is called.
+   */
+  registerOrdersDefaults({
+    mailer: portMailer(deps.mailer ?? resendMailer()),
+    customer: resolveShopCustomer,
+    payments: paymentPort,
+  });
 
   /*
    * FIRST, SO EVERYTHING AFTER IT HAS ONE. Spec §8: every response carries a

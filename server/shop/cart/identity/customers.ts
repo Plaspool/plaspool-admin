@@ -1,10 +1,15 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import { sql } from 'drizzle-orm';
+import { getCookie } from 'hono/cookie';
+import type { Context } from 'hono';
 import { toEpochMs, uniqueViolation } from '../../../db/client';
 import type { Db } from '../../../db/client';
+import { currentDb } from '../../../app-env';
+import type { AppEnv } from '../../../app-env';
 import { getEnv } from '../../../env';
 import { BadRequestError } from '../../../repo/errors';
 import { newId } from '../ids';
+import { SHOP_SESSION_COOKIE } from './cookies';
 
 /**
  * Customers and their sessions (contract §7, brief §2).
@@ -261,4 +266,40 @@ export async function claimCustomerEmail(
     if (uniqueViolation(err) === 'shop_customers_email_uq') return null;
     throw err;
   }
+}
+
+/**
+ * The customer for a request, resolved from `__Host-shop_session` alone.
+ *
+ * THE FUNCTION `server/shop/orders/ports.ts` HAS NAMED SINCE IT WAS WRITTEN and
+ * that nobody had written. Its `CustomerResolver` doc gives the wiring as one
+ * line at the mount site — `{ customer: (c) => resolveShopCustomer(...) }` — and
+ * until this existed the composition root registered no resolver at all, so
+ * `resolveDeps` fell back to `NO_CUSTOMER` and `GET /api/shop/orders` answered
+ * 401 to every caller, INCLUDING one holding a valid customer session. The suite
+ * did not see it because `server/shop/orders/test/app.ts` registers a resolver of
+ * its own; only the deployment was broken.
+ *
+ * A FUNCTION AND NOT `shopSessionMiddleware`, because Orders needs the answer on
+ * routes that middleware never runs on. It is mounted with `built.use('*', ...)`
+ * inside CART's router (`routes/index.ts`), and Orders is a sibling router — so
+ * `c.get('customer')` there is not "no customer", it is a key nothing ever set.
+ * Both spellings share `resolveCustomerSession` below, which is what keeps the
+ * sliding refresh and the expiry sweep identical on both paths.
+ *
+ * `Context<AppEnv>` rather than `Context<ShopEnv>`: the caller is the composition
+ * root, which knows nothing of the shop's environment, and this reads a cookie
+ * rather than the `customer` variable `ShopEnv` adds. Taking the narrower type is
+ * what lets it be handed across that seam without a cast.
+ *
+ * NEVER 401s BY ITSELF, exactly as `CustomerResolver` requires — no cookie, an
+ * expired session and a writer token presented as a customer token are all the
+ * same `null`, and it is the ROUTE that decides whether null is an error.
+ */
+export async function resolveShopCustomer(c: Context<AppEnv>): Promise<Customer | null> {
+  const token = getCookie(c, SHOP_SESSION_COOKIE);
+  // No cookie, no database client — the rule `shopSessionMiddleware` states, and
+  // it matters more here: this runs on the ORDERS routes, most of which a guest
+  // reaches with a signed token and no session at all.
+  return token ? await resolveCustomerSession(currentDb(c), token) : null;
 }
