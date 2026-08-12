@@ -156,6 +156,19 @@ export default function Login() {
           arrives as a link.
         </p>
         <SignInForm />
+        {/*
+          A PLAIN `<a href="#/forgot">` RATHER THAN A ROUTER `<Link>`, AND THAT
+          IS DELIBERATE. This component is rendered in two places that are not
+          both inside a router: the `/`-and-everything-else route, and
+          `RequireAuth`, which renders it as the signed-out screen and as the
+          mid-session prompt. A `<Link>` throws outside a router context, which
+          would turn "you are signed out" into a blank error page — the worst
+          possible moment for this screen to be the thing that breaks. Under
+          `createHashRouter` the hash href navigates identically.
+        */}
+        <a className="btn btn--ghost btn--sm" href="#/forgot">
+          Forgot your password?
+        </a>
       </div>
     </div>
   );

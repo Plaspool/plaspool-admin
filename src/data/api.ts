@@ -335,6 +335,39 @@ export const api = {
       .user;
   },
 
+  /**
+   * 202 `{ sent: true }` FOR EVERY ADDRESS, known or not.
+   *
+   * The route answers identically either way on purpose (`server/routes/auth.ts`),
+   * for the same reason `login` refuses to say which half was wrong: this is an
+   * invite-only instance and knowing which addresses have accounts is most of
+   * what an attacker wants. There is deliberately nothing in the return value
+   * for a caller to branch on — a boolean here would be an enumeration oracle
+   * rebuilt one layer up.
+   *
+   * 501 `not_implemented` is the exception and is not about this address: the
+   * deployment has no mailer configured, which the route checks BEFORE the
+   * lookup so that it fails the same way for everybody.
+   */
+  async forgotPassword(email: string): Promise<void> {
+    await apiFetch<{ sent: true }>('/auth/forgot', { method: 'POST', body: { email } });
+  },
+
+  /**
+   * 200 `{ ok: true }`, AND NO SESSION COOKIE — resetting does not sign you in.
+   *
+   * The route sweeps every session the account holds and deliberately hands
+   * back nothing, so that a token read out of a mailbox cannot become a live
+   * session without the new password being typed. Callers must send the writer
+   * to sign in rather than adopting a user here; there is none to adopt.
+   *
+   * 400 `detail: 'token'` is the expected failure (expired, already used, or
+   * simply wrong); 400 `detail: 'password'` mirrors the length rule.
+   */
+  async resetPassword(token: string, password: string): Promise<void> {
+    await apiFetch<{ ok: true }>('/auth/reset', { method: 'POST', body: { token, password } });
+  },
+
   // --------------------------------------------------------------- invites
   async createInvite(email: string, role: 'owner' | 'writer' = 'writer'): Promise<CreatedInvite> {
     const res = await apiFetch<{ invite: CreatedInvite }>('/invites', {

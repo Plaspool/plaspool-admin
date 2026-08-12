@@ -13,6 +13,8 @@ import {
   InviteError,
   UserInputError,
 } from '../repo/users';
+import { PasswordResetError } from '../repo/password-reset';
+import { MailNotConfiguredError } from '../mail/port';
 
 /**
  * The error contract (spec §8), in one place.
@@ -166,6 +168,25 @@ function map(err: unknown): Mapped | null {
   }
   if (err instanceof DuplicateEmailError) {
     return { status: 400, body: { error: 'bad_request', detail: 'email' } };
+  }
+  /*
+   * A reset token that is unknown, expired, spent, or whose account has been
+   * disabled — all four, indistinguishable, for the reason `PasswordResetError`
+   * documents. 400 and not 500 for the rule at the top of this file: none of
+   * them can ever become valid, so a 500 would be retried five times.
+   */
+  if (err instanceof PasswordResetError) {
+    return { status: 400, body: { error: 'bad_request', detail: 'token' } };
+  }
+  /*
+   * 501, matching the shop's `NotImplementedError` row: the deployment has no
+   * mailer wired, which is a permanent condition for this request and a
+   * configuration problem rather than a caller problem. `feature` names the
+   * capability; the missing VARIABLE names live in the message, which is logged
+   * and never sent.
+   */
+  if (err instanceof MailNotConfiguredError) {
+    return { status: 501, body: { error: 'not_implemented', feature: err.feature } };
   }
 
   return null;

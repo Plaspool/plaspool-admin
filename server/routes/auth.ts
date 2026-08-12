@@ -26,6 +26,9 @@ import {
   listInvites,
   revokeInvite,
 } from '../repo/users';
+import { consumePasswordReset, createPasswordReset } from '../repo/password-reset';
+import { resendMailer } from '../mail/resend';
+import type { Mailer } from '../mail/port';
 import { BadRequestError, NotFoundError } from '../repo/errors';
 import { currentDb, currentUser } from '../app-env';
 import type { AppEnv } from '../app-env';
@@ -83,6 +86,26 @@ export const DUMMY_PASSWORD_HASH =
 export const INVITE_PATH = '/#/accept-invite';
 
 /**
+ * Where the reset mail points, and the `#` is load-bearing for exactly the
+ * reason `INVITE_PATH` above spells out: the client is a `createHashRouter`
+ * app, so a token in `location.search` reaches no route and every link would be
+ * dead on arrival.
+ */
+export const RESET_PATH = '/#/reset';
+
+/**
+ * The narrow forgot-password bucket: five per fifteen minutes per ip+email.
+ *
+ * The same numbers as `LOGIN_LIMIT`/`LOGIN_WINDOW_MS`, and named separately
+ * rather than reused so that tuning the login limiter does not silently retune
+ * how many reset mails one host can aim at one address — this bucket is the
+ * only thing standing between an attacker and an inbox full of mail the account
+ * holder did not ask for.
+ */
+export const FORGOT_LIMIT = 5;
+export const FORGOT_WINDOW_MS = 15 * 60_000;
+
+/**
  * Bounded before it is used as a primary key.
  *
  * The rate-limit key is `login:<ip>|<email>`, so an unbounded email is an
@@ -106,6 +129,17 @@ const AcceptInviteBody = z
     token: str().min(1).max(512),
     password: str().min(1).max(1024),
     displayName: str().min(1).max(200),
+  })
+  .strict();
+
+const ForgotBody = z.object({ email: Email }).strict();
+
+const ResetBody = z
+  .object({
+    token: str().min(1).max(512),
+    // Bounded like the login body: an unauthenticated caller must not be able
+    // to hand scrypt a 10 MB input.
+    password: str().min(1).max(1024),
   })
   .strict();
 
@@ -302,3 +336,146 @@ routes.delete('/invites/:id', requireOwner(), async (c) => {
   if (!(await revokeInvite(currentDb(c), id))) throw new NotFoundError(id);
   return c.json({ ok: true });
 });
+
+// --------------------------------------------------------- password resets
+
+export interface AuthRouteDeps {
+  /**
+   * Mail transport. Defaults to `resendMailer()`, which reads nothing at
+   * construction — so building the app still demands no mail configuration.
+   *
+   * Injected rather than imported so a suite can drive the real route with a
+   * recorder and never touch the network. See `server/mail/port.ts`.
+   */
+  mailer?: Mailer;
+}
+
+/**
+ * The auth router, including the reset routes that need a mailer.
+ *
+ * A FACTORY WRAPPING `routes` rather than a rewrite of it: everything above is
+ * dependency-free and stays registered at module scope, and this adds only the
+ * two routes that are not.
+ */
+export function createAuthRoutes(deps: AuthRouteDeps = {}): Hono<AppEnv> {
+  const mailer = deps.mailer ?? resendMailer();
+  const app = new Hono<AppEnv>();
+
+  /**
+   * `POST /api/auth/forgot` — ALWAYS 202, for any address.
+   *
+   * The same property login holds, one endpoint over: an unknown address and a
+   * real one produce the same status, the same body and the same visible work.
+   * A 404 for "no such account" would be a complete user list for an
+   * invite-only instance, handed out unauthenticated at five requests a
+   * quarter-hour.
+   */
+  app.post('/auth/forgot', async (c) => {
+    const db = currentDb(c);
+    const ip = clientIp(c);
+
+    // The IP bucket BEFORE the body is read, for the reason the login route
+    // gives at length: a limiter cannot bound work that runs after it.
+    await limit(c, `forgot:${ip}`, LOGIN_IP_LIMIT, LOGIN_WINDOW_MS);
+
+    const { email } = await readJson(c, ForgotBody);
+    const address = normaliseEmail(email);
+
+    // The narrow bucket, which is what stops one host mail-bombing one inbox.
+    // It cannot move above the parse: the email it keys on is in the body.
+    await limit(c, `forgot:${ip}|${address}`, FORGOT_LIMIT, FORGOT_WINDOW_MS);
+
+    /*
+     * THE CONFIGURATION CHECK RUNS HERE — BEFORE THE LOOKUP — AND THE ORDER IS
+     * THE WHOLE POINT.
+     *
+     * The brief asks that an unconfigured mailer surface rather than be
+     * swallowed, and separately that an unknown address must never fail
+     * differently from a known one. Put the check where it naturally falls —
+     * inside `mailer.send`, i.e. after the lookup — and those two requirements
+     * collide: on an unconfigured deployment a KNOWN address 501s (it reached
+     * the send) and an UNKNOWN one 202s (it never did). That is precisely the
+     * enumeration oracle this route exists to avoid, rebuilt out of the failure
+     * path instead of the success path, and it would be MORE reliable than a
+     * timing side channel because it is a status code.
+     *
+     * Asking the question before there is a user to ask it about makes the
+     * answer independent of whether the account exists: an unconfigured
+     * deployment 501s for every address alike, and a configured one 202s for
+     * every address alike. Loudly broken for everybody beats quietly broken
+     * only for real accounts.
+     */
+    mailer.assertConfigured?.();
+
+    const issued = await createPasswordReset(db, address);
+
+    /*
+     * `null` for "no account" AND for "disabled account", and the route cannot
+     * tell which — `createPasswordReset` returns a type with no room to say.
+     * Nothing is sent and the answer below is unchanged.
+     */
+    if (issued) {
+      /*
+       * Built from the FIRST CONFIGURED ORIGIN, never from `Host` or `Origin`.
+       * A host header is attacker-controlled on any deployment that does not
+       * pin it, and a reset URL built from one is a password-reset credential
+       * delivered to a domain the attacker chose — the classic host-header
+       * poisoning bug, and worse here than for invites because it takes over an
+       * existing account rather than creating a new one.
+       */
+      const base = c.get('origins')[0] ?? '';
+      const url = `${base}${RESET_PATH}?token=${encodeURIComponent(issued.token)}`;
+
+      await mailer.send({
+        to: issued.user.email,
+        subject: 'Reset your password',
+        text:
+          `Someone asked to reset the password for this account.\n\n` +
+          `${url}\n\n` +
+          `The link works once and expires in an hour. If this was not you, ` +
+          `nothing has changed and you can ignore this message.`,
+        html:
+          `<p>Someone asked to reset the password for this account.</p>` +
+          `<p><a href="${url}">Choose a new password</a></p>` +
+          `<p>The link works once and expires in an hour. If this was not you, ` +
+          `nothing has changed and you can ignore this message.</p>`,
+      });
+    }
+
+    /*
+     * 202 AND NOT 200: the honest status. The server has accepted the request
+     * and will act on it if there is anything to act on; it is deliberately not
+     * telling the caller whether mail was sent, and 200 would imply it had.
+     */
+    return c.json({ sent: true }, 202);
+  });
+
+  /**
+   * `POST /api/auth/reset` — spend the token, set the password, and destroy
+   * every session the user holds.
+   *
+   * Rate-limited by IP alone. There is no account to key on (the token names
+   * one, and looking it up to build a limiter key would mean consulting the
+   * token before the limiter bounds the work), and the two costs on this path —
+   * a scrypt derivation and a write — are both worth bounding for an
+   * unauthenticated caller. The token is 256 bits, so this is not what stands
+   * between an attacker and a guess.
+   */
+  app.post('/auth/reset', async (c) => {
+    await limit(c, `reset:${clientIp(c)}`, LOGIN_IP_LIMIT, LOGIN_WINDOW_MS);
+    const { token, password } = await readJson(c, ResetBody);
+    await consumePasswordReset(currentDb(c), token, password);
+    /*
+     * NO COOKIE IS SET. Resetting does not log you in: the sweep inside
+     * `consumePasswordReset` exists to end every session, and handing back a
+     * fresh one in the same response would make this route the only way to turn
+     * a token seen in a mailbox into a live session without ever typing the new
+     * password.
+     */
+    return c.json({ ok: true });
+  });
+
+  app.route('/', routes);
+  return app;
+}
+

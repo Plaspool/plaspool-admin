@@ -6,7 +6,7 @@ import { toResponse } from './middleware/errors';
 import { NotFoundError } from './repo/errors';
 import { originGuard } from './middleware/origin';
 import { sessionMiddleware } from './middleware/session';
-import { routes as auth } from './routes/auth';
+import { createAuthRoutes } from './routes/auth';
 import { routes as posts } from './routes/posts';
 import { routes as revisions } from './routes/revisions';
 import { routes as backup } from './routes/backup';
@@ -18,6 +18,7 @@ import {
   webhookRoutes as paymentsWebhook,
 } from './shop/payments/routes';
 import { checkoutPort } from './shop/cart/port';
+import type { Mailer } from './mail/port';
 import type { AppEnv } from './app-env';
 
 export type { AppEnv } from './app-env';
@@ -53,6 +54,21 @@ export interface AppDeps {
   db?: Db | (() => Db);
   /** Exact-match allow-list. Defaults to `APP_ORIGINS` (spec §6). */
   origins?: readonly string[];
+
+  /**
+   * Outbound mail, for the password-reset flow. Defaults to `resendMailer()`.
+   *
+   * INJECTED FOR THE SAME REASON `checkoutPort` IS. A route that mails a
+   * credential cannot be tested by having it return the credential — that shape
+   * is an unauthenticated account-takeover primitive and it passes every test
+   * written against it (`server/shop/cart/routes/customer.ts` has the long
+   * version). So the transport is a seam in the type, and the suite supplies a
+   * recorder.
+   *
+   * The default builds nothing and reads nothing at construction, so importing
+   * this module still demands no mail configuration — see `server/mail/resend.ts`.
+   */
+  mailer?: Mailer;
 }
 
 /**
@@ -185,7 +201,7 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
 
   app.use(`${API_PREFIX}/*`, sessionMiddleware());
 
-  app.route(API_PREFIX, auth);
+  app.route(API_PREFIX, createAuthRoutes({ mailer: deps.mailer }));
   app.route(API_PREFIX, posts);
   app.route(API_PREFIX, revisions);
   app.route(API_PREFIX, backup);

@@ -15,6 +15,14 @@ const Schema = z.object({
   R2_BUCKET: z.string().default(''),
   R2_ACCESS_KEY_ID: z.string().default(''),
   R2_SECRET_ACCESS_KEY: z.string().default(''),
+  /*
+   * Mail, for the password-reset flow. `.default('')` exactly like the R2 vars
+   * above: a deployment with no mailer still boots and still serves everything
+   * else — `POST /api/auth/forgot` is the only route that fails, and it fails
+   * with a named 501 rather than taking the process down at import time.
+   */
+  RESEND_API_KEY: z.string().default(''),
+  MAIL_FROM: z.string().default(''),
   NODE_ENV: z.string().default('development'),
 });
 

@@ -19,6 +19,8 @@ import EditorRoute from './routes/Editor';
 import Reader from './routes/Reader';
 import SettingsRoute from './routes/Settings';
 import AcceptInvite from './routes/AcceptInvite';
+import Forgot from './routes/Forgot';
+import Reset from './routes/Reset';
 import Recover from './routes/Recover';
 import MigrateRoute from './routes/Migrate';
 
@@ -87,6 +89,19 @@ const router = createHashRouter([
    * form they cannot satisfy and swallow the token in the process.
    */
   { path: '/accept-invite', element: <AcceptInvite />, errorElement: <RouteError /> },
+  /*
+   * OUTSIDE THE GUARD FOR THE SAME REASON, and here it is even starker: a
+   * writer who has forgotten their password is by definition someone the guard
+   * cannot let through. Behind it, both screens would render the sign-in form —
+   * the one thing the person opening them cannot get past — and `/reset` would
+   * lose its token on the way.
+   *
+   * `/reset` matches `RESET_PATH` in `server/routes/auth.ts` (`/#/reset`), so
+   * the token the mail carries lands in the in-hash query where
+   * `useSearchParams` reads it.
+   */
+  { path: '/forgot', element: <Forgot />, errorElement: <RouteError /> },
+  { path: '/reset', element: <Reset />, errorElement: <RouteError /> },
   {
     element: <AppShell />,
     errorElement: <RouteError />,

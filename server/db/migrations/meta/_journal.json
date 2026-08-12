@@ -85,6 +85,13 @@
       "when": 1786600000400,
       "tag": "0005_public_reading",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1786600000500,
+      "tag": "0006_password_resets",
+      "breakpoints": true
     }
   ]
 }

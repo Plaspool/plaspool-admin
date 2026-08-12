@@ -68,8 +68,14 @@ export class UserInputError extends Error {
   }
 }
 
-/** 256 bits, URL-safe. Returned to the client once and never stored raw. */
-function mintToken(): string {
+/**
+ * 256 bits, URL-safe. Returned to the client once and never stored raw.
+ *
+ * EXPORTED for `repo/password-reset.ts`, which mints a token of exactly this
+ * shape. Re-deriving it there would be two definitions of "how long is a
+ * credential in this app", and the weaker one would never announce itself.
+ */
+export function mintToken(): string {
   return randomBytes(32).toString('base64url');
 }
 
@@ -87,7 +93,7 @@ function mintToken(): string {
  * Rotating `SESSION_SECRET` invalidates every outstanding session and invite,
  * which is the correct behaviour for a secret rotation.
  */
-function tokenId(token: string): string {
+export function tokenId(token: string): string {
   return createHmac('sha256', getEnv().SESSION_SECRET).update(token).digest('hex');
 }
 
