@@ -78,6 +78,13 @@
       "when": 1786600000302,
       "tag": "0122_captured_checkout_index",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1786600000400,
+      "tag": "0005_public_reading",
+      "breakpoints": true
     }
   ]
 }

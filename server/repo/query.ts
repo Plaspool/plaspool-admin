@@ -58,7 +58,15 @@ export { encodeCursor, decodeCursor } from './cursor';
 
 // ------------------------------------------------------------------ sorting
 
-interface SortPart {
+/**
+ * EXPORTED so the PUBLIC list (`./public.ts`) can reuse the ordering, the keyset
+ * and the cursor coercion without reusing `listPosts` itself — whose signature
+ * takes a `StatusFilter` and would happily accept `'trash'` (plan D2). Sharing
+ * the pagination machinery is safe; sharing the filter builder is not.
+ *
+ * Additive: nothing below changed except the `export` keywords.
+ */
+export interface SortPart {
   /** Used identically in the SELECT list, the ORDER BY and the keyset. */
   expr: SQL;
   direction: 'asc' | 'desc';
@@ -171,7 +179,7 @@ const STATUS_RANK = sql.raw(
   `CASE p.status WHEN 'draft' THEN 0 WHEN 'published' THEN 1 ELSE 2 END`,
 );
 
-const SORTS: Record<SortKey, SortPart[]> = {
+export const SORTS: Record<SortKey, SortPart[]> = {
   updated: [{ expr: sql.raw('p.updated_at'), direction: 'desc', type: 'number' }],
   published: [
     { expr: sql.raw('p.published_at'), direction: 'desc', nullable: true, type: 'number' },
@@ -185,7 +193,7 @@ const SORTS: Record<SortKey, SortPart[]> = {
 };
 
 /** Read the key back off the row, in the type the cursor should carry. */
-function readKey(part: SortPart, value: unknown): CursorValue {
+export function readKey(part: SortPart, value: unknown): CursorValue {
   return part.type === 'text' ? String(value) : toEpochMsOrNull(value);
 }
 
@@ -199,7 +207,7 @@ function readKey(part: SortPart, value: unknown): CursorValue {
  * no cursor component can reach the driver as a type the column does not
  * accept, whatever the payload said.
  */
-function coerce(part: SortPart, value: CursorValue): CursorValue {
+export function coerce(part: SortPart, value: CursorValue): CursorValue {
   if (value === null) {
     // Only `published_at` can BE null. A null against a non-nullable part would
     // make `expr > NULL` evaluate to NULL, i.e. an empty page rather than an
@@ -243,7 +251,7 @@ function equal(part: SortPart, value: CursorValue): SQL {
  * the id tiebreak that makes the order total — without which two posts sharing
  * a sort key can be returned twice or skipped entirely across a page boundary.
  */
-function keysetPredicate(parts: SortPart[], values: CursorValue[], id: string): SQL {
+export function keysetPredicate(parts: SortPart[], values: CursorValue[], id: string): SQL {
   const clauses: SQL[] = [];
   for (let i = 0; i < parts.length; i += 1) {
     const conditions = parts
@@ -257,7 +265,7 @@ function keysetPredicate(parts: SortPart[], values: CursorValue[], id: string): 
   return sql`(${sql.join(clauses, sql` OR `)})`;
 }
 
-function orderBy(parts: SortPart[]): SQL {
+export function orderBy(parts: SortPart[]): SQL {
   const terms = parts.map((part) => {
     const direction = part.direction === 'desc' ? 'DESC' : 'ASC';
     // NULLS LAST in BOTH directions: `?? -Infinity` puts them last on the

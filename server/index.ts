@@ -11,6 +11,7 @@ import { routes as posts } from './routes/posts';
 import { routes as revisions } from './routes/revisions';
 import { routes as backup } from './routes/backup';
 import { routes as images } from './routes/images';
+import { createPublicRoutes } from './routes/public';
 import { SHOP_PREFIX, shopApp } from './shop/app';
 import {
   createPaymentRoutes,
@@ -152,6 +153,33 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * unsafe.
    */
   app.route(API_PREFIX, paymentsWebhook);
+
+  /*
+   * THE PUBLIC READING API, AND IT IS ABOVE `sessionMiddleware` DELIBERATELY.
+   *
+   * Every response under `/api/public/*` carries `Cache-Control: public`, so it
+   * may be stored by a shared cache and handed to a different reader. A public
+   * cached response that is ABLE to vary by cookie is therefore one bug away
+   * from serving reader A's view to reader B (plan threat T6) — and "we
+   * remembered not to read the session" is a convention, not a guarantee.
+   *
+   * Mounted here, `c.get('user')` is `undefined` on every request that reaches
+   * the router: the middleware that would resolve a session has not run and
+   * cannot be reached from inside it. The route is STRUCTURALLY incapable of
+   * personalising, so the caching is safe by construction rather than by
+   * review.
+   *
+   * ALSO ABOVE `originGuard`, which is irrelevant to it either way: every public
+   * route is a GET and the guard returns `next()` for safe methods before it
+   * looks at anything. The one cost is that `c.set('origins', …)` never runs for
+   * these requests — so `deps.origins` is handed to the router HERE instead.
+   * Reading `configuredOrigins()` from inside a handler ignored this app's own
+   * allow-list, which made the feed advertise a different host than the one the
+   * app was built for.
+   *
+   * BELOW THE DATABASE FACTORY, because every route here queries.
+   */
+  app.route(API_PREFIX, createPublicRoutes({ origins: deps.origins }));
 
   app.use(`${API_PREFIX}/*`, originGuard(deps.origins));
 

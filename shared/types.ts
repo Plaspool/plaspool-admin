@@ -260,3 +260,52 @@ export interface Query {
   tag: string | null;
   sort: SortKey;
 }
+
+// ----------------------------------------------------- the public read surface
+
+/**
+ * What an UNAUTHENTICATED reader may see of a post (plan D3).
+ *
+ * An ALLOW-LIST, assembled field by field in `server/repo/public-projection.ts`
+ * — never a `Post` with keys deleted. Dropped on purpose, each closing a named
+ * threat: `authorId` (T3), and `deletedAt`, `revision`, `status`,
+ * `excerptSource`, `createdAt` (T4). `status` is dropped because on this surface
+ * it is always `'published'`, and emitting it invites a consumer to branch on a
+ * value that cannot vary.
+ *
+ * `author` is an object rather than a flat `authorName` so that adding a public
+ * author field later is additive, and so the shape makes obvious that a byline
+ * is all there is.
+ */
+export interface PublicPost {
+  id: string;
+  /** Never null on this surface — `slug IS NOT NULL` is in the predicate. */
+  slug: string;
+  title: string;
+  subtitle: string;
+  excerpt: string;
+  coverImage: PublicCoverImage | null;
+  category: string;
+  tags: string[];
+  template: ReadingTemplate | null;
+  /** Never null on this surface — `published_at IS NOT NULL` is in the predicate. */
+  publishedAt: number;
+  updatedAt: number;
+  wordCount: number;
+  readingTime: number;
+  /** A byline. Never an id, never an email. */
+  author: { name: string };
+}
+
+export interface PublicPostDetail extends PublicPost {
+  content: DocNode;
+}
+
+export interface PublicCoverImage {
+  /** Resolved public URL — see `publicImageUrl`. */
+  url: string;
+  alt: string;
+  focalPoint: string;
+  width: number;
+  height: number;
+}
