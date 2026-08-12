@@ -16,6 +16,9 @@
     --rule:#ddd7c6; --rule-strong:#c5bda6;
     --accent:#9a5b2c; --accent-soft:#f0e3d5; --accent-ink:#fff;
     --get:#2d6b4f; --post:#1f5a91; --patch:#8a6511; --put:#6b4a99; --del:#9c2f2f;
+    /* OPTIONS is deliberately the quietest of the six: the only method here that
+       names a preflight rather than an operation somebody performs. */
+    --opt:#5a6b73;
     --ok:#2d6b4f; --warn:#8a6511; --err:#9c2f2f;
     --code-bg:#f3efe4;
     --mono:ui-monospace,"SF Mono",SFMono-Regular,"Cascadia Mono",Menlo,Consolas,monospace;
@@ -28,6 +31,7 @@
     --rule:#33322a; --rule-strong:#4a483c;
     --accent:#d98f52; --accent-soft:#3a2a1c; --accent-ink:#14140f;
     --get:#6fc296; --post:#6fa8dc; --patch:#d9b45c; --put:#b092d9; --del:#e08585;
+    --opt:#9fb4bd;
     --ok:#6fc296; --warn:#d9b45c; --err:#e08585;
     --code-bg:#111109;
   }
@@ -101,14 +105,14 @@
 
   /* ── method + auth chips ────────────────────────────────── */
   .vb.GET{color:var(--get)} .vb.POST{color:var(--post)} .vb.PATCH{color:var(--patch)}
-  .vb.PUT{color:var(--put)} .vb.DELETE{color:var(--del)}
+  .vb.PUT{color:var(--put)} .vb.DELETE{color:var(--del)} .vb.OPTIONS{color:var(--opt)}
   .m-chip{
     font-family:var(--mono); font-size:11px; font-weight:700; letter-spacing:.04em;
     padding:3px 8px; border-radius:5px; border:1px solid currentColor; flex:0 0 auto;
   }
   .m-chip.GET{color:var(--get)} .m-chip.POST{color:var(--post)}
   .m-chip.PATCH{color:var(--patch)} .m-chip.PUT{color:var(--put)}
-  .m-chip.DELETE{color:var(--del)}
+  .m-chip.DELETE{color:var(--del)} .m-chip.OPTIONS{color:var(--opt)}
 
   .auth{
     font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px;
@@ -323,9 +327,9 @@
 
     '<h4>A few rules that apply to every route</h4>' +
     '<table><tbody>' +
-    row('Origin', 'Every unsafe method (anything but GET, HEAD, OPTIONS) needs an <code>Origin</code> header that exactly matches an entry in <code>APP_ORIGINS</code>. Not a prefix match — exact string equality. The one exception is the payments webhook, which reads no cookie and so has nothing for CSRF to borrow.') +
-    row('Content-Type', 'Routes that read a body require <code>application/json</code>. A wrong type is <code>400 detail:"content-type"</code>. Routes whose body is entirely optional skip this check and treat an empty body as <code>{}</code>.') +
-    row('Unknown keys', 'Every body and query schema is strict. An unrecognised key is a 400 naming it — a typo fails loudly rather than being silently ignored.') +
+    row('Origin', 'Every unsafe method (anything but GET, HEAD, OPTIONS) needs an <code>Origin</code> header that exactly matches an entry in <code>APP_ORIGINS</code>. Not a prefix match — exact string equality. <strong>Two routes are exempt</strong>, both mounted above the guard and for the same reason: <code>POST /api/shop/payments/webhook</code> and <code>POST /api/public/unsubscribe</code>. Neither reads a cookie, so neither has any ambient authority for CSRF to borrow — one is authenticated by an HMAC over the raw body, the other by a 256-bit HMAC in <code>?token=</code>.') +
+    row('Content-Type', 'Routes that read a body require <code>application/json</code>. A wrong type is <code>400 detail:"content-type"</code>. Routes whose body is entirely optional skip this check and treat an empty body as <code>{}</code>. <code>POST /api/public/unsubscribe</code> is the exception that proves it: it reads no body at all and takes a plain form submission, because its caller is a mail client.') +
+    row('Unknown keys', 'Every body and query schema is strict. An unrecognised key is a 400 naming it — a typo fails loudly rather than being silently ignored. <strong>One deliberate exception:</strong> the query of <code>GET</code>/<code>POST /api/public/unsubscribe</code>, because corporate link-protection gateways append tracking parameters to every link they rewrite and a refusal there is an unsubscribe outage.') +
     row('NUL bytes', 'A U+0000 anywhere in a string, path segment or query value is a 400, not a 500.') +
     row('__proto__', 'An own <code>__proto__</code> key anywhere in a body is rejected outright.') +
     '</tbody></table>';
@@ -401,8 +405,9 @@
       row('shop-cart-new:&lt;ip&gt;', '20 / hour', 'Creating a cart. Not charged when an existing cart is handed back.') +
       row('shop-cart-write:&lt;cartId&gt;', '120 / 10 min', 'Adding, changing and removing lines.') +
       row('shop-checkout:&lt;cartId&gt;', '10 / 15 min', 'Starting checkout.') +
-      row('shop-magic:&lt;ip&gt;', '20 / 15 min', 'Magic-link requests and redemptions.') +
-      row('shop-magic:&lt;ip&gt;|&lt;email&gt;', '5 / 15 min', 'Magic links for one address.') +
+      row('shop-magic:&lt;ip&gt;', '20 / 15 min', '<strong>Requesting</strong> a magic link — <code>POST /api/shop/customer/session</code>. Charged after the body is parsed, because the second bucket below needs the address out of it.') +
+      row('shop-magic:&lt;ip&gt;|&lt;email&gt;', '5 / 15 min', 'Magic links for one address. Without it, a per-IP limit alone lets one host walk an address list without ever crossing a threshold.') +
+      row('shop-redeem:&lt;ip&gt;', '20 / 15 min', '<strong>Redeeming</strong> one — <code>POST /api/shop/customer/session/redeem</code>. A separate bucket from the request above, so a shopper who asked for two links can still spend the one that arrived.') +
       '</tbody></table>' +
       '<p class="desc">No other shop route is rate limited.</p>' +
 
@@ -432,9 +437,18 @@
       row('Trash / restore / publish', 'Its author, or the owner.') +
       row('Destroy permanently', '<strong>Owner only.</strong> <code>DELETE /api/posts/:id</code> and <code>POST /api/trash/empty</code>.') +
       row('Invite, export, collect orphans', 'Owner only.') +
+      row('Manage the team', '<strong>Owner only.</strong> <code>GET /api/users</code> and <code>POST /api/users/:id/disable</code> / <code>/enable</code> — the list is the email address of every person with a login, and revoking access belongs with invites.') +
+      row('Delete a category', '<strong>Owner only.</strong> <code>DELETE /api/categories/:id</code> — the one category route a writer may not call, because it is the only one that rewrites <code>posts.category</code> in bulk, on posts the caller did not write, with no undo. Creating and renaming are open to writers.') +
+      row('Everything under <code>/api/admin/email/*</code>', '<strong>Owner only, all seventeen routes.</strong> A writer publishing a bad post is a post that can be unpublished; a writer pressing &ldquo;send&rdquo; is thousands of messages that cannot be recalled, to a list whose consent the owner is answerable for.') +
       '</tbody></table>' +
       '<div class="note warn">A missing post is checked <em>before</em> authorization, so a 404 never leaks as a 403 — ' +
       'you cannot use permission errors to discover which ids exist.</div>' +
+      '<div class="note"><strong>Role is not the only gate, and the two are not the same check.</strong> The rows above ' +
+      'that name a route are enforced by <code>requireOwner()</code> middleware, which answers 403 before the handler ' +
+      'runs. The per-post rows are enforced by <code>authorize()</code> <em>inside</em> the handler, after the post has ' +
+      'been read — which is exactly why the 404-before-403 rule above holds. <code>DELETE /api/posts/:id</code> is ' +
+      'owner-only by the second mechanism rather than the first, so a writer aiming it at an id that does not exist ' +
+      'gets a 404, not a 403.</div>' +
 
       '<h2 id="c-cas">Saving, and not losing work</h2>' +
       '<p class="desc">Writes are <strong>compare-and-swap</strong>. Send the <code>baseRevision</code> you read; if ' +
@@ -513,8 +527,9 @@
       '<div class="note"><strong>The public reading API exists.</strong> It is a separate surface — see the ' +
       '<strong>Public</strong> tab at the top of this page — mounted under <code>/api/public/*</code>, needing no ' +
       'credential of any kind, and exposing published posts only. Everything on <em>this</em> (Blog) surface remains ' +
-      'an authenticated admin API: every route here except <code>GET /api/health</code> and the three ' +
-      'unauthenticated auth routes carries <code>requireAuth()</code>.</div>' +
+      'an authenticated admin API: every route here except <code>GET /api/health</code> and the five ' +
+      'unauthenticated auth routes (<code>login</code>, <code>logout</code>, <code>accept-invite</code>, ' +
+      '<code>forgot</code>, <code>reset</code>) carries <code>requireAuth()</code> or <code>requireOwner()</code>.</div>' +
       '<p class="desc">The two surfaces answer different questions and share no code path for visibility. This one ' +
       'shows an authenticated writer every author\'s posts in every state, with <code>authorId</code>, ' +
       '<code>revision</code>, <code>status</code> and <code>deletedAt</code>. The public one is built from an ' +
@@ -525,7 +540,7 @@
       row('One post by slug', '<code>GET /api/public/posts/:slug</code>, including the document body. An unpublished slug is the same 404 as an absent one.') +
       row('RSS and sitemap', '<code>GET /api/public/feed.xml</code> and <code>GET /api/public/sitemap.xml</code>.') +
       row('Category and tag vocabulary', '<code>GET /api/public/categories</code> and <code>GET /api/public/tags</code>, counted over published posts only.') +
-      row('Images', '<code>GET /api/public/images/:id</code> — a 302 to a five-minute presigned URL, served only for images referenced by the live content or cover of a currently published post. <code>GET /api/images/:id</code> on this surface still requires a session.') +
+      row('Images', '<code>GET /api/public/images/:id</code> — a 302 to a five-minute presigned URL. <strong>Two reference scopes, OR-ed:</strong> the live content or cover of a currently <em>published post</em>, or the cover or gallery of a currently <em>active product</em> (<code>status = \'active\' AND deleted_at IS NULL</code>). Neither counts history: an image cut from a published post, or a product that is unpublished, stops being public in the same moment. <code>GET /api/images/:id</code> on this surface still requires a session.') +
       '</tbody></table>' +
       '<p class="desc">Still true, and worth stating plainly:</p>' +
       '<table><thead><tr><th>Still the case</th><th>Detail</th></tr></thead><tbody>' +
@@ -535,34 +550,61 @@
       '</tbody></table>' +
 
       '<h2 id="c-limits">Rate limits</h2>' +
+      '<p class="desc">Every bucket on this surface, and the route that charges it. <strong>Each credential route ' +
+      'has its own key prefix</strong> — they are deliberately not pooled, so exhausting one does not lock a user ' +
+      'out of a different flow. Exactly two buckets in the whole application are ever cleared by a success: ' +
+      '<code>login:&lt;ip&gt;|&lt;email&gt;</code> and <code>chpw:&lt;userId&gt;</code>.</p>' +
       '<table><thead><tr><th>Bucket</th><th>Limit</th><th>Applies to</th></tr></thead><tbody>' +
-      row('login:&lt;ip&gt;', '20 / 15 min', 'Login and invite acceptance, per IP. Never cleared by a success.') +
-      row('login:&lt;ip&gt;|&lt;email&gt;', '5 / 15 min', 'Login for one address. Cleared on success.') +
+      row('login:&lt;ip&gt;', '20 / 15 min', '<code>POST /api/auth/login</code>, per IP. <strong>Never cleared by a success</strong> — clearing it would hand anyone holding one valid account a reset button for the password-spray limiter.') +
+      row('login:&lt;ip&gt;|&lt;email&gt;', '5 / 15 min', 'Login for one address. <strong>Forgotten on success</strong>, so four typos do not lock you out of your own account for a quarter of an hour after the fifth attempt finally works. The narrow bucket only — the per-IP one above survives.') +
+      row('accept:&lt;ip&gt;', '20 / 15 min', '<code>POST /api/auth/accept-invite</code> — <strong>its own bucket, not login\'s.</strong> An invitee redeeming a link has no account yet, so charging login\'s key would let a busy sign-up hour lock out the writers already working.') +
+      row('forgot:&lt;ip&gt;', '20 / 15 min', '<code>POST /api/auth/forgot</code>, per IP. <strong>Charged before the body is parsed</strong> — a limiter cannot bound work that runs after it.') +
+      row('forgot:&lt;ip&gt;|&lt;email&gt;', '5 / 15 min', 'Reset mail for one address, and what stops one host mail-bombing one inbox. It cannot move above the parse: the address it keys on is in the body.') +
+      row('reset:&lt;ip&gt;', '20 / 15 min', '<code>POST /api/auth/reset</code> — redeeming a reset token, per IP.') +
+      row('chpw:&lt;userId&gt;', '5 / 15 min', '<code>POST /api/auth/change-password</code>, checked before the body is parsed. <strong>Keyed on the account, not the IP</strong>: the threat is somebody at an unlocked laptop guessing the existing password, so moving between networks must not reset the count. Forgotten on a successful change.') +
       row('export:&lt;userId&gt;', '5 / hour', 'Export.') +
       row('import:&lt;userId&gt;', '5 / hour', 'Import — <strong>charged before the body is parsed</strong>, so a malformed bundle still spends one.') +
       row('images:&lt;userId&gt;', '120 / hour', 'Reserving upload slots.') +
       row('images:commit:&lt;userId&gt;', '240 / hour', 'Committing uploads.') +
+      row('emailimport:&lt;userId&gt;', '5 / hour', '<code>POST /api/admin/email/subscribers/import</code> — the same allowance as the backup import, for the same reason: a bulk write of attacker-shaped text through a parser.') +
+      row('emailtest:&lt;userId&gt;', '10 / 15 min', '<code>POST /api/admin/email/broadcasts/:id/test</code>. A test send is a real message to a real inbox, and the owner\'s own inbox is still an inbox somebody has to read.') +
       '</tbody></table>' +
+      '<div class="note">No other route on this surface is rate limited — not the post, revision, category, team or ' +
+      'broadcast routes. The public unsubscribe endpoint has its own bucket on the ' +
+      '<strong>Public</strong> surface.</div>' +
 
       '<h2 id="c-errors">Errors</h2>' + COMMON_ERRORS,
 
     public:
       '<h2 id="c-start">Getting started</h2>' +
-      '<p class="lede">Seven routes, all <code>GET</code>, all anonymous. There is nothing to sign up for and nothing to send.</p>' +
+      '<p class="lede">The reading API is seven routes, all <code>GET</code>, all anonymous. There is nothing to sign up for and nothing to send.</p>' +
       '<div class="codeblock"><pre><code>' + esc(
         'curl https://example.com/api/public/posts\n' +
         'curl https://example.com/api/public/posts/my-slug\n' +
         'curl https://example.com/api/public/feed.xml'
       ) + '</code></pre></div>' +
-      '<div class="note"><strong>Send nothing.</strong> No cookie, no bearer token, no API key. This surface is ' +
-      'mounted <em>above</em> the session middleware, so a handler here structurally cannot read a cookie — a ' +
+      '<div class="note"><strong>Send nothing.</strong> No cookie, no bearer token, no API key. The reading routes ' +
+      'are mounted <em>above</em> the session middleware, so a handler there structurally cannot read a cookie — a ' +
       'response marked <code>Cache-Control: public</code> is therefore incapable of varying by who asked, even if a ' +
       'later edit tried. Sending a session cookie changes the response byte for byte: not at all.</div>' +
+      '<div class="note warn"><strong>One more path shares the <code>/api/public/</code> prefix and is not part of ' +
+      'the reading API.</strong> <code>GET</code> and <code>POST /api/public/unsubscribe?token=</code> is the ' +
+      'one-click unsubscribe link carried by marketing email. It is a <em>different router</em>, mounted separately ' +
+      'in <code>server/index.ts</code>: it answers <strong>HTML rather than JSON</strong> (the caller is a person in ' +
+      'a mail client, not a program), it is <code>Cache-Control: no-store</code> and <code>X-Robots-Tag: noindex</code> ' +
+      'because the page names an email address, and it sits <em>above</em> the origin guard so an RFC&nbsp;8058 ' +
+      'one-click <code>POST</code> from a mail provider — which carries no <code>Origin</code> at all — is not a 403. ' +
+      'Its whole authority is a 256-bit HMAC in <code>?token=</code>. The <code>GET</code> only asks; the ' +
+      '<code>POST</code> is what unsubscribes, so a link scanner fetching every URL in a message cannot remove ' +
+      'anybody. It is also the one route in this application whose query is <strong>not</strong> ' +
+      '<code>.strict()</code> — corporate link-protection gateways append their own tracking parameters to every ' +
+      'link they rewrite, and refusing those would turn one gateway into an unsubscribe outage for a whole ' +
+      'company.</div>' +
 
       '<h2 id="c-visible">What is exposed, and what is not</h2>' +
       '<p class="desc"><strong>Published posts only.</strong> A post is visible on this surface when <em>all four</em> ' +
       'of these are true — one predicate, in one place in the SQL, applied to the list, the by-slug read, the feed, ' +
-      'the sitemap, both taxonomy routes and the image check:</p>' +
+      'the sitemap, both taxonomy routes and the post half of the image check:</p>' +
       '<table><thead><tr><th>Must be true</th><th>Why it is a separate condition</th></tr></thead><tbody>' +
       row('Its status is <code>published</code>', 'Drafts and archived posts are not published.') +
       row('It is not in the trash', 'Trash is a <em>view</em>, not a status: a published post that was then trashed still reads <code>status = published</code>, so this has to be asked separately.') +
@@ -612,11 +654,17 @@
       '<p class="desc">That route answers <strong>302</strong> to a presigned URL valid for five minutes — it never ' +
       'proxies bytes, which is why its own response is <code>private, no-store</code>: a cached redirect would ' +
       'outlive the credential inside it.</p>' +
-      '<div class="note warn"><strong>Only live references are served.</strong> An image qualifies when it is ' +
-      'referenced by the <em>current</em> content or cover of a <em>currently published</em> post. A reference from a ' +
+      '<div class="note warn"><strong>Only live references are served, and there are now two of them.</strong> An ' +
+      'image qualifies when it is referenced by the <em>current</em> content or cover of a <em>currently ' +
+      'published</em> post, <strong>or</strong> by the cover or gallery of a <em>currently active</em> product ' +
+      '(<code>status = \'active\' AND deleted_at IS NULL</code>) — the same predicate the storefront product routes ' +
+      'apply, so an image is servable exactly when the page that would show it is reachable. A reference from a ' +
       'revision does not count, so an image cut from a published post stops being public the moment the cut is ' +
-      'saved. Neither does a draft, an archived or a trashed post, nor an upload slot whose bytes were never ' +
-      'committed. Unknown, uncommitted and unreferenced are one <code>404</code> from one statement.</div>' +
+      'saved. Neither does a draft, an archived or a trashed post; nor a draft, archived or trashed product; nor an ' +
+      'upload slot whose bytes were never committed. Unknown, uncommitted and unreferenced are one <code>404</code> ' +
+      'from one statement.<br><br>This is the deliberate mirror image of the orphan collector, which counts post ' +
+      'revisions <em>and</em> products in <strong>every</strong> state so it never deletes bytes somebody needs. ' +
+      'This check fails the other way: it would rather refuse a byte somebody wanted than publish a private one.</div>' +
 
       '<h2 id="c-cache">Caching and conditional requests</h2>' +
       '<p class="desc">Every JSON and XML route carries an <code>ETag</code>. It is <strong>opaque</strong> — a hash ' +
@@ -632,6 +680,7 @@
       row('<code>GET /api/public/categories</code>, <code>/tags</code>', '<code>public, s-maxage=60, stale-while-revalidate=300</code>, <code>ETag</code> only — no <code>Last-Modified</code>') +
       row('<code>GET /api/public/feed.xml</code>, <code>/sitemap.xml</code>', '<code>public, s-maxage=600</code>') +
       row('<code>GET /api/public/images/:id</code>', '<code>private, no-store</code> — the redirect embeds a five-minute credential') +
+      row('<code>GET</code>/<code>POST /api/public/unsubscribe</code>', '<code>no-store</code>, plus <code>X-Robots-Tag: noindex, nofollow</code> — the page names an email address, and this is the one prefix a shared cache has been told it MAY store. No <code>ETag</code>: it answers HTML, not JSON.') +
       '</tbody></table>' +
       '<h4>A worked revalidation</h4>' +
       '<div class="codeblock"><pre><code>' + esc(
@@ -662,24 +711,30 @@
       'as one that got the body.</p>' +
 
       '<h2 id="c-cors">CORS</h2>' +
-      '<p class="desc">Every response under <code>/api/public/*</code> — success, <code>304</code>, and <em>every ' +
+      '<p class="desc">Every response from the <strong>reading</strong> router — success, <code>304</code>, and <em>every ' +
       'error</em>, including the 400s and the 429 — carries <code>Access-Control-Allow-Origin: *</code>. Errors are ' +
       'included deliberately: a browser client seeing an opaque CORS failure instead of a readable 404 is a worse ' +
       'outcome than the error itself.</p>' +
+      '<div class="note warn"><strong>The unsubscribe pair carries no CORS header at all</strong>, and sharing the ' +
+      '<code>/api/public/</code> prefix does not change that: it is a different router, mounted above this one, and the ' +
+      'header is set by a middleware that lives inside the reading router. That is correct rather than an oversight — ' +
+      'those two routes answer HTML to a person in a mail client, not JSON to cross-origin JavaScript, and there is ' +
+      'nothing a browser script should be able to read from them.</div>' +
       '<table><tbody>' +
-      row('<code>Access-Control-Allow-Origin: *</code>', 'Any origin. Scoped to <code>/api/public/*</code> only — the authenticated API carries no such header.') +
+      row('<code>Access-Control-Allow-Origin: *</code>', 'Any origin. The seven reading routes and their preflight only — the authenticated API carries no such header, and neither does <code>/api/public/unsubscribe</code>.') +
       row('<code>Access-Control-Allow-Credentials</code>', '<strong>Never sent.</strong> With <code>*</code> it would be invalid anyway, and the combination is exactly what turns a public read API into a session-riding one. The header a browser needs in order to attach a cookie is never granted.') +
       row('<code>Access-Control-Expose-Headers: ETag, Last-Modified, Retry-After</code>', 'Without this, cross-origin JavaScript receives the validators and cannot read them — neither <code>ETag</code> nor <code>Last-Modified</code> is on the CORS safelist — so it could never send them back. curl, CDNs and feed readers were never affected; browsers were.') +
-      row('<code>OPTIONS</code> preflight', 'Answered with <code>204</code>: <code>Allow-Methods: GET, HEAD, OPTIONS</code>, <code>Allow-Headers: If-None-Match, If-Modified-Since</code>, <code>Max-Age: 86400</code>. Sending a conditional header is not a simple request, so without this the preflight would 404 and the real request would never follow.') +
+      row('<code>OPTIONS</code> preflight', 'Answered with <code>204</code>: <code>Allow-Methods: GET, HEAD, OPTIONS</code>, <code>Allow-Headers: If-None-Match, If-Modified-Since</code>, <code>Max-Age: 86400</code>. Sending a conditional header is not a simple request, so without this the preflight would 404 and the real request would never follow. It answers for the whole <code>/api/public/*</code> prefix, so <code>POST</code> is not advertised even on the unsubscribe path — which costs nothing, because a one-click unsubscribe is a server-to-server POST and a form submission is never preflighted.') +
       '</tbody></table>' +
 
       '<h2 id="c-limits">Rate limits</h2>' +
-      '<p class="desc"><strong>One bucket, and it is on two things only.</strong> The limiter writes a database row ' +
-      'per call, so putting it on the cheap, edge-cacheable routes would make them the expensive ones. Plain list, ' +
-      'detail, feed, sitemap and both taxonomies carry <strong>no limiter at all</strong> and are protected by ' +
-      '<code>s-maxage</code> at the edge instead.</p>' +
+      '<p class="desc"><strong>Two buckets, and the reading one is on two things only.</strong> The limiter writes a ' +
+      'database row per call, so putting it on the cheap, edge-cacheable routes would make them the expensive ones. ' +
+      'Plain list, detail, feed, sitemap and both taxonomies carry <strong>no limiter at all</strong> and are ' +
+      'protected by <code>s-maxage</code> at the edge instead.</p>' +
       '<table><thead><tr><th>Bucket</th><th>Limit</th><th>Applies to</th></tr></thead><tbody>' +
       row('public:&lt;ip&gt;', '300 / minute', 'A list request carrying a non-empty <code>search</code> (a full-text query the published partial index does not serve), and every request to <code>GET /api/public/images/:id</code>. Both are charged <em>before</em> the expensive work runs.') +
+      row('unsub:&lt;ip&gt;', '120 / 15 min', '<code>GET</code> and <code>POST /api/public/unsubscribe</code>, sharing one bucket. <strong>Deliberately generous.</strong> An unsubscribe link is clicked by somebody who has just decided they are done with this sender, and a <code>429</code> at that moment is the worst possible answer; the limit exists only so an unauthenticated endpoint cannot be driven in a loop, and an office behind one NAT unsubscribing en masse must stay comfortably under it.') +
       '</tbody></table>' +
       '<div class="note">A <code>429</code> here carries <code>retryAfter</code> in the body and a ' +
       '<code>Retry-After</code> header, and — unlike most APIs — the CORS headers too, so a browser can actually ' +
@@ -688,11 +743,14 @@
 
       '<h2 id="c-errors">Errors</h2>' +
       '<div class="note">This surface never answers <code>401</code>, <code>403</code>, <code>409</code> or ' +
-      '<code>422</code> — there is no credential to be missing, nothing to write and no document to validate. In ' +
-      'practice you will see <code>400</code>, <code>404</code>, <code>429</code> and, if something breaks, ' +
-      '<code>500</code>. Note that an unconfigured image store and an unconfigured origin allow-list are both ' +
-      '<code>400</code>s rather than 500s, precisely so a client does not spend thirty seconds of backoff arriving ' +
-      'at the same place.</div>' + COMMON_ERRORS
+      '<code>422</code> — there is no credential to be missing, nothing to rebase against and no document to ' +
+      'validate. In practice you will see <code>400</code>, <code>404</code>, <code>429</code> and, if something ' +
+      'breaks, <code>500</code>. Note that an unconfigured image store and an unconfigured origin allow-list are ' +
+      'both <code>400</code>s rather than 500s, precisely so a client does not spend thirty seconds of backoff ' +
+      'arriving at the same place. The envelope below describes the reading routes; ' +
+      '<code>/api/public/unsubscribe</code> answers <strong>HTML pages</strong> instead — <code>200</code> for ' +
+      'ask-or-done and <code>404</code> for a link it cannot recognise, with the four reasons a link is ' +
+      'unrecognisable deliberately not told apart.</div>' + COMMON_ERRORS
   };
 
   /* ── rendering ──────────────────────────────────────────── */
