@@ -215,6 +215,23 @@ const DrainBody = z
   .object({ limit: z.number().int().positive().max(BROADCAST_BATCH).optional() })
   .strict();
 
+/**
+ * The same bound, reached over the query string, because the cron has no body.
+ *
+ * `z.coerce` and not `Number(...)`: a query value is always a string, and the
+ * bare-`Number` version this replaced turned `?limit=abc` into `NaN || undefined`
+ * — which silently became "the default" instead of a refusal.
+ *
+ * THE CEILING IS THE POINT. `vercel.json` gives this function `maxDuration: 30`
+ * and Vercel does not re-run a cron it had to kill, so an uncapped `?limit=100000`
+ * is not a slow drain; it is one that never finishes, never retries, and leaves
+ * the queue for tomorrow. Only `CRON_SECRET` stood in front of it, and a secret
+ * bounds WHO may call a route, never what the call costs.
+ */
+const DrainQuery = z
+  .object({ limit: z.coerce.number().int().positive().max(BROADCAST_BATCH).optional() })
+  .strict();
+
 const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 /**
@@ -655,7 +672,11 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
    */
   routes.get('/admin/email/drain', async (c) => {
     assertCronRequest(c.req.header('Authorization'));
-    return c.json(await runDrain(c, mailer, Number(c.req.query('limit')) || undefined));
+    // Through `DrainQuery`, so this method carries the same ceiling the POST
+    // has always had — see the schema for why an uncapped cron is the one that
+    // never finishes.
+    const { limit } = readQuery(c, DrainQuery);
+    return c.json(await runDrain(c, mailer, limit));
   });
 
   routes.post('/admin/email/drain', requireOwner(), async (c) => {

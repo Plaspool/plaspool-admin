@@ -762,6 +762,37 @@ describe('the drain route', () => {
     expect(mailer.sent).toHaveLength(2);
   });
 
+  it('caps ?limit at the batch size, like the POST always did', async () => {
+    /*
+     * THE ASYMMETRY THIS CLOSES. The GET used to read `Number(query.limit)` with
+     * no schema while the POST went through `DrainBody`, so the cron — the only
+     * caller that actually uses this method — was the one without a ceiling.
+     *
+     * It matters because of what a cron cannot do: `vercel.json` gives this
+     * function `maxDuration: 30` and Vercel does not re-run a job it had to kill,
+     * so an over-large batch is not a slow drain, it is one that never completes
+     * and whose next attempt is tomorrow. `CRON_SECRET` bounds who may call it,
+     * which is a different question from what the call costs.
+     */
+    process.env.CRON_SECRET = SECRET;
+    const bearer = { headers: { authorization: `Bearer ${SECRET}` } };
+
+    const tooBig = await owner.get('/api/admin/email/drain?limit=100000', bearer);
+    expect(tooBig.status).toBe(400);
+    expect((await json<{ detail: string }>(tooBig)).detail).toBe('limit');
+
+    // A non-number is a refusal too, and not the silent `NaN || undefined`
+    // fallback to the default that the bare-`Number` version produced.
+    expect((await owner.get('/api/admin/email/drain?limit=abc', bearer)).status).toBe(400);
+
+    // Strict, like every other query schema here.
+    expect((await owner.get('/api/admin/email/drain?nope=1', bearer)).status).toBe(400);
+
+    // And the ordinary calls still work: within the cap, and absent entirely.
+    expect((await owner.get('/api/admin/email/drain?limit=10', bearer)).status).toBe(200);
+    expect((await owner.get('/api/admin/email/drain', bearer)).status).toBe(200);
+  });
+
   it('FAILS CLOSED when CRON_SECRET is not configured', async () => {
     /*
      * The one that would otherwise be a public endpoint. Vercel sends the

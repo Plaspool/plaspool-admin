@@ -24,7 +24,7 @@ import { shopStats } from './stats';
  * cannot leak, and forgetting one fails that route's own "401 without a session"
  * case.
  *
- * `requireAuth()` AND NOT `requireOwner()`, ON ALL FIVE. It matches the admin
+ * `requireAuth()` AND NOT `requireOwner()`, ON ALL FOUR. It matches the admin
  * order list and the admin product list, which any writer may already read — and
  * every route here is a projection of rows those two already return. Owner-only
  * is what contract §HTTP reserves for money-adjacent WRITES (cancel, refund,
