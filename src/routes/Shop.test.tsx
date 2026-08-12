@@ -62,6 +62,7 @@ import Shop from './Shop';
 import ShopProducts from './ShopProducts';
 import ShopOrders from './ShopOrders';
 import ShopCustomers from './ShopCustomers';
+import ShopAudit from './ShopAudit';
 
 // --------------------------------------------------------------- the server
 
@@ -761,6 +762,112 @@ describe('the buyer list', () => {
 });
 
 // -------------------------------------------------------------------- shared
+
+const AUDIT_STOCK = {
+  id: 'evt_1',
+  kind: 'stock' as const,
+  occurredAt: 1_786_000_000_000,
+  variantId: 'v_1',
+  sku: 'MUG-BLUE',
+  productId: 'p_1',
+  productTitle: 'Enamel mug',
+  optionValues: { Colour: 'Blue' },
+  reason: 'Delivery arrived from the distributor',
+  actor: 'Nathaniel',
+  delta: 12,
+  onHand: 47,
+  amount: null,
+  previousAmount: null,
+  currency: null,
+};
+
+const AUDIT_PRICE = {
+  ...AUDIT_STOCK,
+  id: 'prc_1',
+  kind: 'price' as const,
+  occurredAt: 1_786_000_100_000,
+  reason: 'Distributor raised the price',
+  // No actor: `shop_prices` has no such column, and the view must not invent one.
+  actor: null,
+  delta: null,
+  onHand: null,
+  amount: 2_200_000,
+  previousAmount: 1_850_000,
+  currency: 'NGN',
+};
+
+describe('the history', () => {
+  it('leads with the difference, not the current value', async () => {
+    when('/api/shop/admin/audit', { items: [AUDIT_PRICE], nextCursor: null });
+    mount(<ShopAudit />, '/shop/audit');
+
+    /*
+     * THE QUESTION THIS PAGE ANSWERS is "why is this number what it is", asked
+     * in front of the number — so the row has to carry what it WAS, which is
+     * the one figure that appears nowhere else in the app.
+     */
+    const row = await screen.findByText(/Distributor raised the price/);
+    const entry = row.closest('li')!;
+    // MAJOR units on screen, minor on the wire: 1,850,000 kobo is ₦18,500.00.
+    // The old figure is here because it is the one that appears nowhere else.
+    expect(entry.textContent).toContain('18,500.00');
+    expect(entry.textContent).toContain('22,000.00');
+    expect(entry.textContent).toContain('increase');
+  });
+
+  it('shows a stock move as the delta and what it left behind', async () => {
+    when('/api/shop/admin/audit', { items: [AUDIT_STOCK], nextCursor: null });
+    mount(<ShopAudit />, '/shop/audit');
+
+    const entry = (await screen.findByText(/Delivery arrived/)).closest('li')!;
+    expect(entry.textContent).toContain('+12');
+    expect(entry.textContent).toContain('47');
+    // Who did it, when it is known.
+    expect(entry.textContent).toContain('Nathaniel');
+  });
+
+  it('says a reason was not recorded rather than leaving a gap', async () => {
+    // Every price written before migration 0009 has none. A blank there reads
+    // like a loading bug; the absence is a fact and is stated.
+    when('/api/shop/admin/audit', {
+      items: [{ ...AUDIT_PRICE, reason: null }],
+      nextCursor: null,
+    });
+    mount(<ShopAudit />, '/shop/audit');
+
+    expect(await screen.findByText('No reason recorded')).toBeTruthy();
+  });
+
+  it('asks the server for the kind the URL names', async () => {
+    when('/api/shop/admin/audit', { items: [AUDIT_STOCK], nextCursor: null });
+    mount(<ShopAudit />, '/shop/audit?kind=stock');
+
+    await waitFor(() => expect(asked('kind=stock')).toBeTruthy());
+  });
+
+  it('scopes to one variant, and offers a way back out', async () => {
+    when('/api/shop/admin/audit', { items: [AUDIT_STOCK], nextCursor: null });
+    mount(<ShopAudit />, '/shop/audit?variant=v_1');
+
+    await waitFor(() => expect(asked('variantId=v_1')).toBeTruthy());
+    // A filtered audit page that does not say it is filtered is the worst kind
+    // of wrong on this screen.
+    expect(screen.getByRole('button', { name: /show the whole shop/i })).toBeTruthy();
+  });
+
+  it('appends earlier changes rather than replacing what you were reading', async () => {
+    when('/api/shop/admin/audit', { items: [AUDIT_PRICE], nextCursor: 'cur_2' });
+    mount(<ShopAudit />, '/shop/audit');
+
+    await screen.findByText(/Distributor raised the price/);
+    when('/api/shop/admin/audit', { items: [AUDIT_STOCK], nextCursor: null });
+    await userEvent.click(screen.getByRole('button', { name: /show earlier changes/i }));
+
+    await waitFor(() => expect(screen.getByText(/Delivery arrived/)).toBeTruthy());
+    // The first page is still on screen.
+    expect(screen.getByText(/Distributor raised the price/)).toBeTruthy();
+  });
+});
 
 describe('setting up variants', () => {
   it('asks whether it varies, instead of demanding a SKU', async () => {

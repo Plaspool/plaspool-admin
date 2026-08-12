@@ -280,6 +280,31 @@ export interface ShopProduct {
   revision: number;
 }
 
+export type AuditKind = 'stock' | 'price';
+
+/** One change to a variant: what it was, what it became, who, and why. */
+export interface AuditEntry {
+  id: string;
+  kind: AuditKind;
+  occurredAt: number;
+  variantId: string;
+  sku: string | null;
+  productId: string | null;
+  productTitle: string | null;
+  optionValues: Record<string, string>;
+  /** `null` means no reason was recorded — which is true of every price written
+   *  before migration 0009, and is not the same as an empty one. */
+  reason: string | null;
+  /** `null` for a price: `shop_prices` has no actor column, and guessing one
+   *  would be a fact invented by the audit view. */
+  actor: string | null;
+  delta: number | null;
+  onHand: number | null;
+  amount: number | null;
+  previousAmount: number | null;
+  currency: string | null;
+}
+
 export interface ShopVariant {
   id: string;
   productId: string;
@@ -786,6 +811,23 @@ export const shopApi = {
       subject: 'Variant',
     });
     return res.inventory;
+  },
+
+  /**
+   * What changed in the catalogue, who changed it, and why.
+   *
+   * Two sources behind one list — `commerce_events` for stock and the
+   * append-only `shop_prices` for money — unioned and keyset-paged server-side.
+   * See `server/shop/admin/audit.ts` for why this needed no new table.
+   */
+  async listAudit(
+    q: { kind?: AuditKind; variantId?: string; productId?: string; cursor?: string; limit?: number } = {},
+    signal?: AbortSignal,
+  ): Promise<{ items: AuditEntry[]; nextCursor: string | null }> {
+    return await shopFetch<{ items: AuditEntry[]; nextCursor: string | null }>(
+      `${BASE}/audit`,
+      { query: q as Record<string, string | number | undefined>, signal },
+    );
   },
 
   /**

@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
-import { ImagePlus, Plus, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { History, ImagePlus, Plus, X } from 'lucide-react';
 import {
   shopApi,
   formatMinor,
@@ -466,6 +467,13 @@ function VariantDetail({
               : `${variant.available} available`}
             {variant.status === 'discontinued' && ' · discontinued'}
           </p>
+          {/* Straight to THIS variant's own history. The question "why is this
+              number what it is" is asked in front of the number, so the answer
+              should be one click from it rather than a page away. */}
+          <Link className="vdetail__history" to={`/shop/audit?variant=${encodeURIComponent(variant.id)}`}>
+            <History className="ui-ic" aria-hidden="true" />
+            History
+          </Link>
         </div>
       </div>
 

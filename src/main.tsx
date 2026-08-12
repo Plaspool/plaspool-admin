@@ -27,6 +27,7 @@ import Shop from './routes/Shop';
 import ShopProducts from './routes/ShopProducts';
 import ShopOrders from './routes/ShopOrders';
 import ShopCustomers from './routes/ShopCustomers';
+import ShopAudit from './routes/ShopAudit';
 import EmailTemplates from './routes/EmailTemplates';
 import EmailBroadcasts from './routes/EmailBroadcasts';
 import EmailSubscribers from './routes/EmailSubscribers';
@@ -153,6 +154,7 @@ const router = createHashRouter([
       { path: '/shop/products', element: <ShopProducts />, errorElement: <RouteError /> },
       { path: '/shop/orders', element: <ShopOrders />, errorElement: <RouteError /> },
       { path: '/shop/customers', element: <ShopCustomers />, errorElement: <RouteError /> },
+      { path: '/shop/audit', element: <ShopAudit />, errorElement: <RouteError /> },
       /*
        * `/emails` is a redirect and not a screen of its own — there is no
        * overview worth the click, and `replace` keeps it out of the back stack

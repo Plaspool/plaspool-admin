@@ -1011,3 +1011,140 @@
   height: var(--ctl-h);
   font-size: var(--step--1);
 }
+
+/* ══════════════════════════════════════════════════════════════ the history */
+
+.auditlist {
+  display: grid;
+  gap: var(--s1);
+  margin: var(--s3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The day is a heading inside one flat list rather than a nested <ul>, so the
+   reading order a screen reader announces is not broken into sub-lists. */
+.auditday {
+  margin-top: var(--s4);
+  padding-bottom: var(--s1);
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-4);
+  font-size: var(--step--2);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.auditday:first-child {
+  margin-top: 0;
+}
+
+.auditrow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--s3);
+  padding: var(--s3) var(--s2);
+  border-radius: var(--radius-m);
+}
+.auditrow:hover {
+  background: var(--paper-sunken);
+}
+.auditrow__icon {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-full);
+  background: var(--paper-sunken);
+  color: var(--ink-4);
+}
+.auditrow--price .auditrow__icon {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+.auditrow__body {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.auditrow__what {
+  font-size: var(--step-0);
+  font-variant-numeric: tabular-nums;
+}
+/* The old value is struck through and dimmed: the row leads with the DIFFERENCE,
+   and the number that no longer applies should not compete with the one that
+   does. */
+.auditrow__was {
+  color: var(--ink-4);
+  text-decoration: line-through;
+}
+.auditrow__arrow {
+  margin: 0 var(--s1);
+  color: var(--ink-4);
+}
+ /* No positive token exists in `tokens.css`; `--accent-hover` is what
+    `.chip--active` and `.chip--delivered` already use to mean "good state", so
+    this follows the convention rather than inventing a seventh colour. */
+.auditrow__up {
+  color: var(--accent-hover);
+}
+.auditrow__down {
+  color: var(--danger);
+}
+.auditrow__note {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+}
+.auditrow__note--up {
+  color: var(--danger);
+}
+.auditrow__note--down {
+  color: var(--accent-hover);
+}
+.auditrow__where {
+  font-size: var(--step--1);
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.auditrow__sku {
+  font-family: var(--font-mono);
+  font-size: var(--step--2);
+  color: var(--ink-4);
+}
+.auditrow__why {
+  font-size: var(--step--1);
+  color: var(--ink-2);
+}
+.auditrow__why em {
+  color: var(--ink-4);
+}
+.auditrow__when {
+  color: var(--ink-4);
+  font-size: var(--step--2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.vdetail__history {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  margin-top: var(--s1);
+  color: var(--ink-3);
+  font-size: var(--step--2);
+}
+.vdetail__history:hover {
+  color: var(--accent);
+}
+
+@media (max-width: 640px) {
+  .auditrow {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  /* The time moves under the text rather than squeezing a third column into
+     375px, where it would push the reason to two words a line. */
+  .auditrow__when {
+    grid-column: 2;
+  }
+}

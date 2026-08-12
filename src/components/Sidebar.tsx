@@ -14,6 +14,7 @@ import {
   Archive,
   ChevronLeft,
   Globe,
+  History,
   LayoutDashboard,
   LayoutTemplate,
   Layers,
@@ -149,6 +150,7 @@ const SECTION_PAGES: Partial<Record<SectionId, SectionPage[]>> = {
     { key: 'products', label: 'Products', to: '/shop/products', icon: Package },
     { key: 'orders', label: 'Orders', to: '/shop/orders', icon: Receipt },
     { key: 'customers', label: 'Customers', to: '/shop/customers', icon: Users },
+    { key: 'audit', label: 'History', to: '/shop/audit', icon: History },
   ],
   emails: [
     { key: 'templates', label: 'Templates', to: '/emails/templates', icon: LayoutTemplate },

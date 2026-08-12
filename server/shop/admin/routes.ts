@@ -4,6 +4,7 @@ import { readQuery, str } from '../../middleware/errors';
 import { requireAuth } from '../../middleware/session';
 import { currentDb } from '../../app-env';
 import type { AppEnv } from '../../app-env';
+import { listAudit } from './audit';
 import { listShopCategories } from './categories';
 import { listBuyers } from './customers';
 import { listInventory } from './inventory';
@@ -68,6 +69,19 @@ const PageQueryParams = z
   })
   .strict();
 
+/**
+ * One variant's history, one product's, or the whole shop's.
+ *
+ * `.strict()` like every other query here: a mistyped `?variant=` that is
+ * silently ignored would show the WHOLE shop's history under a heading naming
+ * one variant, which on an audit surface is the worst kind of wrong.
+ */
+const AuditQueryParams = PageQueryParams.extend({
+  kind: z.enum(['stock', 'price']).optional(),
+  variantId: str().max(64).optional(),
+  productId: str().max(64).optional(),
+}).strict();
+
 const InventoryQueryParams = PageQueryParams.extend({
   /**
    * SPELLED AS TWO LITERALS, not coerced from anything truthy. `?belowOnly=false`
@@ -115,6 +129,19 @@ shopAdminRoutes.get('/admin/inventory', auth, async (c) => {
       limit: q.limit,
     }),
   );
+});
+
+/**
+ * WHAT CHANGED, WHO CHANGED IT, AND WHY — over two sources that were already
+ * durable and had no reader. See `audit.ts` for why this adds no table.
+ *
+ * `requireAuth` and not `requireOwner`, matching the rest of this directory: it
+ * is a projection of rows a writer can already see on the product form, and an
+ * audit trail only the owner may read is one nobody consults.
+ */
+shopAdminRoutes.get('/admin/audit', auth, async (c) => {
+  const q = readQuery(c, AuditQueryParams);
+  return c.json(await listAudit(currentDb(c), q));
 });
 
 shopAdminRoutes.get('/admin/categories', auth, async (c) => {
