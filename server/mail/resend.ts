@@ -17,13 +17,33 @@ import type { Mailer } from './port';
  */
 const ENDPOINT = 'https://api.resend.com/emails';
 
+/**
+ * TRIMMED, AND THAT IS NOT TIDYING — it is a fix for a measured production
+ * failure.
+ *
+ * Piping a value into `vercel env add` from PowerShell prefixes it with a BOM
+ * (U+FEFF). The key then reaches `fetch` inside a header value and Undici
+ * rejects the whole request:
+ *
+ *   TypeError: Cannot convert argument to a ByteString because the character
+ *   at index 7 has a value of 65279 which is greater than 255
+ *
+ * Index 7 is the first character after `Bearer `. Nothing about the message
+ * names the environment variable, the header, or the BOM, and the same value
+ * looks perfect in the Vercel dashboard. `trim()` removes U+FEFF because
+ * ECMAScript counts it as whitespace, so this is one call rather than a
+ * special case — and it equally absorbs the trailing newline that a
+ * `cat key.txt | vercel env add` would leave.
+ */
 function config(): { apiKey: string; from: string } {
   const env = getEnv();
+  const apiKey = env.RESEND_API_KEY.trim();
+  const from = env.MAIL_FROM.trim();
   const missing: string[] = [];
-  if (!env.RESEND_API_KEY) missing.push('RESEND_API_KEY');
-  if (!env.MAIL_FROM) missing.push('MAIL_FROM');
+  if (!apiKey) missing.push('RESEND_API_KEY');
+  if (!from) missing.push('MAIL_FROM');
   if (missing.length) throw new MailNotConfiguredError(missing);
-  return { apiKey: env.RESEND_API_KEY, from: env.MAIL_FROM };
+  return { apiKey, from };
 }
 
 export function resendMailer(): Mailer {

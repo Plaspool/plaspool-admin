@@ -496,3 +496,46 @@ describe('an unconfigured mailer', () => {
     expect(Number(rows.rows[0].n)).toBe(0);
   });
 });
+
+describe('a mailer that is configured but FAILS to send', () => {
+  /*
+   * REGRESSION. The first version shipped without this arm and was measured in
+   * production: a known address answered 500 and an unknown one 202. Only a
+   * real account ever reaches the send, so ANY error escaping it confirms the
+   * account exists — the same oracle `assertConfigured` closes for the
+   * unconfigured case, reopened by every other failure mode (an unverified
+   * domain, a revoked key, a provider outage, a BOM in the API key, which is
+   * what actually happened).
+   */
+  const failing: Mailer = {
+    assertConfigured() {
+      /* configured — that is the point of this case */
+    },
+    async send() {
+      throw new Error('resend refused the message: HTTP 403');
+    },
+  };
+
+  const ask = async (email: string, ip: string) => {
+    const base = httpClient(ctx.db, { mailer: failing });
+    const headers = new Headers({ 'x-real-ip': ip });
+    return base.post('/api/auth/forgot', { email }, { headers });
+  };
+
+  it('answers 202 IDENTICALLY for a known and an unknown address', async () => {
+    const known = await ask(ctx.users.owner.email, '198.51.100.60');
+    const unknown = await ask('ghost@test.local', '198.51.100.61');
+
+    expect(`known:${known.status} unknown:${unknown.status}`).toBe('known:202 unknown:202');
+    expect({ ...(await json(known)), requestId: null }).toEqual({
+      ...(await json(unknown)),
+      requestId: null,
+    });
+  });
+
+  it('still commits the reset row, so the writer can be helped out of band', async () => {
+    await ask(ctx.users.owner.email, '198.51.100.62');
+    const rows = await ctx.db.execute(sql`SELECT count(*)::int AS n FROM password_resets`);
+    expect(Number(rows.rows[0].n)).toBe(1);
+  });
+});

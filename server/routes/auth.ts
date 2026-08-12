@@ -426,20 +426,50 @@ export function createAuthRoutes(deps: AuthRouteDeps = {}): Hono<AppEnv> {
       const base = c.get('origins')[0] ?? '';
       const url = `${base}${RESET_PATH}?token=${encodeURIComponent(issued.token)}`;
 
-      await mailer.send({
-        to: issued.user.email,
-        subject: 'Reset your password',
-        text:
-          `Someone asked to reset the password for this account.\n\n` +
-          `${url}\n\n` +
-          `The link works once and expires in an hour. If this was not you, ` +
-          `nothing has changed and you can ignore this message.`,
-        html:
-          `<p>Someone asked to reset the password for this account.</p>` +
-          `<p><a href="${url}">Choose a new password</a></p>` +
-          `<p>The link works once and expires in an hour. If this was not you, ` +
-          `nothing has changed and you can ignore this message.</p>`,
-      });
+      /*
+       * A FAILED SEND MUST NOT BE VISIBLE TO THE CALLER, and this arm is here
+       * because the uncaught version shipped and was measured in production:
+       * a known address answered 500 while an unknown one answered 202. That
+       * is the same enumeration oracle `assertConfigured` closes for the
+       * unconfigured case, reopened by every OTHER way a send can fail — an
+       * unverified domain, a revoked key, a provider outage, a malformed
+       * value. Only a real account ever reaches the send, so any error that
+       * escapes here confirms the account exists.
+       *
+       * Swallowed for the CALLER, never for the operator: the failure is
+       * logged with the same shape `toResponse` uses, so a mail outage is
+       * loud in the logs and silent on the wire. Deliberately not a 500 and
+       * deliberately not a retry — the reset row is already committed, and
+       * the writer can ask again.
+       */
+      try {
+        await mailer.send({
+          to: issued.user.email,
+          subject: 'Reset your password',
+          text:
+            `Someone asked to reset the password for this account.\n\n` +
+            `${url}\n\n` +
+            `The link works once and expires in an hour. If this was not you, ` +
+            `nothing has changed and you can ignore this message.`,
+          html:
+            `<p>Someone asked to reset the password for this account.</p>` +
+            `<p><a href="${url}">Choose a new password</a></p>` +
+            `<p>The link works once and expires in an hour. If this was not you, ` +
+            `nothing has changed and you can ignore this message.</p>`,
+        });
+      } catch (err) {
+        // Name and message only. The message never carries the token — see the
+        // status-only rule in `server/mail/resend.ts`.
+        console.error(
+          '[api]',
+          JSON.stringify({
+            requestId: c.get('requestId') ?? '',
+            name: err instanceof Error ? err.name : 'Error',
+            message: err instanceof Error ? err.message : 'mail send failed',
+            route: 'POST /api/auth/forgot',
+          }),
+        );
+      }
     }
 
     /*
