@@ -458,25 +458,67 @@ export function isAllowedHref(value: unknown): boolean {
 }
 
 /**
- * What an image `src` may be in a *stored* document: `https:`, plus the two
- * opaque local-reference schemes (spec §4.6).
+ * The remote protocols a *stored* image `src` may name — the same two
+ * `src/data/docguards.ts`'s `ALLOWED_IMAGE_PROTOCOLS` renders, and that
+ * identity is the whole point of the list.
+ *
+ * `http:` IS HERE BECAUSE THE EDITOR EMITS IT, NOT BECAUSE IT IS GOOD.
+ * Measured before the change, on this repo's own TipTap 3.29: an `http://…`
+ * image survives `repairPastedHTML` intact (`stripHostile` keeps any src that
+ * passes `isAllowedImageSrc`, which is http/https) and the ProseMirror parse
+ * keeps the node. This validator refused it. Because `savePost` validates
+ * `patch.content` on EVERY save and spec §8 makes a 422 a permanent stop in the
+ * client's retry policy, **one pasted `http://` image made a post unsavable
+ * forever** — the writer keeps typing into a document that can never be
+ * persisted. That is the same class of defect as the scheme-less-href one this
+ * file already records, and it was fixed the same way both previous times: one
+ * list wide enough for everything the editor emits, enforced identically on
+ * both surfaces.
+ *
+ * NARROWING THE EDITOR INSTEAD WAS CONSIDERED AND REJECTED. It loses the
+ * picture on paste *and* strands every document already holding one, which is
+ * strictly worse under this project's prime directive — a stored document must
+ * never become unwritable.
+ *
+ * The privacy consequence is stated rather than hidden: a remote `src` already
+ * leaks the reader's IP (the `https:` case is on the carried-hazard list) and
+ * `http:` adds plaintext. The real fix is the server-side fetch-and-store with
+ * a host allow-list `ARCHITECTURE.md` already specifies. It is not this list.
+ *
+ * NAMED `STORABLE_…` AND NOT `ALLOWED_IMAGE_PROTOCOLS`, deliberately.
+ * `src/data/docguards.ts` already exports that name for the render-side copy of
+ * the same two members, and this slice does not own that file — a second export
+ * under the identical name would read as one shared constant while being two.
+ * The two lists are held equal by `src/editor/schema-drift.test.tsx`, which
+ * drives a real `Editor` and a real `repairPastedHTML` over an `IMAGE_SRCS`
+ * table: whatever the editor keeps must be storable. Collapsing them into one
+ * re-export is a one-line follow-up in `docguards.ts`.
+ */
+export const STORABLE_IMAGE_PROTOCOLS: readonly string[] = ['https:', 'http:'];
+
+/**
+ * What an image `src` may be in a *stored* document: an allowed remote
+ * protocol, plus the two opaque local-reference schemes (spec §4.6).
  *
  * `idb:` stays accepted because it is what every pre-cutover document uses and
  * refusing it would make migration impossible; `asset:` is canonical after.
- * Neither carries protocol risk — they are ids, resolved by the app.
+ * Neither carries protocol risk — they are ids, resolved by the app. A
+ * scheme-less src stays refused, unlike a scheme-less *href*: nothing in this
+ * application writes a relative image, `stripHostile` deletes one on paste
+ * (measured), and there is no server route a relative image path could resolve
+ * against, so accepting one would widen the list past what the editor emits for
+ * no reachable document's benefit.
  *
- * DELIBERATELY NARROWER THAN THE CLIENT'S RENDER GUARD, which still allows
- * `http:` (`isAllowedImageSrc` in `src/data/docguards.ts`). A pasted `http://…`
- * image is therefore producible in the editor and refused here. Spec §4.6 and
- * the plan both list https-only, so that is what this enforces; closing the gap
- * means tightening the editor, which is a frontend change with a visible effect
- * on existing documents and is not this task's to make.
+ * Widening this beyond what the editor admits is the only real hazard here, and
+ * `javascript:`, `data:` and `vbscript:` are absent by construction: it is an
+ * allow-list, not a deny-list.
  */
 export function isStorableImageSrc(value: unknown): boolean {
   if (typeof value !== 'string') return false;
   const id = imageIdFromSrc(value);
   if (id !== null) return IMAGE_ID.test(id);
-  return protocolOf(value) === 'https:';
+  const protocol = protocolOf(value);
+  return protocol !== null && STORABLE_IMAGE_PROTOCOLS.includes(protocol);
 }
 
 /**

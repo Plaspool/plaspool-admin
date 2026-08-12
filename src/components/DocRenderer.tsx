@@ -1,7 +1,7 @@
 import { Fragment, type ReactNode } from 'react';
 import { StoredImg } from './StoredImg';
 import type { DocNode } from '../data/types';
-import { IDB_SCHEME } from '../data/doc';
+import { imageIdFromSrc } from '../data/doc';
 import { isAllowedHref, isAllowedImageSrc } from '../data/docguards';
 import { lowlight } from '../editor/extensions';
 
@@ -153,7 +153,15 @@ function renderNode(node: DocNode, key: number): ReactNode {
       const src = String(node.attrs?.src ?? '');
       const alt = String(node.attrs?.alt ?? '');
       const caption = String(node.attrs?.title ?? '');
-      const blobId = src.startsWith(IDB_SCHEME) ? src.slice(IDB_SCHEME.length) : null;
+      /*
+       * BOTH SCHEMES, through one predicate. `idb:` is what every pre-cutover
+       * document holds and `asset:` is what a migrated or newly written one
+       * holds, and a renderer that knew only the first would show "Image
+       * unavailable" over every picture in the library the moment migration
+       * ran. `StoredImg` resolves the bare id from either side of the cutover —
+       * local blob first, then `/api/images/<id>`.
+       */
+      const blobId = imageIdFromSrc(src);
       return (
         <figure key={key} className="doc-figure">
           {blobId ? (

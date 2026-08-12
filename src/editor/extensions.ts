@@ -26,7 +26,7 @@ import sql from 'highlight.js/lib/languages/sql';
 import typescript from 'highlight.js/lib/languages/typescript';
 import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
-import { IDB_SCHEME } from '../data/doc';
+import { IDB_SCHEME, imageIdFromSrc } from '../data/doc';
 import { isAllowedHref, isAllowedImageSrc } from '../data/docguards';
 import { ImageError, storeImageFile } from '../data/images';
 
@@ -160,12 +160,30 @@ function stripHostile(doc: Document) {
   // words stay and the affordance doesn't lie.
   doc.querySelectorAll('a:not([href])').forEach((el) => unwrap(el));
 
-  // Images are the one src we resolve ourselves. A `data:` URI reaching here
-  // means the paste handler didn't intercept it (plain `insertContent`, say),
-  // and the schema would drop it silently anyway — so drop it explicitly.
+  /*
+   * Images are the one src we resolve ourselves, and THIS IS THE ONLY GATE THEY
+   * HAVE. Measured on this repo's TipTap 3.29: the ProseMirror parse keeps an
+   * `<img>` with any src at all — `javascript:`, a relative path, anything —
+   * and only `allowBase64: false` removes one (`data:`). So a src that reaches
+   * a document is a src this line let through.
+   *
+   * `imageIdFromSrc` REPLACES A HAND-ROLLED `startsWith(IDB_SCHEME)`, and that
+   * is a data-loss fix rather than a tidy-up. Measured before the change:
+   * `repairPastedHTML('<p>x</p><img src="asset:img_abc">')` returned
+   * `'<p>x</p>'`. After migration every image in every post is `asset:`, so
+   * copying a section from one post into another silently deleted the
+   * pictures — against the invariant the block comment at the top of this
+   * section states in its own words ("no words are lost"), and with no error
+   * anywhere. One predicate, `shared/doc.ts`'s, now decides for both schemes at
+   * all three sites that ask the question (here, `DocRenderer`, `ImageNode`).
+   *
+   * A `data:` URI reaching here means the paste handler didn't intercept it
+   * (plain `insertContent`, say), and the schema would drop it silently anyway —
+   * so drop it explicitly, and keep the image count honest.
+   */
   doc.querySelectorAll('img').forEach((el) => {
     const src = el.getAttribute('src') ?? '';
-    if (!src.startsWith(IDB_SCHEME) && !isAllowedImageSrc(src)) el.remove();
+    if (imageIdFromSrc(src) === null && !isAllowedImageSrc(src)) el.remove();
   });
 }
 
@@ -421,20 +439,34 @@ async function rewriteDataImages(html: string, hooks: EditorHooks): Promise<stri
   return doc.body.innerHTML;
 }
 
-/** A remote `<img>` is kept — never lose content — but it breaks offline. */
+/**
+ * A remote `<img>` is kept — never lose content — but it breaks offline.
+ *
+ * THE STORED-IMAGE TEST IS EXPLICIT HERE EVEN THOUGH IT CHANGES NOTHING TODAY,
+ * and the honest version of why: `protocolOf('asset:img_x')` already returns
+ * `'asset:'`, which is not in `ALLOWED_IMAGE_PROTOCOLS`, so a stored image is
+ * not counted as remote right now — measured, `countRemoteImages` over one
+ * `asset:`, one `idb:` and one `http:` image returns 1. What this line buys is
+ * that the exclusion no longer depends on that coincidence. Both `asset:` and
+ * `idb:` DO name a protocol, so the day anything widens the render list — a
+ * `blob:` preview, say — a stored image starts being badged "on another site"
+ * and the writer is told to rescue a picture that is already local. Same
+ * predicate as `stripHostile` and `ImageNode`, decided in one place.
+ */
 export function countRemoteImages(html: string): number {
   try {
     const doc = new DOMParser().parseFromString(html, 'text/html');
-    return [...doc.querySelectorAll('img')].filter((el) =>
-      isAllowedImageSrc(el.getAttribute('src')),
-    ).length;
+    return [...doc.querySelectorAll('img')].filter((el) => {
+      const src = el.getAttribute('src');
+      return imageIdFromSrc(src) === null && isAllowedImageSrc(src);
+    }).length;
   } catch {
     return 0;
   }
 }
 
 const REMOTE_NOTICE =
-  'image still lives on another site. It will break if that site removes it — open it and choose “Save to this device”.';
+  'image still lives on another site. It will break if that site removes it — open it and choose “Save to this blog”.';
 
 function createImagePaste(hooks: EditorHooks) {
   return new Plugin({

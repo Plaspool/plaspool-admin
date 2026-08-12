@@ -60,8 +60,27 @@ export const routes = new Hono<AppEnv>();
 export const DUMMY_PASSWORD_HASH =
   'scrypt$32768$8$1$u6l3a2HntF0KoKSbIXU6Zr6RGAcrANS9Ul852acaa/E=$cBZrwDKdPAuVJZ7WGJhoIQFWoy++nUGWCREXuGtrJ4M=';
 
-/** Where `POST /api/invites` points the invitee. Project C renders this route. */
-export const INVITE_PATH = '/accept-invite';
+/**
+ * Where `POST /api/invites` points the invitee.
+ *
+ * THE `#` IS LOAD-BEARING AND IS NOT A STYLE CHOICE. The client is a static
+ * app served under `createHashRouter` (`src/main.tsx`), which reads the route
+ * out of `location.hash` and never looks at `location.search`. With the old
+ * `/accept-invite`, the token arrived in the query string of a path the router
+ * does not route: every invite this server could mint was dead on arrival, and
+ * the invitee landed on the dashboard's catch-all with no way to claim their
+ * account.
+ *
+ * `#/accept-invite?token=…` puts it where the router can see it: react-router's
+ * `createHashLocation` runs `parsePath(location.hash.substring(1))`, which
+ * yields `{ pathname: '/accept-invite', search: '?token=…' }`. (Parsing the
+ * whole href instead returns only `{ hash }` — that mistake is why this took a
+ * second look.)
+ *
+ * Links already sent still work: `src/main.tsx` rewrites the old path form
+ * before the router mounts.
+ */
+export const INVITE_PATH = '/#/accept-invite';
 
 /**
  * Bounded before it is used as a primary key.

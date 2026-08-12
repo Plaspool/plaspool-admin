@@ -61,18 +61,27 @@ export function isBlankDoc(doc: DocNode | null | undefined): boolean {
  * shared module exists to prevent. Every existing frontend import is unchanged.
  */
 export { ALLOWED_LINK_PROTOCOLS, isAllowedHref } from '../../shared/validate';
-import { protocolOf } from '../../shared/validate';
+import { isStorableImageSrc } from '../../shared/validate';
 
-/** Client-side render policy, and deliberately not the server's: see
- * `isStorableImageSrc` in `shared/validate.ts`, which refuses `http:`. */
-export const ALLOWED_IMAGE_PROTOCOLS = ['http:', 'https:'];
-
-export function isAllowedImageSrc(value: unknown): boolean {
-  const p = protocolOf(value);
-  return p !== null && ALLOWED_IMAGE_PROTOCOLS.includes(p);
-}
+/**
+ * The image rule, and it is the SAME OBJECT the server validates against.
+ *
+ * This used to be a second array declared here, with a comment saying the two
+ * lists differed on purpose because `isStorableImageSrc` refused `http:`. That
+ * difference was not a policy, it was a **permanent 422**: the editor keeps an
+ * `http:` image through paste, `savePost` validates on every save, and spec §8
+ * makes a validation refusal a permanent stop — so one pasted image made the
+ * post unsavable forever and the writer kept typing into something that could
+ * never be persisted. Two lists that are supposed to be equal are exactly the
+ * drift this codebase has paid for three times (the link allow-list, twice).
+ *
+ * So there is one list, it lives where the server can read it, and the alias
+ * below keeps every existing frontend import unchanged.
+ */
+export { STORABLE_IMAGE_PROTOCOLS as ALLOWED_IMAGE_PROTOCOLS } from '../../shared/validate';
+export { isStorableImageSrc as isAllowedImageSrc } from '../../shared/validate';
 
 /** True for a URL that points off this device — i.e. one that breaks offline. */
 export function isRemoteSrc(value: unknown): boolean {
-  return isAllowedImageSrc(value);
+  return isStorableImageSrc(value);
 }

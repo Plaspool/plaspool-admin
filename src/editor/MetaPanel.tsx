@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../data/db';
+import { cachedList } from '../data/cache';
+import { activeUser } from '../data/posts';
 import { Dialog } from '../components/Dialog';
-import { deriveExcerpt, slugify } from '../data/doc';
+import { slugify } from '../data/doc';
 import { Select } from '../components/ui/Select';
 import { useSettings, TEMPLATES, type ReadingTemplate } from '../data/settings';
 import type { Post } from '../data/types';
@@ -44,7 +45,20 @@ export function MetaPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const all = useLiveQuery(() => db.posts.toArray(), []) ?? [];
+  /**
+   * `postList`, NOT `posts` (plan §2.1, §4).
+   *
+   * These two lists are the whole point of the control: they suggest what the
+   * writer has used elsewhere. `db.posts` is a cache of the posts whose bodies
+   * have been fetched — after the cutover that is the handful this session has
+   * opened — so reading it here would suggest categories from three posts out
+   * of two hundred and quietly look like the feature had stopped working.
+   *
+   * Scoped by the active user for the same reason every other cache read is
+   * (I2): a row left by another account on a shared machine must not put their
+   * category names into this writer's suggestions.
+   */
+  const all = useLiveQuery(() => cachedList(activeUser()), []) ?? [];
   const knownCategories = useMemo(
     () => [...new Set(all.map((p) => p.category).filter(Boolean))].sort(),
     [all],
@@ -175,7 +189,17 @@ export function MetaPanel({
           rows={3}
           maxLength={320}
           value={excerpt}
-          placeholder={deriveExcerpt(post.content) || 'A short description…'}
+          /*
+           * THE SERVER'S DERIVED EXCERPT, NOT A SECOND DERIVATION OF IT. The
+           * blog derives one on every write (`server/repo/mapping.ts`), so
+           * `post.excerpt` is already the sentence this placeholder is trying
+           * to reconstruct — and reconstructing it walked the whole document on
+           * every keystroke in this field to produce, at best, the same string.
+           * At worst a different one, which is the failure the same decision
+           * removed from `PostCard` (F13): two answers to a question that has
+           * one, differing whenever the two implementations drift.
+           */
+          placeholder={post.excerpt || 'A short description…'}
           onChange={(e) => setExcerpt(e.target.value)}
           style={{ resize: 'vertical', fontFamily: 'var(--font-display)' }}
         />

@@ -362,8 +362,13 @@ describe('validateDoc', () => {
     });
   });
 
-  it('accepts asset:, idb: and https: image srcs', () => {
-    for (const src of ['asset:img_1', 'idb:img_1', 'https://cdn.example.com/a.png']) {
+  it('accepts asset:, idb:, https: and http: image srcs', () => {
+    for (const src of [
+      'asset:img_1',
+      'idb:img_1',
+      'https://cdn.example.com/a.png',
+      'http://cdn.example.com/a.png',
+    ]) {
       expect(violation(image(src))).toBeNull();
     }
   });
@@ -388,15 +393,48 @@ describe('validateDoc', () => {
     expect(violation(image('asset:img_meyc0k9x8f2a1b3c4d5e6f7a8'))).toBeNull();
   });
 
-  it('refuses an http: image src, which the client-side render guard still allows', () => {
-    // Spec §4.6 lists {https, asset:, idb:} — http is deliberately absent. The
-    // editor's own `isAllowedImageSrc` accepts http today, so a pasted
-    // `http://…` image is producible on the client and refused here. Pinned so
-    // the divergence is a decision someone made, not one nobody noticed.
-    expect(violation(image('http://cdn.example.com/a.png'))).toEqual({
-      path: 'content[0]',
-      reason: 'bad_protocol',
-    });
+  it('accepts http:, because the editor emits it and a 422 here is permanent', () => {
+    /*
+     * THIS CASE USED TO ASSERT THE OPPOSITE, and the inversion is the fix for
+     * plan §9. Spec §4.6 lists {https, asset:, idb:}; the editor's paste repair
+     * keeps an `http://` image (measured — `stripHostile` gates on
+     * `isAllowedImageSrc`, which is http/https). `savePost` validates
+     * `patch.content` on EVERY save and spec §8 makes a 422 a permanent stop in
+     * the client's retry policy, so with the narrower list one pasted picture
+     * made the post unsavable forever and the pending write was dropped rather
+     * than retried.
+     *
+     * Widening the validator is the fix rather than narrowing the editor
+     * because narrowing loses the picture on paste AND strands every document
+     * that already holds one. `src/editor/schema-drift.test.tsx` is the durable
+     * check — it drives a real `Editor` and a real `repairPastedHTML` — and it
+     * fails against the narrower list, verified.
+     */
+    expect(violation(image('http://cdn.example.com/a.png'))).toBeNull();
+    expect(violation(image('HTTP://CDN.EXAMPLE.COM/a.png'))).toBeNull();
+  });
+
+  it('still refuses every scheme the editor cannot produce', () => {
+    // The list stayed an ALLOW-list, which is the property that makes widening
+    // it by one member safe. A scheme-less src stays refused too: nothing in
+    // the app writes one and the paste repair deletes one, so accepting it
+    // would widen past what the editor emits for no document's benefit.
+    for (const src of [
+      'javascript:alert(1)',
+      ' javascript:alert(1)',
+      'java\nscript:alert(1)',
+      'vbscript:msgbox(1)',
+      'file:///etc/passwd',
+      'blob:https://example.com/abc',
+      '/relative.png',
+      '//cdn.example.com/a.png',
+      'photo.png',
+    ]) {
+      expect(violation(image(src)), src).toEqual({
+        path: 'content[0]',
+        reason: 'bad_protocol',
+      });
+    }
   });
 
   it('rejects nesting deeper than the cap without overflowing the stack', () => {

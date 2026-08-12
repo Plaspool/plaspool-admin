@@ -31,7 +31,15 @@ export function CoverPicker({
     setBusy(true);
     try {
       const rec = await storeImageFile(file);
-      // Only after a fully successful store do we touch the post's cover.
+      /*
+       * Only after a fully successful store do we touch the post's cover — and
+       * "successful" now means the server has COMMITTED the object, not merely
+       * that IndexedDB accepted a blob. `rec.id` is the server's asset id, and
+       * it goes into `blobId` bare, with no scheme: that field is what the
+       * server's orphan sweep reads as `cover_image->>'blobId'`, and
+       * `acquireImageURL` resolves a bare id from either side of the cutover.
+       * Prefixing it would break both at once.
+       */
       onChange({
         blobId: rec.id,
         alt: cover?.alt ?? '',
@@ -76,7 +84,10 @@ export function CoverPicker({
             <circle cx="8.5" cy="9.5" r="1.5" />
             <path d="m4 17 5-5 4 4 3-2 4 3" />
           </svg>
-          {busy ? 'Adding…' : 'Add a cover image'}
+          {/* "Uploading" and not "Adding": this is a network round trip now,
+              long enough that a label promising a local write would read as a
+              hang the moment the connection is slow. */}
+          {busy ? 'Uploading…' : 'Add a cover image'}
         </button>
       </div>
     );

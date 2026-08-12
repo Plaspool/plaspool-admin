@@ -1,24 +1,49 @@
 /**
  * Runtime cover for the two spec-mandated changes to `Post` (spec §3.4) that
- * `tsc` cannot see and that the existing 52 tests do not touch.
+ * `tsc` cannot see.
  *
- * Both were verified unpinned before this file existed: reverting
- * `slug: partial.slug ?? null` to `?? ''`, or deleting `authorId:
- * current.authorId` from `savePost`'s system-field re-apply, each left every
- * one of the 52 green. `slug: string | null` accepts `''`, so the compiler is
- * no help either.
+ * WHERE HALF OF THIS FILE WENT. Slug assignment and the system-field re-apply
+ * were `savePost`'s job when `savePost` was a Dexie transaction. They are the
+ * server's now and are tested against a real database in
+ * `server/repo/posts.test.ts` — "normalises an empty slug to NULL so two
+ * untitled drafts can coexist", "assigns a slug on the first save that has a
+ * title", "leaves an untitled draft unslugged" and "never lets a patch smuggle
+ * in system fields" — plus `server/routes/posts.test.ts`'s "refuses a system
+ * field rather than ignoring it" and `server/repo/lifecycle.test.ts`'s
+ * "copies content and metadata into a fresh unpublished draft", which pins the
+ * duplicate's NULL slug.
  *
- * These live in their own file rather than in `posts.test.ts` so that suite —
- * the ported gauntlet regression set — stays byte-identical to its baseline.
+ * What is left is the two things that are still decided in this browser:
+ * `createDraftShape`, which `backup.ts` rebuilds every imported post through,
+ * and the allow-list that decides what a `Partial<Post>` may put on the wire.
  */
 import 'fake-indexeddb/auto';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('./api', () => ({
+  api: { createPost: vi.fn(), savePost: vi.fn() },
+}));
+
+import { api } from './api';
 import { db } from './db';
-import { createDraftShape, createPost, duplicatePost, publishPost, savePost } from './posts';
-import type { Post } from './types';
+import { createDraftShape, createPost, setActiveUser } from './posts';
+import type { DocNode, Post } from './types';
+
+const USER = 'u_writer';
+
+const para = (text: string): DocNode => ({
+  type: 'doc',
+  content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
+});
 
 beforeEach(async () => {
+  vi.resetAllMocks();
+  setActiveUser(USER);
+  vi.mocked(api.createPost).mockImplementation(async (patch) =>
+    createDraftShape({ id: 'p_server', authorId: USER, authorName: 'A Writer', ...patch }),
+  );
   await db.posts.clear();
+  await db.postList.clear();
   await db.revisions.clear();
   await db.images.clear();
 });
@@ -29,52 +54,39 @@ describe('slug is NULL, never the empty string', () => {
     // cannot hold twenty empty strings, but Postgres permits many NULLs — so
     // `''` here means the second untitled draft a writer creates is rejected by
     // the database. That is the whole reason spec §3.4 made the column
-    // nullable.
+    // nullable, and `backup.ts` rebuilds every imported post through this
+    // function, so `''` would arrive on the server one import later.
     const draft = createDraftShape();
     expect(draft.slug).toBeNull();
     expect(draft.slug).not.toBe('');
   });
 
-  it('two untitled drafts can coexist, both with a NULL slug', async () => {
-    const a = await createPost();
-    const b = await createPost();
-    expect(a.slug).toBeNull();
-    expect(b.slug).toBeNull();
-
-    const stored = await db.posts.toArray();
-    expect(stored).toHaveLength(2);
-    for (const p of stored) {
-      expect(p.slug).toBeNull();
-      // The empty-string convention is what the nullable column replaced.
-      expect(p.slug).not.toBe('');
-    }
-  });
-
-  it('duplicatePost gives the copy a NULL slug, not its source’s', async () => {
-    const src = await createPost({ title: 'Original' });
-    const published = await publishPost(src.id);
-    expect(published.slug).toBe('original');
-
-    const copy = await duplicatePost(src.id);
-    expect(copy.slug).toBeNull();
-  });
-
-  it('a slug is assigned on the first save with a title, and only then', async () => {
-    const post = await createPost();
-    const untouched = await savePost(post.id, { subtitle: 'still untitled' });
-    expect(untouched.slug).toBeNull();
-
-    const titled = await savePost(post.id, { title: 'Hello World' });
-    expect(titled.slug).toBe('hello-world');
+  it('a draft rebuilt from a bundle keeps every field it was given', () => {
+    const source: Partial<Post> = {
+      title: 'Imported',
+      subtitle: 'sub',
+      category: 'essays',
+      tags: ['a'],
+      template: 'technical',
+      excerpt: 'written by hand',
+      content: para('body'),
+    };
+    const rebuilt = createDraftShape(source);
+    expect(rebuilt).toMatchObject(source);
+    // An author-written excerpt has to stay author-written, or the first save
+    // after an import silently replaces it with a derivation.
+    expect(rebuilt.excerptSource).toBe('author');
   });
 });
 
-describe('savePost re-applies every system field', () => {
+describe('what a Partial<Post> may put on the wire', () => {
   /**
-   * The re-apply block exists because `{ ...current, ...patch }` lets any key
-   * present on the patch object through. `PostPatch` does not declare these
-   * keys, but the patch arrives as a JSON body on the server and as an
-   * unchecked object here — the type is not the guard, the re-apply is.
+   * The allow-list exists because `{ ...partial }` lets any key through, and
+   * `POST /api/posts` validates its body with a `.strict()` Zod schema: an
+   * unknown key is a **400**, not an ignored field. `Editor.tsx:517`'s "Save as
+   * a new post" hands a `Partial<Post>`, and a row from the pre-backend
+   * `localPosts` store carries `migratedAt` on top of that — the measured
+   * `unrecognized_keys` case in plan §6.4 step 0.
    */
   const smuggle = {
     id: 'p_attacker',
@@ -85,32 +97,36 @@ describe('savePost re-applies every system field', () => {
     authorId: 'someone-else',
     authorName: 'Someone Else',
     revision: 999,
+    migratedAt: null,
   } as unknown as Partial<Post>;
 
-  it('authorId survives a patch that tries to change it', async () => {
-    const post = await createPost({ title: 'Mine' });
-    const saved = await savePost(post.id, { ...smuggle, title: 'Still mine' } as never);
+  it('sends the patchable keys and nothing else', async () => {
+    await createPost({ ...smuggle, title: 'Mine', content: para('rescued') });
 
-    // Reassigning authorship is how a writer takes over another writer's post
-    // once `author_id` decides who may edit it (spec §6, author-or-owner).
-    expect(saved.authorId).toBe(post.authorId);
-    expect(saved.authorId).not.toBe('someone-else');
-    expect((await db.posts.get(post.id))!.authorId).toBe(post.authorId);
+    expect(vi.mocked(api.createPost)).toHaveBeenCalledWith({
+      title: 'Mine',
+      content: para('rescued'),
+    });
+    const [[body]] = vi.mocked(api.createPost).mock.calls;
+    for (const key of Object.keys(smuggle)) {
+      expect(Object.hasOwn(body!, key)).toBe(false);
+    }
   });
 
-  it('the rest of the system fields survive too', async () => {
-    const post = await createPost({ title: 'Mine' });
-    const saved = await savePost(post.id, { ...smuggle, title: 'Still mine' } as never);
+  it('an explicit null still crosses — absent and null are different states', async () => {
+    await createPost({ coverImage: null, template: null, tags: [] });
+    expect(vi.mocked(api.createPost)).toHaveBeenCalledWith({
+      coverImage: null,
+      template: null,
+      tags: [],
+    });
+  });
 
-    expect(saved.id).toBe(post.id);
-    expect(saved.createdAt).toBe(post.createdAt);
-    expect(saved.status).toBe(post.status);
-    expect(saved.publishedAt).toBe(post.publishedAt);
-    expect(saved.deletedAt).toBe(post.deletedAt);
-    expect(saved.authorName).toBe(post.authorName);
-    // Revision is derived from the stored row, never taken from the patch.
-    expect(saved.revision).toBe(post.revision + 1);
-    // The patched field did land — the re-apply is targeted, not a rejection.
-    expect(saved.title).toBe('Still mine');
+  it('caches what the server answered, not what was asked for', async () => {
+    const created = await createPost({ title: 'Mine' });
+    // The server owns authorship, the revision and the id; the cached row has
+    // to be its answer or the editor hydrates from a document nobody stored.
+    expect(created.authorId).toBe(USER);
+    expect((await db.posts.get('p_server'))?.authorId).toBe(USER);
   });
 });

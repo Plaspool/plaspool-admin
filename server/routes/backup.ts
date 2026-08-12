@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
-import { z } from 'zod';
-import { readJson, str } from '../middleware/errors';
+import { readJson } from '../middleware/errors';
 import { requireAuth, requireOwner } from '../middleware/session';
 import { limit } from '../middleware/ratelimit';
 import { BACKUP_LIMIT, BACKUP_WINDOW_MS } from '../repo/ratelimit';
@@ -10,6 +9,18 @@ import { InvalidDocumentError } from '../repo/errors';
 import { BadRequestError } from '../repo/errors';
 import { uniqueViolation } from '../db/client';
 import { checkPostMeta, validateDoc } from '../../shared/validate';
+/*
+ * THE BODY SCHEMA IS SHARED, AND THAT IS LOAD-BEARING RATHER THAN TIDY.
+ *
+ * Migration (plan §6.4 step 0) has to answer "would the server take this?"
+ * BEFORE it uploads, because `limit()` runs ahead of `readJson` below, so a
+ * body this schema refuses still burns one of the five import slots the hour
+ * allows. It can only answer that by running this exact object; a client-side
+ * approximation of it produced a 400 on every batch. `shared/bundle.test.ts`
+ * fails if this file goes back to declaring its own.
+ */
+import { ImportBody } from '../../shared/bundle';
+import type { BundlePostInput } from '../../shared/bundle';
 import { BUNDLE_FORMAT, BUNDLE_FORMAT_PREFIX } from '../../shared/types';
 import { currentDb, currentUser } from '../app-env';
 import type { AppEnv } from '../app-env';
@@ -60,78 +71,6 @@ routes.get('/export', requireOwner(), async (c) => {
 });
 
 // ------------------------------------------------------------------ import
-
-const CoverImage = z
-  .object({
-    blobId: str().min(1).max(300),
-    alt: str().max(2000),
-    focalPoint: str().max(100),
-    width: z.number().int().min(0).max(100_000),
-    height: z.number().int().min(0).max(100_000),
-  })
-  .strict();
-
-/**
- * EVERY field a bundle's `Post` carries, and `.strict()`.
- *
- * The system-owned ones are declared here and then deliberately NOT honoured
- * below — declaring them is what lets a genuine `exportBundle()` file import at
- * all, while `.strict()` still refuses a key that is not part of `Post`, so a
- * caller cannot smuggle a column name past the schema and hope.
- *
- * Nearly everything is optional because a bundle may come from an older export
- * (`template` and `excerptSource` are recent) and because `createPost` already
- * has a defined default for each.
- */
-const BundlePost = z
-  .object({
-    id: str().min(1).max(300),
-    title: str(),
-    subtitle: str(),
-    slug: str().nullable().optional(),
-    excerpt: str().optional(),
-    excerptSource: z.enum(['derived', 'author']).optional(),
-    content: z.unknown(),
-    coverImage: CoverImage.nullable().optional(),
-    category: str().optional(),
-    tags: z.array(str()).max(1000).optional(),
-    template: z.enum(['magazine', 'minimal', 'editorial', 'technical']).nullable().optional(),
-    status: z.enum(['draft', 'published', 'archived']).optional(),
-    createdAt: z.number().int().optional(),
-    updatedAt: z.number().int().optional(),
-    publishedAt: z.number().int().nullable().optional(),
-    deletedAt: z.number().int().nullable().optional(),
-    // Declared, never honoured — see `toPartial`.
-    wordCount: z.number().optional(),
-    readingTime: z.number().optional(),
-    authorId: str().optional(),
-    authorName: str().optional(),
-    revision: z.number().optional(),
-    author: str().optional(),
-  })
-  .strict();
-
-type BundlePostInput = z.infer<typeof BundlePost>;
-
-const ImportBody = z
-  .object({
-    format: str().min(1).max(200),
-    exportedAt: str().max(100).optional(),
-    posts: z.array(BundlePost).max(20_000),
-    /*
-     * ACCEPTED AND IGNORED, AND THE RESPONSE SAYS SO.
-     *
-     * A real bundle carries both keys, so refusing them would make the file
-     * this application writes unimportable by the application that wrote it.
-     * But neither is restored — see the note on `revisions` below — and
-     * silently dropping them would be the accepted-and-discarded failure every
-     * other `.strict()` schema here exists to prevent. So the counts come back
-     * in the response.
-     */
-    revisions: z.array(z.unknown()).optional(),
-    images: z.array(z.unknown()).optional(),
-  })
-  .strict();
 
 /**
  * A bundle post, reduced to what import is allowed to honour.

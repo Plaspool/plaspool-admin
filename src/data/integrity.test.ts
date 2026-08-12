@@ -1,187 +1,186 @@
 /**
  * Regression tests for every issue a gauntlet critic found.
  * Each `it` names the failure it prevents from coming back.
+ *
+ * WHAT MOVED TO THE SERVER AT THE CUTOVER. This file used to own image
+ * lifecycle (mark-and-sweep over `db.images`), publish atomicity and the
+ * all-or-nothing empty-trash transaction. All three are server behaviour now
+ * and are tested against a real database — `server/repo/images.test.ts`'s "the
+ * reference walk" and "the two-phase quarantine" suites,
+ * `server/repo/lifecycle.test.ts`'s `publishPost` and `emptyTrash` suites, and
+ * `server/repo/revisions.test.ts`'s `pruneAutosaves`. Re-asserting any of them
+ * against a mocked `api` would pin the mock, not the behaviour.
+ *
+ * What stays is the client-side half nothing on the server can cover: the two
+ * guards on `discardIfBlank`, which is awaited inside a frozen file on the way
+ * out of the editor.
  */
 import 'fake-indexeddb/auto';
-import { beforeEach, describe, expect, it } from 'vitest';
-import { db, newId } from './db';
-import {
-  collectOrphanImages,
-  createPost,
-  destroyPost,
-  discardIfBlank,
-  emptyTrash,
-  publishPost,
-  savePost,
-  trashPost,
-} from './posts';
-import { IDB_SCHEME, docToText } from './doc';
-import type { DocNode, StoredImage } from './types';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const imageDoc = (blobId: string, text = 'body'): DocNode => ({
+vi.mock('./api', () => ({
+  api: {
+    createPost: vi.fn(),
+    savePost: vi.fn(),
+    destroyPost: vi.fn(),
+    emptyTrash: vi.fn(),
+    sweepBlankDrafts: vi.fn(),
+    collectOrphanImages: vi.fn(),
+  },
+}));
+
+import { api } from './api';
+import { cachePost } from './cache';
+import { db } from './db';
+import { ApiError, ForbiddenError, OfflineError } from './errors';
+import { createDraftShape, discardIfBlank, isBlankDraft, setActiveUser } from './posts';
+import type { DocNode, Post } from './types';
+
+const USER = 'u_writer';
+const OTHER = 'u_colleague';
+
+let n = 0;
+const draft = (over: Partial<Post> = {}): Post =>
+  createDraftShape({ id: `p_${(n += 1)}`, authorId: USER, ...over });
+
+const para = (text: string): DocNode => ({
   type: 'doc',
-  content: [
-    { type: 'paragraph', content: [{ type: 'text', text }] },
-    { type: 'image', attrs: { src: `${IDB_SCHEME}${blobId}`, alt: '' } },
-  ],
+  content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
 });
 
-async function seedImage(id = newId('img_')): Promise<string> {
-  const rec: StoredImage = {
-    id,
-    blob: new Blob(['x']),
-    width: 10,
-    height: 10,
-    type: 'image/png',
-    createdAt: Date.now(),
-  };
-  await db.images.add(rec);
-  return id;
-}
-
 beforeEach(async () => {
+  vi.resetAllMocks();
+  setActiveUser(USER);
+  vi.mocked(api.destroyPost).mockResolvedValue(undefined);
   await db.posts.clear();
+  await db.postList.clear();
   await db.revisions.clear();
   await db.images.clear();
 });
 
-describe('image lifecycle (critic issue 3)', () => {
-  it('does not delete an image another post still uses inline', async () => {
-    const img = await seedImage();
-    const a = await createPost({
-      title: 'Cover user',
-      coverImage: { blobId: img, alt: '', focalPoint: '50% 50%', width: 10, height: 10 },
-    });
-    await createPost({ title: 'Inline user', content: imageDoc(img) });
-
-    await destroyPost(a.id);
-
-    expect(await db.images.get(img)).toBeDefined();
-  });
-
-  it('collects an image nothing references any more', async () => {
-    const img = await seedImage();
-    const p = await createPost({ title: 'Only user', content: imageDoc(img) });
-    await destroyPost(p.id);
-    expect(await db.images.get(img)).toBeUndefined();
-  });
-
-  it('keeps images that only a revision snapshot still references', async () => {
-    const img = await seedImage();
-    const p = await createPost({ content: imageDoc(img) });
-    // Author removes the image from the current document...
-    await savePost(p.id, {
-      content: { type: 'doc', content: [{ type: 'paragraph' }] },
-    });
-    await collectOrphanImages();
-    // ...but the earlier revision can still be restored, so the blob lives.
-    expect(await db.images.get(img)).toBeDefined();
-  });
-
-  it('never leaves a post referencing a blob that was collected', async () => {
-    const shared = await seedImage();
-    await createPost({ content: imageDoc(shared, 'keeps it') });
-    const doomed = await createPost({ content: imageDoc(shared, 'goes away') });
-    await destroyPost(doomed.id);
-
-    const survivors = await db.posts.toArray();
-    for (const p of survivors) {
-      const refs = JSON.stringify(p.content).match(/idb:[a-z0-9_]+/gi) ?? [];
-      for (const ref of refs) {
-        expect(await db.images.get(ref.slice(IDB_SCHEME.length))).toBeDefined();
-      }
-    }
-  });
-});
-
-describe('publish atomicity (critic issue 6)', () => {
-  it('publishes and snapshots in one transaction', async () => {
-    const p = await createPost({ title: 'Atomic', content: { type: 'doc', content: [
-      { type: 'paragraph', content: [{ type: 'text', text: 'final text' }] },
-    ] } });
-    const pub = await publishPost(p.id);
-
-    const snap = await db.revisions
-      .where('postId')
-      .equals(p.id)
-      .filter((r) => r.kind === 'publish')
-      .first();
-
-    expect(snap).toBeDefined();
-    expect(snap!.revision).toBe(pub.revision);
-    // The snapshot records exactly what was published, not an earlier read.
-    expect(docToText(snap!.content)).toBe('final text');
-    expect(snap!.title).toBe(pub.title);
-  });
-
-  it('does not revert derived fields written by a concurrent save', async () => {
-    const p = await createPost({ title: 'Race', content: { type: 'doc', content: [] } });
-    await savePost(p.id, { excerpt: 'author wrote this' });
-    const pub = await publishPost(p.id);
-    expect(pub.excerpt).toBe('author wrote this');
-  });
-});
-
-describe('empty trash is all-or-nothing (critic non-blocking note)', () => {
-  it('removes every trashed post and its revisions, leaving live posts alone', async () => {
-    const live = await createPost({ title: 'Live' });
-    const a = await createPost({ title: 'A' });
-    const b = await createPost({ title: 'B' });
-    await savePost(a.id, { title: 'A2' });
-    await trashPost(a.id);
-    await trashPost(b.id);
-
-    expect(await emptyTrash()).toBe(2);
-    expect(await db.posts.toArray()).toHaveLength(1);
-    expect((await db.posts.get(live.id))!.title).toBe('Live');
-    expect(await db.revisions.where('postId').equals(a.id).count()).toBe(0);
-    expect(await db.revisions.where('postId').equals(b.id).count()).toBe(0);
-  });
-});
-
-describe('checkpoint revisions survive pruning (critic issue 5)', () => {
-  it('keeps every manual and publish snapshot through heavy autosaving', async () => {
-    const p = await createPost({ title: 'Long session' });
-    await savePost(p.id, { title: 'checkpoint one' }, { kind: 'manual' });
-    for (let i = 0; i < 60; i++) {
-      await savePost(p.id, { title: `auto ${i}` }, { kind: 'autosave' });
-    }
-    await savePost(p.id, { title: 'checkpoint two' }, { kind: 'manual' });
-
-    const revs = await db.revisions.where('postId').equals(p.id).toArray();
-    const manual = revs.filter((r) => r.kind === 'manual').map((r) => r.title);
-    expect(manual).toContain('checkpoint one');
-    expect(manual).toContain('checkpoint two');
-    expect(revs.filter((r) => r.kind === "autosave").length).toBeLessThanOrEqual(40);
-  });
-});
-
 describe('blank drafts do not accumulate (critic UX note)', () => {
   it('discards a post opened and abandoned without any content', async () => {
-    const p = await createPost();
+    const p = draft();
+    await cachePost(USER, p);
+
     expect(await discardIfBlank(p.id)).toBe(true);
+    expect(vi.mocked(api.destroyPost)).toHaveBeenCalledWith(p.id);
     expect(await db.posts.get(p.id)).toBeUndefined();
   });
 
   it('never discards a draft that has anything in it', async () => {
-    const withTitle = await createPost({ title: 'A' });
-    const withWords = await createPost({
-      content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'hi' }] }] },
-    });
-    const withTags = await createPost({ tags: ['x'] });
-    const withCover = await createPost({
-      coverImage: { blobId: 'img_x', alt: '', focalPoint: '50% 50%', width: 1, height: 1 },
-    });
-    for (const p of [withTitle, withWords, withTags, withCover]) {
+    const rows = [
+      draft({ title: 'A' }),
+      draft({ content: para('hi') }),
+      draft({ tags: ['x'] }),
+      draft({ coverImage: { blobId: 'img_x', alt: '', focalPoint: '50% 50%', width: 1, height: 1 } }),
+    ];
+    for (const p of rows) await cachePost(USER, p);
+
+    for (const p of rows) {
       expect(await discardIfBlank(p.id)).toBe(false);
       expect(await db.posts.get(p.id)).toBeDefined();
     }
+    expect(vi.mocked(api.destroyPost)).not.toHaveBeenCalled();
   });
 
   it('never discards a published or archived post, even if empty', async () => {
-    const pub = await createPost({ title: 'T' });
-    await publishPost(pub.id);
-    await savePost(pub.id, { title: '' });
+    const pub = draft({ status: 'published', title: '' });
+    const arch = draft({ status: 'archived', title: '' });
+    await cachePost(USER, pub);
+    await cachePost(USER, arch);
+
     expect(await discardIfBlank(pub.id)).toBe(false);
+    expect(await discardIfBlank(arch.id)).toBe(false);
+  });
+});
+
+/**
+ * F7 and F10. `Editor.tsx:375–381` is frozen and reads
+ * `await flush(); await discardIfBlank(id); navigate('/')`, so anything this
+ * function throws is an unhandled rejection between the writer and the only
+ * exit from the editor screen.
+ */
+describe('discardIfBlank can never strand the writer, and never guesses', () => {
+  it('swallows the owner-only 403 and returns false', async () => {
+    const p = draft();
+    await cachePost(USER, p);
+    // `DELETE /api/posts/:id` is `requireOwner()` (F7), so this is what EVERY
+    // writer gets for EVERY blank draft they abandon.
+    vi.mocked(api.destroyPost).mockRejectedValue(new ForbiddenError());
+
+    await expect(discardIfBlank(p.id)).resolves.toBe(false);
+    // The request was genuinely attempted — the fixture reaches the catch
+    // rather than being turned away by an earlier guard.
+    expect(vi.mocked(api.destroyPost)).toHaveBeenCalledWith(p.id);
+    expect(await db.posts.get(p.id)).toBeDefined();
+  });
+
+  it('swallows every other failure too — offline, 5xx, a 404 race', async () => {
+    const failures = [
+      new OfflineError(),
+      new ApiError({ status: 503, code: 'unavailable' }),
+      new ApiError({ status: 404, code: 'gone' }),
+    ];
+    for (const err of failures) {
+      const p = draft();
+      await cachePost(USER, p);
+      vi.mocked(api.destroyPost).mockRejectedValueOnce(err);
+      await expect(discardIfBlank(p.id)).resolves.toBe(false);
+    }
+    expect(vi.mocked(api.destroyPost)).toHaveBeenCalledTimes(failures.length);
+  });
+
+  it('REFUSES to act on a row whose document did not arrive (F10)', async () => {
+    /*
+     * `isBlankDoc(undefined)` is `true` — measured. So a cached row missing its
+     * `content` reads as a blank draft on every other criterion and would be
+     * destroyed: the post AND its whole server-side revision history, because
+     * this device failed to hold a field. Writing the row past `cachePost`,
+     * which refuses bodyless posts, is the only way to produce one — which is
+     * exactly how a legacy or half-written row gets there.
+     */
+    const p = draft({ title: '', wordCount: 0 });
+    await db.posts.put({ ...p, content: undefined as unknown as DocNode, ownerUserId: USER });
+
+    await expect(discardIfBlank(p.id)).resolves.toBe(false);
+    expect(vi.mocked(api.destroyPost)).not.toHaveBeenCalled();
+    expect(await db.posts.get(p.id)).toBeDefined();
+  });
+
+  it('refuses when there is no cached full row at all', async () => {
+    // The editor can be opened offline against a `postList` row alone. "I could
+    // not read this post" must not become "destroy this post".
+    const p = draft();
+    await db.postList.put({ ...p, ownerUserId: USER });
+
+    await expect(discardIfBlank(p.id)).resolves.toBe(false);
+    expect(vi.mocked(api.destroyPost)).not.toHaveBeenCalled();
+  });
+
+  it('refuses a row cached for a different user (I2)', async () => {
+    const p = draft();
+    await cachePost(OTHER, p);
+
+    await expect(discardIfBlank(p.id)).resolves.toBe(false);
+    expect(vi.mocked(api.destroyPost)).not.toHaveBeenCalled();
+  });
+});
+
+describe('isBlankDraft carries the same refusal', () => {
+  it('an unparseable document counts as content, not as emptiness', () => {
+    const p = draft({ title: '', wordCount: 0 });
+    expect(isBlankDraft(p)).toBe(true);
+    expect(isBlankDraft({ ...p, content: undefined as unknown as DocNode })).toBe(false);
+    expect(isBlankDraft({ ...p, content: '<p>hi</p>' as unknown as DocNode })).toBe(false);
+  });
+
+  it('an image-only or divider-only draft still has content despite zero words', () => {
+    const imageOnly = draft({
+      content: { type: 'doc', content: [{ type: 'image', attrs: { src: 'asset:img_1' } }] },
+      wordCount: 0,
+    });
+    expect(imageOnly.wordCount).toBe(0);
+    expect(isBlankDraft(imageOnly)).toBe(false);
   });
 });

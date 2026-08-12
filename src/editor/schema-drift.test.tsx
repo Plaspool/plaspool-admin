@@ -26,7 +26,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { Editor } from '@tiptap/core';
-import { editorExtensions } from './extensions';
+import { editorExtensions, repairPastedHTML } from './extensions';
 import { ALLOWED_MARKS, ALLOWED_NODES, validateDoc } from '../../shared/validate';
 import type { DocNode } from '../../shared/types';
 
@@ -80,6 +80,55 @@ const HOSTILE_HREFS = [
   'vbscript:msgbox(1)',
 ];
 
+/**
+ * IMAGE `src`, AND WHY THE PIPELINE IS DIFFERENT FROM THE HREF ONE ABOVE.
+ *
+ * A link's gate is `Link.isAllowedUri`, which runs inside the ProseMirror
+ * parse, so `new Editor({content})` is enough to ask the schema what it keeps.
+ * An image has NO parse-time gate — measured on this repo's TipTap 3.29,
+ * `new Editor({content: '<img src="javascript:alert(1)">'})` keeps the node
+ * verbatim, and only `allowBase64: false` removes anything (`data:`). The gate
+ * for images is `stripHostile` inside `repairPastedHTML`, which is where every
+ * foreign `<img>` a writer can produce actually arrives.
+ *
+ * So this half of the drift guard drives BOTH: the repair (what the editor's
+ * one real image entry point keeps) and then the schema parse of what came out
+ * (what therefore lands in a document), and holds `validateDoc` to that answer.
+ * Asking only the parser would assert nothing, because the parser keeps
+ * everything.
+ *
+ * The `http:` row is the defect this table was added for (plan §9): the repair
+ * keeps an `http://` image, and the validator refused it, so ONE pasted picture
+ * made the post permanently unsavable.
+ */
+const IMAGE_SRCS = [
+  // What the app writes itself: `Editor.tsx:262` (frozen) and, after migration,
+  // the `asset:` rewrite. Both must survive a copy-paste between posts — F11.
+  'idb:img_abc123',
+  'asset:img_abc123',
+  'https://cdn.example.com/chart.png',
+  'http://cdn.example.com/chart.png',
+];
+
+/**
+ * Refused by the repair AND by the validator. `data:` is doubly refused — the
+ * repair removes it and `allowBase64: false` would not have parsed it anyway.
+ */
+const HOSTILE_IMAGE_SRCS = [
+  'javascript:alert(1)',
+  ' javascript:alert(1)',
+  'JavaScript:alert(1)',
+  'data:image/png;base64,iVBORw0KGgo=',
+  'vbscript:msgbox(1)',
+];
+
+/**
+ * Shapes the validator refuses and the repair also refuses, so no document can
+ * hold one. Listed rather than assumed: if a future repair rule starts keeping
+ * them, this file goes red and names the validator that would then 422 them.
+ */
+const UNREACHABLE_IMAGE_SRCS = ['/relative.png', 'photo.png', '//cdn.example/x.png', '?ref=1'];
+
 function editor(content?: string): Editor {
   return new Editor({ extensions: editorExtensions, content });
 }
@@ -113,6 +162,21 @@ function hrefIn(doc: DocNode): string | null {
   walk(doc);
   return found;
 }
+
+/** Every image node's `src`, in document order. Mirrors `hrefIn` above. */
+function srcIn(doc: DocNode): string[] {
+  const found: string[] = [];
+  const walk = (n: DocNode) => {
+    if (n.type === 'image' && typeof n.attrs?.src === 'string') found.push(n.attrs.src as string);
+    n.content?.forEach(walk);
+  };
+  walk(doc);
+  return found;
+}
+
+/** `<p>` beside the image so a case that drops the image still has a document. */
+const withImage = (src: string) =>
+  `<p>prose</p><img src="${src.replace(/"/g, '&quot;')}" alt="a picture">`;
 
 describe('the validator accepts everything the editor writes', () => {
   it('every node and mark type in the live schema is on the allow-list', () => {
@@ -218,5 +282,65 @@ describe('the validator accepts everything the editor writes', () => {
     const result = validateDoc(forged);
     expect(result.ok).toBe(false);
     expect(result.ok ? null : result.violation.reason).toBe('bad_protocol');
+  });
+
+  it.each(IMAGE_SRCS)('keeps the image src %s through paste, and the validator takes it', (src) => {
+    // First half: the editor's real image entry point keeps it. `asset:` is the
+    // row F11 is about — `stripHostile` used to delete it, so after migration
+    // copying a section between posts silently removed every picture.
+    const repaired = repairPastedHTML(withImage(src));
+    expect(repaired, `repairPastedHTML dropped the image ${src}`).toContain('<img');
+    expect(repaired).toContain(`src="${src}"`);
+
+    // Second half: what the schema then makes of it must be storable. This is
+    // the assertion that fails against the un-widened `isStorableImageSrc`,
+    // for the `http:` row.
+    const ed = editor(repaired);
+    try {
+      const doc = ed.getJSON() as DocNode;
+      expect(srcIn(doc), `the schema dropped ${src}`).toEqual([src]);
+      const result = validateDoc(doc);
+      expect(
+        result.ok ? null : result.violation,
+        `${src} survived the editor and the validator refused it — every save of a post holding one is a permanent 422`,
+      ).toBeNull();
+    } finally {
+      ed.destroy();
+    }
+  });
+
+  it.each(HOSTILE_IMAGE_SRCS)('refuses the image src %j on both sides', (src) => {
+    // The repair removes the element outright rather than leaving a src the
+    // schema happens to ignore, so the count of images stays honest.
+    const repaired = repairPastedHTML(withImage(src));
+    expect(repaired).not.toContain('<img');
+    expect(repaired).toContain('prose');
+
+    // And a forged document — one that arrived from an import rather than from
+    // this editor — is refused by the validator directly.
+    const forged: DocNode = {
+      type: 'doc',
+      content: [{ type: 'image', attrs: { src, alt: '' } } as DocNode],
+    };
+    const result = validateDoc(forged);
+    expect(result.ok).toBe(false);
+    expect(result.ok ? null : result.violation.reason).toBe('bad_protocol');
+  });
+
+  it.each(UNREACHABLE_IMAGE_SRCS)('cannot produce the scheme-less image src %s', (src) => {
+    /*
+     * The ProseMirror parse keeps these — measured — so the claim that the
+     * validator may refuse them rests entirely on the repair removing them
+     * first. That is the thing worth pinning: widen the repair and this test
+     * names the validator that would start 422-ing the result.
+     */
+    expect(repairPastedHTML(withImage(src))).not.toContain('<img');
+
+    const forged: DocNode = {
+      type: 'doc',
+      content: [{ type: 'image', attrs: { src, alt: '' } } as DocNode],
+    };
+    const result = validateDoc(forged);
+    expect(result.ok).toBe(false);
   });
 });

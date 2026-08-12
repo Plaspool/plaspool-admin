@@ -2,9 +2,23 @@ import { useEffect, useState } from 'react';
 import { acquireImageURL, releaseImageURL } from '../data/images';
 
 /**
- * Renders a blob from IndexedDB. Refcounted object URL, cleaned up on unmount.
- * A missing/unreadable blob degrades to a styled placeholder instead of a
- * broken-image icon — and never takes the surrounding post down with it.
+ * Renders an image by its BARE id, from whichever side of the cutover holds it.
+ *
+ * `acquireImageURL` decides: a local blob becomes a refcounted object URL,
+ * cleaned up on unmount exactly as before; anything else becomes
+ * `/api/images/<id>`, which the browser follows to a signed URL. Both arrive
+ * here as a string and nothing below has to know which it got — the release in
+ * the cleanup is a no-op for the server case, because `releaseImageURL` only
+ * knows ids it minted an object URL for.
+ *
+ * The prop is still named `blobId` because `CoverImage.blobId` is, and that
+ * field is read by the server's own SQL as `cover_image->>'blobId'` — renaming
+ * it here would be renaming a column's contract for cosmetics.
+ *
+ * A missing, unreadable or 404ing image degrades to a styled placeholder
+ * instead of a broken-image icon — and never takes the surrounding post down
+ * with it. That matters more after the cutover than before it: an image can now
+ * fail because the network did.
  */
 export function StoredImg({
   blobId,

@@ -6,22 +6,32 @@ import {
 } from '@tiptap/react';
 import { useState } from 'react';
 import { StoredImg } from '../components/StoredImg';
-import { IDB_SCHEME } from '../data/doc';
+import { ASSET_SCHEME, imageIdFromSrc } from '../data/doc';
 import { isAllowedImageSrc } from '../data/docguards';
 import { ImageError, storeImageFile } from '../data/images';
 import { Dialog } from '../components/Dialog';
 import { Spinner } from '../components/ui/Feedback';
 
 /**
- * Images are stored as `idb:<blobId>` so a post survives a reload — an
- * object URL would be dead the moment the page unloads. The node view
- * resolves the blob and hosts the alt/caption editors inline.
+ * Images are stored as an opaque id — `idb:<id>` or `asset:<id>` — so a post
+ * survives a reload; an object URL would be dead the moment the page unloads.
+ * The node view resolves the id through `StoredImg` and hosts the alt/caption
+ * editors inline.
+ *
+ * BOTH SCHEMES RESOLVE, and after the cutover the prefix stops telling the
+ * truth about where the bytes are. `src/routes/Editor.tsx:262` is frozen and
+ * writes `` `idb:${rec.id}` `` for a newly uploaded image, whose id is now a
+ * SERVER id (plan §6.3). `imageIdFromSrc` strips either prefix and
+ * `acquireImageURL` looks in the local store first and falls back to
+ * `/api/images/<id>`, so the same node renders correctly whichever side of the
+ * cutover wrote it. A hand-rolled `startsWith(IDB_SCHEME)` here would have
+ * rendered "Image unavailable" over every migrated picture.
  */
 function ImageView({ node, updateAttributes, selected, deleteNode }: NodeViewProps) {
   const src = String(node.attrs.src ?? '');
   const alt = String(node.attrs.alt ?? '');
   const caption = String(node.attrs.title ?? '');
-  const blobId = src.startsWith(IDB_SCHEME) ? src.slice(IDB_SCHEME.length) : null;
+  const blobId = imageIdFromSrc(src);
 
   const [altOpen, setAltOpen] = useState(false);
   const [altDraft, setAltDraft] = useState('');
@@ -35,12 +45,17 @@ function ImageView({ node, updateAttributes, selected, deleteNode }: NodeViewPro
   const remote = !blobId && isAllowedImageSrc(src);
 
   /**
-   * Copy a remote image onto this device.
+   * Copy a remote image into this blog's own storage.
    *
-   * Deliberately a button and never automatic: fetching on paste would put a
-   * network call — and a likely CORS failure — in the middle of a paste, in an
-   * app whose whole claim is that it needs no network. This is the only request
-   * the application itself ever makes, and only because it was asked to.
+   * Deliberately a button and never automatic: fetching on paste would put two
+   * network calls — and a likely CORS failure — in the middle of a paste.
+   *
+   * `ASSET_SCHEME` AND NOT `IDB_SCHEME`. `storeImageFile` now returns a server
+   * asset id (plan §6.1), and this is a surface that is free to say so.
+   * `src/routes/Editor.tsx:262` is frozen and writes the same kind of id under
+   * `idb:`, which still resolves — `imageIdFromSrc` strips either prefix and the
+   * server's orphan-sweep extractor reads both — but a file that CAN write the
+   * truthful prefix should (plan §6.3).
    */
   async function saveLocally() {
     setSaving(true);
@@ -51,8 +66,11 @@ function ImageView({ node, updateAttributes, selected, deleteNode }: NodeViewPro
       const blob = await res.blob();
       const name = src.split('/').pop()?.split('?')[0] || 'image';
       const rec = await storeImageFile(new File([blob], name, { type: blob.type }));
-      updateAttributes({ src: `${IDB_SCHEME}${rec.id}` });
+      updateAttributes({ src: `${ASSET_SCHEME}${rec.id}` });
     } catch (err) {
+      // `storeImageFile` wraps every failure it owns — including the upload's —
+      // in `ImageError`, so a message that reaches the `else` here is a CORS
+      // refusal from the other site rather than anything this app did.
       setSaveError(
         err instanceof ImageError
           ? err.message
@@ -90,7 +108,14 @@ function ImageView({ node, updateAttributes, selected, deleteNode }: NodeViewPro
           {remote && (
             <button className="cover__tool" onClick={saveLocally} disabled={saving}>
               {saving ? <Spinner size={12} label="Saving image" /> : null}
-              {saving ? 'Saving…' : 'Save to this device'}
+              {/*
+                "…to this blog", not "…to this device". The bytes now go to the
+                blog's own storage rather than to IndexedDB, and a label that
+                promised a local copy would be describing the pre-cutover
+                behaviour. The notice in `extensions.ts` quotes this string, so
+                the two move together.
+              */}
+              {saving ? 'Saving…' : 'Save to this blog'}
             </button>
           )}
           <button

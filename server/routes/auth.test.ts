@@ -537,6 +537,30 @@ describe('the invite routes', () => {
     );
   });
 
+  it('puts the token where a hash router can actually read it', async () => {
+    /*
+     * The assertion above passes for ANY value of `INVITE_PATH`, which is how
+     * this shipped broken: the client is served under `createHashRouter`
+     * (`src/main.tsx`), so a token in `location.search` reaches no route at all
+     * and every invite was dead on arrival.
+     *
+     * So this case does not compare against the constant. It parses the minted
+     * URL the way react-router's `createHashLocation` does — `parsePath` over
+     * `location.hash.substring(1)` — and asserts the token comes out the other
+     * end. It fails against the old `/accept-invite`.
+     */
+    const owner = await loggedIn(ctx.users.owner, '192.0.2.31');
+    const res = await owner.post('/api/invites', { email: 'hash-router@test.local' });
+    expect(res.status).toBe(201);
+
+    const url = new URL(String((await json<{ invite: { url: string } }>(res)).invite.url));
+    // Nothing in the real query string: the router never looks there.
+    expect(url.search).toBe('');
+    const routed = new URL(url.hash.substring(1), 'http://router.invalid');
+    expect(routed.pathname).toBe('/accept-invite');
+    expect(routed.searchParams.get('token')).toBeTruthy();
+  });
+
   it('every invite route is 401 without a session', async () => {
     const anon = client('192.0.2.22');
     expect((await anon.post('/api/invites', { email: 'x@test.local' })).status).toBe(401);
@@ -550,7 +574,15 @@ describe('the invite routes', () => {
     const owner = await loggedIn(ctx.users.owner, '192.0.2.23');
     const res = await owner.post('/api/invites', { email: 'roundtrip@test.local' });
     const url = String((await json<{ invite: { url: string } }>(res)).invite.url);
-    const token = new URL(url).searchParams.get('token')!;
+    /*
+     * Read out of the HASH, exactly as the client does. Reading
+     * `new URL(url).searchParams` — which is what this line used to do — is the
+     * F3 defect itself: under `createHashRouter` the query string of the outer
+     * URL reaches no route, so a token that only lives there can never be
+     * redeemed by anyone.
+     */
+    const token = new URL(new URL(url).hash.substring(1), 'http://router.invalid')
+      .searchParams.get('token')!;
 
     const stored = await ctx.db.execute(sql`SELECT token_hash FROM invites`);
     expect(String(stored.rows[0].token_hash)).not.toBe(token);

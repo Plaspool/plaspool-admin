@@ -9,8 +9,7 @@ import {
 } from 'lucide-react';
 import { StoredImg } from './StoredImg';
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from './ui/Menu';
-import { deriveExcerpt } from '../data/doc';
-import type { Post } from '../data/types';
+import type { ListPost } from '../data/types';
 
 export interface CardActions {
   edit: () => void;
@@ -25,20 +24,48 @@ export interface CardActions {
   destroy: () => void;
 }
 
+/**
+ * `ListPost`, NOT `Post` (F13, plan §4).
+ *
+ * `GET /api/posts` never returns `content` — that is the whole reason the
+ * projection type exists — so the dashboard's rows come out of `db.postList`
+ * with no document in them. Typing this prop `Post` would have compiled only by
+ * a cast at the call site, and the cast would have hidden the real consequence
+ * below.
+ */
 export function PostCard({
   post,
   actions,
   onTag,
   index = 0,
+  canDestroy = true,
 }: {
-  post: Post;
+  post: ListPost;
   actions: CardActions;
   onTag: (t: string) => void;
   /** Position in the grid — drives the entrance stagger only. */
   index?: number;
+  /**
+   * Whether "Delete forever" may be offered at all.
+   *
+   * `DELETE /api/posts/:id` is owner-only (`server/authorize.ts:48`), so for a
+   * writer this control is a confirmation dialog in front of a guaranteed 403 —
+   * the app asking "are you sure?" about something it cannot do. Defaulted to
+   * `true` so the prop is additive: only a caller that knows the role has an
+   * opinion, and `Dashboard` is the only surface that renders trashed cards.
+   */
+  canDestroy?: boolean;
 }) {
   const inTrash = post.deletedAt != null;
-  const excerpt = post.excerpt || deriveExcerpt(post.content, 150);
+  /*
+   * THE `deriveExcerpt(post.content, 150)` FALLBACK IS GONE, and dropping it is
+   * a decision rather than a compile fix. The server derives an excerpt on
+   * every write (`server/repo/mapping.ts:88`), so a list row always carries
+   * one; the fallback only ever existed because the pre-cutover client derived
+   * nothing on the list path. Keeping it would mean shipping every document to
+   * the browser to render a card — the exact mistake ARCHITECTURE.md §6 flags.
+   */
+  const excerpt = post.excerpt;
   const title = post.title.trim() || 'Untitled';
 
   return (
@@ -130,9 +157,11 @@ export function PostCard({
             <button className="card__act" onClick={actions.restore}>
               Restore
             </button>
-            <button className="card__act card__act--danger" onClick={actions.destroy}>
-              Delete forever
-            </button>
+            {canDestroy && (
+              <button className="card__act card__act--danger" onClick={actions.destroy}>
+                Delete forever
+              </button>
+            )}
           </>
         ) : (
           <>
@@ -150,7 +179,7 @@ export function PostCard({
   );
 }
 
-function Overflow({ post, actions }: { post: Post; actions: CardActions }) {
+function Overflow({ post, actions }: { post: ListPost; actions: CardActions }) {
   return (
     <Menu>
       <MenuTrigger asChild>

@@ -612,6 +612,26 @@
   }
 }
 
+/* The sign-out control in the masthead menu is a real <button>, because it owns
+   the unsent-work confirmation and has to survive the menu closing around it.
+   Every sibling in that menu is Radix's div[role="menuitem"], so the only thing
+   missing is the browser chrome a <button> brings with it. No new colour and no
+   new metric: `.ui-menu__item` still supplies both, including the 1.9rem icon
+   gutter that keeps the labels on one line. */
+button.ui-menu__item {
+  width: 100%;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+}
+button.ui-menu__item:hover {
+  background: var(--paper-sunken);
+}
+button.ui-menu__item--danger:hover {
+  background: var(--danger-soft);
+}
+
 /* Long-running library work (import/export) — a bar, not a blocking modal. */
 .dash__busy {
   display: grid;

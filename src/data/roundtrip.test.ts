@@ -1,283 +1,169 @@
 /**
  * Regression tests for the integration-gauntlet findings.
+ *
+ * WHAT MOVED TO THE SERVER AT THE CUTOVER. The excerpt rules, the
+ * revision-per-lifecycle-change history and the blank-draft grace window were
+ * all asserted here against Dexie transactions that no longer exist. Their
+ * server-side equivalents run against a real database:
+ * `server/repo/posts.test.ts`'s "keeps the excerpt rule: author text survives,
+ * a derived one tracks the post", `server/repo/lifecycle.test.ts`'s "derives
+ * the excerpt on publish but leaves an author-written one alone", "every
+ * lifecycle change leaves a revision with no numbering gap", "destroys a blank
+ * draft that is past the grace window" and "never sweeps a draft inside the
+ * grace window, or the one being edited".
+ *
+ * The export/import round trip has now moved too. It stayed here through Task
+ * 19 because `src/data/backup.ts` was still a Dexie reader/writer; Task 22
+ * (plan §8.1) makes export a server route and import an upload, so the three
+ * tests are re-pointed in `src/data/backup.test.ts` — see the note below for
+ * which became what.
  */
 import 'fake-indexeddb/auto';
-import { beforeEach, describe, expect, it } from 'vitest';
-import { db, newId } from './db';
-import {
-  archivePost,
-  createPost,
-  duplicatePost,
-  publishPost,
-  savePost,
-  sweepBlankDrafts,
-  unpublishPost,
-} from './posts';
-import { exportBundle, importBundle, ImportError, BUNDLE_FORMAT } from './backup';
-import { IDB_SCHEME, docToText, deriveExcerpt } from './doc';
-import type { DocNode, StoredImage } from './types';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('./api', () => ({
+  api: {
+    createPost: vi.fn(),
+    savePost: vi.fn(),
+    publishPost: vi.fn(),
+  },
+}));
+
+import { api } from './api';
+import { cachePost } from './cache';
+import { db } from './db';
+import { createDraftShape, publishPost, savePost, setActiveUser } from './posts';
+import { docToText } from './doc';
+import type { DocNode, Post } from './types';
+
+const USER = 'u_writer';
 
 const doc = (text: string): DocNode => ({
   type: 'doc',
   content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
 });
 
-const withImage = (blobId: string, text: string): DocNode => ({
-  type: 'doc',
-  content: [
-    { type: 'paragraph', content: [{ type: 'text', text }] },
-    { type: 'image', attrs: { src: `${IDB_SCHEME}${blobId}`, alt: 'pic' } },
-  ],
-});
+let n = 0;
+const post = (over: Partial<Post> = {}): Post =>
+  createDraftShape({ id: `p_${(n += 1)}`, authorId: USER, ...over });
 
-async function seedImage(): Promise<string> {
-  const rec: StoredImage = {
-    id: newId('img_'),
-    blob: new Blob([new Uint8Array([1, 2, 3, 4, 5])], { type: 'image/png' }),
-    width: 4,
-    height: 4,
-    type: 'image/png',
-    createdAt: Date.now(),
-  };
-  await db.images.add(rec);
-  return rec.id;
-}
-
-/** Dexie's typed `update` can't express a patch on a recursive doc type. */
-async function age(id: string, ms: number) {
-  const p = await db.posts.get(id);
-  await db.posts.put({ ...p!, updatedAt: Date.now() - ms });
+/** A post as the server would have handed it back, already in the cache. */
+async function cached(over: Partial<Post> = {}): Promise<Post> {
+  const p = post(over);
+  await cachePost(USER, p);
+  return p;
 }
 
 beforeEach(async () => {
+  vi.resetAllMocks();
+  setActiveUser(USER);
   await db.posts.clear();
+  await db.postList.clear();
   await db.revisions.clear();
   await db.images.clear();
 });
 
 describe('publishing does not strand the editor (blocking #1)', () => {
-  it('a save based on the revision publish returned is accepted', async () => {
-    const p = await createPost({ title: 'T', content: doc('before') });
+  it('the revision publish returns is the one the next save carries', async () => {
+    const p = await cached({ title: 'T', content: doc('before') });
+    vi.mocked(api.publishPost).mockResolvedValue({
+      ...p,
+      status: 'published',
+      revision: p.revision + 1,
+    });
+    vi.mocked(api.savePost).mockImplementation(async (_id, patch, opts) => ({
+      ...p,
+      ...patch,
+      revision: (opts?.baseRevision ?? 0) + 1,
+    }));
+
     const published = await publishPost(p.id);
-    // This is exactly what the editor does after adopting the new revision.
+    // The lifecycle response was cached, so the live query behind the editor
+    // is not a revision behind the write it is about to base itself on.
+    expect((await db.posts.get(p.id))?.revision).toBe(published.revision);
+
+    // Exactly what `Editor.tsx:285`'s `adopt` does with the return value.
     const next = await savePost(
       p.id,
       { content: doc('typed after publishing') },
       { baseRevision: published.revision },
     );
+
+    expect(vi.mocked(api.savePost)).toHaveBeenCalledWith(
+      p.id,
+      { content: doc('typed after publishing') },
+      { baseRevision: 2 },
+    );
     expect(docToText(next.content)).toBe('typed after publishing');
-  });
-
-  it('the same holds for unpublish and archive', async () => {
-    const p = await createPost({ title: 'T', content: doc('x') });
-    const un = await unpublishPost((await publishPost(p.id)).id);
-    await expect(
-      savePost(p.id, { content: doc('after unpublish') }, { baseRevision: un.revision }),
-    ).resolves.toBeDefined();
-
-    const ar = await archivePost(p.id);
-    await expect(
-      savePost(p.id, { content: doc('after archive') }, { baseRevision: ar.revision }),
-    ).resolves.toBeDefined();
-  });
-});
-
-describe('excerpts track the post (blocking #2)', () => {
-  it('a derived excerpt follows the content instead of freezing', async () => {
-    const p = await createPost();
-    await savePost(p.id, { content: doc('the original opening lines') });
-    expect((await db.posts.get(p.id))!.excerpt).toContain('original opening');
-
-    await savePost(p.id, { content: doc('completely different prose now') });
-    const after = (await db.posts.get(p.id))!;
-    expect(after.excerpt).toContain('completely different');
-    expect(after.excerpt).not.toContain('original opening');
-  });
-
-  it('an author-written excerpt is never overwritten', async () => {
-    const p = await createPost();
-    await savePost(p.id, { content: doc('first') });
-    await savePost(p.id, { excerpt: 'My own summary' });
-    await savePost(p.id, { content: doc('second, totally new') });
-    const after = (await db.posts.get(p.id))!;
-    expect(after.excerpt).toBe('My own summary');
-    expect(after.excerptSource).toBe('author');
-  });
-
-  it('clearing the excerpt returns it to tracking the content', async () => {
-    const p = await createPost({ content: doc('body words here') });
-    await savePost(p.id, { excerpt: 'Mine' });
-    const cleared = await savePost(p.id, { excerpt: '   ' });
-    expect(cleared.excerptSource).toBe('derived');
-    expect(cleared.excerpt).toBe(deriveExcerpt(cleared.content));
-  });
-
-  it('publishing does not resurrect a stale derived excerpt', async () => {
-    const p = await createPost();
-    await savePost(p.id, { content: doc('old opening') });
-    await savePost(p.id, { content: doc('new opening entirely') });
-    const pub = await publishPost(p.id);
-    expect(pub.excerpt).toContain('new opening');
-  });
-});
-
-describe('export/import is a complete round trip (blocking #3)', () => {
-  it('carries posts, revisions and image bytes, and can be read back', async () => {
-    const img = await seedImage();
-    const p = await createPost({
-      title: 'Round trip',
-      content: withImage(img, 'body text'),
-      coverImage: { blobId: img, alt: 'cover', focalPoint: '50% 25%', width: 4, height: 4 },
-      tags: ['a', 'b'],
-      category: 'Tech',
-    });
-    await savePost(p.id, { title: 'Round trip v2' });
-
-    const bundle = await exportBundle();
-    expect(bundle.format).toBe(BUNDLE_FORMAT);
-    expect(bundle.images).toHaveLength(1);
-    expect(bundle.revisions.length).toBeGreaterThan(1);
-
-    // Simulate a different browser: wipe everything, then import.
-    await db.posts.clear();
-    await db.revisions.clear();
-    await db.images.clear();
-
-    const result = await importBundle(JSON.stringify(bundle));
-    expect(result.posts).toBe(1);
-    expect(result.images).toBe(1);
-
-    const restored = (await db.posts.toArray())[0];
-    expect(restored.title).toBe('Round trip v2');
-    expect(restored.tags).toEqual(['a', 'b']);
-    expect(restored.category).toBe('Tech');
-
-    // The cover and the inline reference both point at a blob that exists.
-    expect(await db.images.get(restored.coverImage!.blobId)).toBeDefined();
-    const refs = JSON.stringify(restored.content).match(/idb:[a-z0-9_]+/gi) ?? [];
-    expect(refs).toHaveLength(1);
-    for (const ref of refs) {
-      const rec = await db.images.get(ref.slice(IDB_SCHEME.length));
-      expect(rec).toBeDefined();
-      expect(rec!.blob.size).toBe(5);
-    }
-    expect(restored.coverImage!.alt).toBe('cover');
-    expect(restored.coverImage!.focalPoint).toBe('50% 25%');
-    // History came with it.
-    expect(await db.revisions.where('postId').equals(restored.id).count()).toBeGreaterThan(1);
-  });
-
-  it('import is additive — it never overwrites existing work', async () => {
-    const mine = await createPost({ title: 'Written since the export' });
-    const bundle = await exportBundle();
-    await importBundle(JSON.stringify(bundle));
-    const all = await db.posts.toArray();
-    expect(all).toHaveLength(2);
-    expect(await db.posts.get(mine.id)).toBeDefined();
-  });
-
-  it('rejects files that are not Studio bundles', async () => {
-    await expect(importBundle('not json at all')).rejects.toBeInstanceOf(ImportError);
-    await expect(importBundle('{"format":"something/else"}')).rejects.toBeInstanceOf(
-      ImportError,
-    );
-  });
-});
-
-describe('blank-draft sweep respects a grace period', () => {
-  it('leaves a freshly created draft alone', async () => {
-    const p = await createPost();
-    expect(await sweepBlankDrafts()).toBe(0);
-    expect(await db.posts.get(p.id)).toBeDefined();
-  });
-
-  it('collects a blank draft that was abandoned long enough ago', async () => {
-    const p = await createPost();
-    await age(p.id, 120_000);
-    expect(await sweepBlankDrafts()).toBe(1);
-    expect(await db.posts.get(p.id)).toBeUndefined();
-  });
-
-  it('never collects the post currently open, however old', async () => {
-    const p = await createPost();
-    await age(p.id, 120_000);
-    expect(await sweepBlankDrafts(p.id)).toBe(0);
-    expect(await db.posts.get(p.id)).toBeDefined();
-  });
-
-  it('never collects an old draft that has words in it', async () => {
-    const p = await createPost({ content: doc('has content') });
-    await age(p.id, 120_000);
-    expect(await sweepBlankDrafts()).toBe(0);
-  });
-});
-
-describe('lifecycle changes leave a history entry', () => {
-  it('records publish, unpublish and archive with no revision gaps', async () => {
-    const p = await createPost({ title: 'T', content: doc('x') });
-    await publishPost(p.id);
-    await unpublishPost(p.id);
-    await archivePost(p.id);
-
-    const revs = (await db.revisions.where('postId').equals(p.id).toArray()).sort(
-      (a, b) => a.revision - b.revision,
-    );
-    const numbers = revs.map((r) => r.revision);
-    // Every revision number the post passed through is accounted for.
-    expect(numbers).toEqual([...new Set(numbers)].sort((a, b) => a - b));
-    expect(numbers[numbers.length - 1]).toBe((await db.posts.get(p.id))!.revision);
-    expect(revs.filter((r) => r.kind === 'status').map((r) => r.note)).toEqual([
-      'Moved back to drafts',
-      'Archived',
-    ]);
+    expect((await db.posts.get(p.id))?.revision).toBe(3);
   });
 });
 
 /**
+ * WHERE THE EXPORT/IMPORT TESTS WENT, AND WHY THEY COULD NOT STAY HERE.
+ *
+ * Three tests lived at this point — "carries posts, revisions and image bytes,
+ * and can be read back", "import is additive — it never overwrites existing
+ * work", and "rejects files that are not Studio bundles" — and all three
+ * asserted on Dexie because `src/data/backup.ts` read and wrote Dexie. Task 22
+ * (plan §8.1) is the slice that changes that: export now comes from
+ * `GET /api/export` or is rebuilt from `GET /posts`, and import goes through
+ * `src/data/migrate.ts`'s upload pipeline rather than `bulkAdd`.
+ *
+ * They are re-pointed rather than deleted, in `src/data/backup.test.ts`:
+ *
+ * - the round trip → "carries the posts, their history and the image bytes"
+ *   (the local corpus, which is the only bundle that still carries bytes) plus
+ *   "rebuilds the same bundle from routes every writer already has";
+ * - "import is additive" → "uploads the bundle instead of writing it into the
+ *   cache". The additive rule moved to the server with the write:
+ *   `server/routes/backup.ts` skips an id it already holds and reports it in
+ *   `skipped`, so the client no longer decides it and can no longer test it;
+ * - "rejects files that are not Studio bundles" → the `parseBundle` block, plus
+ *   "rejects a file that is not a bundle before any request is made", which is
+ *   the sharper version: a refused body still burns one of five hourly
+ *   rate-limit slots (F8), so the refusal has to happen before the request.
+ *
+ * What stays here is what this file was always about: the write path, and the
+ * fields that fall out of it.
+ */
+
+/**
  * A new `Post` field has to land in four places — `shared/types.ts`,
  * `PostPatch`, `createDraftShape`, and the `backup.ts` import path — or it is
- * silently dropped. Import rebuilds every post through `createDraftShape`, so
- * that function is the one that actually decides, and this is the test that
- * notices.
+ * silently dropped. The last of those is asserted in `backup.test.ts`'s
+ * "carries a per-post template override onto the wire", which drives the same
+ * `createDraftShape` through the new import.
  */
 describe('per-post template override', () => {
-  it('defaults to null — no opinion, follow the blog', async () => {
-    const p = await createPost({ title: 'Plain' });
-    expect(p.template).toBeNull();
+  it('defaults to null — no opinion, follow the blog', () => {
+    expect(createDraftShape({ title: 'Plain' }).template).toBeNull();
   });
 
-  it('is patchable through savePost, and clearable back to the default', async () => {
-    const p = await createPost({ title: 'Essay' });
-    const pinned = await savePost(p.id, { template: 'editorial' });
-    expect(pinned.template).toBe('editorial');
-    const cleared = await savePost(p.id, { template: null });
-    expect(cleared.template).toBeNull();
+  it('a cleared override goes on the wire as null rather than being dropped', async () => {
+    const p = await cached({ title: 'Essay', template: 'editorial' });
+    vi.mocked(api.savePost).mockResolvedValue({ ...p, template: null, revision: 2 });
+
+    await savePost(p.id, { template: null });
+
+    // `undefined` and `null` are different states on this field: one means "no
+    // change", the other "follow the blog again". A patch that dropped the key
+    // would leave the post pinned to Editorial forever.
+    expect(vi.mocked(api.savePost)).toHaveBeenCalledWith(p.id, { template: null }, {});
+    expect((await db.posts.get(p.id))?.template).toBeNull();
   });
 
-  it('survives an export → wipe → import round trip', async () => {
-    const pinned = await createPost({ title: 'Full bleed', template: 'editorial' });
-    const plain = await createPost({ title: 'Ordinary' });
-    const bundle = JSON.stringify(await exportBundle());
+  it('a pinned layout survives being cached and read back', async () => {
+    await cached({ title: 'Full bleed', template: 'editorial' });
+    await cached({ title: 'Ordinary' });
 
-    await db.posts.clear();
-    await db.revisions.clear();
-    await importBundle(bundle);
-
-    const restored = await db.posts.toArray();
-    const byTitle = (t: string) => restored.find((p) => p.title === t)!;
+    const rows = await db.posts.toArray();
+    const byTitle = (t: string) => rows.find((p) => p.title === t)!;
     // The override is the thing at risk; `null` staying `null` matters just as
     // much, because `undefined` would read as "no opinion" and then serialise
     // out of the next bundle entirely.
     expect(byTitle('Full bleed').template).toBe('editorial');
     expect(byTitle('Ordinary').template).toBeNull();
     expect(Object.hasOwn(byTitle('Ordinary'), 'template')).toBe(true);
-    expect(pinned.template).toBe('editorial');
-    expect(plain.template).toBeNull();
-  });
-
-  it('carries over when a post is duplicated', async () => {
-    const p = await createPost({ title: 'Source', template: 'technical' });
-    const copy = await duplicatePost(p.id);
-    expect(copy.template).toBe('technical');
   });
 });

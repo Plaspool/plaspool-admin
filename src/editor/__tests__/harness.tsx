@@ -12,7 +12,8 @@ import { editorExtensions } from '../extensions';
 import { BLOCK_TYPES, type BlockContext, type BlockType } from '../BlockMenu';
 import { DocRenderer } from '../../components/DocRenderer';
 import { db } from '../../data/db';
-import { createPost, savePost } from '../../data/posts';
+import { cachePost } from '../../data/cache';
+import { createDraftShape } from '../../data/posts';
 import { IDB_SCHEME } from '../../data/doc';
 import type { DocNode, Post } from '../../data/types';
 
@@ -124,20 +125,36 @@ export function renderDoc(doc: DocNode): string {
 
 export async function emptyDb() {
   await db.posts.clear();
+  await db.postList.clear();
   await db.revisions.clear();
   await db.images.clear();
 }
+
+/** The one this rig writes under. `cache.ts` is user-scoped by invariant I2. */
+const HARNESS_USER = 'u_harness';
 
 /**
  * Editor → Dexie → back. The whole point of the block tests: whatever the
  * editor produced has to survive the persistence layer and still be something
  * the reader understands.
+ *
+ * IT GOES THROUGH `cachePost` NOW RATHER THAN `createPost` + `savePost`.
+ * After Task 19 those two are HTTP requests, so this rig would have been
+ * asserting that a mocked fetch returned what it was told to — and unmocked, as
+ * it was left, every block test failed with `OfflineError` from `api.ts`.
+ *
+ * `db.posts` is still the store `Editor.tsx:48` hydrates from and
+ * `DocRenderer` still reads what comes out of it, so the question these tests
+ * ask is unchanged: does this document survive IndexedDB's structured clone
+ * intact. `createDraftShape` is what derives `wordCount` from the document, and
+ * `cachePost` is what refuses to store one without a body — both of which the
+ * cases below rely on.
  */
 export async function roundTrip(content: DocNode): Promise<Post> {
-  const created = await createPost();
-  await savePost(created.id, { content });
-  const stored = await db.posts.get(created.id);
-  if (!stored) throw new Error('the post did not survive savePost');
+  const shaped = createDraftShape({ content });
+  await cachePost(HARNESS_USER, shaped);
+  const stored = await db.posts.get(shaped.id);
+  if (!stored) throw new Error('the post did not survive the cache write');
   return stored;
 }
 
