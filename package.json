@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "dev:api": "tsx server/dev.ts",
+    "dev:api": "tsx --env-file-if-exists=.env server/dev.ts",
     "dev:all": "concurrently \"npm:dev\" \"npm:dev:api\"",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx server/db/migrate.ts",
