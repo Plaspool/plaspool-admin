@@ -703,3 +703,55 @@
     mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
   }
 }
+
+/* ------------------------------------------------- variant image thumbnail */
+
+/*
+ * The picture IS the button. A colour variant is the one row where a swatch
+ * finds the thing faster than a SKU does, and a separate upload control beside
+ * it would double the width of the narrowest useful column for nothing.
+ *
+ * A checkerboard under it, because these PNGs are transparent outside the
+ * spool: on a flat panel a white spool on a light card looks like a broken
+ * image, and the checker says "this is transparent" the way every image editor
+ * has for thirty years.
+ */
+.vthumb {
+  --check: color-mix(in srgb, var(--ink) 7%, transparent);
+  display: grid;
+  place-items: center;
+  width: 3rem;
+  height: 3rem;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background-color: var(--paper-sunken);
+  background-image:
+    linear-gradient(45deg, var(--check) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--check) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--check) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--check) 75%);
+  background-size: 0.75rem 0.75rem;
+  background-position: 0 0, 0 0.375rem, 0.375rem -0.375rem, -0.375rem 0;
+  color: var(--ink-4);
+  cursor: pointer;
+  overflow: hidden;
+  transition:
+    border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.vthumb:hover:not(:disabled),
+.vthumb:focus-visible {
+  border-color: var(--accent);
+  color: var(--ink-2);
+}
+.vthumb:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+.vthumb__img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}

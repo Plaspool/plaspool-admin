@@ -256,6 +256,7 @@ const VARIANT = {
   price: { amount: 1990, currency: 'GBP' },
   available: 2,
   backorderable: false,
+  imageId: null as string | null,
 };
 
 const ORDER_DETAIL = {
@@ -754,6 +755,33 @@ describe('the buyer list', () => {
 });
 
 // -------------------------------------------------------------------- shared
+
+describe('a variant carries its own picture', () => {
+  it('offers to add one when the variant has none', async () => {
+    when('/api/shop/admin/products/p_1', { product: { ...PRODUCT, variants: [VARIANT] } });
+    mount(<ShopProducts />, '/shop/products?id=p_1');
+
+    // The option's own name is in the label, so a rail of eight colours does
+    // not present eight controls called "Add an image".
+    expect(await screen.findByRole('button', { name: /Add an image for Blue/i })).toBeTruthy();
+  });
+
+  it('shows the picture, and offers to replace it, once one is set', async () => {
+    when('/api/shop/admin/products/p_1', {
+      product: { ...PRODUCT, variants: [{ ...VARIANT, imageId: 'img_blue' }] },
+    });
+    mount(<ShopProducts />, '/shop/products?id=p_1');
+
+    const button = await screen.findByRole('button', { name: /Replace the image for Blue/i });
+    const img = button.querySelector('img');
+    /*
+     * THE ADMIN URL, not the public one. This screen shows drafts, and
+     * `/api/public/images/:id` serves only what an ACTIVE product references —
+     * so a draft's swatches would all be 404s against the public route.
+     */
+    expect(img?.getAttribute('src')).toContain('/api/images/img_blue');
+  });
+});
 
 /*
  * THE "shop nav" TEST LIVED HERE AND HAS MOVED, rather than been dropped.

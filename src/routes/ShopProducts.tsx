@@ -1073,6 +1073,12 @@ function VariantsPanel({
             <table className="dtable">
               <thead>
                 <tr>
+                  {/* FIRST, because on this catalogue the variant IS a colour
+                      and the picture is the fastest way to find the row you
+                      meant. The header says "Image" rather than "Colour": the
+                      axis is whatever `optionValues` says, and a size-by-fit
+                      product would read wrong under a colour heading. */}
+                  <th scope="col">Image</th>
                   <th scope="col">SKU</th>
                   <th scope="col">Price</th>
                   <th scope="col">Stock</th>
@@ -1140,8 +1146,16 @@ function VariantRow({
   onChanged: () => void;
 }) {
   const { notify } = useToast();
-  /** The store's currency for a variant that has never been priced. */
-  const currency = variant.price?.currency ?? 'GBP';
+  /**
+   * The store's currency for a variant that has never been priced.
+   *
+   * There is no store-currency constant anywhere — the currency travels with
+   * each price — so this is the seed for the FIRST price on a variant, and it
+   * has to match what the rest of the catalogue is in or the operator types a
+   * number that lands in the wrong denomination. Paystack's supported set is
+   * NGN/GHS/ZAR/KES/USD, and GBP (which this used to default to) is not in it.
+   */
+  const currency = variant.price?.currency ?? 'NGN';
 
   /*
    * The box shows MAJOR units and the request carries MINOR ones, and the two
@@ -1161,11 +1175,85 @@ function VariantRow({
   const priceError = parsed && !parsed.ok ? moneyRefusalMessage(parsed.reason, currency) : null;
   const changed = parsed?.ok && parsed.minor !== (variant.price?.amount ?? -1);
 
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [imageBusy, setImageBusy] = useState(false);
+
+  /**
+   * Upload, commit, then attach — three steps, and the attach is deliberately
+   * last.
+   *
+   * `storeImageFile` is the same slot/PUT/commit the product cover uses, so a
+   * variant image is a fully committed row before its id is ever sent. That
+   * order is what `checkVariantImage` on the server requires, and it is why a
+   * half-finished upload cannot leave a variant pointing at bytes that are not
+   * there.
+   */
+  async function attachImage(file: File | undefined): Promise<void> {
+    if (!file) return;
+    setImageBusy(true);
+    try {
+      const stored = await storeImageFile(file);
+      await shopApi.updateVariant(variant.id, { imageId: stored.id });
+      notify('Image set');
+      onChanged();
+    } catch (err) {
+      notify(
+        err instanceof ImageError ? err.message : explain(err, 'image'),
+        { tone: 'danger' },
+      );
+    } finally {
+      setImageBusy(false);
+    }
+  }
+
   const deltaValue = Number(delta);
   const deltaOk = delta.trim() !== '' && Number.isSafeInteger(deltaValue) && deltaValue !== 0;
 
+  const colour =
+    variant.optionValues?.Colour ??
+    Object.values(variant.optionValues ?? {})[0] ??
+    variant.sku;
+
   return (
     <tr>
+      <td>
+        {/*
+          THE THUMBNAIL IS THE CONTROL. A separate "upload" button beside a
+          picture doubles the width of the narrowest useful column for no gain —
+          clicking the image is what everybody tries first, and the alt text and
+          the label keep it reachable without a pointer.
+
+          `api.imageUrl(id)` and not the public URL: this is the admin, the
+          image may belong to a draft product, and `/api/public/images/:id`
+          serves only what an ACTIVE product references.
+        */}
+        <input
+          ref={fileInput}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/avif,image/gif"
+          hidden
+          onChange={(e) => {
+            void attachImage(e.target.files?.[0]);
+            e.target.value = '';
+          }}
+        />
+        <button
+          type="button"
+          className="vthumb"
+          disabled={imageBusy}
+          onClick={() => fileInput.current?.click()}
+          aria-label={
+            variant.imageId ? `Replace the image for ${colour}` : `Add an image for ${colour}`
+          }
+        >
+          {variant.imageId ? (
+            <img className="vthumb__img" src={api.imageUrl(variant.imageId)} alt="" />
+          ) : (
+            <ImagePlus className="ui-ic" aria-hidden="true" />
+          )}
+        </button>
+      </td>
+
       <td>
         <span className="dtable__strong">{variant.sku}</span>
         <span className="dtable__sub">

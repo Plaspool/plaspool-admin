@@ -295,6 +295,13 @@ export interface ShopVariant {
   /** `null` is "no inventory row", which is not the same as "none left". */
   available: number | null;
   backorderable: boolean;
+  /**
+   * The photograph of THIS option (migration 0009). `null` until one is set.
+   *
+   * The options in this store are colours, and a colour is the thing a picture
+   * settles — the product cover can only show one of them.
+   */
+  imageId: string | null;
 }
 
 export interface ShopProductDetail extends ShopProduct {
@@ -698,6 +705,7 @@ export const shopApi = {
       weightGrams?: number | null;
       onHand?: number;
       backorderable?: boolean;
+      imageId?: string | null;
     },
   ): Promise<ShopVariant> {
     const res = await shopFetch<{ variant: ShopVariant }>(
@@ -715,6 +723,8 @@ export const shopApi = {
       position?: number;
       weightGrams?: number | null;
       status?: VariantStatus;
+      /** `null` clears the colour photograph; a committed image id sets it. */
+      imageId?: string | null;
     },
   ): Promise<ShopVariant> {
     const res = await shopFetch<{ variant: ShopVariant }>(`${BASE}/variants/${seg(id)}`, {

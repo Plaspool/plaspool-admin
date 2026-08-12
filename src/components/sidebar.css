@@ -359,27 +359,17 @@
 }
 
 /*
- * The dot stands where a section's icon stands. Without it every page item
- * would start its label at the rail's left padding, and a collapsed rail would
- * be a column of clipped words with nothing to aim at.
+ * The sub-item icon sits in the same column the section icons occupy, and is
+ * dimmed until the item is current or hovered. These were identical dots, which
+ * works only at the width where the label is beside them — a collapsed rail of
+ * five grey circles is five controls you can tell apart only by counting.
  */
-.sidebar__dot {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-}
-.sidebar__dot::before {
-  content: '';
-  width: 0.375rem;
-  height: 0.375rem;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.55;
+.sidebar__item--page .sidebar__icon {
+  opacity: 0.62;
   transition: opacity var(--dur-1) var(--ease);
 }
-.sidebar__item--page.is-active .sidebar__dot::before,
-.sidebar__item--page:hover .sidebar__dot::before {
+.sidebar__item--page.is-active .sidebar__icon,
+.sidebar__item--page:hover .sidebar__icon {
   opacity: 1;
 }
 

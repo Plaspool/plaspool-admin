@@ -11,13 +11,24 @@ import {
 } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
+  Archive,
   ChevronLeft,
+  Globe,
+  LayoutDashboard,
+  LayoutTemplate,
+  Layers,
   Mail,
+  Megaphone,
   Newspaper,
+  Package,
   PanelLeft,
   PanelLeftClose,
+  PencilLine,
+  Receipt,
   Settings as SettingsIcon,
   ShoppingBag,
+  Trash2,
+  Users,
   X,
 } from 'lucide-react';
 import { Tooltip } from './ui/Switch';
@@ -106,28 +117,43 @@ interface SectionPage {
   key: string;
   label: string;
   to: string;
+  /**
+   * ONE ICON EACH, and they are not decoration.
+   *
+   * These were identical dots, which is fine at the width where the label is
+   * beside them and useless at the width where it is not — a collapsed rail of
+   * five grey circles is five controls a person can only tell apart by counting
+   * from the top. The icon IS the item when the rail is 56px wide.
+   */
+  icon: typeof Newspaper;
   /** The `?status=` this item owns. `''` is the unfiltered default. */
   status?: string;
 }
 
 const SECTION_PAGES: Partial<Record<SectionId, SectionPage[]>> = {
   posts: [
-    { key: 'all', label: 'All', to: '/', status: '' },
-    { key: 'published', label: 'Published', to: '/?status=published', status: 'published' },
-    { key: 'draft', label: 'Drafts', to: '/?status=draft', status: 'draft' },
-    { key: 'archived', label: 'Archived', to: '/?status=archived', status: 'archived' },
-    { key: 'trash', label: 'Trash', to: '/?status=trash', status: 'trash' },
+    { key: 'all', label: 'All', to: '/', status: '', icon: Layers },
+    // A globe for published, because that is the one state that means "anyone
+    // on the internet can read this" — the distinction the others are all
+    // shades of.
+    { key: 'published', label: 'Published', to: '/?status=published', status: 'published', icon: Globe },
+    { key: 'draft', label: 'Drafts', to: '/?status=draft', status: 'draft', icon: PencilLine },
+    { key: 'archived', label: 'Archived', to: '/?status=archived', status: 'archived', icon: Archive },
+    { key: 'trash', label: 'Trash', to: '/?status=trash', status: 'trash', icon: Trash2 },
   ],
   shop: [
-    { key: 'overview', label: 'Overview', to: '/shop' },
-    { key: 'products', label: 'Products', to: '/shop/products' },
-    { key: 'orders', label: 'Orders', to: '/shop/orders' },
-    { key: 'customers', label: 'Customers', to: '/shop/customers' },
+    { key: 'overview', label: 'Overview', to: '/shop', icon: LayoutDashboard },
+    // The same two icons these screens already use for themselves: `Package` is
+    // the products empty state and `Receipt` is the orders one, so the rail and
+    // the page agree rather than each inventing a symbol.
+    { key: 'products', label: 'Products', to: '/shop/products', icon: Package },
+    { key: 'orders', label: 'Orders', to: '/shop/orders', icon: Receipt },
+    { key: 'customers', label: 'Customers', to: '/shop/customers', icon: Users },
   ],
   emails: [
-    { key: 'templates', label: 'Templates', to: '/emails/templates' },
-    { key: 'broadcasts', label: 'Broadcasts', to: '/emails/broadcasts' },
-    { key: 'subscribers', label: 'Subscribers', to: '/emails/subscribers' },
+    { key: 'templates', label: 'Templates', to: '/emails/templates', icon: LayoutTemplate },
+    { key: 'broadcasts', label: 'Broadcasts', to: '/emails/broadcasts', icon: Megaphone },
+    { key: 'subscribers', label: 'Subscribers', to: '/emails/subscribers', icon: Users },
   ],
 };
 
@@ -535,16 +561,16 @@ function PageLink({
   expanded: boolean;
   count?: number;
 }) {
+  const Icon = page.icon;
   const link = (
     <Link
       className={`sidebar__item sidebar__item--page${active ? ' is-active' : ''}`}
       to={href}
       aria-current={active ? 'page' : undefined}
     >
-      {/* A dot where the section icons are, so the two levels line up on the
-          same 56px grid and the collapsed rail still shows SOMETHING per item
-          rather than a column of clipped words. */}
-      <span className="sidebar__dot ui-ic" aria-hidden="true" />
+      {/* In the same column the section icons occupy, so the two levels line up
+          on one 56px grid rather than reading as two different rails. */}
+      <Icon className="ui-ic sidebar__icon" aria-hidden="true" />
       <span className="sidebar__label">{page.label}</span>
       {count !== undefined && (
         <span className="sidebar__count sidebar__label">{count}</span>
