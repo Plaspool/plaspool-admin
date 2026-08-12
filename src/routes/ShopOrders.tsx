@@ -131,7 +131,6 @@ export default function ShopOrders() {
               </div>
             </div>
           </header>
-          <ShopNav />
         </>
       )}
 
@@ -1175,21 +1174,3 @@ function explain(err: unknown, what: string): string {
 }
 
 /** See `Shop.tsx` for why this row is copied into each screen. */
-function ShopNav() {
-  return (
-    <nav className="shopscr__nav" aria-label="Shop sections">
-      <Link className="shopscr__tab" to="/shop">
-        Overview
-      </Link>
-      <Link className="shopscr__tab" to="/shop/products">
-        Products
-      </Link>
-      <Link className="shopscr__tab" to="/shop/orders" aria-current="page">
-        Orders
-      </Link>
-      <Link className="shopscr__tab" to="/shop/customers">
-        Customers
-      </Link>
-    </nav>
-  );
-}

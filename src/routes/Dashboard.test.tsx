@@ -110,6 +110,7 @@ import { resetCategories } from '../data/useCategories';
 import { TooltipProvider } from '../components/ui/Switch';
 import { brand } from '../brand';
 import Dashboard from './Dashboard';
+import { Sidebar, SidebarCounts } from '../components/Sidebar';
 import type { ListPost, Post } from '../data/types';
 
 const USER = 'u_writer';
@@ -231,16 +232,33 @@ function StubEditor() {
   return <button onClick={() => navigate(-1)}>Back to posts</button>;
 }
 
+/**
+ * THE RAIL IS PART OF THIS HARNESS NOW, and it has to be.
+ *
+ * The five status filters used to be a tab strip inside `Dashboard`; they are
+ * the Posts pages of the sidebar since the navigation was unified. The URL
+ * behaviour they drive — push on a status change, replace on a search,
+ * defaults deleted rather than written — is unchanged and still worth
+ * pinning, but the links that exercise it are no longer rendered by the
+ * component under test.
+ *
+ * `SidebarCounts` wraps both, exactly as `AppShell` does: the dashboard
+ * publishes the counts and the rail reads them, so a provider around only one
+ * of them would put the two on opposite sides of the boundary.
+ */
 function drawRouted(entries: string[]) {
   return render(
     <MemoryRouter initialEntries={entries}>
       <TooltipProvider>
-        <Chrome />
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/edit/:id" element={<StubEditor />} />
-          <Route path="/elsewhere" element={<p>Somewhere else entirely</p>} />
-        </Routes>
+        <SidebarCounts>
+          <Chrome />
+          <Sidebar user={null} signOut={null} />
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/edit/:id" element={<StubEditor />} />
+            <Route path="/elsewhere" element={<p>Somewhere else entirely</p>} />
+          </Routes>
+        </SidebarCounts>
       </TooltipProvider>
     </MemoryRouter>,
   );
@@ -526,13 +544,15 @@ describe('controls that would 403', () => {
    * them these tests care about.
    */
   async function openTrashTab(): Promise<void> {
-    await userEvent.click(screen.getByRole('link', { name: /^Trash/ }));
+    // BY URL, because the status filters moved into the sidebar and `draw()`
+    // renders the dashboard alone. `?status=trash` is the same interface the
+    // rail link uses — these tests are about who may empty the bin, not about
+    // how the bin is reached.
+    drawRouted(['/?status=trash']);
   }
 
   it('are hidden from a writer, and their absence is explained', async () => {
     await db.postList.put(trashed());
-    draw();
-    await waitFor(() => expect(screen.getByRole('link', { name: /^Trash/ })).toBeTruthy());
     await openTrashTab();
 
     await waitFor(() => expect(screen.getByText('Binned')).toBeTruthy());
@@ -548,8 +568,6 @@ describe('controls that would 403', () => {
       user: { id: USER, email: 'o@test.local', displayName: 'The Owner', role: 'owner' },
     };
     await db.postList.put(trashed());
-    draw();
-    await waitFor(() => expect(screen.getByRole('link', { name: /^Trash/ })).toBeTruthy());
     await openTrashTab();
 
     await waitFor(() => expect(screen.getByText('Binned')).toBeTruthy());
@@ -789,7 +807,14 @@ describe('the filters live in the URL', () => {
     // Neither an error screen nor an empty grid: two typos in somebody's
     // address bar are not something the app should make a fuss about.
     await waitFor(() => expect(screen.getByText('Alpha')).toBeTruthy());
-    expect(screen.getByRole('link', { name: /^All/ }).getAttribute('aria-current')).toBe('page');
+    /*
+     * NOTHING in the rail is lit, and that is correct rather than a gap: the
+     * five items match on the `status` param, `publised` is none of them, and
+     * `All` is specifically the EMPTY status. The dashboard falls back to
+     * showing everything — which is what the assertion above already proves —
+     * without the rail claiming the URL says something it does not.
+     */
+    expect(screen.getByRole('link', { name: /^All/ }).getAttribute('aria-current')).toBeNull();
     // Left as typed rather than rewritten underneath them — a URL that edits
     // itself the instant it loads is its own small horror.
     expect(url()).toBe('/?status=publised&sort=chronological');

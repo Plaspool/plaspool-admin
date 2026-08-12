@@ -1,6 +1,9 @@
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -8,6 +11,7 @@ import {
 } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
+  ChevronLeft,
   Mail,
   Newspaper,
   PanelLeft,
@@ -85,6 +89,91 @@ const SETTINGS_SECTION: Section = {
 };
 
 /**
+ * THE PAGES INSIDE A SECTION, which used to be a tab row on every screen.
+ *
+ * Three separate strips did this job — `ShopNav` copied into four shop files,
+ * `MailNav` into three email ones, and the dashboard's status tabs — and each
+ * cost a full row above content that had a heading of its own directly beneath
+ * it. Moving them here makes one navigation instead of two: the rail says where
+ * you are and where you can go, and the page under it is only the page.
+ *
+ * `key` is what a screen publishes a count against (see `useSidebarCounts`),
+ * and what decides which item is lit. `search` is how the Posts filters live in
+ * the URL — they are the dashboard's `?status=`, not separate routes, so they
+ * are matched on the query rather than on the path.
+ */
+interface SectionPage {
+  key: string;
+  label: string;
+  to: string;
+  /** The `?status=` this item owns. `''` is the unfiltered default. */
+  status?: string;
+}
+
+const SECTION_PAGES: Partial<Record<SectionId, SectionPage[]>> = {
+  posts: [
+    { key: 'all', label: 'All', to: '/', status: '' },
+    { key: 'published', label: 'Published', to: '/?status=published', status: 'published' },
+    { key: 'draft', label: 'Drafts', to: '/?status=draft', status: 'draft' },
+    { key: 'archived', label: 'Archived', to: '/?status=archived', status: 'archived' },
+    { key: 'trash', label: 'Trash', to: '/?status=trash', status: 'trash' },
+  ],
+  shop: [
+    { key: 'overview', label: 'Overview', to: '/shop' },
+    { key: 'products', label: 'Products', to: '/shop/products' },
+    { key: 'orders', label: 'Orders', to: '/shop/orders' },
+    { key: 'customers', label: 'Customers', to: '/shop/customers' },
+  ],
+  emails: [
+    { key: 'templates', label: 'Templates', to: '/emails/templates' },
+    { key: 'broadcasts', label: 'Broadcasts', to: '/emails/broadcasts' },
+    { key: 'subscribers', label: 'Subscribers', to: '/emails/subscribers' },
+  ],
+};
+
+/**
+ * Counts beside the section's pages, published by whichever screen knows them.
+ *
+ * ONLY THE DASHBOARD HAS THEM, and only it can: the tab counts are derived from
+ * the Dexie cache of every post, which the sidebar has no business reading and
+ * no way to read cheaply. Moving the tabs into the rail without this would have
+ * quietly dropped "Drafts 8" — a regression disguised as a layout change.
+ *
+ * A context rather than a store: the value is per-render and per-screen, and it
+ * must be cleared when the screen unmounts, which a module-scope store would
+ * make somebody remember to do.
+ */
+type Counts = Record<string, number>;
+const CountsContext = createContext<{
+  counts: Counts;
+  publish: (c: Counts | null) => void;
+}>({ counts: {}, publish: () => {} });
+
+export function SidebarCounts({ children }: { children: ReactNode }) {
+  const [counts, setCounts] = useState<Counts>({});
+  const publish = useCallback((c: Counts | null) => setCounts(c ?? {}), []);
+  const value = useMemo(() => ({ counts, publish }), [counts, publish]);
+  return <CountsContext.Provider value={value}>{children}</CountsContext.Provider>;
+}
+
+/**
+ * Publish this screen's counts to the rail, and take them down on unmount.
+ *
+ * The cleanup is the load-bearing half: without it, navigating from the
+ * dashboard to the shop would leave "Drafts 8" hanging beside Orders.
+ */
+export function useSidebarCounts(counts: Counts | null): void {
+  const { publish } = useContext(CountsContext);
+  // Serialised, so a caller may pass an object literal without re-publishing on
+  // every render — the shape is a handful of small integers.
+  const encoded = counts === null ? null : JSON.stringify(counts);
+  useEffect(() => {
+    publish(encoded === null ? null : (JSON.parse(encoded) as Counts));
+    return () => publish(null);
+  }, [encoded, publish]);
+}
+
+/**
  * Which item is lit, derived from the URL and nothing else.
  *
  * `/recover` and `/migrate` fall through to Posts on purpose, and so does the
@@ -120,9 +209,25 @@ export function Sidebar({
    */
   signOut: ReactNode;
 }) {
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const [settings, update] = useSettings();
   const pinned = settings.sidebarPinned;
+  const { counts } = useContext(CountsContext);
+
+  /**
+   * DRILLED UP — the one piece of state the rail keeps about itself.
+   *
+   * Entering a section shows that section's pages, because that is what you are
+   * about to navigate among. Back does NOT navigate: you are still on the shop
+   * page you were reading, and a Back that also threw away the screen would be
+   * a second, worse meaning for the same arrow. It only lifts the rail one level
+   * so Posts and Emails are reachable again.
+   *
+   * Cleared on any path change, which is what makes the next click re-enter:
+   * lift to the top list, choose Emails, and the rail is showing Emails' pages
+   * by the time that screen paints. Only an explicit Back can set it.
+   */
+  const [drilledUp, setDrilledUp] = useState(false);
 
   /*
    * Initial value from `innerWidth` and every value after it from
@@ -179,6 +284,9 @@ export function Sidebar({
   // navigate closes it too.
   useEffect(() => setDrawerOpen(false), [pathname]);
 
+  // ...and re-enters the section. See `drilledUp`.
+  useEffect(() => setDrilledUp(false), [pathname]);
+
   useEffect(() => {
     if (!drawerOpen) return;
     const onKey = (e: globalThis.KeyboardEvent) => {
@@ -222,6 +330,7 @@ export function Sidebar({
   };
 
   const active = sectionOf(pathname);
+  const pages = SECTION_PAGES[active];
 
   return (
     <>
@@ -278,13 +387,46 @@ export function Sidebar({
         </div>
 
         <nav className="sidebar__nav">
-          <ul className="sidebar__list">
-            {SECTIONS.map((s) => (
-              <li key={s.id}>
-                <SectionLink section={s} active={active === s.id} expanded={expanded} />
-              </li>
-            ))}
-          </ul>
+          {pages && !drilledUp ? (
+            <>
+              {/*
+                THE WAY BACK UP, and it is a button rather than a link because
+                it navigates nowhere — see `drilledUp`. It carries the section's
+                own name so the rail always says which set of pages is below it;
+                a bare arrow in a 56px rail is an arrow to nothing in particular.
+              */}
+              <button
+                className="sidebar__back"
+                onClick={() => setDrilledUp(true)}
+                aria-label={`Leave ${sectionLabel(active)} — show all sections`}
+              >
+                <ChevronLeft className="ui-ic sidebar__icon" aria-hidden="true" />
+                <span className="sidebar__label">{sectionLabel(active)}</span>
+              </button>
+
+              <ul className="sidebar__list">
+                {pages.map((p) => (
+                  <li key={p.key}>
+                    <PageLink
+                      page={p}
+                      href={pageHref(p, search)}
+                      active={isPageActive(p, pathname, search)}
+                      expanded={expanded}
+                      count={counts[p.key]}
+                    />
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <ul className="sidebar__list">
+              {SECTIONS.map((s) => (
+                <li key={s.id}>
+                  <SectionLink section={s} active={active === s.id} expanded={expanded} />
+                </li>
+              ))}
+            </ul>
+          )}
 
           {/* Settings sits at the bottom with the identity it configures,
               rather than in the list of places you go to do work. */}
@@ -332,6 +474,85 @@ function RailToggle({
     </button>
   );
   return expanded ? button : <Tooltip label={label} side="right">{button}</Tooltip>;
+}
+
+const sectionLabel = (id: SectionId): string =>
+  id === 'settings'
+    ? SETTINGS_SECTION.label
+    : (SECTIONS.find((s) => s.id === id)?.label ?? 'Sections');
+
+/**
+ * Which page inside the section is lit.
+ *
+ * TWO RULES, because the Posts pages are not routes. Shop and Emails have a
+ * path each, so an exact path match is the answer. The dashboard's five are one
+ * route with a `?status=`, so they compare on that param — and the empty status
+ * is "All", which is why the default is `''` rather than absent.
+ */
+function isPageActive(page: SectionPage, pathname: string, search: string): boolean {
+  if (page.status !== undefined) {
+    if (pathname !== '/') return false;
+    return (new URLSearchParams(search).get('status') ?? '') === page.status;
+  }
+  return pathname === page.to;
+}
+
+/**
+ * Where a page item actually points.
+ *
+ * THE POSTS FILTERS CARRY THE REST OF THE QUERY, which the tab row they replace
+ * did through `writeFilters`. Switching from Drafts to Published with "neon" in
+ * the search box and a category chosen has to keep both, or the rail becomes a
+ * way to silently clear filters somebody set two clicks ago. `status=all` is
+ * dropped rather than written, so `/` stays clean — the same rule the dashboard
+ * applies to every default.
+ *
+ * Shop and Emails pages are plain routes and carry nothing: their filters are
+ * per-screen and a cursor from the orders list means nothing on customers.
+ */
+function pageHref(page: SectionPage, search: string): string {
+  if (page.status === undefined) return page.to;
+  const next = new URLSearchParams(search);
+  if (page.status === '') next.delete('status');
+  else next.set('status', page.status);
+  // A cursor is a position in one ordering of one filter; carrying it into a
+  // different tab is page two of a list nobody asked for.
+  next.delete('cursor');
+  const qs = next.toString();
+  return qs === '' ? '/' : `/?${qs}`;
+}
+
+function PageLink({
+  page,
+  href,
+  active,
+  expanded,
+  count,
+}: {
+  page: SectionPage;
+  href: string;
+  active: boolean;
+  expanded: boolean;
+  count?: number;
+}) {
+  const link = (
+    <Link
+      className={`sidebar__item sidebar__item--page${active ? ' is-active' : ''}`}
+      to={href}
+      aria-current={active ? 'page' : undefined}
+    >
+      {/* A dot where the section icons are, so the two levels line up on the
+          same 56px grid and the collapsed rail still shows SOMETHING per item
+          rather than a column of clipped words. */}
+      <span className="sidebar__dot ui-ic" aria-hidden="true" />
+      <span className="sidebar__label">{page.label}</span>
+      {count !== undefined && (
+        <span className="sidebar__count sidebar__label">{count}</span>
+      )}
+    </Link>
+  );
+  const tip = count === undefined ? page.label : `${page.label} · ${count}`;
+  return expanded ? link : <Tooltip label={tip} side="right">{link}</Tooltip>;
 }
 
 function SectionLink({

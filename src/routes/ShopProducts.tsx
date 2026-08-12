@@ -145,7 +145,6 @@ export default function ShopProducts() {
         silently abandon unsaved work. `ProductForm` leads with its own back bar,
         which is the one exit this page should offer.
       */}
-      {!openId && <ShopNav />}
 
       <div className="shopscr__body">
         {openId ? <ProductForm key={openId} id={openId} /> : <ProductList />}
@@ -1498,21 +1497,3 @@ function explain(err: unknown, what: string): string {
 }
 
 /** See `Shop.tsx` for why this row is copied into each screen. */
-function ShopNav() {
-  return (
-    <nav className="shopscr__nav" aria-label="Shop sections">
-      <Link className="shopscr__tab" to="/shop">
-        Overview
-      </Link>
-      <Link className="shopscr__tab" to="/shop/products" aria-current="page">
-        Products
-      </Link>
-      <Link className="shopscr__tab" to="/shop/orders">
-        Orders
-      </Link>
-      <Link className="shopscr__tab" to="/shop/customers">
-        Customers
-      </Link>
-    </nav>
-  );
-}

@@ -29,6 +29,7 @@ import {
 import { ThemeToggle } from '../components/ThemeToggle';
 import { OfflineBanner, useOnline } from '../components/OfflineBanner';
 import { useSession } from '../components/RequireAuth';
+import { useSidebarCounts } from '../components/Sidebar';
 import { useCategories } from '../data/useCategories';
 import {
   createPost,
@@ -164,12 +165,6 @@ function writeFilters(base: URLSearchParams, patch: Partial<Filters>): URLSearch
     else next.set(PARAM[key], value);
   }
   return next;
-}
-
-/** `?a=b`, or `''` when nothing is set — the shape `<Link to={{ search }}>` wants. */
-function asSearch(params: URLSearchParams): string {
-  const qs = params.toString();
-  return qs === '' ? '' : `?${qs}`;
 }
 
 // ------------------------------------------------------------------ scroll
@@ -538,6 +533,15 @@ export default function Dashboard() {
       trash: trashScoped.length,
     } as Record<StatusFilter, number>;
   }, [scoped, category, tag]);
+
+  /*
+   * UP TO THE RAIL, which draws these five as its Posts pages now. Only this
+   * screen can produce them — they are derived from the Dexie cache of every
+   * post, narrowed by the active category and tag so the rail can never
+   * advertise 7 next to a grid showing 2 — and `useSidebarCounts` clears them
+   * on unmount so "Drafts 8" cannot follow you into the shop.
+   */
+  useSidebarCounts(counts);
 
   /*
    * FROM THE BLOG, NOT FROM THIS DEVICE'S CACHE (HANDOFF §4 C3).
@@ -1006,39 +1010,21 @@ export default function Dashboard() {
 
       <div className="dash__controls">
         {/*
-          LINKS, NOT BUTTONS, AND THE ONLY FILTER THAT PUSHES.
+          THE STATUS FILTERS LIVE IN THE SIDEBAR NOW.
 
-          A row of things that look like tabs promises middle-click and
-          ⌘-click — a button delivers neither, and "open Drafts in a new tab"
-          is a reasonable thing to want from a library screen. Pushing rather
-          than replacing is the other half: switching tab is a navigation, so
-          Back should walk Published → Drafts, while narrowing by category or
-          typing in the box should not put anything in the history stack at
-          all (see `setFilters`).
+          This row and the shop's and the email screens' were three copies of
+          the same idea, each spending a line of the page on navigation directly
+          above a heading that named the same thing. The rail shows the pages of
+          whichever section you are in, so there is one navigation instead of
+          two — and on a 375px screen that is a whole row of content back.
 
-          `pathname: '/'` rather than a bare `search`, because `*` also renders
-          this screen: a tab clicked from a mistyped path should land on the
-          dashboard's own URL rather than pinning the filters to the typo.
-
-          The inline `textDecoration` belongs in `.tabs__tab` in
-          `dashboard.css`, which another workstream owns this run — `base.css`
-          resets an anchor's colour but not its underline, so without this the
-          active tab is underlined white-on-black.
+          Everything about the filtering is unchanged: the five links still
+          write `?status=`, still push so Back walks Published to Drafts, and
+          are still real links so ⌘-click opens a new tab. Only where they are
+          drawn moved. The counts are handed up rather than recomputed, because
+          they come from the Dexie cache of every post and the rail has no
+          business reading that.
         */}
-        <nav className="tabs" aria-label="Filter by status">
-          {TABS.map((t) => (
-            <Link
-              key={t.key}
-              className={`tabs__tab${status === t.key ? ' is-active' : ''}`}
-              style={{ textDecoration: 'none' }}
-              to={{ pathname: '/', search: asSearch(writeFilters(params, { status: t.key })) }}
-              aria-current={status === t.key ? 'page' : undefined}
-            >
-              {t.label}
-              <span className="tabs__count">{counts[t.key] ?? 0}</span>
-            </Link>
-          ))}
-        </nav>
 
         <div className="dash__tools">
           <div className="searchbox">

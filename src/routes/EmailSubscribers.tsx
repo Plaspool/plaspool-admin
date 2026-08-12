@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useId, useState, type ChangeEvent } from 'react';
-import { Link } from 'react-router-dom';
 import { UserCheck } from 'lucide-react';
 import { Spinner } from '../components/ui/Feedback';
 import { Select } from '../components/ui/Select';
@@ -280,7 +279,6 @@ export default function EmailSubscribers() {
         </p>
       </header>
 
-      <MailNav />
 
       <div className="mailscr__body">
         {error && (
@@ -575,18 +573,3 @@ function CsvImport({ onImported }: { onImported: () => void }) {
 }
 
 /** See `EmailTemplates.tsx` for why this row is copied into each screen. */
-function MailNav() {
-  return (
-    <nav className="mailscr__nav" aria-label="Email sections">
-      <Link className="mailscr__tab" to="/emails/templates">
-        Templates
-      </Link>
-      <Link className="mailscr__tab" to="/emails/broadcasts">
-        Broadcasts
-      </Link>
-      <Link className="mailscr__tab" to="/emails/subscribers" aria-current="page">
-        Subscribers
-      </Link>
-    </nav>
-  );
-}

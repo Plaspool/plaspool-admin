@@ -10,7 +10,7 @@ import {
 } from '../data/session';
 import { revalidate } from '../data/sync';
 import { ConfirmDialog } from './Dialog';
-import { Sidebar } from './Sidebar';
+import { Sidebar, SidebarCounts } from './Sidebar';
 import Login, { SignInForm } from '../routes/Login';
 import '../routes/auth.css';
 
@@ -145,6 +145,12 @@ export function AppShell() {
       {chromeless ? (
         <Outlet />
       ) : (
+        /*
+          The counts provider wraps BOTH the rail and the outlet, because the
+          dashboard publishes into it and the rail reads it — a provider inside
+          either one would put the two on opposite sides of the boundary.
+        */
+        <SidebarCounts>
         <div className="shell">
           <Sidebar
             user={session.status === 'unknown' ? null : (session.user ?? null)}
@@ -171,6 +177,7 @@ export function AppShell() {
             <Outlet />
           </div>
         </div>
+        </SidebarCounts>
       )}
     </RequireAuth>
   );

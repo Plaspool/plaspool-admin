@@ -140,19 +140,75 @@ describe('the resting state', () => {
     expect(rail.getAttribute('data-pinned')).toBe('false');
   });
 
-  it('still names every item while collapsed', () => {
+  it('still names every item while collapsed', async () => {
     mount();
 
     /*
      * The point of the assertion is the accessibility tree, not the pixels.
      * `display: none` on the labels would collapse the rail just as neatly and
-     * leave four links called nothing — the failure the tooltips paper over
+     * leave every link called nothing — the failure the tooltips paper over
      * for sighted users and for nobody else.
+     *
+     * The rail opens INSIDE a section now, so at `/` these are the Posts pages.
+     * The three section links are one Back away, and are asserted there.
      */
+    expect(screen.getByRole('link', { name: /^All/ })).toBeTruthy();
+    expect(screen.getByRole('link', { name: /^Drafts/ })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Settings' })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: /show all sections/i }));
+
     expect(screen.getByRole('link', { name: 'Posts' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Shop' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Emails' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Settings' })).toBeTruthy();
+  });
+
+  it('shows the pages of the section you are in, not the sections', () => {
+    mount('/shop/orders');
+
+    // The rail IS the shop's navigation now; the tab strip these replace is
+    // gone from all four shop screens.
+    expect(screen.getByRole('link', { name: 'Overview' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Products' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Orders' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Customers' })).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Emails' })).toBeNull();
+  });
+
+  it('names the section on the way back up, and does not navigate', async () => {
+    mount('/shop/orders');
+
+    const back = screen.getByRole('button', { name: /show all sections/i });
+    // It says which set of pages it is closing. A bare arrow in a 56px rail is
+    // an arrow to nothing in particular.
+    expect(back.textContent).toContain('Shop');
+
+    await userEvent.click(back);
+
+    // The three sections are reachable again...
+    expect(screen.getByRole('link', { name: 'Posts' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Emails' })).toBeTruthy();
+    // ...and Shop is still lit, because Back lifts the rail without moving you
+    // off the page you were reading.
+    expect(screen.getByRole('link', { name: 'Shop' }).getAttribute('aria-current')).toBe('page');
+  });
+
+  it('carries the rest of the query across a Posts filter', () => {
+    // The tab row it replaces did this through `writeFilters`. Switching from
+    // Drafts to Published with a search and a category set has to keep both, or
+    // the rail becomes a way to silently clear filters set two clicks ago.
+    mount('/?status=draft&q=neon&category=Tech');
+
+    const href = screen.getByRole('link', { name: /^Published/ }).getAttribute('href') || '';
+    expect(href).toContain('status=published');
+    expect(href).toContain('q=neon');
+    expect(href).toContain('category=Tech');
+
+    // `all` drops the param rather than writing `status=all`.
+    expect(
+      screen.getByRole('link', { name: /^All/ }).getAttribute('href'),
+    ).not.toContain('status=');
   });
 
   it('carries the signed-in identity and the sign-out it was given', () => {
@@ -296,22 +352,44 @@ describe('the drawer, under 720px', () => {
 });
 
 describe('aria-current follows the route', () => {
-  it('marks Posts at the root', () => {
+  /** The sections are one Back away now — see `drilledUp` in `Sidebar.tsx`. */
+  const drillUp = async () =>
+    userEvent.click(screen.getByRole('button', { name: /show all sections/i }));
+
+  it('marks Posts at the root', async () => {
     mount('/');
+    await drillUp();
 
     expect(screen.getByRole('link', { name: 'Posts' }).getAttribute('aria-current')).toBe('page');
     expect(screen.getByRole('link', { name: 'Shop' }).getAttribute('aria-current')).toBeNull();
   });
 
-  it('marks Shop on a shop child route, not only on its index', () => {
+  it('marks the page you are on inside the section', () => {
     mount('/shop/orders');
+
+    expect(screen.getByRole('link', { name: 'Orders' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('link', { name: 'Products' }).getAttribute('aria-current')).toBeNull();
+  });
+
+  it('marks the Posts filter the URL is showing', () => {
+    mount('/?status=draft');
+
+    expect(screen.getByRole('link', { name: /^Drafts/ }).getAttribute('aria-current')).toBe('page');
+    // `All` is the empty status, so it must not also light up.
+    expect(screen.getByRole('link', { name: /^All/ }).getAttribute('aria-current')).toBeNull();
+  });
+
+  it('marks Shop on a shop child route, not only on its index', async () => {
+    mount('/shop/orders');
+    await drillUp();
 
     expect(screen.getByRole('link', { name: 'Shop' }).getAttribute('aria-current')).toBe('page');
     expect(screen.getByRole('link', { name: 'Posts' }).getAttribute('aria-current')).toBeNull();
   });
 
-  it('marks Emails on a broadcast route, though the link points at templates', () => {
+  it('marks Emails on a broadcast route, though the link points at templates', async () => {
     mount('/emails/broadcasts');
+    await drillUp();
 
     const emails = screen.getByRole('link', { name: 'Emails' });
     expect(emails.getAttribute('aria-current')).toBe('page');
@@ -326,11 +404,12 @@ describe('aria-current follows the route', () => {
     );
   });
 
-  it('falls back to Posts on the library-adjacent routes', () => {
+  it('falls back to Posts on the library-adjacent routes', async () => {
     // `/recover` and `/migrate` are reached from the library and render
     // library screens, and so does the catch-all. Lighting nothing on them
     // would read as the navigation being broken rather than as neutrality.
     mount('/recover');
+    await drillUp();
 
     expect(screen.getByRole('link', { name: 'Posts' }).getAttribute('aria-current')).toBe('page');
   });

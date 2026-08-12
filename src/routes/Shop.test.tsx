@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 
@@ -755,19 +755,19 @@ describe('the buyer list', () => {
 
 // -------------------------------------------------------------------- shared
 
-describe('every screen', () => {
-  it('marks its own section as current in the shop nav', async () => {
-    when('/api/shop/admin/customers', { items: [], nextCursor: null });
-    mount(<ShopCustomers />, '/shop/customers');
-
-    const nav = screen.getByRole('navigation', { name: 'Shop sections' });
-    const current = within(nav)
-      .getAllByRole('link')
-      .filter((a) => a.getAttribute('aria-current') === 'page');
-    expect(current).toHaveLength(1);
-    expect(current[0].textContent).toBe('Customers');
-  });
-});
+/*
+ * THE "shop nav" TEST LIVED HERE AND HAS MOVED, rather than been dropped.
+ *
+ * It asserted that the in-page `Shop sections` row marked the screen you were
+ * on. That row is gone from all four shop screens: the sidebar shows the pages
+ * of whichever section you are in, so there is one navigation instead of two.
+ * The same property is pinned in `src/components/Sidebar.test.tsx` — "marks the
+ * page you are on inside the section" — against the component that now draws it.
+ *
+ * Deleted here instead of rewritten because these screens no longer render any
+ * section navigation at all; a test mounting one of them could only assert the
+ * absence, which `Sidebar.test.tsx` already covers from the other side.
+ */
 
 /** A currency symbol is a regex metacharacter in more locales than not. */
 function escape(value: string): string {

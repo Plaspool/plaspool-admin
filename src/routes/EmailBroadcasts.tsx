@@ -114,7 +114,6 @@ export default function EmailBroadcasts() {
         </p>
       </header>
 
-      <MailNav />
 
       <div className="mailscr__body">
         {error && (
@@ -673,18 +672,3 @@ function ProgressView({
 }
 
 /** See `EmailTemplates.tsx` for why this row is copied into each screen. */
-function MailNav() {
-  return (
-    <nav className="mailscr__nav" aria-label="Email sections">
-      <Link className="mailscr__tab" to="/emails/templates">
-        Templates
-      </Link>
-      <Link className="mailscr__tab" to="/emails/broadcasts" aria-current="page">
-        Broadcasts
-      </Link>
-      <Link className="mailscr__tab" to="/emails/subscribers">
-        Subscribers
-      </Link>
-    </nav>
-  );
-}

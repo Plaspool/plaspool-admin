@@ -88,7 +88,6 @@ export default function ShopCustomers() {
         </div>
       </header>
 
-      <ShopNav />
 
       <div className="shopscr__body">
         {problem && (
@@ -255,21 +254,3 @@ function explain(err: unknown): string {
 }
 
 /** See `Shop.tsx` for why this row is copied into each screen. */
-function ShopNav() {
-  return (
-    <nav className="shopscr__nav" aria-label="Shop sections">
-      <Link className="shopscr__tab" to="/shop">
-        Overview
-      </Link>
-      <Link className="shopscr__tab" to="/shop/products">
-        Products
-      </Link>
-      <Link className="shopscr__tab" to="/shop/orders">
-        Orders
-      </Link>
-      <Link className="shopscr__tab" to="/shop/customers" aria-current="page">
-        Customers
-      </Link>
-    </nav>
-  );
-}

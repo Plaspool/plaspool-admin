@@ -87,7 +87,6 @@ export default function Shop() {
         </div>
       </header>
 
-      <ShopNav />
 
       <div className="shopscr__body">
         {problem && (
@@ -406,32 +405,4 @@ function explain(err: unknown): string {
     return 'Your account isn’t allowed to read the shop’s figures.';
   }
   return 'The blog answered with an error.';
-}
-
-/**
- * The shop's section row.
- *
- * Declared in each of the four shop screens rather than shared out of one of
- * them, and that is a decision about who can change what: these screens are
- * replaced independently, and a component exported from one of them would mean
- * rewriting Products breaks Orders. Seven lines of markup is a cheaper price
- * than that coupling.
- */
-function ShopNav() {
-  return (
-    <nav className="shopscr__nav" aria-label="Shop sections">
-      <Link className="shopscr__tab" to="/shop" aria-current="page">
-        Overview
-      </Link>
-      <Link className="shopscr__tab" to="/shop/products">
-        Products
-      </Link>
-      <Link className="shopscr__tab" to="/shop/orders">
-        Orders
-      </Link>
-      <Link className="shopscr__tab" to="/shop/customers">
-        Customers
-      </Link>
-    </nav>
-  );
 }

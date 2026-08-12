@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { LayoutTemplate, Plus, Trash2 } from 'lucide-react';
 import { ConfirmDialog } from '../components/Dialog';
 import { Spinner } from '../components/ui/Feedback';
@@ -118,7 +117,6 @@ export default function EmailTemplates() {
         </p>
       </header>
 
-      <MailNav />
 
       <div className="mailscr__body">
         {error && (
@@ -439,28 +437,5 @@ function TemplateEditor({
         </button>
       </div>
     </section>
-  );
-}
-
-/**
- * The email section row.
- *
- * Copied into each of the three screens rather than shared, for the reason
- * `Shop.tsx` gives at length: these screens get replaced independently, and an
- * import between them would make one rewrite break the other two.
- */
-function MailNav() {
-  return (
-    <nav className="mailscr__nav" aria-label="Email sections">
-      <Link className="mailscr__tab" to="/emails/templates" aria-current="page">
-        Templates
-      </Link>
-      <Link className="mailscr__tab" to="/emails/broadcasts">
-        Broadcasts
-      </Link>
-      <Link className="mailscr__tab" to="/emails/subscribers">
-        Subscribers
-      </Link>
-    </nav>
   );
 }
