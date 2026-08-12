@@ -139,7 +139,9 @@ const AdminListQueryParams = ListQueryParams.extend({
 
 const CreateVariantBody = z
   .object({
-    sku: str().min(1).max(200),
+    /** OPTIONAL — the server derives one from the title and the options when
+     *  it is absent. See `server/shop/catalog/sku.ts`. */
+    sku: str().min(1).max(200).optional(),
     optionValues: z.record(str().max(100), str().max(200)).optional(),
     position: z.number().int().min(0).optional(),
     weightGrams: z.number().int().min(0).max(10_000_000).nullable().optional(),

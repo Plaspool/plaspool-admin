@@ -755,3 +755,259 @@
   object-fit: contain;
   display: block;
 }
+
+/* ══════════════════════════════════════════════════════ variants, rebuilt */
+
+/* The opening question, when a product has none yet. */
+.vempty {
+  display: grid;
+  gap: var(--s2);
+  max-width: 44rem;
+}
+.vempty__q {
+  margin: 0;
+  font-size: var(--step-1);
+  font-weight: 600;
+  color: var(--ink);
+}
+.vempty__choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin-top: var(--s2);
+}
+
+/* ------------------------------------------------------- the option builder */
+
+.vbuild {
+  display: grid;
+  gap: var(--s3);
+}
+.vaxis {
+  display: grid;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-sunken);
+}
+.vaxis__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.vaxis__name {
+  max-width: 12rem;
+  font-weight: 600;
+}
+.vaxis__values {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+}
+/* Grows with what is typed but never pushes the chips onto their own line at
+   the width a phone gives this panel. */
+.vaxis__add {
+  flex: 1 1 7rem;
+  min-width: 6rem;
+  max-width: 14rem;
+}
+.chip--value {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  padding-right: var(--s1);
+}
+.chip__x {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: none;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+}
+.chip__x:hover {
+  opacity: 1;
+}
+.vbuild__add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+.vbuild__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--rule);
+}
+.vbuild__actions {
+  display: flex;
+  gap: var(--s2);
+}
+
+/* ---------------------------------------------------------- master + detail */
+
+/*
+ * THE LIST FINDS, THE PANEL CHANGES. A row of inputs per variant means eight
+ * colours is eight price boxes and eight reason boxes on one screen — every one
+ * a chance to type into the wrong row. Below 900px the two stack, list first,
+ * because on a phone you are choosing before you are editing.
+ */
+.vsplit {
+  display: grid;
+  gap: var(--s4);
+  grid-template-columns: minmax(14rem, 20rem) minmax(0, 1fr);
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .vsplit {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.vlist {
+  display: grid;
+  gap: var(--s1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 32rem;
+  overflow-y: auto;
+}
+.vlist__item {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  padding: var(--s2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-m);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease);
+}
+.vlist__item:hover {
+  background: var(--paper-sunken);
+}
+.vlist__item.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.vlist__thumb {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-s);
+  background: var(--paper-sunken);
+  color: var(--ink-4);
+  overflow: hidden;
+}
+.vlist__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.vlist__text {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+.vlist__name {
+  font-weight: 600;
+  font-size: var(--step--1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vlist__meta {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+
+.vdetail {
+  display: grid;
+  gap: var(--s4);
+  padding: var(--s4);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+}
+.vdetail__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+.vdetail__title {
+  margin: 0;
+  font-size: var(--step-1);
+}
+.vdetail__sku {
+  margin: 0.15rem 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--step--2);
+  color: var(--ink-4);
+}
+.vthumb--lg {
+  width: 5rem;
+  height: 5rem;
+}
+.vdetail__field {
+  display: grid;
+  gap: var(--s2);
+}
+.vdetail__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+}
+.vdetail__num {
+  width: 8rem;
+  font-variant-numeric: tabular-nums;
+}
+/* The reason takes the rest of the row: it is the field most likely to hold a
+   sentence, and the one a cramped box makes people abbreviate into "fix". */
+.vreason {
+  display: flex;
+  flex: 1 1 14rem;
+  gap: var(--s2);
+  min-width: 0;
+}
+.vreason .ui-select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.vreason .input {
+  flex: 2 1 10rem;
+  min-width: 0;
+}
+
+/*
+ * A denser input, for the rows where a control sits beside a `btn--sm`.
+ *
+ * DEFINED HERE AND NOT IN `base.css` because only these variant rows need it:
+ * `base.css` pins `.btn`, `.input` and friends to one height precisely so a row
+ * of mixed controls lines up, and adding a second global size to that rule is
+ * how that guarantee starts to drift. `--ctl-h` is the small height that file
+ * already declares, so this is the existing scale rather than a new number.
+ */
+.input--sm {
+  height: var(--ctl-h);
+  font-size: var(--step--1);
+}

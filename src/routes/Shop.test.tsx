@@ -437,9 +437,7 @@ describe('the catalogue', () => {
     });
     mount(<ShopProducts />, '/shop/products?id=p_1');
 
-    const price = (await screen.findByLabelText(
-      'Price for MUG-BLUE in GBP',
-    )) as HTMLInputElement;
+    const price = (await screen.findByLabelText('Price')) as HTMLInputElement;
     // 1990 minor units. `19.9` is the value a division produces and the one an
     // operator would have to notice was missing a digit.
     expect(price.value).toBe('19.90');
@@ -452,7 +450,7 @@ describe('the catalogue', () => {
     when('/api/shop/admin/variants/v_1/price', { price: { amount: 2500, currency: 'GBP' } });
     mount(<ShopProducts />, '/shop/products?id=p_1');
 
-    const price = await screen.findByLabelText('Price for MUG-BLUE in GBP');
+    const price = await screen.findByLabelText('Price');
     await userEvent.clear(price);
     await userEvent.type(price, '25.00');
     await userEvent.click(screen.getByRole('button', { name: 'Set' }));
@@ -470,7 +468,7 @@ describe('the catalogue', () => {
     });
     mount(<ShopProducts />, '/shop/products?id=p_1');
 
-    const price = await screen.findByLabelText('Price for MUG-BLUE in GBP');
+    const price = await screen.findByLabelText('Price');
     await userEvent.clear(price);
     await userEvent.type(price, '19.999');
 
@@ -486,12 +484,20 @@ describe('the catalogue', () => {
     });
     mount(<ShopProducts />, '/shop/products?id=p_1');
 
-    const delta = await screen.findByLabelText('Stock change for MUG-BLUE');
+    const delta = await screen.findByLabelText('Stock');
     await userEvent.type(delta, '10');
     const adjust = screen.getByRole('button', { name: 'Adjust' }) as HTMLButtonElement;
     expect(adjust.disabled).toBe(true);
 
-    await userEvent.type(screen.getByLabelText('Reason for the stock change to MUG-BLUE'), 'Restock');
+    /*
+     * THE REASON IS NOW A PICKER, and that is the point of it: a mandatory free
+     * text box collects "fix" and "x", which satisfies the server and tells the
+     * next reader nothing. Six presets plus "Something else" means the common
+     * answer is one click and the audit trail is still readable a year later.
+     */
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('combobox', { name: 'Why the stock changed' }));
+    await user.click(await screen.findByRole('option', { name: 'Stocktake recount' }));
     await waitFor(() => expect(adjust.disabled).toBe(false));
   });
 });
@@ -756,6 +762,86 @@ describe('the buyer list', () => {
 
 // -------------------------------------------------------------------- shared
 
+describe('setting up variants', () => {
+  it('asks whether it varies, instead of demanding a SKU', async () => {
+    when('/api/shop/admin/products/p_1', { product: { ...PRODUCT, variants: [] } });
+    mount(<ShopProducts />, '/shop/products?id=p_1');
+
+    /*
+     * THE WHOLE POINT. The old panel opened with a text box wanting
+     * `WOOD-175-EBY-1KG` before it would accept anything a shopkeeper knows.
+     */
+    expect(await screen.findByText('Does this come in variations?')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /single item/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /set up options/i })).toBeTruthy();
+  });
+
+  it('creates one variant with no SKU and no options for a single item', async () => {
+    when('/api/shop/admin/products/p_1', { product: { ...PRODUCT, variants: [] } });
+    when('/api/shop/admin/products/p_1/variants', { variant: VARIANT });
+    mount(<ShopProducts />, '/shop/products?id=p_1');
+
+    await userEvent.click(await screen.findByRole('button', { name: /single item/i }));
+
+    await waitFor(() => expect(asked('/api/shop/admin/products/p_1/variants')).toBeTruthy());
+    const calls = (globalThis.fetch as unknown as { mock: { calls: [unknown, RequestInit][] } })
+      .mock.calls;
+    const post = calls.find((c) => c[1]?.method === 'POST');
+    // No `sku` on the wire at all — the server derives it.
+    expect(JSON.parse(String(post![1].body))).toEqual({});
+  });
+
+  it('turns two axes into their combinations, one POST each', async () => {
+    const user = userEvent.setup();
+    when('/api/shop/admin/products/p_1', { product: { ...PRODUCT, variants: [] } });
+    when('/api/shop/admin/products/p_1/variants', { variant: VARIANT });
+    mount(<ShopProducts />, '/shop/products?id=p_1');
+
+    await user.click(await screen.findByRole('button', { name: /set up options/i }));
+
+    // Colour: Black, Red
+    const colour = screen.getByLabelText('Add a Colour');
+    await user.type(colour, 'Black{Enter}');
+    await user.type(colour, 'Red{Enter}');
+
+    // ...and a second axis.
+    await user.click(screen.getByRole('button', { name: 'Size' }));
+    const size = screen.getByLabelText('Add a Size');
+    await user.type(size, 'S{Enter}');
+
+    // 2 colours x 1 size. The count is promised before the click.
+    expect(screen.getByText(/This makes 2 variants/)).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: /^Create 2$/ }));
+
+    await waitFor(() => {
+      const calls = (globalThis.fetch as unknown as { mock: { calls: [unknown, RequestInit][] } })
+        .mock.calls;
+      const posts = calls.filter((c) => c[1]?.method === 'POST');
+      expect(posts).toHaveLength(2);
+      expect(posts.map((c) => JSON.parse(String(c[1].body)).optionValues)).toEqual([
+        { Colour: 'Black', Size: 'S' },
+        { Colour: 'Red', Size: 'S' },
+      ]);
+    });
+  });
+
+  it('refuses the same value twice, whatever the casing', async () => {
+    const user = userEvent.setup();
+    when('/api/shop/admin/products/p_1', { product: { ...PRODUCT, variants: [] } });
+    mount(<ShopProducts />, '/shop/products?id=p_1');
+
+    await user.click(await screen.findByRole('button', { name: /set up options/i }));
+    const colour = screen.getByLabelText('Add a Colour');
+    await user.type(colour, 'Black{Enter}');
+    // "black" is the same colour, and a second variant for it is a SKU
+    // collision somebody would have to explain later.
+    await user.type(colour, 'black{Enter}');
+
+    expect(screen.getByText(/This makes 1 variant/)).toBeTruthy();
+  });
+});
+
 describe('a variant carries its own picture', () => {
   it('offers to add one when the variant has none', async () => {
     when('/api/shop/admin/products/p_1', { product: { ...PRODUCT, variants: [VARIANT] } });
@@ -763,7 +849,7 @@ describe('a variant carries its own picture', () => {
 
     // The option's own name is in the label, so a rail of eight colours does
     // not present eight controls called "Add an image".
-    expect(await screen.findByRole('button', { name: /Add an image for Blue/i })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: /Add an image/i })).toBeTruthy();
   });
 
   it('shows the picture, and offers to replace it, once one is set', async () => {
@@ -772,7 +858,7 @@ describe('a variant carries its own picture', () => {
     });
     mount(<ShopProducts />, '/shop/products?id=p_1');
 
-    const button = await screen.findByRole('button', { name: /Replace the image for Blue/i });
+    const button = await screen.findByRole('button', { name: /Replace this image/i });
     const img = button.querySelector('img');
     /*
      * THE ADMIN URL, not the public one. This screen shows drafts, and

@@ -4,6 +4,7 @@ import { uniqueViolation } from '../../db/client';
 import { BadRequestError, NotFoundError } from '../../repo/errors';
 import { rejectNul } from '../../repo/cursor';
 import { committedImageIds } from '../../repo/images';
+import { generateSku } from './sku';
 import { normalizeBlobId } from '../../repo/public-projection';
 import type { AuthUser } from '../../../shared/types';
 import type { VariantStatus } from '../../../shared/commerce/catalog-port';
@@ -59,7 +60,11 @@ export class DuplicateSkuError extends BadRequestError {
 }
 
 export interface CreateVariantInput {
-  sku: string;
+  /**
+   * OPTIONAL. Omitted means "derive one" — see `sku.ts` for why the human is no
+   * longer the one who has to satisfy `shop_variants_sku_unique`.
+   */
+  sku?: string;
   optionValues?: Record<string, string>;
   position?: number;
   weightGrams?: number | null;
@@ -130,8 +135,24 @@ export async function createVariant(
 ): Promise<Variant> {
   const now = Date.now();
   const id = newCatalogId('var_');
-  const sku = rejectNul(input.sku.trim(), 'sku');
-  if (!sku) throw new BadRequestError('sku');
+
+  /*
+   * A SUPPLIED SKU WINS, ALWAYS. A shop with an existing catalogue has codes
+   * that mean something to a supplier, and silently replacing one would be
+   * worse than never generating at all. Only a genuinely absent value is
+   * derived — an empty string is still a 400, because a caller that sent the
+   * field meant to send a value.
+   */
+  let sku: string;
+  if (input.sku === undefined) {
+    const titleRow = await db.execute(sql`
+      SELECT title FROM shop_products WHERE id = ${productId}`);
+    if (!titleRow.rows[0]) throw new NotFoundError(productId);
+    sku = await generateSku(db, String(titleRow.rows[0].title), input.optionValues ?? {});
+  } else {
+    sku = rejectNul(input.sku.trim(), 'sku');
+    if (!sku) throw new BadRequestError('sku');
+  }
   const onHand = input.onHand ?? 0;
   if (!Number.isInteger(onHand) || onHand < 0) throw new BadRequestError('onHand');
   await checkVariantImage(db, input.imageId);

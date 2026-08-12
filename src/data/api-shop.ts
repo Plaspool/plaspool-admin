@@ -699,7 +699,8 @@ export const shopApi = {
   async createVariant(
     productId: string,
     body: {
-      sku: string;
+      /** OPTIONAL — the server derives one from the title and the options. */
+      sku?: string;
       optionValues?: Record<string, string>;
       position?: number;
       weightGrams?: number | null;
@@ -747,11 +748,24 @@ export const shopApi = {
     id: string,
     amount: number,
     currency: string,
+    /** WHY it moved. Optional on the wire — every price written before
+     *  migration 0009 has none, and the audit view says so rather than
+     *  inventing one. */
+    reason?: string,
   ): Promise<{ amount: number; currency: string }> {
     if (!Number.isSafeInteger(amount)) throw new MoneyShapeError(amount);
     const res = await shopFetch<{ price: { amount: number; currency: string } }>(
       `${BASE}/variants/${seg(id)}/price`,
-      { method: 'PUT', body: { amount, currency: currency.toUpperCase() }, id, subject: 'Variant' },
+      {
+        method: 'PUT',
+        body: {
+          amount,
+          currency: currency.toUpperCase(),
+          ...(reason && reason.trim() ? { reason: reason.trim() } : {}),
+        },
+        id,
+        subject: 'Variant',
+      },
     );
     return res.price;
   },
