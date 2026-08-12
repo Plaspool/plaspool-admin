@@ -1,0 +1,474 @@
+import { sql, type SQL } from 'drizzle-orm';
+import { DbError, toEpochMs, toEpochMsOrNull } from '../../../db/client';
+import type { Db } from '../../../db/client';
+import {
+  BadRequestError,
+  NotFoundError,
+  PreconditionFailedError,
+  StaleWriteError,
+} from '../../../repo/errors';
+import { ID, newId } from '../ids';
+import { renderShipment, type AccessLink } from '../mailer';
+import {
+  LIFECYCLE_ATTEMPTS,
+  asErrorSubject,
+  readOrder,
+  type Order,
+  type OrderRead,
+} from './orders';
+
+/**
+ * Fulfilments (brief §2, §6, §8).
+ *
+ * TWO INVARIANTS LIVE IN THE DATABASE AND NOT HERE, and this file is written on the
+ * assumption that they do:
+ *
+ *  - **`sum(fulfillment_lines.qty) per order line ≤ line.qty`**, enforced by
+ *    `shop_order_lines_fulfilled_ck` over a counter that
+ *    `shop_fulfillment_lines_apply` maintains under a row lock. There is
+ *    deliberately NO TypeScript pre-check of the remaining quantity: a read-then-
+ *    insert is decided against a snapshot a concurrent fulfilment has already
+ *    invalidated, which is the entire finding of GAUNTLET II Part 2b, and a JS
+ *    check would additionally make the constraint untestable — the suite would pass
+ *    whether or not the CHECK existed. `fulfillments.test.ts` drops the constraint
+ *    to prove it is the thing refusing.
+ *  - **A fulfilment cannot reach across orders**, enforced by the same trigger.
+ *    Both foreign keys are satisfied by a line belonging to a different order.
+ *
+ * A FULFILMENT HAS ITS OWN LIFECYCLE GENERATION, for the reason brief §1 gives: a
+ * re-applied `ship` is a double shipment — a second tracking email and a second
+ * shipment recorded against the same goods.
+ */
+
+export type FulfillmentStatus = 'pending' | 'shipped' | 'delivered' | 'cancelled';
+
+export interface FulfillmentLine {
+  id: string;
+  orderLineId: string;
+  qty: number;
+}
+
+export interface Fulfillment {
+  id: string;
+  orderId: string;
+  status: FulfillmentStatus;
+  carrier: string | null;
+  trackingNumber: string | null;
+  shippedAt: number | null;
+  deliveredAt: number | null;
+  createdAt: number;
+  revision: number;
+  lines: FulfillmentLine[];
+}
+
+const FULFILLMENT_COLUMNS = [
+  'id',
+  'order_id',
+  'status',
+  'carrier',
+  'tracking_number',
+  'shipped_at',
+  'delivered_at',
+  'created_at',
+  'revision',
+];
+
+const returning = (alias?: string) =>
+  FULFILLMENT_COLUMNS.map((c) => (alias ? `${alias}.${c}` : c)).join(', ');
+
+function rowToFulfillment(row: Record<string, unknown>): Fulfillment {
+  const lines = (row.lines as Record<string, unknown>[]) ?? [];
+  return {
+    id: String(row.id),
+    orderId: String(row.order_id),
+    status: row.status as FulfillmentStatus,
+    carrier: row.carrier == null ? null : String(row.carrier),
+    trackingNumber: row.tracking_number == null ? null : String(row.tracking_number),
+    shippedAt: toEpochMsOrNull(row.shipped_at),
+    deliveredAt: toEpochMsOrNull(row.delivered_at),
+    createdAt: toEpochMs(row.created_at),
+    revision: Number(row.revision),
+    lines: lines.map((line) => ({
+      id: String(line.id),
+      orderLineId: String(line.order_line_id),
+      qty: Number(line.qty),
+    })),
+  };
+}
+
+const LINE_AGG = sql`
+  COALESCE((
+    SELECT json_agg(json_build_object('id', fl.id, 'order_line_id', fl.order_line_id,
+                                      'qty', fl.qty) ORDER BY fl.id)
+      FROM shop_fulfillment_lines fl WHERE fl.fulfillment_id = f.id
+  ), '[]'::json) AS lines`;
+
+interface FulfillmentRead {
+  fulfillment: Fulfillment;
+  generation: number;
+}
+
+export async function readFulfillment(db: Db, id: string): Promise<FulfillmentRead | null> {
+  const res = await db.execute(sql`
+    SELECT ${sql.raw(returning('f'))}, f.lifecycle_generation, ${LINE_AGG}
+      FROM shop_fulfillments f WHERE f.id = ${id}`);
+  const row = res.rows[0];
+  return row
+    ? { fulfillment: rowToFulfillment(row), generation: Number(row.lifecycle_generation) }
+    : null;
+}
+
+export async function listFulfillments(db: Db, orderId: string): Promise<Fulfillment[]> {
+  const res = await db.execute(sql`
+    SELECT ${sql.raw(returning('f'))}, ${LINE_AGG}
+      FROM shop_fulfillments f WHERE f.order_id = ${orderId}
+     ORDER BY f.created_at ASC, f.id ASC`);
+  return res.rows.map(rowToFulfillment);
+}
+
+// -------------------------------------------------------------------- create
+
+export interface FulfillmentRequest {
+  lines: { orderLineId: string; qty: number }[];
+  carrier: string | null;
+  trackingNumber: string | null;
+}
+
+/**
+ * A fulfilment, its lines, and a timeline entry — in one statement, behind a CAS on
+ * the ORDER.
+ *
+ * WHY THE ORDER IS CAS'd AND NOT JUST READ. The obvious shape is
+ * `WITH ord AS (SELECT … WHERE status IN ('paid', …))`, and it has a race: under
+ * READ COMMITTED the CTE evaluates against this statement's snapshot, so a cancel
+ * that commits after the snapshot is invisible and a fulfilment gets created for an
+ * order that is already cancelled. Making the order's own row the thing that must
+ * match — revision, pinned generation, and status — closes it, because the UPDATE
+ * re-evaluates against the committed row and the concurrent cancel has moved both
+ * the revision and the generation.
+ *
+ * It also means creating a fulfilment BUMPS THE ORDER'S REVISION, which is correct:
+ * an order's revision should move when something happens to the order. The
+ * generation deliberately does NOT move — the trigger watches status and the four
+ * timestamps, not `revision` — so a fulfilment being created does not refuse a
+ * concurrent refund.
+ *
+ * `partially_refunded` IS FULFILLABLE and `refunded` is not. A partial refund on an
+ * order that has not shipped is a price adjustment; the goods still owe. A full
+ * refund means nothing is owed.
+ */
+export async function createFulfillment(
+  db: Db,
+  orderId: string,
+  req: FulfillmentRequest,
+  actorId: string,
+  now: number,
+): Promise<Fulfillment> {
+  if (req.lines.length === 0) throw new BadRequestError('lines');
+
+  let read = await readOrder(db, orderId);
+  if (!read) throw new NotFoundError(orderId);
+  const pinned = read.generation;
+  const derivedFrom = read.order.revision;
+
+  /*
+   * EVERY REQUESTED LINE MUST BELONG TO THIS ORDER, decided against the order's own
+   * snapshot rather than by trusting the request. This is a 400 rather than a
+   * database error because the caller sent a line id that is not part of the order
+   * it named — a malformed request, permanently — and the alternative is SQLSTATE
+   * `ORD04` from the cross-order trigger arriving as a 500 the client retries five
+   * times. The trigger is still the authority; this only makes the ordinary mistake
+   * legible.
+   */
+  const known = new Set(read.lines.map((line) => line.id));
+  for (const line of req.lines) {
+    if (!known.has(line.orderLineId)) throw new BadRequestError('lines.orderLineId');
+    if (!Number.isInteger(line.qty) || line.qty <= 0) throw new BadRequestError('lines.qty');
+  }
+
+  for (let attempt = 0; attempt < LIFECYCLE_ATTEMPTS; attempt += 1) {
+    const base = read.order.revision;
+    const fulfillmentId = newId(ID.fulfillment);
+    const lines = req.lines.map((line) => ({
+      id: newId(ID.fulfillmentLine),
+      order_line_id: line.orderLineId,
+      qty: line.qty,
+    }));
+
+    const res = await runOrTranslate(db, orderId, sql`
+      WITH ord AS (
+        UPDATE shop_orders SET revision = revision + 1
+         WHERE id = ${orderId}
+           AND revision = ${base}
+           AND lifecycle_generation = ${pinned}
+           AND status IN ('paid', 'partially_refunded')
+        RETURNING id
+      ), ful AS (
+        INSERT INTO shop_fulfillments (id, order_id, status, carrier, tracking_number,
+                                       created_at, revision)
+        SELECT ${fulfillmentId}, ord.id, 'pending', ${req.carrier}, ${req.trackingNumber},
+               ${now}, 1
+          FROM ord
+        RETURNING ${sql.raw(returning())}
+      ), fl AS (
+        INSERT INTO shop_fulfillment_lines (id, fulfillment_id, order_line_id, qty)
+        SELECT l.id, ful.id, l.order_line_id, l.qty
+          FROM ful, jsonb_to_recordset(${sql`${JSON.stringify(lines)}::jsonb`}) AS l(
+                 id text, order_line_id text, qty integer)
+        RETURNING id, order_line_id, qty
+      ), timeline AS (
+        INSERT INTO shop_order_events (id, order_id, type, message, occurred_at, actor_id)
+        SELECT ${newId(ID.timeline)}, ful.order_id, 'fulfillment_created',
+               'Fulfillment created', ${now}, ${actorId}
+          FROM ful
+        RETURNING 1
+      )
+      SELECT ${sql.raw(returning('ful'))},
+             (SELECT COALESCE(json_agg(json_build_object('id', x.id,
+                                                         'order_line_id', x.order_line_id,
+                                                         'qty', x.qty) ORDER BY x.id), '[]'::json)
+                FROM fl x) AS lines
+        FROM ful`);
+
+    const row = res.rows[0];
+    if (row) return rowToFulfillment(row);
+
+    const after = await readOrder(db, orderId);
+    if (!after) throw new NotFoundError(orderId);
+    if (after.generation === pinned && !fulfillable(after.order)) {
+      throw new PreconditionFailedError('fulfill', asErrorSubject(after.order));
+    }
+    read = after;
+  }
+
+  throw new StaleWriteError(derivedFrom, read.order.revision, null);
+}
+
+/** The JS mirror of the SQL guard, used ONLY to classify a CAS that matched nothing. */
+const fulfillable = (order: Order) =>
+  order.status === 'paid' || order.status === 'partially_refunded';
+
+/** The CHECK that bounds `sum(fulfilled qty)` by the line's own `qty`. */
+export const OVER_FULFILMENT_CONSTRAINT = 'shop_order_lines_fulfilled_ck';
+
+/**
+ * Run the create statement, turning the over-fulfilment CHECK into a domain error.
+ *
+ * WITHOUT THIS, THE MOST ORDINARY ADMIN MISTAKE IS A 500 THAT GETS RETRIED FIVE TIMES.
+ * "Ship 3 of an order line for 2" is a typo an operator makes daily. `guardDb` scrubs the
+ * violation to a `DbError`, `server/middleware/errors.ts` has no row for it, so it answers
+ * `{"error":"internal"}` — and spec §8's client retries a 5xx five times over ~30 seconds
+ * for a request whose answer will never change. Contract §10 states the rule directly: a
+ * permanent failure returned as a 500 is a request retried forever that can never succeed.
+ *
+ * `PreconditionFailedError` (409) AND NOT `BadRequestError` (400), because the request is
+ * well-formed and the refusal is about STATE: the same body would have succeeded before
+ * the earlier fulfilment existed, and the client's correct response is to re-read the
+ * remaining quantities rather than to fix its own input. The client's retry policy stops
+ * on both, so nothing is retried either way.
+ *
+ * The translation is here and not in the trigger because the CHECK is what must stay
+ * authoritative — `fulfillments.test.ts` drops it and watches the bound disappear.
+ */
+async function runOrTranslate(
+  db: Db,
+  orderId: string,
+  statement: SQL,
+): Promise<{ rows: Record<string, unknown>[] }> {
+  try {
+    return await db.execute(statement);
+  } catch (err: unknown) {
+    if (err instanceof DbError && err.constraint === OVER_FULFILMENT_CONSTRAINT) {
+      const order = await readOrder(db, orderId);
+      throw new PreconditionFailedError('fulfill', asErrorSubject(order?.order ?? { id: orderId }));
+    }
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------- transitions
+
+interface FulfillmentTransition {
+  name: string;
+  holds(fulfillment: Fulfillment): boolean;
+  guard: SQL;
+  set(now: number): SQL;
+  timeline: { type: 'shipped' | 'delivered' | 'fulfillment_cancelled'; message: string };
+  /** Only shipment mails a customer. */
+  mail?(order: OrderRead, fulfillment: Fulfillment, link: AccessLink | null): {
+    dedupeKey: string;
+    to: string;
+    subject: string;
+    body: string;
+  };
+}
+
+/**
+ * The same read → PIN → CAS shape `orders.ts` uses, over `shop_fulfillments`.
+ *
+ * DELIBERATELY NOT SHARED WITH THE ORDER VERSION. The two differ in what they emit,
+ * what they mail, whether they claim an outbox event, and what they return, and a
+ * generic transition covering both would take five flags to express those
+ * differences — at which point the shared code is harder to read than either
+ * concrete version and neither is checkable by eye. What matters is that the
+ * PROPERTY is the same, and that is pinned by tests on both.
+ */
+async function fulfillmentTransition(
+  db: Db,
+  fulfillmentId: string,
+  t: FulfillmentTransition,
+  now: number,
+  link: AccessLink | null,
+  actorId: string | null,
+): Promise<Fulfillment> {
+  let read = await readFulfillment(db, fulfillmentId);
+  if (!read) throw new NotFoundError(fulfillmentId);
+
+  const pinned = read.generation;
+  const derivedFrom = read.fulfillment.revision;
+  const order = await readOrder(db, read.fulfillment.orderId);
+  if (!order) throw new NotFoundError(read.fulfillment.orderId);
+
+  for (let i = 0; i < LIFECYCLE_ATTEMPTS; i += 1) {
+    const base = read.fulfillment.revision;
+    const mail = t.mail?.(order, read.fulfillment, link);
+
+    const ctes: SQL[] = [
+      sql`ful AS (
+        UPDATE shop_fulfillments
+           SET ${t.set(now)}, revision = revision + 1
+         WHERE id = ${fulfillmentId}
+           AND revision = ${base}
+           AND lifecycle_generation = ${pinned}
+           AND ${t.guard}
+        RETURNING ${sql.raw(returning())}
+      )`,
+      sql`timeline AS (
+        INSERT INTO shop_order_events (id, order_id, type, message, occurred_at, actor_id)
+        SELECT ${newId(ID.timeline)}, ful.order_id, ${t.timeline.type},
+               ${t.timeline.message}, ${now}, ${actorId}
+          FROM ful
+        RETURNING 1
+      )`,
+    ];
+
+    if (mail) {
+      ctes.push(sql`mail AS (
+        INSERT INTO shop_order_email_intents (id, order_id, kind, to_email, subject, body,
+                                              created_at, dedupe_key)
+        SELECT ${newId(ID.emailIntent)}, ful.order_id, 'shipment', ${mail.to},
+               ${mail.subject}, ${mail.body}, ${now}, ${mail.dedupeKey}
+          FROM ful
+        ON CONFLICT (dedupe_key) DO NOTHING
+        RETURNING 1
+      )`);
+    }
+
+    const res = await db.execute(sql`
+      WITH ${sql.join(ctes, sql`, `)}
+      SELECT ${sql.raw(returning())},
+             (SELECT COALESCE(json_agg(json_build_object('id', fl.id,
+                                                        'order_line_id', fl.order_line_id,
+                                                        'qty', fl.qty) ORDER BY fl.id), '[]'::json)
+                FROM shop_fulfillment_lines fl WHERE fl.fulfillment_id = ful.id) AS lines
+        FROM ful`);
+
+    const row = res.rows[0];
+    if (row) return rowToFulfillment(row);
+
+    const after = await readFulfillment(db, fulfillmentId);
+    if (!after) throw new NotFoundError(fulfillmentId);
+    if (after.generation === pinned && !t.holds(after.fulfillment)) {
+      throw new PreconditionFailedError(t.name, asErrorSubject(after.fulfillment));
+    }
+    read = after;
+  }
+
+  throw new StaleWriteError(derivedFrom, read.fulfillment.revision, null);
+}
+
+const SHIP: FulfillmentTransition = {
+  name: 'ship',
+  holds: (f) => f.status === 'pending',
+  guard: sql`status = 'pending'`,
+  set: (now) => sql`status = 'shipped', shipped_at = ${now}`,
+  timeline: { type: 'shipped', message: 'Shipped' },
+  mail: (order, fulfillment, link) => ({
+    /* One shipment mail PER FULFILMENT — a three-parcel order sends three. */
+    dedupeKey: `shipment:${fulfillment.id}`,
+    ...renderShipment(
+      {
+        orderNumber: order.order.orderNumber,
+        email: order.order.email,
+        currency: order.order.currency,
+        grandTotal: order.order.grandTotal,
+        /*
+         * ONLY THE LINES THIS PARCEL CONTAINS, from the order's own snapshot. A
+         * shipment mail listing the whole order would tell a customer their second
+         * parcel contains items that are still in the warehouse.
+         */
+        lines: order.lines
+          .filter((line) => fulfillment.lines.some((fl) => fl.orderLineId === line.id))
+          .map((line) => {
+            const covered = fulfillment.lines.find((fl) => fl.orderLineId === line.id);
+            return {
+              title: line.title,
+              sku: line.sku,
+              qty: covered?.qty ?? line.qty,
+              lineTotal: line.lineTotal,
+            };
+          }),
+        carrier: fulfillment.carrier,
+        trackingNumber: fulfillment.trackingNumber,
+      },
+      link,
+    ),
+  }),
+};
+
+const DELIVER: FulfillmentTransition = {
+  name: 'deliver',
+  holds: (f) => f.status === 'shipped',
+  guard: sql`status = 'shipped'`,
+  set: (now) => sql`status = 'delivered', delivered_at = ${now}`,
+  timeline: { type: 'delivered', message: 'Delivered' },
+};
+
+/**
+ * Cancelling releases the quantity, via `shop_fulfillments_release`.
+ *
+ * A SHIPPED FULFILMENT CAN BE CANCELLED and a DELIVERED ONE CANNOT. A parcel that
+ * was lost, recalled or returned to sender is a real and reasonably common event,
+ * and the quantity has to come back or those lines could never be fulfilled again.
+ * Delivery, by contrast, is the end of the story: unwinding it would be a return,
+ * which contract §13 puts explicitly out of scope.
+ */
+const CANCEL_FULFILLMENT: FulfillmentTransition = {
+  name: 'cancel_fulfillment',
+  holds: (f) => f.status === 'pending' || f.status === 'shipped',
+  guard: sql`status IN ('pending', 'shipped')`,
+  set: () => sql`status = 'cancelled'`,
+  timeline: { type: 'fulfillment_cancelled', message: 'Fulfillment cancelled' },
+};
+
+export const shipFulfillment = (
+  db: Db,
+  id: string,
+  now: number,
+  link: AccessLink | null,
+  actorId: string | null,
+): Promise<Fulfillment> => fulfillmentTransition(db, id, SHIP, now, link, actorId);
+
+export const deliverFulfillment = (
+  db: Db,
+  id: string,
+  now: number,
+  actorId: string | null,
+): Promise<Fulfillment> => fulfillmentTransition(db, id, DELIVER, now, null, actorId);
+
+export const cancelFulfillment = (
+  db: Db,
+  id: string,
+  now: number,
+  actorId: string | null,
+): Promise<Fulfillment> => fulfillmentTransition(db, id, CANCEL_FULFILLMENT, now, null, actorId);

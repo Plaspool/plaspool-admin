@@ -1,0 +1,456 @@
+import { sql } from 'drizzle-orm';
+import { toEpochMs } from '../../../db/client';
+import type { Db } from '../../../db/client';
+import { BadRequestError, PreconditionFailedError, StaleWriteError } from '../../../repo/errors';
+import { asCommerceEventType } from '../../../../shared/commerce/events';
+import {
+  parseCheckoutCompleted,
+  parsePaymentAuthorized,
+  parsePaymentCaptured,
+  parsePaymentFailed,
+  parsePaymentRefunded,
+} from '../inbound';
+import { mintGuestToken } from '../tokens';
+import type { AccessLink } from '../mailer';
+import {
+  CONSUMER,
+  cancelOrder,
+  createOrderFromCheckout,
+  markOrderPaid,
+  readOrderByCheckout,
+  recordAuthorization,
+  refundOrder,
+  type OrderRead,
+} from './orders';
+
+/**
+ * THE CONSUMER (contract §6, brief §4).
+ *
+ * Orders creates nothing itself; it reacts to rows in `commerce_events`. Which means
+ * this file's job is almost entirely to answer one question correctly for each row:
+ *
+ *   **applied**  — the state changed. The consumption row was written in the SAME
+ *                  statement, so this outcome cannot be lost or double-counted.
+ *   **ignored**  — nothing will ever change because of this row. An event type this
+ *                  subsystem does not handle (§6 rule 4), a duplicate the constraints
+ *                  refused, or an operation the order's state REFUSES rather than
+ *                  loses. A consumption row is written so it is never re-examined.
+ *   **parked**   — this row could not be applied YET. Its predecessor has not
+ *                  arrived, or a race was lost, or this build cannot read its
+ *                  payload. **No consumption row at all**, which is what makes it
+ *                  retryable, plus `last_error` and `attempts` on the outbox row so
+ *                  an operator can see what is stuck.
+ *
+ * THE THREE THINGS THIS FILE MUST NEVER DO, from brief §4:
+ *
+ *  - **Never throw.** A dispatcher that throws stops draining the outbox at its
+ *    first bad row, and the row that stops it is by definition the one nobody
+ *    predicted. Every handler is wrapped; an unrecognised failure parks.
+ *  - **Never drop.** Nothing here deletes a `commerce_events` row, ever.
+ *  - **Never require ordering.** `payment.captured` before `checkout.completed` is
+ *    ordinary, not exceptional: providers retry, and a webhook is not a queue.
+ *
+ * THE CANDIDATE SET IS AN ANTI-JOIN, NOT `processed_at IS NULL`. §6 rule 2 keys
+ * idempotency on `(consumer, eventId)`, and `processed_at` is one column on a shared
+ * table that cannot say "Orders is done and some future consumer is not". The
+ * anti-join is what makes this consumer's progress its own.
+ */
+
+export type Disposition =
+  | { kind: 'applied'; detail?: string }
+  | { kind: 'ignored'; detail: string }
+  | { kind: 'parked'; detail: string };
+
+/**
+ * How many times a row may park before it is recorded `abandoned`.
+ *
+ * A parked row is retried on every sweep, so an event whose predecessor will never
+ * arrive would be retried forever. Twenty sweeps is generous enough that a same-day
+ * redeploy — the realistic fix when the cause is a payload this build cannot read —
+ * recovers automatically, and finite enough that a genuinely orphaned event stops
+ * consuming the budget.
+ *
+ * `abandoned` DESTROYS NOTHING. The outbox row keeps its payload and its
+ * `last_error`; only the consumption row says this consumer has stopped trying.
+ * Recovery is `DELETE FROM shop_order_event_consumptions WHERE consumer = 'orders'
+ * AND event_id = …`, which is deliberately a human decision.
+ */
+export const PARK_ATTEMPT_LIMIT = 20;
+
+/** How many rows one sweep will look at. */
+export const EVENT_SWEEP_LIMIT = 100;
+
+export interface EventRow {
+  id: string;
+  type: string;
+  subjectId: string;
+  payload: unknown;
+  occurredAt: number;
+  attempts: number;
+}
+
+export interface ConsumerDeps {
+  /**
+   * The origin guest access links are built from — `AppEnv.origins[0]`, i.e. this
+   * deployment's own allow-list.
+   *
+   * NEVER A `Host` HEADER, and there is not even one available here: the sweeper runs
+   * from a cron with no request. A link built from an attacker-supplied header is a
+   * phishing link the application sent itself, which is why `server/routes/auth.ts`
+   * takes the same value from the same place for invite URLs.
+   *
+   * `null` means emails carry no link, which is a degraded but honest state.
+   */
+  origin: string | null;
+}
+
+// ------------------------------------------------------------------ dispatch
+
+/**
+ * One row. Returns a disposition and NEVER THROWS.
+ *
+ * The `try` is not decoration: `handleEvent` reaches a repository that reaches a
+ * driver, and the set of things a driver can raise is not enumerable from here.
+ * Whatever it is, the honest answer is "this row is not applied and has not been
+ * consumed", which is a park.
+ */
+export async function handleEvent(
+  db: Db,
+  row: EventRow,
+  deps: ConsumerDeps,
+  now: number,
+): Promise<Disposition> {
+  try {
+    return await dispatch(db, row, deps, now);
+  } catch (err: unknown) {
+    return classify(err);
+  }
+}
+
+/**
+ * The error taxonomy that already exists in this codebase maps EXACTLY onto
+ * park-versus-ignore, which is why no new error class was added (contract §10 permits
+ * one only for genuinely new client behaviour).
+ *
+ * - `PreconditionFailedError` — "refused, not lost". `server/repo/errors.ts` split
+ *   this out from `StaleWriteError` precisely because the two mean different things,
+ *   and the difference is the one this function needs: the order is already in a
+ *   state where this event has nothing to do, and it will still be in one on the next
+ *   sweep. **Ignored.**
+ * - `StaleWriteError` — three attempts, three lost races. Genuinely transient.
+ *   **Parked.**
+ * - `BadRequestError` — malformed input that can never be accepted, which is exactly
+ *   the reason that class exists. **Ignored.**
+ * - anything else — unknown, so assume a redeploy might fix it. **Parked.**
+ */
+function classify(err: unknown): Disposition {
+  if (err instanceof PreconditionFailedError) {
+    return { kind: 'ignored', detail: `refused: ${err.operation}` };
+  }
+  if (err instanceof StaleWriteError) {
+    return { kind: 'parked', detail: 'lost the write race; will retry' };
+  }
+  if (err instanceof BadRequestError) {
+    return { kind: 'ignored', detail: `bad payload: ${err.detail}` };
+  }
+  // Names only. A message can quote a value; `DbError` is already scrubbed, but an
+  // arbitrary error is not, and this string is written to a column.
+  const name = err instanceof Error ? err.name : typeof err;
+  return { kind: 'parked', detail: `unhandled ${name}; will retry` };
+}
+
+/** A parse failure names the FIELD and parks — never the value, and never a throw. */
+function parkOnBadPayload(failure: { detail: string }): Disposition {
+  return {
+    kind: 'parked',
+    detail: `payload not readable by this build at: ${failure.detail}`,
+  };
+}
+
+/**
+ * "Its predecessor has not arrived" — brief §4's park, with a recognisable message.
+ *
+ * `awaiting predecessor` is a fixed prefix so an operator can find every one of them
+ * with a single `LIKE`, which is the difference between a diagnosable backlog and a
+ * column full of prose.
+ */
+function awaitingCheckout(checkoutId: string): Disposition {
+  return {
+    kind: 'parked',
+    detail: `awaiting predecessor: checkout.completed for ${checkoutId}`,
+  };
+}
+
+function accessLink(read: OrderRead, deps: ConsumerDeps, now: number): AccessLink | null {
+  if (deps.origin === null) return null;
+  return {
+    origin: deps.origin,
+    token: mintGuestToken({ orderNumber: read.order.orderNumber, email: read.order.email }, now),
+  };
+}
+
+async function dispatch(
+  db: Db,
+  row: EventRow,
+  deps: ConsumerDeps,
+  now: number,
+): Promise<Disposition> {
+  const type = asCommerceEventType(row.type);
+
+  /*
+   * §6 RULE 4, AND IT IS WHY THESE FOUR SUBSYSTEMS COULD BE BUILT AT ONCE. A type
+   * this build has never heard of is logged and ignored — not thrown, which would
+   * stop the whole outbox the first time another agent shipped ahead of this one.
+   */
+  if (type === null) return ignoreAndLog(row, `unknown type: ${row.type}`);
+
+  switch (type) {
+    /*
+     * MY OWN EMISSIONS, AND EVERY OTHER SUBSYSTEM'S. They are in the same table and
+     * this consumer reads the whole table, so they have to be declined explicitly.
+     * Recording an `ignored` consumption row is what stops them being re-examined on
+     * every sweep for the life of the shop.
+     */
+    case 'catalog.variant.published':
+    case 'catalog.variant.unpublished':
+    case 'catalog.inventory.adjusted':
+    case 'order.created':
+    case 'order.fulfilled':
+    case 'order.cancelled':
+      return { kind: 'ignored', detail: `not handled by ${CONSUMER}: ${type}` };
+
+    case 'checkout.completed': {
+      const parsed = parseCheckoutCompleted(row.payload, row.subjectId);
+      if (!parsed.ok) return parkOnBadPayload(parsed);
+      const outcome = await createOrderFromCheckout(
+        db,
+        { id: row.id, occurredAt: row.occurredAt },
+        parsed.value,
+        now,
+      );
+      if (outcome.kind === 'created') return { kind: 'applied' };
+      if (outcome.kind === 'replayed') return { kind: 'ignored', detail: 'already consumed' };
+      return { kind: 'ignored', detail: `duplicate order for this ${outcome.on}` };
+    }
+
+    case 'payment.authorized': {
+      const parsed = parsePaymentAuthorized(row.payload);
+      if (!parsed.ok) return parkOnBadPayload(parsed);
+      const read = await readOrderByCheckout(db, parsed.value.checkoutId);
+      if (!read) return awaitingCheckout(parsed.value.checkoutId);
+      const applied = await recordAuthorization(
+        db,
+        read.order.id,
+        row.id,
+        now,
+        parsed.value.intentId,
+      );
+      return applied
+        ? { kind: 'applied' }
+        : { kind: 'ignored', detail: 'already consumed' };
+    }
+
+    case 'payment.captured': {
+      const parsed = parsePaymentCaptured(row.payload);
+      if (!parsed.ok) return parkOnBadPayload(parsed);
+      const read = await readOrderByCheckout(db, parsed.value.checkoutId);
+      if (!read) return awaitingCheckout(parsed.value.checkoutId);
+
+      /*
+       * A CAPTURE AGAINST A CANCELLED ORDER IS AN ANOMALY, AND IT IS NOT SILENTLY
+       * IGNORED.
+       *
+       * It is reachable: `payment.failed` arriving before `payment.captured` cancels
+       * the order, and Payments' own status ladder admits `failed → captured`
+       * explicitly because a customer can pay a checkout we locally gave up on. The
+       * money then exists and the order says it will never ship.
+       *
+       * Resurrecting the order here would be worse than the anomaly: `cancelled` may
+       * have been a deliberate human decision, and stock has been released. So the
+       * state is left alone and the row is recorded LOUDLY — `last_error` carries a
+       * fixed `anomaly:` prefix so one `LIKE` finds every one of them. Refusing to
+       * decide is the correct behaviour; refusing to WRITE IT DOWN would not be.
+       */
+      if (read.order.status === 'cancelled') {
+        return {
+          kind: 'ignored',
+          detail: `anomaly: capture for a cancelled order (${read.order.orderNumber}) — reconcile with payments`,
+        };
+      }
+
+      await markOrderPaid(
+        db,
+        read.order.id,
+        now,
+        accessLink(read, deps, now),
+        { eventId: row.id },
+        parsed.value.intentId,
+      );
+      return { kind: 'applied' };
+    }
+
+    case 'payment.failed': {
+      const parsed = parsePaymentFailed(row.payload);
+      if (!parsed.ok) return parkOnBadPayload(parsed);
+      const read = await readOrderByCheckout(db, parsed.value.checkoutId);
+      if (!read) return awaitingCheckout(parsed.value.checkoutId);
+      /*
+       * `order.cancelled` carries the lines, which is how the reservations get
+       * released (brief §4). Releasing them from here would be a call into Cart, and
+       * contract §2 R4 makes cross-subsystem causation an event.
+       */
+      await cancelOrder(
+        db,
+        read.order.id,
+        {
+          reason: 'payment_failed',
+          actorId: null,
+          link: accessLink(read, deps, now),
+          intentId: parsed.value.intentId,
+        },
+        now,
+        { eventId: row.id },
+      );
+      return { kind: 'applied' };
+    }
+
+    case 'payment.refunded': {
+      const parsed = parsePaymentRefunded(row.payload);
+      if (!parsed.ok) return parkOnBadPayload(parsed);
+      const read = await readOrderByCheckout(db, parsed.value.checkoutId);
+      if (!read) return awaitingCheckout(parsed.value.checkoutId);
+      await refundOrder(
+        db,
+        read.order.id,
+        {
+          refundedAmount: parsed.value.refundedAmount,
+          refundedTotal: parsed.value.refundedTotal,
+          link: accessLink(read, deps, now),
+          eventId: row.id,
+          intentId: parsed.value.intentId,
+        },
+        now,
+        { eventId: row.id },
+      );
+      return { kind: 'applied' };
+    }
+  }
+}
+
+function ignoreAndLog(row: EventRow, detail: string): Disposition {
+  // eslint-disable-next-line no-console -- §6 rule 4 says ignore AND LOG
+  console.info(
+    `[shop/orders/consumer] ignoring event`,
+    JSON.stringify({ eventId: row.id, type: row.type, detail }),
+  );
+  return { kind: 'ignored', detail };
+}
+
+// -------------------------------------------------------------------- record
+
+/**
+ * Write down what happened to a row that was NOT applied.
+ *
+ * An `applied` disposition needs nothing here: its consumption row and its
+ * `processed_at` were written inside the same statement as the state change, which is
+ * the only arrangement in which the two cannot disagree.
+ */
+async function record(db: Db, row: EventRow, disposition: Disposition, now: number): Promise<void> {
+  if (disposition.kind === 'applied') return;
+
+  if (disposition.kind === 'ignored') {
+    await db.execute(sql`
+      WITH claim AS (
+        INSERT INTO shop_order_event_consumptions (consumer, event_id, handled_at, outcome, detail)
+        VALUES (${CONSUMER}, ${row.id}, ${now}, 'ignored', ${disposition.detail})
+        ON CONFLICT DO NOTHING
+        RETURNING event_id
+      )
+      UPDATE commerce_events
+         SET processed_at = ${now}, last_error = ${disposition.detail}
+       WHERE id = ${row.id}`);
+    return;
+  }
+
+  /*
+   * PARKED: `processed_at` STAYS NULL and no consumption row is written, which is
+   * contract §6 rule 3 exactly — mark `lastError`, do not delete, do not retry in a
+   * tight loop. The retry is the NEXT sweep, not a loop here.
+   */
+  const attempts = row.attempts + 1;
+  await db.execute(sql`
+    UPDATE commerce_events
+       SET attempts = ${attempts}, last_error = ${disposition.detail}
+     WHERE id = ${row.id}`);
+
+  if (attempts >= PARK_ATTEMPT_LIMIT) {
+    await db.execute(sql`
+      INSERT INTO shop_order_event_consumptions (consumer, event_id, handled_at, outcome, detail)
+      VALUES (${CONSUMER}, ${row.id}, ${now}, 'abandoned',
+              ${`${disposition.detail} (abandoned after ${attempts} attempts)`})
+      ON CONFLICT DO NOTHING`);
+  }
+}
+
+// --------------------------------------------------------------------- sweep
+
+export interface EventSweepSummary {
+  applied: number;
+  ignored: number;
+  parked: number;
+  /** Every disposition, in the order they were decided. For tests and for a log. */
+  dispositions: { eventId: string; type: string; disposition: Disposition }[];
+}
+
+/**
+ * Drain what this consumer has not yet handled, oldest first.
+ *
+ * ONE PASS, NOT A LOOP UNTIL EMPTY. A sweep that kept going until the candidate set
+ * was empty would never terminate while a parked event remained parked — it would
+ * re-select the same row forever inside a single invocation. Bounded work per
+ * invocation, invoked again by whatever schedules it, is the shape that cannot hang.
+ *
+ * OLDEST FIRST because it is the ordering most likely to make a parked event
+ * unnecessary: `checkout.completed` genuinely did happen before `payment.captured`,
+ * so processing by `occurred_at` resolves the ordinary out-of-order case within a
+ * single sweep rather than needing a second one.
+ */
+export async function sweepCommerceEvents(
+  db: Db,
+  deps: ConsumerDeps,
+  now: number,
+  limit: number = EVENT_SWEEP_LIMIT,
+): Promise<EventSweepSummary> {
+  const res = await db.execute(sql`
+    SELECT e.id, e.type, e.subject_id, e.payload, e.occurred_at, e.attempts
+      FROM commerce_events e
+     WHERE NOT EXISTS (
+             SELECT 1 FROM shop_order_event_consumptions c
+              WHERE c.consumer = ${CONSUMER} AND c.event_id = e.id)
+     ORDER BY e.occurred_at ASC, e.id ASC
+     LIMIT ${limit}`);
+
+  const summary: EventSweepSummary = {
+    applied: 0,
+    ignored: 0,
+    parked: 0,
+    dispositions: [],
+  };
+
+  for (const raw of res.rows) {
+    const row: EventRow = {
+      id: String(raw.id),
+      type: String(raw.type),
+      subjectId: String(raw.subject_id),
+      payload: raw.payload,
+      occurredAt: toEpochMs(raw.occurred_at),
+      attempts: Number(raw.attempts),
+    };
+    const disposition = await handleEvent(db, row, deps, now);
+    await record(db, row, disposition, now);
+    summary[disposition.kind] += 1;
+    summary.dispositions.push({ eventId: row.id, type: row.type, disposition });
+  }
+
+  return summary;
+}
