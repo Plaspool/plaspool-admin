@@ -67,6 +67,34 @@ import ShopCustomers from './ShopCustomers';
 
 type Responder = (url: URL, init: RequestInit) => { status?: number; body: unknown };
 
+/**
+ * What jsdom does not implement and Radix's Select needs the moment its popup
+ * opens — the same block `Emails.test.tsx:55` and `Dashboard.test.tsx:122` use.
+ *
+ * ADDED WHEN THE ORDERS STATUS FILTER BECAME A SELECT. This file used to state
+ * that it asserted Selects "through the URL and the trigger's own label, NOT by
+ * opening the popup", because an unhandled `hasPointerCapture is not a function`
+ * from inside a React handler is reported as a whole-file error rather than a
+ * failing assertion. That was a workaround for a missing polyfill, not a
+ * property worth preserving: the behaviour that matters is that choosing an
+ * option writes the URL, and the only honest way to test it is to choose one.
+ */
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+  Element.prototype.setPointerCapture = () => {};
+  Element.prototype.releasePointerCapture = () => {};
+}
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+if (!globalThis.ResizeObserver) {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+}
+
 const handlers = new Map<string, Responder>();
 let requests: string[] = [];
 
@@ -472,26 +500,34 @@ describe('the catalogue', () => {
 // ============================================================================
 
 describe('the order list', () => {
-  it('reads its tab from the URL and sends it as a filter', async () => {
+  it('reads its status from the URL and sends it as a filter', async () => {
     when('/api/shop/admin/orders', { items: [ORDER], nextCursor: null });
     mount(<ShopOrders />, '/shop/orders?status=paid');
 
     await waitFor(() => expect(screen.getByText('PS-4821-K')).toBeTruthy());
     expect(asked('/api/shop/admin/orders?status=paid')).toBeTruthy();
-    expect(
-      screen.getByRole('link', { name: /^Paid/ }).getAttribute('aria-current'),
-    ).toBe('page');
+    // The control SHOWS the filter that is in the URL. A dropdown whose label
+    // disagreed with the list under it would be worse than no label at all.
+    expect(screen.getByRole('combobox', { name: 'Status' }).textContent).toContain('Paid');
   });
 
-  it('makes the tabs real links, so middle-click works', async () => {
+  it('changes the status through the dropdown, keeping the search', async () => {
+    /*
+     * WAS A TAB STRIP OF SEVEN LINKS. An order has seven states, most of them
+     * empty most of the time, so the strip spent a row on six things nobody was
+     * looking for and wrapped on a narrow screen — and it read as navigation
+     * while behaving as a filter. What has to survive the change is that the
+     * filter is still in the URL and still leaves every other param alone.
+     */
+    const user = userEvent.setup();
     when('/api/shop/admin/orders', { items: [], nextCursor: null });
     mount(<ShopOrders />, '/shop/orders?q=someone%40test.local');
 
-    // The search survives a tab change: the tab writes `status` and leaves
-    // every other param alone.
-    const tab = await screen.findByRole('link', { name: /^Fulfilled/ });
-    expect(tab.getAttribute('href')).toContain('q=someone');
-    expect(tab.getAttribute('href')).toContain('status=fulfilled');
+    await user.click(await screen.findByRole('combobox', { name: 'Status' }));
+    await user.click(await screen.findByRole('option', { name: 'Fulfilled' }));
+
+    await waitFor(() => expect(address()).toContain('status=fulfilled'));
+    expect(address()).toContain('q=someone');
   });
 
   it('debounces the search box into ?q= and searches the server', async () => {
@@ -510,8 +546,11 @@ describe('the order list', () => {
     // A keyset cursor is a position in ONE ordering of ONE filter. Carried
     // across a new search it means page two of the old list, which reads as a
     // search that found nothing.
-    const tab = await screen.findByRole('link', { name: /^Paid/ });
-    expect(tab.getAttribute('href')).not.toContain('cursor=');
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('combobox', { name: 'Status' }));
+    await user.click(await screen.findByRole('option', { name: 'Paid' }));
+    await waitFor(() => expect(address()).toContain('status=paid'));
+    expect(address()).not.toContain('cursor=');
 
     await userEvent.type(screen.getByLabelText('Search orders'), 'x');
     await waitFor(() => expect(address()).toContain('q=x'));

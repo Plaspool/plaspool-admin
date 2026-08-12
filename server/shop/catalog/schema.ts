@@ -216,6 +216,22 @@ export const shopVariants = pgTable(
     /** Shipping needs it; nullable is honest for a variant nobody has weighed. */
     weightGrams: integer('weight_grams'),
     status: text('status').$type<VariantStatus>().notNull(),
+    /**
+     * ONE image, for the option this variant actually is (migration 0009).
+     *
+     * The options in this store are colours, and a colour is the thing a
+     * photograph disambiguates — the product cover can only show one spool, so
+     * choosing between eight PLA colours was choosing between eight words. One
+     * image rather than a gallery: a gallery per colour is not a thing anybody
+     * asked for, and it would make the orphan collector's walk wider for no gain.
+     *
+     * NOT an FK to `images`: that is the blog's table, and contract §2 R3 keeps
+     * the two halves from constraining one another — the same call
+     * `shop_products.cover_image_id` already made. Existence is checked at write
+     * time by `checkImageRefs`, and `server/repo/images.ts#REFERENCE_SET` unions
+     * this column so an image referenced ONLY from here survives collection.
+     */
+    imageId: text('image_id'),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
     updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
   },
@@ -224,6 +240,9 @@ export const shopVariants = pgTable(
     check('shop_variants_position_ck', sql`${t.position} >= 0`),
     check('shop_variants_weight_ck', sql`${t.weightGrams} IS NULL OR ${t.weightGrams} >= 0`),
     index('shop_variants_product_idx').on(t.productId, t.position),
+    /** Partial: the reference walk and the public check both scan it, and a
+     *  variant with no image answers neither question. */
+    index('shop_variants_image_idx').on(t.imageId).where(sql`${t.imageId} IS NOT NULL`),
   ],
 );
 
@@ -258,6 +277,18 @@ export const shopPrices = pgTable(
     /** NULL = current. */
     effectiveTo: bigint('effective_to', { mode: 'number' }),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    /**
+     * WHY the price moved (migration 0009).
+     *
+     * The what and the when were always here — this table is append-only and
+     * effective-dated. The why was not, and it is the half a person needs: a row
+     * saying 18,500 became 22,000 on a Tuesday is a trail nobody can act on.
+     *
+     * NULLABLE, and it stays nullable: every price written before 0009 has none,
+     * and inventing one for them would put a lie in the audit view. "No reason
+     * recorded" is a true thing to display; an empty string is not.
+     */
+    reason: text('reason'),
   },
   (t) => [
     /**

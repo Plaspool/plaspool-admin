@@ -230,12 +230,33 @@
 
 /* -------------------------------------------------------------- switch */
 
+/*
+ * A FLEX ROW WITH PADDING, not a positioned box with a hand-tuned offset.
+ *
+ * The thumb used to be a plain block child of a `position: relative` track with
+ * `translateX(0.18rem)` faking the left gap. A block child sits at the TOP of
+ * its parent's content box, so a 1.05rem thumb in a 1.4rem track rode 0.35rem
+ * high — visibly clipped against the top edge, and the "off" state looked like a
+ * different component from the "on" state. Nothing centred it vertically because
+ * nothing was asked to.
+ *
+ * Now the track centres its thumb and the end gaps are padding, so the only
+ * number left to get right is the travel, and it is derived below rather than
+ * eyeballed.
+ */
 .ui-switch {
-  width: 2.5rem;
-  height: 1.4rem;
+  --switch-w: 2.5rem;
+  --switch-h: 1.4rem;
+  --switch-pad: 0.175rem;
+  --switch-thumb: calc(var(--switch-h) - var(--switch-pad) * 2);
+
+  display: inline-flex;
+  align-items: center;
+  width: var(--switch-w);
+  height: var(--switch-h);
+  padding: 0 var(--switch-pad);
   background: var(--rule-strong);
   border-radius: var(--radius-full);
-  position: relative;
   border: 0;
   cursor: pointer;
   flex: none;
@@ -250,17 +271,23 @@
 }
 .ui-switch__thumb {
   display: block;
-  width: 1.05rem;
-  height: 1.05rem;
-  background: var(--paper-raised);
+  width: var(--switch-thumb);
+  height: var(--switch-thumb);
+  /* Not `--paper-raised`: on the checked track that is a pale disc on a pale
+     accent, which is the state that most needs to read at a glance. A fixed
+     near-white works on both track colours in both themes. */
+  background: #fff;
   border-radius: 50%;
   box-shadow: var(--shadow-1);
   transition: transform var(--dur-2) var(--ease);
-  transform: translateX(0.18rem);
+  transform: translateX(0);
   will-change: transform;
 }
+/* The full travel, derived: track width, less both pads, less the thumb. */
 .ui-switch__thumb[data-state='checked'] {
-  transform: translateX(1.27rem);
+  transform: translateX(
+    calc(var(--switch-w) - var(--switch-pad) * 2 - var(--switch-thumb))
+  );
 }
 
 /* ------------------------------------------------------------- tooltip */

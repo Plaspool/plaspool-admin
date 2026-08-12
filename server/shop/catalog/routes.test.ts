@@ -284,15 +284,52 @@ describe('variants, prices and inventory over HTTP', () => {
     expect(noReason.status).toBe(400);
   });
 
-  it('a duplicate SKU is a 400 that names the field, not a 500', async () => {
+  it('a duplicate SKU is a 409 naming the SKU, not a 500 and not a bare 400', async () => {
+    /*
+     * WAS A 400 `detail: 'sku'`, AND THE CHANGE IS THE POINT. That is the same
+     * answer an empty or NUL-bearing SKU gets, so the screen could say no more
+     * than "the sku was refused" — which sent somebody to inspect the characters
+     * in a SKU whose only problem was that it already existed. "Already in use"
+     * is a conflict with existing state, which is what 409 means everywhere else
+     * in this application, and the SKU itself rides along so the message can
+     * quote what the server rejected rather than whatever is in the input by the
+     * time it renders.
+     *
+     * `server/shop/app.ts` does the upgrade. `DuplicateSkuError` is still a
+     * `BadRequestError` underneath, so a caller reaching it outside that
+     * `onError` still gets a 4xx that stops the retry policy.
+     */
     const a = await createProduct('SKU A');
     const b = await createProduct('SKU B');
     expect(
       (await http.post(`/api/shop/admin/products/${a.id}/variants`, { sku: 'DUPE-1' })).status,
     ).toBe(201);
     const res = await http.post(`/api/shop/admin/products/${b.id}/variants`, { sku: 'DUPE-1' });
-    expect(res.status).toBe(400);
-    expect(await json(res)).toMatchObject({ error: 'bad_request', detail: 'sku' });
+    expect(res.status).toBe(409);
+    expect(await json(res)).toMatchObject({
+      error: 'duplicate_sku',
+      detail: 'sku',
+      sku: 'DUPE-1',
+    });
+  });
+
+  it('renaming a variant onto a taken SKU is the same 409', async () => {
+    // The update path has its own catch, and it used to report a SKU it could
+    // not name because the value was scoped inside the branch that set it.
+    const a = await createProduct('SKU C');
+    const taken = await json<{ variant: { id: string } }>(
+      await http.post(`/api/shop/admin/products/${a.id}/variants`, { sku: 'TAKEN-1' }),
+    );
+    const mine = await json<{ variant: { id: string } }>(
+      await http.post(`/api/shop/admin/products/${a.id}/variants`, { sku: 'MINE-1' }),
+    );
+    expect(taken.variant.id).not.toBe(mine.variant.id);
+
+    const res = await http.patch(`/api/shop/admin/variants/${mine.variant.id}`, {
+      sku: 'TAKEN-1',
+    });
+    expect(res.status).toBe(409);
+    expect(await json(res)).toMatchObject({ error: 'duplicate_sku', sku: 'TAKEN-1' });
   });
 
   it('a variant on a product that does not exist is a 404, not a foreign-key 500', async () => {

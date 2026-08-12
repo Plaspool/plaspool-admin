@@ -7,7 +7,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from 'react';
-import { Link } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Check, ChevronLeft, Copy, Pencil } from 'lucide-react';
 import { Select } from '../components/ui/Select';
 import { Switch } from '../components/ui/Switch';
@@ -1470,13 +1470,32 @@ export default function SettingsRoute() {
   const user = session.status === 'unknown' ? null : session.user;
   const isOwner = user?.role === 'owner';
 
+  const navigate = useNavigate();
+  const location = useLocation();
+
   return (
     <div className="settings">
+      {/*
+        "Back", NOT "Posts". Settings is reachable from the sidebar on every
+        screen in the app, so labelling the exit "Posts" was a promise the button
+        only kept for the one caller who happened to arrive from the dashboard —
+        and it read as navigation to a section rather than as a way out of this
+        one. `navigate(-1)` with a fallback is the pattern the editor already
+        uses: return to wherever you actually came from, and fall back to the
+        dashboard for a pasted link with no history behind it.
+      */}
       <header className="settings__bar">
-        <Link className="btn btn--ghost btn--sm" to="/">
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={() => {
+            if (location.key === 'default') navigate('/');
+            else navigate(-1);
+          }}
+        >
           <ChevronLeft className="ui-ic" aria-hidden="true" />
-          Posts
-        </Link>
+          Back
+        </button>
         <span className="settings__title">Settings</span>
         <span aria-hidden="true" />
       </header>

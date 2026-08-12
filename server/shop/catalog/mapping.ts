@@ -102,6 +102,7 @@ export const VARIANT_COLUMNS: string[] = [
   'position',
   'weight_grams',
   'status',
+  'image_id',
   'created_at',
   'updated_at',
 ];
@@ -203,6 +204,8 @@ export function rowToVariant(row: Record<string, unknown>): Variant {
     position: Number(row.position),
     weightGrams: row.weight_grams == null ? null : Number(row.weight_grams),
     status: row.status as VariantStatus,
+    /** Migration 0009. NULL until somebody uploads a photograph of this colour. */
+    imageId: row.image_id == null ? null : String(row.image_id),
     createdAt: toEpochMs(row.created_at),
     updatedAt: toEpochMs(row.updated_at),
   };

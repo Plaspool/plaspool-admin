@@ -3,6 +3,8 @@ import type { Db } from '../../db/client';
 import { uniqueViolation } from '../../db/client';
 import { BadRequestError, NotFoundError } from '../../repo/errors';
 import { rejectNul } from '../../repo/cursor';
+import { committedImageIds } from '../../repo/images';
+import { normalizeBlobId } from '../../repo/public-projection';
 import type { AuthUser } from '../../../shared/types';
 import type { VariantStatus } from '../../../shared/commerce/catalog-port';
 import { VARIANT_COLUMNS, newCatalogId, rowToVariant, rowToVariantWithPrice } from './mapping';
@@ -32,11 +34,27 @@ import type { Variant, VariantPatch, VariantWithPrice } from './types';
  * unlikely.
  */
 
-/** `sku` is a UNIQUE column, so a duplicate is a 400 that names the field. */
+/**
+ * The SKU is already taken (`shop_variants_sku_unique`).
+ *
+ * IT CARRIES THE SKU, AND THE SHOP APP RENDERS IT AS A 409, because "already
+ * in use" is not the same complaint as "malformed" and a caller cannot act on
+ * the two the same way. Both used to arrive as a bare 400 `detail: 'sku'`, and
+ * the screen could say no more than "the sku was refused" — which sent somebody
+ * to check the characters in a SKU whose only problem was that it existed.
+ *
+ * Still a `BadRequestError` underneath so that a caller reaching this outside
+ * the shop app's `onError` — a direct repository call, a future mount — still
+ * gets a 4xx that stops the retry policy rather than a 500 that does not.
+ * `server/shop/app.ts` upgrades it to the 409 the condition actually is.
+ */
 export class DuplicateSkuError extends BadRequestError {
-  constructor() {
+  readonly sku: string;
+
+  constructor(sku: string) {
     super('sku');
     this.name = 'DuplicateSkuError';
+    this.sku = sku;
   }
 }
 
@@ -48,6 +66,27 @@ export interface CreateVariantInput {
   /** Stock at creation. Defaults to zero — nothing is in the warehouse yet. */
   onHand?: number;
   backorderable?: boolean;
+  /** The photograph of this colour. Validated as a committed image. */
+  imageId?: string | null;
+}
+
+/**
+ * The variant's image must name a COMMITTED image, exactly as a product's cover
+ * must (`checkImageRefs` in `products.ts`, whose header explains at length why
+ * this is advisory rather than a referential invariant).
+ *
+ * The protection that actually keeps the bytes alive is the other half:
+ * `server/repo/images.ts#REFERENCE_SET` unions `shop_variants.image_id`, so an
+ * image a variant names is never collected in the first place. This check exists
+ * so a typo becomes a 400 at the boundary instead of a broken colour swatch.
+ *
+ * An empty string is not an id — `null` clears the field, and every consumer
+ * downstream already skips `''`.
+ */
+async function checkVariantImage(db: Db, imageId: string | null | undefined): Promise<void> {
+  if (imageId == null || imageId === '') return;
+  const known = await committedImageIds(db, [imageId]);
+  if (!known.has(normalizeBlobId(imageId))) throw new BadRequestError('imageId');
 }
 
 /**
@@ -95,6 +134,7 @@ export async function createVariant(
   if (!sku) throw new BadRequestError('sku');
   const onHand = input.onHand ?? 0;
   if (!Number.isInteger(onHand) || onHand < 0) throw new BadRequestError('onHand');
+  await checkVariantImage(db, input.imageId);
 
   /*
    * `position` DEFAULTS TO THE END, computed in SQL rather than read first.
@@ -114,10 +154,10 @@ export async function createVariant(
         SELECT id FROM shop_products WHERE id = ${productId}
       ), ins AS (
         INSERT INTO shop_variants (id, product_id, sku, option_values, position,
-                                   weight_grams, status, created_at, updated_at)
+                                   weight_grams, status, image_id, created_at, updated_at)
         SELECT ${id}, prod.id, ${sku},
                ${JSON.stringify(input.optionValues ?? {})}::jsonb, ${position},
-               ${input.weightGrams ?? null}, 'active', ${now}, ${now}
+               ${input.weightGrams ?? null}, 'active', ${input.imageId || null}, ${now}, ${now}
           FROM prod
         RETURNING ${sql.raw(VARIANT_COLUMNS.join(', '))}
       ), inv AS (
@@ -128,7 +168,7 @@ export async function createVariant(
       SELECT ${sql.raw(VARIANT_COLUMNS.join(', '))} FROM ins`)
     .then((res) => res.rows[0])
     .catch((err: unknown) => {
-      if (uniqueViolation(err) === 'shop_variants_sku_unique') throw new DuplicateSkuError();
+      if (uniqueViolation(err) === 'shop_variants_sku_unique') throw new DuplicateSkuError(sku);
       throw err;
     });
 
@@ -157,10 +197,14 @@ export async function updateVariant(
   patch: VariantPatch,
 ): Promise<Variant> {
   const assignments = [];
+  // Hoisted out of the branch because the `catch` below reports it: a unique
+  // violation can only have come from this value, and an error that cannot name
+  // the SKU it rejected is the error this change exists to stop.
+  let newSku: string | null = null;
   if (patch.sku !== undefined) {
-    const sku = rejectNul(patch.sku.trim(), 'sku');
-    if (!sku) throw new BadRequestError('sku');
-    assignments.push(sql`sku = ${sku}`);
+    newSku = rejectNul(patch.sku.trim(), 'sku');
+    if (!newSku) throw new BadRequestError('sku');
+    assignments.push(sql`sku = ${newSku}`);
   }
   if (patch.optionValues !== undefined) {
     assignments.push(sql`option_values = ${JSON.stringify(patch.optionValues)}::jsonb`);
@@ -180,6 +224,10 @@ export async function updateVariant(
   if (patch.status !== undefined) {
     assignments.push(sql`status = ${patch.status satisfies VariantStatus}`);
   }
+  if (patch.imageId !== undefined) {
+    await checkVariantImage(db, patch.imageId);
+    assignments.push(sql`image_id = ${patch.imageId || null}`);
+  }
 
   // An empty patch is a 400, not a no-op that reports success. A caller sending
   // `{}` has misunderstood something, and answering 200 confirms the mistake.
@@ -192,7 +240,9 @@ export async function updateVariant(
       RETURNING ${sql.raw(VARIANT_COLUMNS.join(', '))}`)
     .then((res) => res.rows[0])
     .catch((err: unknown) => {
-      if (uniqueViolation(err) === 'shop_variants_sku_unique') throw new DuplicateSkuError();
+      if (uniqueViolation(err) === 'shop_variants_sku_unique') {
+        throw new DuplicateSkuError(newSku ?? '');
+      }
       throw err;
     });
 

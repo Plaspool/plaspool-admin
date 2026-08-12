@@ -41,6 +41,10 @@ export interface PriceRow {
   effectiveFrom: number;
   effectiveTo: number | null;
   createdAt: number;
+  /** WHY it moved. NULL on every price written before migration 0009, and NULL
+   *  whenever a caller chose not to say — the audit view distinguishes the two
+   *  from neither, by saying "no reason recorded" rather than showing ''. */
+  reason: string | null;
 }
 
 function rowToPrice(row: Record<string, unknown>): PriceRow {
@@ -52,6 +56,7 @@ function rowToPrice(row: Record<string, unknown>): PriceRow {
     effectiveFrom: toEpochMs(row.effective_from),
     effectiveTo: toEpochMsOrNull(row.effective_to),
     createdAt: toEpochMs(row.created_at),
+    reason: row.reason == null ? null : String(row.reason),
   };
 }
 
@@ -70,7 +75,7 @@ export async function currentPrice(db: Db, variantId: string): Promise<Money | n
  */
 export async function priceHistory(db: Db, variantId: string): Promise<PriceRow[]> {
   const res = await db.execute(sql`
-    SELECT id, variant_id, amount, currency, effective_from, effective_to, created_at
+    SELECT id, variant_id, amount, currency, effective_from, effective_to, created_at, reason
       FROM shop_prices WHERE variant_id = ${variantId}
      ORDER BY effective_from DESC, id DESC`);
   return res.rows.map(rowToPrice);
@@ -118,7 +123,13 @@ export async function priceHistory(db: Db, variantId: string): Promise<PriceRow[
  * The column's `amount >= 0` and `currency ~ '^[A-Z]{3}$'` checks are the
  * backstop for a backfill.
  */
-export async function setPrice(db: Db, variantId: string, price: Money): Promise<PriceRow> {
+export async function setPrice(
+  db: Db,
+  variantId: string,
+  price: Money,
+  /** WHY it moved (migration 0009). NULL for every price written before it. */
+  reason: string | null = null,
+): Promise<PriceRow> {
   const now = Date.now();
   const id = newCatalogId('prc_');
 
@@ -142,10 +153,11 @@ export async function setPrice(db: Db, variantId: string, price: Money): Promise
         SELECT id FROM shop_variants WHERE id = ${variantId}
       )
       INSERT INTO shop_prices (id, variant_id, amount, currency, effective_from,
-                               effective_to, created_at)
-      SELECT ${id}, variant.id, ${price.amount}, ${price.currency}, ${now}, NULL, ${now}
+                               effective_to, created_at, reason)
+      SELECT ${id}, variant.id, ${price.amount}, ${price.currency}, ${now}, NULL, ${now},
+             ${reason && reason.trim() ? reason.trim() : null}
         FROM variant
-      RETURNING id, variant_id, amount, currency, effective_from, effective_to, created_at`)
+      RETURNING id, variant_id, amount, currency, effective_from, effective_to, created_at, reason`)
     .then((res) => res.rows[0])
     .catch((err: unknown) => {
       /*

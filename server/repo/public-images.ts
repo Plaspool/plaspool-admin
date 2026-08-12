@@ -151,6 +151,22 @@ export function publicProductImageRefExists(
                  FROM unnest(sp.image_ids) AS g(ref)
                 WHERE g.ref <> ''
                   AND regexp_replace(g.ref, ${COVER_PREFIX}, '') = ${id})
+          OR EXISTS (
+               /*
+                * THE VARIANT'S OWN IMAGE (migration 0009). Scoped through the
+                * PRODUCT, not through the variant's own status: this file's
+                * question is "may an anonymous reader see these bytes", and a
+                * colour photograph on a discontinued variant of a live product
+                * is still a picture of something the storefront is selling.
+                * Narrowing to sv.status = 'active' would 404 the image on a
+                * product page that still lists the colour as sold out.
+                */
+               SELECT 1
+                 FROM shop_variants sv
+                WHERE sv.product_id = sp.id
+                  AND sv.image_id IS NOT NULL
+                  AND sv.image_id <> ''
+                  AND regexp_replace(sv.image_id, ${COVER_PREFIX}, '') = ${id})
            )
      LIMIT 1)`;
 }

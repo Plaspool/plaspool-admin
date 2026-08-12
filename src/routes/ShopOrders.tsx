@@ -17,6 +17,7 @@ import { useSession } from '../components/RequireAuth';
 import { useToast } from '../components/Toast';
 import { ConfirmDialog } from '../components/Dialog';
 import { Skeleton } from '../components/ui/Feedback';
+import { Select } from '../components/ui/Select';
 import { useDelayed } from '../components/ui/useDelayed';
 import './shop.css';
 
@@ -111,20 +112,28 @@ export default function ShopOrders() {
 
   return (
     <div className="shopscr">
-      <header className="shopscr__head">
-        <div className="shopscr__headrow">
-          <div>
-            <h1 className="shopscr__title">Orders</h1>
-            <p className="shopscr__lede">
-              What was bought, what has shipped, and what the store has tried to
-              email about it. Cancelling and refunding are owner-only, and both ask
-              before they act.
-            </p>
-          </div>
-        </div>
-      </header>
-
-      <ShopNav />
+      {/*
+        Both the section title and the section nav are hidden on an order's own
+        page — see `ShopProducts.tsx` for the reasoning. One order is a support
+        conversation, not a stop on a tour of the shop.
+      */}
+      {!openId && (
+        <>
+          <header className="shopscr__head">
+            <div className="shopscr__headrow">
+              <div>
+                <h1 className="shopscr__title">Orders</h1>
+                <p className="shopscr__lede">
+                  What was bought, what has shipped, and what the store has tried to
+                  email about it. Cancelling and refunding are owner-only, and both ask
+                  before they act.
+                </p>
+              </div>
+            </div>
+          </header>
+          <ShopNav />
+        </>
+      )}
 
       <div className="shopscr__body">
         {openId ? <OrderDetail id={openId} /> : <OrderList />}
@@ -220,33 +229,30 @@ function OrderList() {
 
   return (
     <>
-      {/*
-        LINKS, NOT BUTTONS, AND THE ONLY CONTROL HERE THAT PUSHES. A row that
-        looks like tabs promises middle-click and ⌘-click, which a button
-        delivers neither of; and switching status is a navigation, so Back
-        should walk Paid → Fulfilled while typing in the box should not put
-        anything in the history stack at all.
-      */}
-      <nav className="shoptabs" aria-label="Filter orders by status">
-        {STATUS_TABS.map((tab) => (
-          <Link
-            key={tab.key}
-            className={`shoptabs__tab${status === tab.key ? ' is-active' : ''}`}
-            style={{ textDecoration: 'none' }}
-            to={{
-              pathname: '/shop/orders',
-              search: asSearch(
-                withParams(params, { status: tab.key, id: null, cursor: null }),
-              ),
-            }}
-            aria-current={status === tab.key ? 'page' : undefined}
-          >
-            {tab.label}
-          </Link>
-        ))}
-      </nav>
-
       <div className="shopfilters">
+        {/*
+          A SELECT RATHER THAN A TAB STRIP, and the deciding number is seven.
+          Tabs are for a handful of destinations you want to compare at a glance;
+          an order has seven states, most of which are empty most of the time, so
+          the strip spent a full row telling you six things you were not looking
+          for and wrapped on a narrow screen. It also read as navigation while
+          behaving like a filter — which is what it is, and it now sits with the
+          search box that filters the same list.
+
+          It stays URL-driven and still PUSHES, so Back walks Paid → Fulfilled
+          and a filtered list is still a link somebody can send.
+        */}
+        <Select
+          label="Status"
+          value={status}
+          onChange={(v) =>
+            navigate({
+              pathname: '/shop/orders',
+              search: asSearch(withParams(params, { status: v, id: null, cursor: null })),
+            })
+          }
+          options={STATUS_TABS.map((t) => ({ value: t.key, label: t.label }))}
+        />
         <div className="searchbox">
           <Search className="ui-ic" aria-hidden="true" />
           <input
@@ -1153,15 +1159,17 @@ function idSeed(): string {
   return `${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9).toString(36)}`;
 }
 
+/** This is the shop, so nothing here blames the blog — see `ShopProducts.tsx`. */
 function explain(err: unknown, what: string): string {
-  if (err instanceof OfflineError) return 'The request didn’t reach the blog.';
+  if (err instanceof OfflineError) return 'The request didn’t reach the server.';
   if (err instanceof NotFoundError) {
     return `This deployment has no ${what} route yet.`;
   }
   if (err instanceof ApiError) {
     if (err.status === 403) return `Your account isn’t allowed to do that.`;
     if (err.status === 409) return 'Something else changed this order first. Reload and look again.';
-    if (err.status === 400 && err.detail) return `The blog refused the ${err.detail}.`;
+    if (err.status === 429) return 'Too many changes too quickly — wait a moment and retry.';
+    if (err.status === 400 && err.detail) return `The ${err.detail} wasn’t accepted.`;
   }
   return `The ${what} didn’t go through.`;
 }

@@ -145,6 +145,8 @@ const CreateVariantBody = z
     weightGrams: z.number().int().min(0).max(10_000_000).nullable().optional(),
     onHand: z.number().int().min(0).max(100_000_000).optional(),
     backorderable: z.boolean().optional(),
+    /** The photograph of this colour (migration 0009). */
+    imageId: str().min(1).max(200).nullable().optional(),
   })
   .strict();
 
@@ -155,6 +157,8 @@ const UpdateVariantBody = z
     position: z.number().int().min(0),
     weightGrams: z.number().int().min(0).max(10_000_000).nullable(),
     status: z.enum(['active', 'discontinued']),
+    /** `null` clears the colour photograph; a string sets it. */
+    imageId: str().min(1).max(200).nullable(),
   })
   .partial()
   .strict();
@@ -181,6 +185,17 @@ const PriceBody = z
   .object({
     amount: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
     currency: str().regex(/^[A-Z]{3}$/, 'iso4217'),
+    /**
+     * WHY the price moved (migration 0009). Optional, because every price
+     * already written has none and a required field would make the audit view
+     * lie about them — see the migration's own note.
+     *
+     * A stock change has required one since it was written. A price change is
+     * the other half of the same question, and "distributor raised the reel
+     * price" is the difference between an audit trail somebody can act on and a
+     * row saying 18,500 became 22,000 on a Tuesday.
+     */
+    reason: str().min(1).max(400).optional(),
   })
   .strict();
 
@@ -362,7 +377,9 @@ routes.put('/admin/variants/:id/price', auth, async (c) => {
   // `money()` is the one constructor, and it refuses a non-integer amount and a
   // malformed currency code before either reaches a column.
   const price = money(body.amount, body.currency);
-  return c.json({ price: await setPrice(currentDb(c), pathParam(c, 'id'), price) });
+  return c.json({
+    price: await setPrice(currentDb(c), pathParam(c, 'id'), price, body.reason ?? null),
+  });
 });
 
 /**

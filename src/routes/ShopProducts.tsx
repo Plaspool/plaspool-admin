@@ -110,17 +110,22 @@ export default function ShopProducts() {
 
   return (
     <div className="shopscr">
-      <header className="shopscr__head">
-        <div className="shopscr__headrow">
-          <div>
-            <h1 className="shopscr__title">Products</h1>
-            <p className="shopscr__lede">
-              Every product, its variants and the prices they carry. Prices are
-              entered in major units and sent as minor ones, so &pound;19.99 leaves
-              this screen as 1999.
-            </p>
-          </div>
-          {!openId && (
+      {/*
+        HIDDEN ENTIRELY ON A DETAIL PAGE. A page-level "Products" title above a
+        form editing ONE product describes the section you left, not the thing in
+        front of you, and it pushes the actual subject below the fold.
+      */}
+      {!openId && (
+        <header className="shopscr__head">
+          <div className="shopscr__headrow">
+            <div>
+              <h1 className="shopscr__title">Products</h1>
+              <p className="shopscr__lede">
+                Every product, its variants and the prices they carry. Prices are
+                typed in whole naira and sent as kobo, so &#8358;18,500 leaves this
+                screen as 1850000 — the store never rounds money through a float.
+              </p>
+            </div>
             <Link
               className="btn btn--primary"
               to={{ pathname: '/shop/products', search: asSearch(withParams(params, { id: 'new' })) }}
@@ -128,11 +133,19 @@ export default function ShopProducts() {
               <Plus className="ui-ic" aria-hidden="true" />
               New product
             </Link>
-          )}
-        </div>
-      </header>
+          </div>
+        </header>
+      )}
 
-      <ShopNav />
+      {/*
+        THE SECTION NAV DISAPPEARS ON A DETAIL PAGE, and so does the lede above.
+        Editing one product is a different flow from browsing the catalogue: the
+        only navigation that makes sense is back to where you came from, and
+        Overview / Orders / Customers sitting above an edit form are four ways to
+        silently abandon unsaved work. `ProductForm` leads with its own back bar,
+        which is the one exit this page should offer.
+      */}
+      {!openId && <ShopNav />}
 
       <div className="shopscr__body">
         {openId ? <ProductForm key={openId} id={openId} /> : <ProductList />}
@@ -1434,14 +1447,52 @@ function majorDigits(amount: number, currency: string): string {
   return formatMinor(amount, currency).replace(/[^\d.]/g, '');
 }
 
+/**
+ * NOTHING HERE SAYS "the blog", and that is the point.
+ *
+ * This is the shop. Every message on this screen used to be phrased as the blog
+ * refusing something — "The blog refused the sku." for a SKU that was merely
+ * already in use — which named the wrong system AND the wrong problem in one
+ * sentence, and sent somebody hunting for bad characters in a perfectly good
+ * SKU. Field names are not error messages: `detail` is a field NAME by the
+ * server's own convention, so rendering it raw shows the caller our schema
+ * rather than their mistake.
+ */
+const FIELD_TROUBLE: Record<string, string> = {
+  sku: 'That SKU isn’t usable — it can’t be blank.',
+  title: 'The title is too long or empty.',
+  category: 'That category name isn’t usable.',
+  tags: 'One of those tags isn’t usable.',
+  delta: 'That stock change would take the count below zero.',
+  reason: 'A reason is required.',
+  amount: 'That price isn’t a whole number of minor units.',
+  currency: 'That currency code isn’t a three-letter ISO code.',
+  coverImageId: 'That cover image isn’t one this shop can use yet.',
+  imageIds: 'One of those images isn’t one this shop can use yet.',
+  imageId: 'That image isn’t one this shop can use yet.',
+  patch: 'Nothing was changed.',
+};
+
 function explain(err: unknown, what: string): string {
-  if (err instanceof OfflineError) return 'The request didn’t reach the blog.';
-  if (err instanceof NotFoundError) return `That ${what} is not on the blog.`;
+  if (err instanceof OfflineError) return 'The request didn’t reach the server.';
+  if (err instanceof NotFoundError) return `That ${what} no longer exists.`;
   if (err instanceof ApiError) {
+    // The SKU conflict, named as the conflict it is. `sku` rides along on the
+    // body so this quotes what the server actually rejected.
+    if (err.status === 409 && err.code === 'duplicate_sku') {
+      const rec = (err.body ?? {}) as Record<string, unknown>;
+      const sku = typeof rec.sku === 'string' ? rec.sku : '';
+      return sku
+        ? `SKU “${sku}” is already used by another variant. SKUs are unique across the whole catalogue.`
+        : 'That SKU is already used by another variant.';
+    }
     if (err.status === 403) return 'Your account isn’t allowed to do that.';
     if (err.status === 409) return 'Something else changed this first. Reload and look again.';
-    if (err.status === 422) return 'The blog refused the description as unsafe.';
-    if (err.status === 400 && err.detail) return `The blog refused the ${err.detail}.`;
+    if (err.status === 422) return 'That description was refused as unsafe.';
+    if (err.status === 429) return 'Too many changes too quickly — wait a moment and retry.';
+    if (err.status === 400 && err.detail) {
+      return FIELD_TROUBLE[err.detail] ?? `The ${err.detail} wasn’t accepted.`;
+    }
   }
   return `The ${what} didn’t go through.`;
 }

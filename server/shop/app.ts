@@ -5,6 +5,7 @@ import {
   ProductPreconditionFailedError,
   StaleProductWriteError,
 } from './catalog/errors';
+import { DuplicateSkuError } from './catalog/variants';
 import { routes as catalog } from './catalog/routes';
 import { catalogPort } from './catalog/port';
 import { orders } from './orders/routes';
@@ -69,7 +70,21 @@ export function shopApp(): Hono<AppEnv> {
               operation: err.operation,
               product: err.product,
             }
-          : null;
+          : /*
+             * A TAKEN SKU IS A CONFLICT WITH EXISTING STATE, not a malformed
+             * field, and the difference is the whole of what a caller can do
+             * next. It used to arrive as a bare 400 `detail: 'sku'` — the same
+             * answer an empty or NUL-bearing SKU gets — so the screen could only
+             * say "the sku was refused" and send somebody to inspect characters
+             * in a SKU whose sole problem was that it already existed.
+             *
+             * The `sku` travels with it so the client can name it rather than
+             * echo whatever is currently in the input, which by then may have
+             * been retyped.
+             */
+            err instanceof DuplicateSkuError
+            ? { error: 'duplicate_sku', detail: 'sku', sku: err.sku }
+            : null;
 
     if (!body) return toResponse(err, requestId);
 

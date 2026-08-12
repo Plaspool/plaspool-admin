@@ -92,6 +92,14 @@ export interface Variant {
   position: number;
   weightGrams: number | null;
   status: VariantStatus;
+  /**
+   * The photograph of THIS option (migration 0009).
+   *
+   * The options in this store are colours, and a colour is the thing a picture
+   * settles: the product cover can only show one spool, so a customer choosing
+   * between eight PLA colours was choosing between eight words.
+   */
+  imageId: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -158,4 +166,6 @@ export interface VariantPatch {
   position?: number;
   weightGrams?: number | null;
   status?: VariantStatus;
+  /** `null` clears it. Validated as a committed image, like a product's cover. */
+  imageId?: string | null;
 }

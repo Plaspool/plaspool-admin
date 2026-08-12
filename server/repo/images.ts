@@ -643,6 +643,21 @@ const REFERENCE_SET = sql`
       FROM shop_products
       CROSS JOIN LATERAL unnest(image_ids) AS g(ref)
      WHERE g.ref IS NOT NULL AND g.ref <> ''
+    UNION
+    -- THE VARIANT'S OWN IMAGE (migration 0009), and it is the same bug fix as
+    -- the product columns above rather than a new idea: the options in this
+    -- store are colours, each colour now carries its own photograph, and an
+    -- image referenced ONLY from shop_variants.image_id would be unreferenced
+    -- by definition the moment it was committed. No status filter, for the
+    -- reason the product block gives -- a discontinued variant is one somebody
+    -- can reactivate.
+    SELECT DISTINCT image_id AS id
+      FROM shop_variants
+     WHERE image_id IS NOT NULL AND image_id <> ''
+    UNION
+    SELECT DISTINCT regexp_replace(image_id, '^(asset|idb):', '')
+      FROM shop_variants
+     WHERE image_id IS NOT NULL AND image_id <> ''
   ), referenced AS (
     SELECT id FROM scheme_refs WHERE id IS NOT NULL
     UNION
