@@ -20,16 +20,19 @@
       "destination": "/api"
     },
     {
-      "source": "/docs/api",
-      "destination": "/docs/api/index.html"
-    },
-    {
       "source": "/docs/api/",
       "destination": "/docs/api/index.html"
     },
     {
       "source": "/((?!api/|docs/).*)",
       "destination": "/index.html"
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/docs/api",
+      "destination": "/docs/api/",
+      "permanent": false
     }
   ],
   "headers": [

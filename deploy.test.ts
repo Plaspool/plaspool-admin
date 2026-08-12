@@ -23,6 +23,11 @@ interface Rewrite {
   source: string;
   destination: string;
 }
+interface Redirect {
+  source: string;
+  destination: string;
+  permanent?: boolean;
+}
 interface HeaderRule {
   source: string;
   headers: { key: string; value: string }[];
@@ -30,6 +35,7 @@ interface HeaderRule {
 interface VercelConfig {
   outputDirectory: string;
   rewrites: Rewrite[];
+  redirects?: Redirect[];
   headers?: HeaderRule[];
 }
 
@@ -88,18 +94,41 @@ describe('the API reference is deployed, not just local', () => {
   });
 
   /*
-   * `/docs/api` has no extension and matches no file, so the filesystem cannot
-   * serve it and the catch-all no longer claims it — without these it is a 404.
+   * `/docs/api/` has no extension and matches no file, so the filesystem cannot
+   * serve it and the catch-all no longer claims it — without this it is a 404.
    */
-  it('serves the bare directory path', () => {
-    for (const source of ['/docs/api', '/docs/api/']) {
-      const rule = vercel.rewrites.find((r) => r.source === source);
-      expect(`${source} → ${rule?.destination ?? 'MISSING'}`).toBe(`${source} → ${DOCS_ENTRY}`);
-    }
+  it('serves the trailing-slash directory path', () => {
+    const rule = vercel.rewrites.find((r) => r.source === '/docs/api/');
+    expect(rule?.destination ?? 'MISSING').toBe(DOCS_ENTRY);
+  });
+
+  /*
+   * THE BARE PATH MUST REDIRECT, NOT REWRITE — and this test exists because the
+   * first version rewrote it, shipped, and served a BLANK PAGE in production.
+   *
+   * A rewrite keeps the URL at `/docs/api`, so the browser resolves the page's
+   * relative `<script src="routes.js">` against `/docs/` and requests
+   * `/docs/routes.js` — a 404. The document loads, the title is right, and the
+   * route data never arrives.
+   *
+   * It survived a curl check because the HTML was a 200 and mentioned the
+   * symbol being grepped for; only loading it in a browser showed
+   * `window.API_ROUTES` empty. Hence the assertion is on the MECHANISM: a
+   * directory URL gets a redirect to its trailing-slash form, which is the only
+   * version where relative assets resolve.
+   */
+  it('redirects the bare directory path rather than rewriting it', () => {
+    const rewritten = vercel.rewrites.find((r) => r.source === '/docs/api');
+    expect(
+      rewritten ? 'REWRITTEN — relative assets will 404' : 'not rewritten',
+    ).toBe('not rewritten');
+
+    const redirect = vercel.redirects?.find((r) => r.source === '/docs/api');
+    expect(redirect?.destination ?? 'MISSING').toBe('/docs/api/');
   });
 
   it('is ordered ahead of the catch-all', () => {
-    const docsIndex = vercel.rewrites.findIndex((r) => r.source === '/docs/api');
+    const docsIndex = vercel.rewrites.findIndex((r) => r.source === '/docs/api/');
     const catchAllIndex = vercel.rewrites.indexOf(catchAll);
     expect(docsIndex).toBeGreaterThan(-1);
     expect(docsIndex).toBeLessThan(catchAllIndex);
