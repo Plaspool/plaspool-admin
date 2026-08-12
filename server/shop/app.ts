@@ -101,17 +101,26 @@ export function shopApp(): Hono<AppEnv> {
    */
   shop.route('/', cartShopRoutes({ catalog: catalogPort }));
 
-  // ==========================================================================
-  // PAYMENTS — append your two lines here.
-  //
-  //   import { routes as payments } from './payments/routes';
-  //   shop.route('/', payments);
-  //
-  // Mount at '/' like Catalog does, and give your own routes their full path
-  // (`/checkout/...`, `/admin/payments/...`). Mounting at a sub-prefix would
-  // work equally well; what must not happen is two routers claiming one path,
-  // because Hono resolves that by registration order rather than by refusing.
-  // ==========================================================================
+  /*
+   * ==========================================================================
+   * PAYMENTS IS NOT MOUNTED HERE, AND THE MARKER THAT USED TO INVITE IT IS GONE.
+   *
+   * It landed in `server/index.ts` instead, for two reasons that only became
+   * visible once its routes existed:
+   *
+   * 1. Its webhook cannot live in this app at all. `shopApp()` is mounted below
+   *    `originGuard`, and a provider webhook is a server-to-server POST with no
+   *    `Origin` header — a 403 every time. It needs a mount above the guard,
+   *    which is a line in `server/index.ts` by definition (AMENDMENTS A-PAY-001).
+   * 2. Its other routes carry their own full paths (`/shop/payments/...`), so
+   *    mounting them into an app that is itself at `/api/shop` would produce
+   *    `/api/shop/shop/payments/...`. Splitting the pair across two files to fix
+   *    that would hide the security-relevant ordering between them.
+   *
+   * So both halves are mounted together in `server/index.ts`, where their
+   * relative order to the guard is the thing you read.
+   * ==========================================================================
+   */
 
   return shop;
 }

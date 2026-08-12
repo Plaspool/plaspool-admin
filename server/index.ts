@@ -12,6 +12,11 @@ import { routes as revisions } from './routes/revisions';
 import { routes as backup } from './routes/backup';
 import { routes as images } from './routes/images';
 import { SHOP_PREFIX, shopApp } from './shop/app';
+import {
+  createPaymentRoutes,
+  webhookRoutes as paymentsWebhook,
+} from './shop/payments/routes';
+import { checkoutPort } from './shop/cart/port';
 import type { AppEnv } from './app-env';
 
 export type { AppEnv } from './app-env';
@@ -104,28 +109,51 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
   app.get(`${API_PREFIX}/health`, (c) => c.json({ ok: true }));
 
   /*
-   * ORIGIN FIRST, THEN THE DATABASE, THEN THE SESSION.
-   *
-   * A forged cross-origin write is refused before anything is resolved or
-   * looked up — it is the cheapest possible refusal and it must not depend on
-   * a dependency being available. Measured on a booted dev server with an
-   * unusable `DATABASE_URL`: with the database middleware first, that 403 was
-   * a 500.
-   */
-  app.use(`${API_PREFIX}/*`, originGuard(deps.origins));
-
-  /*
    * LAZY, AND MEMOISED PER REQUEST. `resolveDb` is not called here; the closure
    * is published and `currentDb(c)` calls it on first use. A request that never
-   * touches the database — an unrouted path, an anonymous 401, the 403 above —
+   * touches the database — an unrouted path, an anonymous 401, the 403 below —
    * never builds a client, so its answer cannot be turned into a 500 by an
    * environment it did not need.
+   *
+   * IT SITS ABOVE `originGuard` ONLY BECAUSE THE WEBHOOK BELOW DOES. The
+   * ordering note this comment used to carry — "origin first, then the
+   * database", measured on a booted dev server where a database-first middleware
+   * turned a forged-origin 403 into a 500 — is about RESOLVING a handle, and
+   * nothing here resolves one. Publishing a closure cannot fail, so the 403 is
+   * still the cheapest possible refusal and still does not depend on
+   * `DATABASE_URL` being usable.
    */
   app.use(`${API_PREFIX}/*`, async (c, next) => {
     let handle: Db | null = null;
     c.set('dbFactory', () => (handle ??= resolveDb()));
     await next();
   });
+
+  /*
+   * THE PAYMENTS WEBHOOK, AND IT IS ABOVE `originGuard` DELIBERATELY.
+   *
+   * A provider webhook is a server-to-server POST with no `Origin` header, and
+   * the guard below refuses exactly that on an unsafe method. Mounted after it,
+   * this route is a 403 with zero rows in `shop_payment_events` — measured, and
+   * written up as AMENDMENTS A-PAY-001.
+   *
+   * The exemption costs nothing an attacker can use. CSRF borrows a victim's
+   * AMBIENT authority — their cookie — and this route reads no cookie, resolves
+   * no session and trusts nothing about the caller: its entire authority is an
+   * HMAC-SHA512 over the raw body, which a cross-origin form post cannot
+   * produce. It is also one route wide. Its twin on the storefront,
+   * `POST /api/shop/payments/intents`, is mounted with everything else below and
+   * is still a 403 without an `Origin`.
+   *
+   * BELOW THE DATABASE FACTORY, because it needs one: `storeEvent` commits the
+   * event before the response is acknowledged. It is deliberately ABOVE the
+   * session middleware — this route resolves no session and must not, since
+   * reading a cookie is the one thing that would make the origin exemption
+   * unsafe.
+   */
+  app.route(API_PREFIX, paymentsWebhook);
+
+  app.use(`${API_PREFIX}/*`, originGuard(deps.origins));
 
   app.use(`${API_PREFIX}/*`, sessionMiddleware());
 
@@ -141,6 +169,32 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * they fail with a named error rather than taking the import down.
    */
   app.route(API_PREFIX, images);
+
+  /*
+   * PAYMENTS' STOREFRONT AND ADMIN ROUTES — behind the guard and the session,
+   * like everything else, and unlike the webhook above.
+   *
+   * MOUNTED AT `API_PREFIX` RATHER THAN INTO `shopApp()`, despite the marker in
+   * `server/shop/app.ts` inviting the opposite. Payments' routes carry their own
+   * full paths (`/shop/payments/intents`, `/shop/admin/payments/...`), and
+   * `shopApp()` is itself mounted at `${API_PREFIX}${SHOP_PREFIX}` — so routing
+   * them into it yields `/api/shop/shop/payments/intents`. Both mounts are
+   * legal Hono; only this one produces contract §10's `/api/shop/*`. It also
+   * keeps the pair adjacent to its webhook, which cannot live in the shop app
+   * at all because the shop app is mounted below the guard.
+   *
+   * `createPaymentRoutes` RATHER THAN THE PRE-BUILT `routes` EXPORT, because
+   * that export carries the default `unwiredCheckoutPort()` — which rejects
+   * every call by design, so a payment attempt against it fails loudly instead
+   * of reporting every checkout as missing.
+   *
+   * THIS IS THE COMPOSITION ROOT, and it is the only place allowed to know both
+   * halves of the seam: contract R2 forbids anything under
+   * `server/shop/payments/` importing `server/shop/cart/`, and nothing there
+   * does — Cart's `checkoutPort()` is handed in from here, exactly as
+   * `catalogPort` is handed to Cart in `server/shop/app.ts`.
+   */
+  app.route(API_PREFIX, createPaymentRoutes({ checkout: checkoutPort() }));
 
   /*
    * COMMERCE, UNDER `/api/shop` (commerce contract §10). ONE LINE, and it is the
