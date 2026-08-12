@@ -42,11 +42,23 @@ describe('the dev API server', () => {
     expect(await res.json()).toEqual({ ok: true });
   });
 
-  it('listens on the port vite.config.ts proxies /api to', () => {
+  it('listens on the port vite.config.ts proxies /api to, by default', () => {
+    /*
+     * The two halves are configurable now — `server/dev.ts` reads `PORT` and the
+     * proxy reads `API_PORT` — because two checkouts of this repository run at
+     * once here and the second one cannot bind 8787, which silently pointed its
+     * frontend at the FIRST one's API and database.
+     *
+     * So the assertion is on the DEFAULTS, which is what the contract always
+     * was: with neither variable set, the server listens where the proxy sends.
+     * Asserting the literal string stopped being possible the moment the target
+     * became an expression, and asserting nothing would have let the two drift
+     * to different defaults — which is the outage this test exists for.
+     */
     expect(DEV_PORT).toBe(8787);
-    expect(readFileSync('vite.config.ts', 'utf8')).toContain(
-      `http://localhost:${DEV_PORT}`,
-    );
+    const config = readFileSync('vite.config.ts', 'utf8');
+    const fallback = /API_PORT \|\| (\d+)/.exec(config);
+    expect(fallback?.[1]).toBe(String(DEV_PORT));
   });
 
   it('importing it does not start a listener or demand the full environment', async () => {

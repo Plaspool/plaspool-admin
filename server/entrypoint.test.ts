@@ -20,7 +20,7 @@ import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import handler, { runtime } from '../api/index';
+import { GET, POST, runtime } from '../api/index';
 
 const vercel = JSON.parse(readFileSync('vercel.json', 'utf8')) as {
   functions: Record<string, { runtime?: string; maxDuration?: number }>;
@@ -32,31 +32,49 @@ const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as {
 };
 
 describe('api/index.ts', () => {
-  it('exports a DEFAULT handler, not the Next.js named-method form', () => {
+  it('exports NAMED HTTP methods, and no default that returns a Response', () => {
     /*
-     * `export const GET = handle(app)` is the Next.js App Router convention.
-     * This is a Vite project whose functions come from the `api/` directory,
-     * where Vercel's Node builder looks for a default export and ignores named
-     * ones — so the Next form would 500 every route in production while passing
-     * every other test in this repository.
+     * THIS TEST PREVIOUSLY ASSERTED THE OPPOSITE, and the opposite is what took
+     * production down. It required `export default handle(app)` and forbade the
+     * named form as "the Next.js App Router convention" — reasoning that was
+     * true when it was written and that the platform has since invalidated.
+     *
+     * Vercel's Node launcher treats a DEFAULT export as the legacy
+     * `(req, res) => void` signature and DISCARDS its return value. `handle`
+     * returns a `Response`, so nothing wrote to `res` and every request hung
+     * for the full `maxDuration`. Measured on a real deployment:
+     *
+     *   WARN: default export returned a `Response`. The default-export
+     *   signature is `(req, res) => void` — returns are ignored.
+     *   Vercel Runtime Timeout Error: Task timed out after 30 seconds
+     *
+     * That is the SECOND time a test in this file pinned a contract the
+     * platform rejects (see the `functions[].runtime` note below), and both
+     * times the suite stayed green while nothing served. The only assertion
+     * that cannot rot this way is one that runs the built artefact — which is
+     * the opt-in `vercel build` block at the bottom, and the reason to keep it.
      */
-    expect(typeof handler).toBe('function');
     const source = readFileSync('api/index.ts', 'utf8');
-    expect(source).toContain('export default handle(app)');
-    // Anchored to a line start so the docblock explaining the Next.js form
-    // does not count as using it.
-    expect(source).not.toMatch(/^export const (GET|POST|PATCH|DELETE) =/m);
+    for (const method of ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'HEAD', 'OPTIONS']) {
+      expect([method, new RegExp(`^export const ${method} = `, 'm').test(source)]).toEqual([
+        method,
+        true,
+      ]);
+    }
+    // Anchored to a line start so the docblock explaining the old form does not
+    // count as using it.
+    expect(source).not.toMatch(/^export default/m);
   });
 
-  it('actually serves, and one handler covers every method', async () => {
-    const get = await handler(new Request('https://studio.test/api/health'));
+  it('actually serves, and one handler object covers every method', async () => {
+    const get = await GET(new Request('https://studio.test/api/health'));
     expect(get.status).toBe(200);
     expect(await get.json()).toEqual({ ok: true });
 
-    // Method-agnostic: `handle` returns `(req) => app.fetch(req)`. A POST to an
-    // unrouted path reaches the Origin guard, which is proof the same function
-    // dispatches a non-GET.
-    const post = await handler(
+    // Method-agnostic: `handle` returns `(req) => app.fetch(req)`, so the named
+    // exports are the same object. A POST to an unrouted path reaches the Origin
+    // guard, which is proof the same function dispatches a non-GET.
+    const post = await POST(
       new Request('https://studio.test/api/posts', { method: 'POST' }),
     );
     expect(post.status).toBe(403);
@@ -66,7 +84,7 @@ describe('api/index.ts', () => {
     // The rewrite rewrites the DESTINATION FILE, not the path — `/api/(.*)` to
     // `/api` leaves `c.req.path` as `/api/auth/login`. Mounting the routers at
     // `/auth/login` would 404 everything in production.
-    const stripped = await handler(new Request('https://studio.test/health'));
+    const stripped = await GET(new Request('https://studio.test/health'));
     expect(stripped.status).toBe(404);
   });
 
@@ -143,7 +161,13 @@ describe('api/index.ts', () => {
      */
     const ignore = readFileSync('.vercelignore', 'utf8');
     expect(ignore).toMatch(/^\*\*\/\*\.test\.ts$/m);
-    expect(readdirSync('api')).toEqual(['index.ts']);
+    /*
+     * `.d.ts` is allowed and is NOT a function: `api/server-bundle.d.ts` types
+     * the generated bundle, and the emitted output carries exactly one
+     * `.func` (asserted by the opt-in build block below). Anything else here
+     * that ends in `.ts` WOULD become a public endpoint.
+     */
+    expect(readdirSync('api').sort()).toEqual(['index.ts', 'server-bundle.d.ts']);
   });
 });
 

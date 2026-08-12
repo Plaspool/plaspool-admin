@@ -1,5 +1,21 @@
 import { handle } from 'hono/vercel';
-import { app } from '../server/index';
+/*
+ * THE BUNDLE, WITH AN EXPLICIT `.js`, AND BOTH HALVES OF THAT MATTER.
+ *
+ * `@vercel/node` transpiles per file rather than bundling, and keeps every
+ * import specifier verbatim. The function's `package.json` is
+ * `"type": "module"`, so Node's ESM loader resolves them — and it requires an
+ * explicit extension. `from '../server/index'` therefore threw
+ * ERR_MODULE_NOT_FOUND at module load on a real deployment, 500ing every route
+ * including `/api/health`, while `tsc -b`, `tsx`, Vitest and every
+ * `app.request()` route test passed, because none of them go through that
+ * loader. See `vite.server.config.ts` for why the answer is one bundled module
+ * rather than an extension on each of 145 relative imports.
+ *
+ * `api-build/server.js` is produced by `npm run build` before functions are
+ * built, and is gitignored — it is build output, like `dist/`.
+ */
+import { app } from '../api-build/server.js';
 
 /**
  * The Vercel entrypoint (spec §2).
@@ -48,4 +64,43 @@ import { app } from '../server/index';
  */
 export const runtime = 'nodejs';
 
-export default handle(app);
+/**
+ * NAMED HTTP METHODS, NOT `export default handle(app)` — AND THE COMMENT ABOVE
+ * USED TO SAY THE OPPOSITE.
+ *
+ * It was right when it was written and the platform moved. Vercel's Node
+ * launcher now treats a DEFAULT export as the legacy `(req, res) => void`
+ * signature: it calls it, and it THROWS AWAY the return value. `handle(app)` is
+ * fetch-style — it returns a `Response` — so nothing ever wrote to `res` and
+ * every request hung until the function was killed. Measured on a real
+ * deployment, `GET /api/health`:
+ *
+ *     WARN: default export returned a `Response`. The default-export signature
+ *     is `(req, res) => void` — returns are ignored. You likely meant the Web
+ *     `fetch`-style API.
+ *     Vercel Runtime Timeout Error: Task timed out after 30 seconds
+ *
+ * A HANG, not a crash: 30 s of billed execution per request, no body, and a
+ * 504 the client's retry policy treats as transient — so spec §8's five
+ * attempts turn one page load into 150 seconds of function time.
+ *
+ * The launcher's own message names the fix, and it is the form the previous
+ * comment dismissed as "the Next.js App Router convention". One handler object
+ * is bound to each method rather than one per verb, because `handle` returns a
+ * method-agnostic `(req) => app.fetch(req)` — the names are what the launcher
+ * dispatches on, not different behaviours.
+ *
+ * Every method the router actually serves is listed. A missing one is a 405
+ * from the platform before any route in `server/index.ts` is consulted, which
+ * is invisible to every in-process `app.request()` test in this repository —
+ * the same blind spot that let the default export ship in the first place.
+ */
+const handler = handle(app);
+
+export const GET = handler;
+export const POST = handler;
+export const PATCH = handler;
+export const PUT = handler;
+export const DELETE = handler;
+export const HEAD = handler;
+export const OPTIONS = handler;

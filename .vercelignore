@@ -9,4 +9,14 @@
 **/*.spec.tsx
 
 # Fixtures and harnesses that only tests import.
+#
+# `**/test/` AND NOT JUST `server/test/`, because the narrow form broke the
+# build the first time a second test directory appeared. The patterns above
+# match a FILENAME (`*.test.ts`); a harness is called `harness.ts`, so
+# `server/shop/cart/test/harness.ts` matched nothing, shipped, and then imported
+# `../../../test/harness` — a path this file had excluded. Result: `tsc -b`
+# passed locally, where `server/test/` exists, and failed the deploy with
+# TS2307 on a module no production code references. Excluding the directory by
+# name keeps the two halves consistent however many of them there are.
+**/test/
 server/test/
