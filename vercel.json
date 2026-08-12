@@ -20,8 +20,27 @@
       "destination": "/api"
     },
     {
-      "source": "/((?!api/).*)",
+      "source": "/docs/api",
+      "destination": "/docs/api/index.html"
+    },
+    {
+      "source": "/docs/api/",
+      "destination": "/docs/api/index.html"
+    },
+    {
+      "source": "/((?!api/|docs/).*)",
       "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/docs/api/(.*)",
+      "headers": [
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex, nofollow"
+        }
+      ]
     }
   ]
 }

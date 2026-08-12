@@ -1,10 +1,50 @@
 /// <reference types="vitest/config" />
-import { defineConfig, loadEnv } from 'vite'
+import { cpSync, existsSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { defineConfig, loadEnv, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
+
+const root = dirname(fileURLToPath(import.meta.url))
+
+/**
+ * Ship `docs/api/` with the site.
+ *
+ * The API reference is plain static HTML that lives OUTSIDE `src/`, so Vite
+ * never sees it: nothing imports it, and it is not in `public/`. Without this
+ * it exists only on a developer's machine — which is how it came to be
+ * documented as "open it on localhost".
+ *
+ * A build-time copy rather than a move into `public/`: the docs are source
+ * material that a reader browses in the repository, and `public/` is the
+ * app's own asset folder. Copying keeps one canonical location.
+ *
+ * `closeBundle` rather than `writeBundle`, so the copy lands after Vite has
+ * finished writing (and, on a fresh build, after it has emptied `outDir` —
+ * doing this earlier would delete it again).
+ */
+function copyApiDocs(): Plugin {
+  let outDir = 'dist'
+  return {
+    name: 'copy-api-docs',
+    apply: 'build',
+    configResolved(config) {
+      outDir = config.build.outDir
+    },
+    closeBundle() {
+      const from = resolve(root, 'docs/api')
+      if (!existsSync(from)) {
+        this.warn('docs/api is missing — the published site will have no API reference')
+        return
+      }
+      cpSync(from, resolve(root, outDir, 'docs/api'), { recursive: true })
+    },
+  }
+}
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => ({
-  plugins: [react()],
+  plugins: [react(), copyApiDocs()],
   /*
    * `server/dev.ts` listens on 8787, and the proxy keeps the SAME path prefix
    * as production, where the Vercel catch-all passes `/api/*` through

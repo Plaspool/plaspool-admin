@@ -145,13 +145,22 @@ describe('api/index.ts', () => {
     // Without the negative lookahead every API request would be answered with
     // index.html — a 200 of HTML where the client expects JSON. Order matters
     // as much as the pattern: Vercel takes the FIRST matching rewrite.
-    const spa = vercel.rewrites[1];
-    expect(spa.destination).toBe('/index.html');
-    const source = new RegExp(`^${spa.source}$`);
+    //
+    // FOUND BY DESTINATION, NOT BY INDEX. This read `rewrites[1]` until the
+    // API-reference rules were added above it, at which point the test failed
+    // while the config was correct — it was pinning a position rather than the
+    // property it names. More rules will be inserted here over time.
+    const spa = vercel.rewrites.find((r) => r.destination === '/index.html');
+    expect(spa).toBeDefined();
+    const source = new RegExp(`^${spa!.source}$`);
     expect(source.test('/api/posts')).toBe(false);
     expect(source.test('/api/auth/login')).toBe(false);
     expect(source.test('/editor/p_1')).toBe(true);
     expect(source.test('/')).toBe(true);
+
+    // The ordering the test's name promises, asserted rather than assumed.
+    const apiIndex = vercel.rewrites.findIndex((r) => r.destination === '/api');
+    expect(apiIndex).toBeLessThan(vercel.rewrites.indexOf(spa!));
   });
 
   it('the test file is excluded from the deployment', () => {
