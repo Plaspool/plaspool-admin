@@ -1,0 +1,1342 @@
+<title>Returns — Kanban wireframe</title>
+
+<style>
+/* ================================================================
+   Returns, as a desk and a board — static wireframe, v2.
+
+   Tokens inlined from src/styles/tokens.css so the frames read as
+   the real application rather than as a wireframe kit. Every colour
+   below is a var(); none is defined only inside a media or
+   [data-theme] block, so both themes resolve as a set.
+   ================================================================ */
+:root {
+  --paper: #fbfaf7;
+  --paper-raised: #ffffff;
+  --paper-sunken: #f2f0ea;
+  --paper-inset: #e8e5da;
+  --ink: #16150f;
+  --ink-2: #3a372d;
+  --ink-3: #5c584a;
+  --ink-4: #64604f;
+  --ink-5: #9a9384;
+  --rule: #e2ded2;
+  --rule-strong: #c7c0ae;
+  --accent: #1c6b4b;
+  --accent-soft: #e4efe9;
+  --accent-line: #b6d4c5;
+  --accent-ink: #ffffff;
+  --danger: #962c1c;
+  --danger-soft: #f8ebe8;
+  --warn: #7a5610;
+  --warn-soft: #f6eeda;
+
+  --font-display: "Spectral", Georgia, serif;
+  --font-ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+  --s1: 0.25rem; --s2: 0.5rem; --s3: 0.75rem; --s4: 1rem;
+  --s5: 1.5rem; --s6: 2rem; --s7: 2.5rem; --s8: 3rem; --s9: 4rem;
+  --radius-s: 4px; --radius-m: 8px; --radius-l: 14px; --radius-full: 999px;
+}
+
+/* The un-stamped default — most viewers never choose a theme, so this is the
+   block that actually runs for them. Guarded so an explicit light choice still
+   beats a dark OS. Flat rather than nested: the app's tokens.css uses this form. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #14140f;
+    --paper-raised: #1c1b15;
+    --paper-sunken: #24231b;
+    --paper-inset: #2c2b21;
+    --ink: #f2efe4;
+    --ink-2: #ddd9cb;
+    --ink-3: #b8b3a3;
+    --ink-4: #9d9887;
+    --ink-5: #6b6759;
+    --rule: #33322a;
+    --rule-strong: #4a4839;
+    --accent: #5cbd90;
+    --accent-soft: #1c2c25;
+    --accent-line: #2f4c3e;
+    --accent-ink: #0d1b14;
+    --danger: #e88b78;
+    --danger-soft: #2e1d18;
+    --warn: #d9b164;
+    --warn-soft: #2b2418;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #14140f;
+  --paper-raised: #1c1b15;
+  --paper-sunken: #24231b;
+  --paper-inset: #2c2b21;
+  --ink: #f2efe4;
+  --ink-2: #ddd9cb;
+  --ink-3: #b8b3a3;
+  --ink-4: #9d9887;
+  --ink-5: #6b6759;
+  --rule: #33322a;
+  --rule-strong: #4a4839;
+  --accent: #5cbd90;
+  --accent-soft: #1c2c25;
+  --accent-line: #2f4c3e;
+  --accent-ink: #0d1b14;
+  --danger: #e88b78;
+  --danger-soft: #2e1d18;
+  --warn: #d9b164;
+  --warn-soft: #2b2418;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: var(--s7) var(--s5) var(--s9);
+  background: var(--paper);
+  color: var(--ink-2);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.6;
+}
+.wrap { max-width: 80rem; margin: 0 auto; }
+
+/* ------------------------------------------------ document furniture */
+
+.doc-title {
+  font-family: var(--font-display);
+  font-size: 2.6rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1;
+  color: var(--ink); margin: 0 0 var(--s3); text-wrap: balance;
+}
+.doc-lede { max-width: 62ch; color: var(--ink-3); margin: 0 0 var(--s6); font-size: 1.05rem; }
+.rule { height: 1px; background: var(--rule); border: 0; margin: var(--s8) 0 var(--s7); }
+h2.sec {
+  font-family: var(--font-display); font-size: 1.6rem; font-weight: 600;
+  color: var(--ink); letter-spacing: -0.01em; margin: 0 0 var(--s2);
+}
+p.note { max-width: 68ch; color: var(--ink-3); margin: 0 0 var(--s4); }
+
+.why {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  padding: var(--s4) var(--s5);
+  border-radius: 0 var(--radius-m) var(--radius-m) 0;
+  margin: var(--s5) 0; max-width: 72ch;
+}
+.why strong { color: var(--ink); }
+
+.frame {
+  border: 1px solid var(--rule-strong); border-radius: var(--radius-l);
+  background: var(--paper); overflow: hidden; box-shadow: 0 1px 3px rgb(0 0 0 / 6%);
+}
+.frame__bar {
+  display: flex; align-items: center; gap: var(--s2);
+  padding: var(--s2) var(--s4); background: var(--paper-sunken);
+  border-bottom: 1px solid var(--rule);
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--ink-4);
+}
+.frame__dot { width: 8px; height: 8px; border-radius: var(--radius-full); background: var(--rule-strong); }
+.frame__body { padding: var(--s5); background: var(--paper); }
+.frame__flush { padding: 0; }
+.cap { font-size: 0.9rem; color: var(--ink-4); margin: var(--s3) 0 var(--s7); max-width: 72ch; }
+.cap b { color: var(--ink-2); font-weight: 600; }
+.scroller { overflow-x: auto; }
+
+/* ------------------------------------------------ app chrome */
+
+.scr__head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--s4); flex-wrap: wrap;
+  padding: var(--s5) var(--s5) var(--s4);
+}
+.scr__title {
+  font-family: var(--font-display); font-size: 1.75rem; font-weight: 600;
+  letter-spacing: -0.02em; color: var(--ink); margin: 0;
+}
+.scr__lede { color: var(--ink-4); font-size: 0.9rem; margin: var(--s1) 0 0; max-width: 52ch; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: var(--s2);
+  height: 2.25rem; padding: 0 var(--s4); border-radius: var(--radius-m);
+  border: 1px solid var(--rule-strong); background: var(--paper-raised);
+  color: var(--ink-2); font: inherit; font-size: 0.85rem; font-weight: 500; white-space: nowrap;
+}
+.btn--primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.btn--accent { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn--ghost { background: transparent; border-color: transparent; color: var(--ink-3); }
+.btn--sm { height: 1.85rem; padding: 0 var(--s3); font-size: 0.8rem; }
+.btn--danger { color: var(--danger); border-color: var(--danger); background: transparent; }
+.btn--off { opacity: 0.4; border-style: dashed; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 0.3em;
+  padding: 0.15em 0.6em; border-radius: var(--radius-full);
+  border: 1px solid var(--rule); background: var(--paper-sunken);
+  color: var(--ink-3); font-size: 0.72rem; font-weight: 600; white-space: nowrap;
+}
+.chip--warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.chip--danger { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+.chip--accent { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.chip--on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+
+.field {
+  display: flex; align-items: center; gap: var(--s2); height: 2.25rem;
+  padding: 0 var(--s3); border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-m); background: var(--paper-raised);
+  color: var(--ink-4); font-size: 0.85rem;
+}
+.field--grow { flex: 1; min-width: 8rem; }
+.field b { color: var(--ink-2); font-weight: 600; }
+
+.toolbar { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; padding: 0 var(--s5) var(--s4); }
+.toolbar__spacer { flex: 1; }
+.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* ------------------------------------------------ the desk */
+
+.desk { border: 1px solid var(--rule); border-radius: var(--radius-l); background: var(--paper-raised); overflow: hidden; margin: 0 var(--s5) var(--s5); }
+.desk__head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s3);
+  padding: var(--s3) var(--s4); border-bottom: 1px solid var(--rule);
+  background: var(--warn-soft); flex-wrap: wrap;
+}
+.desk__title { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--warn); }
+.desk table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.desk th {
+  text-align: left; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--ink-4);
+  padding: var(--s2) var(--s4); border-bottom: 1px solid var(--rule); white-space: nowrap;
+}
+.desk td { padding: var(--s3) var(--s4); border-bottom: 1px solid var(--rule); color: var(--ink-2); vertical-align: middle; }
+.desk tr:last-child td { border-bottom: 0; }
+.who { font-weight: 600; color: var(--ink); }
+.sub { display: block; font-size: 0.75rem; color: var(--ink-5); font-family: var(--font-mono); }
+.age--warn { color: var(--warn); font-weight: 600; }
+.age--danger { color: var(--danger); font-weight: 700; }
+
+/* ============================================ THE BOARD (Trello-shaped) */
+
+/*
+ * The canvas. Trello's lists float on a coloured board rather than sitting on
+ * the page, and that separation is what makes a column read as a CONTAINER you
+ * can drop into instead of as a heading with things under it. Ours is the warm
+ * inset surface rather than a photograph — same job, this app's materials.
+ */
+.canvas { background: var(--paper-inset); padding: var(--s4); border-top: 1px solid var(--rule); }
+
+.laneband {
+  display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap;
+  padding: var(--s2) var(--s3); margin-bottom: var(--s3);
+  background: var(--paper-raised); border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+}
+.laneband__name { font-weight: 700; color: var(--ink); font-size: 0.95rem; }
+.laneband__facts { display: flex; gap: var(--s4); color: var(--ink-4); font-size: 0.8rem; }
+.laneband__facts b { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.laneband__spacer { flex: 1; }
+.laneband--muted { background: var(--warn-soft); border-color: transparent; }
+
+.lists { display: flex; gap: var(--s3); align-items: flex-start; padding-bottom: var(--s2); }
+
+/* A list. Fixed width like Trello's 272px — a column that grows with its
+   content makes the board reflow every time a card moves, and the whole point
+   of a board is that things stay where you put them. */
+.list {
+  width: 17rem; flex: none;
+  background: var(--paper-sunken);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-l);
+  display: flex; flex-direction: column; max-height: 27rem;
+}
+.list__head {
+  display: flex; align-items: center; gap: var(--s2);
+  padding: var(--s3) var(--s3) var(--s2);
+}
+/* NO DOTS. A coloured dot beside a column name is a legend the reader has to
+   learn and then keep in their head; the column already says what it is in
+   words, and urgency belongs on the CARD, where the thing that is urgent is. */
+.list__name { font-weight: 700; color: var(--ink); font-size: 0.85rem; }
+.list__n { color: var(--ink-4); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.list__spacer { flex: 1; }
+.list__more { color: var(--ink-4); font-size: 1rem; line-height: 1; padding: 0 var(--s1); }
+.list__body { padding: 0 var(--s2) var(--s2); display: grid; gap: var(--s2); overflow: hidden; }
+.list__add {
+  display: flex; align-items: center; gap: var(--s2);
+  padding: var(--s2) var(--s3); color: var(--ink-4); font-size: 0.83rem;
+  border-top: 1px solid transparent;
+}
+.list--drop { border-color: var(--accent); background: var(--accent-soft); }
+
+/* A card. */
+.tcard {
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  padding: var(--s3);
+  display: grid; gap: var(--s2);
+  box-shadow: 0 1px 1px rgb(0 0 0 / 7%);
+}
+/* The label bar — Trello's coloured strip, doing real work here: it is the
+   waiting band, so a card that has gone red is visible from the far side of
+   the board without reading a word of it. No bar means nothing is wrong. */
+.tcard__label { height: 5px; width: 2.5rem; border-radius: var(--radius-full); background: var(--rule-strong); }
+.tcard__label--warn { background: var(--warn); }
+.tcard__label--danger { background: var(--danger); }
+.tcard__label--ok { background: var(--accent); }
+.tcard__top { display: flex; align-items: flex-start; gap: var(--s2); }
+.tcard__who { font-weight: 600; color: var(--ink); font-size: 0.87rem; min-width: 0; overflow-wrap: anywhere; }
+.tcard__load { font-size: 0.82rem; color: var(--ink-3); }
+.tcard__qty { font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+.tcard__foot { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; font-size: 0.72rem; }
+.tcard__id { font-family: var(--font-mono); font-size: 0.68rem; color: var(--ink-5); }
+.tcard__worth { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
+.tcard__ph { color: var(--ink-5); }
+.tcard__spacer { flex: 1; }
+/* The monogram stands in for Trello's avatar: this app has no member photos,
+   and initials are enough to tell two rows apart at a glance. */
+.mono {
+  width: 1.4rem; height: 1.4rem; border-radius: var(--radius-full);
+  background: var(--accent-soft); color: var(--accent);
+  display: grid; place-items: center; font-size: 0.62rem; font-weight: 700; flex: none;
+}
+.box {
+  width: 15px; height: 15px; flex: none; margin-top: 2px;
+  border: 1.5px solid var(--rule-strong); border-radius: var(--radius-s); background: var(--paper);
+}
+.box--on {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
+  display: grid; place-items: center; font-size: 10px; font-weight: 900; line-height: 1;
+}
+.tcard--sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-line); }
+
+/* IN HAND — the card under the pointer. Lifted, tilted a degree and a half,
+   and carrying a real shadow, so it is unmistakably out of the flow. */
+.tcard--lift {
+  transform: rotate(-2deg) scale(1.02);
+  box-shadow: 0 12px 24px rgb(0 0 0 / 22%);
+  border-color: var(--accent);
+  cursor: grabbing;
+}
+/* WHERE IT WILL LAND — Trello's placeholder. A hole the exact size of the card,
+   so the list does not jump when the card is released. */
+.tcard--ghost {
+  border: 2px dashed var(--accent-line);
+  background: transparent;
+  box-shadow: none;
+  min-height: 4.5rem;
+  display: grid; place-items: center;
+  color: var(--accent); font-size: 0.78rem; font-weight: 600;
+}
+.stub {
+  border: 1px dashed var(--rule-strong); border-radius: var(--radius-m);
+  padding: var(--s3); text-align: center; color: var(--ink-5); font-size: 0.78rem;
+}
+
+.selbar {
+  display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap;
+  padding: var(--s3) var(--s4); border: 1px solid var(--accent);
+  background: var(--accent-soft); border-radius: var(--radius-m); margin: 0 var(--s5) var(--s3);
+}
+.selbar__n { font-weight: 700; color: var(--ink); }
+.selbar__hint { color: var(--ink-3); font-size: 0.8rem; }
+
+/* ============================================ BOARD SWITCHER
+
+   One board per Abuja district. The badge is the count of returns in that
+   district that are waiting on a person — and it INVERTS against the surface
+   by construction: `--ink` on `--paper` is a near-black disc with light type in
+   the light theme, and the same two tokens swap in the dark one, giving the
+   white disc with black type. One rule, both themes, no second colour. */
+.badge {
+  min-width: 1.35rem; height: 1.35rem; padding: 0 0.35em;
+  border-radius: var(--radius-full);
+  background: var(--ink); color: var(--paper);
+  display: inline-grid; place-items: center;
+  font-size: 0.72rem; font-weight: 700; font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.boardpick {
+  display: inline-flex; align-items: center; gap: var(--s2);
+  height: 2.25rem; padding: 0 var(--s3);
+  border: 1px solid var(--rule-strong); border-radius: var(--radius-m);
+  background: var(--paper-raised); color: var(--ink); font-weight: 600; font-size: 0.9rem;
+}
+
+.switcher {
+  width: 20rem; border: 1px solid var(--rule-strong); border-radius: var(--radius-l);
+  background: var(--paper-raised); box-shadow: 0 16px 40px rgb(0 0 0 / 20%);
+  overflow: hidden;
+}
+.switcher__head {
+  padding: var(--s3) var(--s4); border-bottom: 1px solid var(--rule);
+  background: var(--paper-sunken);
+  font-size: 0.68rem; font-weight: 700; letter-spacing: 0.09em;
+  text-transform: uppercase; color: var(--ink-4);
+}
+.switcher__body { padding: var(--s2); display: grid; gap: 2px; max-height: 20rem; overflow: hidden; }
+.brow {
+  display: flex; align-items: center; gap: var(--s3);
+  padding: var(--s2) var(--s3); border-radius: var(--radius-m);
+  font-size: 0.87rem; color: var(--ink-2);
+}
+.brow__name { flex: 1; min-width: 0; }
+.brow--on { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+/* Nothing needs a person there, so there is nowhere to go: the row states the
+   fact and stops being a control. Not hidden — a district that vanished from
+   the list would read as a district that is not served. */
+.brow--idle { color: var(--ink-5); }
+.brow--idle .brow__q { font-size: 0.78rem; }
+.switcher__foot {
+  border-top: 1px solid var(--rule); padding: var(--s3) var(--s4);
+  background: var(--danger-soft); color: var(--danger);
+  font-size: 0.8rem; display: flex; align-items: center; gap: var(--s3);
+}
+
+.gate {
+  border: 1px solid var(--rule); border-radius: var(--radius-l);
+  background: var(--paper-raised); padding: var(--s5); max-width: 30rem;
+  display: grid; gap: var(--s3);
+}
+.gate__mark {
+  width: 2.5rem; height: 2.5rem; border-radius: var(--radius-full);
+  background: var(--warn-soft); color: var(--warn);
+  display: grid; place-items: center; font-size: 1.2rem;
+}
+.gate__title { font-family: var(--font-display); font-size: 1.2rem; font-weight: 600; color: var(--ink); }
+
+/* ============================================ CENTRE MODAL */
+
+.stage { position: relative; overflow: hidden; }
+/* The board behind is blurred and dimmed — the card is the only thing in focus,
+   and the board is still visibly THERE, which is what stops the modal reading
+   as a separate page. */
+.stage__behind { filter: blur(4px); opacity: 0.55; pointer-events: none; }
+.stage__scrim { position: absolute; inset: 0; background: rgb(0 0 0 / 34%); }
+.modal {
+  position: absolute; inset: var(--s5) var(--s6);
+  background: var(--paper-raised); border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-l); box-shadow: 0 24px 60px rgb(0 0 0 / 28%);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.modal__bar {
+  display: flex; align-items: center; gap: var(--s3);
+  padding: var(--s3) var(--s4); border-bottom: 1px solid var(--rule);
+  background: var(--paper-sunken);
+}
+.modal__grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); flex: 1; overflow: hidden; }
+.modal__main { padding: var(--s5); display: grid; gap: var(--s5); align-content: start; overflow: hidden; }
+.modal__side { padding: var(--s5); border-left: 1px solid var(--rule); background: var(--paper-sunken); display: grid; gap: var(--s3); align-content: start; overflow: hidden; }
+.modal__who { font-family: var(--font-display); font-size: 1.5rem; font-weight: 600; color: var(--ink); line-height: 1.2; }
+.modal__row { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.label {
+  font-size: 0.66rem; font-weight: 700; letter-spacing: 0.09em;
+  text-transform: uppercase; color: var(--ink-4);
+}
+.kv { display: grid; grid-template-columns: auto 1fr; gap: var(--s2) var(--s4); font-size: 0.85rem; }
+.kv dt { color: var(--ink-4); white-space: nowrap; }
+.kv dd { margin: 0; color: var(--ink-2); text-align: right; font-variant-numeric: tabular-nums; }
+.money {
+  display: flex; align-items: baseline; justify-content: space-between;
+  padding: var(--s3) var(--s4); background: var(--accent-soft);
+  border: 1px solid var(--accent-line); border-radius: var(--radius-m);
+}
+.money__n { font-family: var(--font-display); font-size: 1.5rem; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
+.money__lbl { font-size: 0.75rem; color: var(--ink-4); }
+.stepper {
+  display: inline-flex; align-items: center; border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-m); overflow: hidden; background: var(--paper-raised);
+}
+.stepper span { padding: 0 var(--s3); height: 2.1rem; display: grid; place-items: center; color: var(--ink-3); }
+.stepper b { padding: 0 var(--s4); border-left: 1px solid var(--rule); border-right: 1px solid var(--rule); font-variant-numeric: tabular-nums; color: var(--ink); }
+.tl { display: grid; gap: var(--s3); }
+.tl__row { display: grid; grid-template-columns: auto 1fr auto; gap: var(--s3); align-items: start; font-size: 0.8rem; }
+.tl__dot { width: 8px; height: 8px; margin-top: 6px; border-radius: var(--radius-full); background: var(--accent); }
+.tl__dot--past { background: var(--rule-strong); }
+.tl__when { color: var(--ink-5); font-size: 0.72rem; white-space: nowrap; }
+.tl__what b { color: var(--ink); }
+
+/* ============================================ PHONE */
+
+.phones { display: flex; gap: var(--s6); flex-wrap: wrap; }
+.phone { width: 340px; flex: none; border: 10px solid var(--ink); border-radius: 30px; overflow: hidden; background: var(--paper); }
+.phone__scr { height: 680px; display: flex; flex-direction: column; position: relative; overflow: hidden; }
+
+/* THE STATIC HALF. Title, the desk line, the area, and the stage tabs never
+   move — because the tabs are the DROP TARGETS, and a drop target that scrolls
+   away under the card you are dragging is not a target. */
+.phone__fixed { background: var(--paper); border-bottom: 1px solid var(--rule); padding: var(--s3) var(--s3) var(--s2); display: grid; gap: var(--s2); }
+.phone__title { font-family: var(--font-display); font-size: 1.3rem; font-weight: 600; color: var(--ink); }
+.phone__scrollarea { flex: 1; overflow: hidden; padding: var(--s3); background: var(--paper-inset); display: grid; gap: var(--s2); align-content: start; }
+
+.deskline {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--s2) var(--s3); border-radius: var(--radius-m);
+  background: var(--warn-soft); color: var(--warn); font-size: 0.78rem; font-weight: 700;
+}
+.areapick {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s2);
+  padding: var(--s2) var(--s3); border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-m); background: var(--paper-raised);
+  font-size: 0.82rem; font-weight: 600; color: var(--ink);
+}
+.tabs { display: flex; gap: var(--s2); overflow: hidden; }
+.tab {
+  flex: none; padding: 0.3em 0.7em; border-radius: var(--radius-full);
+  border: 1px solid var(--rule); background: var(--paper-sunken);
+  color: var(--ink-3); font-size: 0.75rem; font-weight: 600; white-space: nowrap;
+}
+.tab--on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+/* A tab lit up because a card is over it. */
+.tab--target {
+  background: var(--accent-soft); color: var(--accent);
+  border: 2px dashed var(--accent); font-weight: 700;
+}
+.tab--armed { border-style: dashed; border-color: var(--accent-line); color: var(--accent); background: transparent; }
+
+.hand {
+  position: absolute; left: 96px; top: 300px; width: 210px;
+  z-index: 3; pointer-events: none;
+}
+.thumb {
+  position: absolute; left: 168px; top: 372px; width: 46px; height: 46px;
+  border-radius: var(--radius-full); background: rgb(0 0 0 / 12%);
+  border: 2px solid rgb(0 0 0 / 22%); z-index: 4;
+}
+.sheet {
+  position: absolute; left: 0; right: 0; bottom: 0; top: 84px;
+  background: var(--paper-raised); border-top: 1px solid var(--rule-strong);
+  border-radius: var(--radius-l) var(--radius-l) 0 0;
+  box-shadow: 0 -8px 24px rgb(0 0 0 / 14%);
+  display: flex; flex-direction: column;
+}
+.sheet__grab { width: 40px; height: 4px; border-radius: var(--radius-full); background: var(--rule-strong); margin: var(--s2) auto; }
+.sheet__body { flex: 1; overflow: hidden; padding: 0 var(--s4) var(--s4); display: grid; gap: var(--s3); align-content: start; }
+.sheet__foot { padding: var(--s3) var(--s4) var(--s5); border-top: 1px solid var(--rule); display: grid; gap: var(--s2); }
+.scrim-full { position: absolute; inset: 0; background: rgb(0 0 0 / 30%); }
+
+/* ------------------------------------------------ anatomy + tables */
+
+.anatomy { display: grid; grid-template-columns: 17rem minmax(0, 1fr); gap: var(--s6); align-items: start; }
+.calls { display: grid; gap: var(--s3); }
+.call { display: grid; grid-template-columns: 1.5rem 1fr; gap: var(--s3); font-size: 0.88rem; }
+.call__n {
+  width: 1.5rem; height: 1.5rem; border-radius: var(--radius-full);
+  background: var(--ink); color: var(--paper); display: grid; place-items: center;
+  font-size: 0.72rem; font-weight: 700;
+}
+.call b { color: var(--ink); }
+table.spec { width: 100%; border-collapse: collapse; font-size: 0.88rem; margin: var(--s4) 0 var(--s6); }
+table.spec th, table.spec td { text-align: left; padding: var(--s2) var(--s3); border-bottom: 1px solid var(--rule); vertical-align: top; }
+table.spec th { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-4); }
+table.spec td b { color: var(--ink); }
+
+@media (max-width: 900px) {
+  .anatomy { grid-template-columns: 1fr; }
+  .modal__grid { grid-template-columns: 1fr; }
+}
+</style>
+
+<div class="wrap">
+
+  <h1 class="doc-title">Returns, as a desk and a board</h1>
+  <p class="doc-lede">
+    A wireframe for the returns queue: what needs a person, and where everything is. Static — nothing here
+    clicks. Drawn in the application's own tokens, with the board borrowing Trello's shape because Trello
+    solved this arrangement and an operator already knows how to read it.
+  </p>
+
+  <div class="why">
+    <strong>The structural decision everything follows from.</strong> “Needs action” is not a stage — it is a
+    <em>judgement</em> about a card. A column is a place a card <em>is</em>, and a card can only be in one
+    place, so needs-action cannot be a column without lying about where the work sits. It becomes a table
+    above the board. The desk answers <b>“what do I do next?”</b>; the board answers <b>“where is
+    everything?”</b> A card legitimately appears in both.
+  </div>
+
+  <div class="why">
+    <strong>A district is a board, not a lane.</strong> The expensive decision here is <em>which van goes
+    where today</em>, and that decision is made one district at a time — so Maitama is a board, Wuse II is a
+    board, and the Requested list on a board <em>is</em> the dispatch list for that district. Its header
+    carries the total spools, which is what decides whether one van is enough. The picker in the top right
+    is how you move between them, and it doubles as the answer to “where is there work at all”.
+  </div>
+
+  <div class="why">
+    <strong>Abuja only, and the boards are the reason it stays honest.</strong> A spool comes back because a
+    driver fetches it, so the programme is served where there are drivers — Abuja, today. Every board is a
+    served district; an address that resolves to none of them cannot be given a board, and a return that has
+    no board can never reach Received, which is the only state that awards. The geography is not a rule
+    written down somewhere and checked later: it is the shape of the screen.
+  </div>
+
+  <hr class="rule">
+
+  <!-- ============================================================ A -->
+  <h2 class="sec">A · Desktop — the desk, then the board</h2>
+  <p class="note">
+    Lists float on a canvas rather than sitting on the page: the separation is what makes a column read as a
+    container you can drop into. No coloured dots beside the column names — urgency lives on the card, where
+    the urgent thing is.
+  </p>
+
+  <div class="frame">
+    <div class="frame__bar"><span class="frame__dot"></span><span class="frame__dot"></span><span class="frame__dot"></span> Desktop · 1280 · /marketing/returns</div>
+    <div class="frame__body frame__flush">
+
+      <div class="scr__head">
+        <div>
+          <h3 class="scr__title">Returns</h3>
+          <p class="scr__lede">Book a pickup, collect it, receive it — then count what arrived.</p>
+        </div>
+        <div style="display:flex;gap:var(--s2);align-items:center">
+          <span class="boardpick">◉ Maitama District <span class="badge">3</span> ▾</span>
+          <span class="btn">Export</span>
+          <span class="btn btn--primary">Log a return…</span>
+        </div>
+      </div>
+
+      <div class="desk">
+        <div class="desk__head">
+          <span class="desk__title">⚑ Waiting on you · 6</span>
+          <div style="display:flex;gap:var(--s2);flex-wrap:wrap">
+            <span class="chip chip--warn">Needs a pickup 4</span>
+            <span class="chip chip--danger">Needs inspecting 2</span>
+            <span class="chip">Overdue 1</span>
+            <span class="btn btn--ghost btn--sm">Filters ▾</span>
+          </div>
+        </div>
+        <div class="scroller">
+        <table>
+          <thead><tr><th style="width:2.5rem"></th><th>Customer</th><th>Load</th><th>Area</th><th>Waiting</th><th>Why it is here</th><th></th></tr></thead>
+          <tbody>
+            <tr><td><span class="box"></span></td><td><span class="who">Dara Adeyemi</span><span class="sub">ret_9f2k41</span></td><td class="num">6 spools</td><td>Maitama</td><td class="num age--danger">4d 6h</td><td>No pickup booked</td><td><span class="btn btn--sm">Schedule…</span></td></tr>
+            <tr><td><span class="box"></span></td><td><span class="who">chi@example.com</span><span class="sub">ret_77ab09</span></td><td class="num">12 spools</td><td>Wuse II</td><td class="num age--warn">2d 1h</td><td>Arrived — not counted</td><td><span class="btn btn--sm btn--accent">Inspect…</span></td></tr>
+            <tr><td><span class="box"></span></td><td><span class="who">Tolu Bassey</span><span class="sub">ret_a01x77</span></td><td class="num">4 spools</td><td>Maitama</td><td class="num">9h</td><td>No pickup booked</td><td><span class="btn btn--sm">Schedule…</span></td></tr>
+          </tbody>
+        </table>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <span class="field"><b>Sort in list</b> Oldest first ▾</span>
+        <span class="field"><b>Program</b> All ▾</span>
+        <span class="field field--grow">⌕ Email address, or a whole return id…</span>
+        <span class="btn btn--sm">Select ▾</span>
+      </div>
+
+      <div class="canvas">
+
+        <div class="laneband">
+          <span class="laneband__name">◉ Maitama District</span>
+          <span class="badge">3</span>
+          <span class="laneband__spacer"></span>
+          <span class="laneband__facts">
+            <span>Open <b>5</b></span><span>Load <b>29 spools</b></span><span>Oldest <b class="age--danger">4d</b></span>
+          </span>
+          <span class="btn btn--ghost btn--sm">Dispatch this district…</span>
+        </div>
+
+        <div class="scroller">
+        <div class="lists">
+
+          <div class="list">
+            <div class="list__head"><span class="list__name">Requested</span><span class="list__n">2</span><span class="list__spacer"></span><span class="list__more">⋯</span></div>
+            <div class="list__body">
+              <div class="tcard">
+                <span class="tcard__label tcard__label--danger"></span>
+                <div class="tcard__who">Dara Adeyemi</div>
+                <div class="tcard__load"><span class="tcard__qty">6</span> spools</div>
+                <div class="tcard__foot"><span class="chip chip--danger">4d 6h</span><span class="tcard__worth">→ 60 pts</span><span class="tcard__spacer"></span><span class="mono">DA</span></div>
+              </div>
+              <div class="tcard">
+                <span class="tcard__label"></span>
+                <div class="tcard__who">Tolu Bassey</div>
+                <div class="tcard__load"><span class="tcard__qty">4</span> spools</div>
+                <div class="tcard__foot"><span class="chip">9h</span><span class="tcard__worth">→ 40 pts</span><span class="tcard__spacer"></span><span class="mono">TB</span></div>
+              </div>
+            </div>
+            <div class="list__add">＋ Log a return</div>
+          </div>
+
+          <div class="list">
+            <div class="list__head"><span class="list__name">Scheduled</span><span class="list__n">2</span><span class="list__spacer"></span><span class="list__more">⋯</span></div>
+            <div class="list__body">
+              <div class="tcard">
+                <span class="tcard__label tcard__label--ok"></span>
+                <div class="tcard__who">Musa Bello</div>
+                <div class="tcard__load"><span class="tcard__qty">8</span> spools</div>
+                <div class="tcard__foot"><span class="chip chip--accent">Fri 15 · 10:00</span><span class="tcard__ph">Sade</span><span class="tcard__spacer"></span><span class="mono">MB</span></div>
+              </div>
+              <div class="tcard">
+                <span class="tcard__label tcard__label--ok"></span>
+                <div class="tcard__who">bola@example.com</div>
+                <div class="tcard__load"><span class="tcard__qty">6</span> spools</div>
+                <div class="tcard__foot"><span class="chip chip--accent">Fri 15 · 10:00</span><span class="tcard__ph">Sade</span><span class="tcard__spacer"></span><span class="mono">BO</span></div>
+              </div>
+            </div>
+            <div class="list__add">&nbsp;</div>
+          </div>
+
+          <div class="list">
+            <div class="list__head"><span class="list__name">Picked up</span><span class="list__n">1</span><span class="list__spacer"></span><span class="list__more">⋯</span></div>
+            <div class="list__body">
+              <div class="tcard">
+                <span class="tcard__label"></span>
+                <div class="tcard__who">Ifeanyi O.</div>
+                <div class="tcard__load"><span class="tcard__qty">5</span> spools</div>
+                <div class="tcard__foot"><span class="chip">in transit · 08:40</span><span class="tcard__spacer"></span><span class="mono">IO</span></div>
+              </div>
+            </div>
+            <div class="list__add">&nbsp;</div>
+          </div>
+
+          <div class="list">
+            <div class="list__head"><span class="list__name">Received</span><span class="list__n">0</span><span class="list__spacer"></span><span class="list__more">⋯</span></div>
+            <div class="list__body"><div class="stub">Nothing from Maitama is on the bench</div></div>
+            <div class="list__add">&nbsp;</div>
+          </div>
+
+        </div>
+        </div>
+
+
+      </div>
+    </div>
+  </div>
+  <p class="cap">
+    <b>One district, one board.</b> The board shows Maitama and only Maitama; the other districts are boards
+    of their own, reached from the picker in the header. The desk above it is the exception and stays
+    <em>whole-of-Abuja</em> on purpose — “what needs me” is a question about the day, not about a district,
+    and an operator should not have to visit six boards to discover that two of them are on fire. Its Area
+    column is how a row on the desk tells you which board it lives on.
+    Every list is a fixed width, so nothing reflows when a card moves —
+    the whole point of a board is that things stay where you put them. “＋ Log a return” appears under
+    Requested only, because that is the one list a return can be born into; the others are reached by moving.
+    Returns whose address resolves to no served district get no board at all — they sit in the picker's red
+    footer, where they can be cancelled or rejected but never awarded.
+  </p>
+
+  <hr class="rule">
+
+  <!-- ========================================================= A2 -->
+  <h2 class="sec">A2 · Switching board</h2>
+  <p class="note">
+    Every Abuja district that is served has a board. The count beside each is how many returns there are
+    <em>waiting on a person</em> — and a district with none is not somewhere you can go, because there would
+    be nothing to do when you arrived.
+  </p>
+
+  <div style="display:flex;gap:var(--s6);flex-wrap:wrap;align-items:flex-start">
+    <div class="switcher">
+      <div class="switcher__head">Switch board · Abuja</div>
+      <div class="switcher__body">
+        <div class="brow brow--on"><span class="brow__name">Maitama District</span><span class="badge">3</span></div>
+        <div class="brow"><span class="brow__name">Wuse II District</span><span class="badge">2</span></div>
+        <div class="brow"><span class="brow__name">Garki II District</span><span class="badge">1</span></div>
+        <div class="brow"><span class="brow__name">Asokoro District</span><span class="badge">1</span></div>
+        <div class="brow brow--idle"><span class="brow__name">Wuse District</span><span class="brow__q">nothing waiting</span></div>
+        <div class="brow brow--idle"><span class="brow__name">Garki</span><span class="brow__q">nothing waiting</span></div>
+        <div class="brow brow--idle"><span class="brow__name">Jabi District</span><span class="brow__q">nothing waiting</span></div>
+        <div class="brow brow--idle"><span class="brow__name">Utako District</span><span class="brow__q">nothing waiting</span></div>
+        <div class="brow brow--idle"><span class="brow__name">Gwarinpa</span><span class="brow__q">nothing waiting</span></div>
+        <div class="brow brow--idle"><span class="brow__name">Guzape District</span><span class="brow__q">nothing waiting</span></div>
+        <div class="brow brow--idle"><span class="brow__name">Wuye · Jahi · Kado · +9 more</span><span class="brow__q">nothing waiting</span></div>
+      </div>
+      <div class="switcher__foot">
+        <span style="flex:1">⚠ Outside Abuja — not served</span>
+        <span class="badge" style="background:var(--danger);color:var(--paper-raised)">1</span>
+      </div>
+    </div>
+
+    <div style="max-width:34ch">
+      <p class="cap" style="margin:0 0 var(--s4)">
+        <b>The badge inverts by construction.</b> It is <code>--ink</code> on <code>--paper</code>: a
+        near-black disc with light type in the light theme, and — because those two tokens swap — the white
+        disc with black type in the dark one. One rule, both themes, no second colour to maintain.
+      </p>
+      <p class="cap" style="margin:0">
+        <b>Idle districts stay listed, greyed.</b> Removing them would read as “we do not serve Jabi”, which
+        is a different and much worse claim than “nothing is waiting in Jabi today”. They are still reachable
+        from search and from a desk row; they are just not a place the picker will send you for no reason.
+      </p>
+    </div>
+  </div>
+
+  <hr class="rule">
+
+  <!-- ========================================================= A3 -->
+  <h2 class="sec">A3 · Abuja only, and what happens outside it</h2>
+  <p class="note">
+    Spool points are earned by returning spools, and a spool is returned by a driver who has to physically get
+    to it. So the programme is served in Abuja and nowhere else — which has to be said before somebody packs
+    a box, not after.
+  </p>
+
+  <div style="display:flex;gap:var(--s6);flex-wrap:wrap;align-items:flex-start">
+    <div class="gate">
+      <div class="gate__mark">⚑</div>
+      <div class="gate__title">We only collect in Abuja right now</div>
+      <p style="margin:0;color:var(--ink-3);font-size:0.9rem">
+        Your address is in <b>Port Harcourt</b>, and we have no driver there yet. You can still buy filament —
+        there is just nothing to earn for sending the spools back until we reach you.
+      </p>
+      <div class="modal__row">
+        <span class="btn btn--sm">Use a different address</span>
+        <span class="btn btn--sm btn--ghost">Tell me when you reach me</span>
+      </div>
+      <p style="margin:0;color:var(--ink-5);font-size:0.8rem">
+        Served today: Maitama, Wuse, Wuse II, Garki, Garki II, Asokoro, Jabi, Utako, Gwarinpa and 12 more.
+      </p>
+    </div>
+
+    <div style="max-width:34ch">
+      <p class="cap" style="margin:0 0 var(--s4)">
+        <b>The gate is at the door, not at the till.</b> The check runs when the address is entered — on the
+        storefront's request form and on the admin's “Log a return…” — so nobody schedules a van they cannot
+        send, and no customer is told “no” after they have already boxed twelve spools.
+      </p>
+      <p class="cap" style="margin:0">
+        <b>Out-of-area returns still exist, they just cannot pay.</b> If one is logged anyway — a phone call, a
+        walk-in from out of town — it lands in the picker's red footer rather than on a district board. It can
+        be cancelled or rejected with a reason; what it cannot do is award, because no board can move it to
+        Received.
+      </p>
+    </div>
+  </div>
+
+  <hr class="rule">
+
+  <!-- ============================================================ B -->
+  <h2 class="sec">B · Desktop — a card in hand</h2>
+  <p class="note">
+    Two things are visible at once while dragging: the card, lifted and tilted under the pointer, and the
+    hole it will drop into.
+  </p>
+
+  <div class="frame">
+    <div class="frame__bar"><span class="frame__dot"></span><span class="frame__dot"></span><span class="frame__dot"></span> Desktop · dragging “Dara Adeyemi” from Requested → Scheduled</div>
+    <div class="frame__body frame__flush">
+      <div class="canvas">
+        <div class="laneband">
+          <span class="laneband__name">◉ Maitama District</span>
+          <span class="laneband__spacer"></span>
+          <span class="laneband__facts"><span>Open <b>5</b></span><span>Load <b>29 spools</b></span></span>
+        </div>
+        <div class="scroller">
+        <div class="lists">
+
+          <div class="list">
+            <div class="list__head"><span class="list__name">Requested</span><span class="list__n">2</span><span class="list__spacer"></span><span class="list__more">⋯</span></div>
+            <div class="list__body">
+              <!-- the gap the card left behind -->
+              <div class="tcard tcard--ghost" style="border-color:var(--rule-strong);color:var(--ink-5)">taken from here</div>
+              <div class="tcard">
+                <span class="tcard__label"></span>
+                <div class="tcard__who">Tolu Bassey</div>
+                <div class="tcard__load"><span class="tcard__qty">4</span> spools</div>
+                <div class="tcard__foot"><span class="chip">9h</span><span class="tcard__spacer"></span><span class="mono">TB</span></div>
+              </div>
+            </div>
+            <div class="list__add">＋ Log a return</div>
+          </div>
+
+          <!-- the list under the pointer -->
+          <div class="list list--drop">
+            <div class="list__head"><span class="list__name">Scheduled</span><span class="list__n">2</span><span class="list__spacer"></span><span class="list__more">⋯</span></div>
+            <div class="list__body">
+              <div class="tcard" style="opacity:.75">
+                <span class="tcard__label tcard__label--ok"></span>
+                <div class="tcard__who">Musa Bello</div>
+                <div class="tcard__load"><span class="tcard__qty">8</span> spools</div>
+              </div>
+              <!-- IN HAND, drawn over the placeholder it is about to fill -->
+              <div style="position:relative">
+                <div class="tcard tcard--ghost">drops here</div>
+                <div class="tcard tcard--lift" style="position:absolute;left:14px;top:-14px;right:-14px">
+                  <span class="tcard__label tcard__label--danger"></span>
+                  <div class="tcard__who">Dara Adeyemi</div>
+                  <div class="tcard__load"><span class="tcard__qty">6</span> spools</div>
+                  <div class="tcard__foot"><span class="chip chip--danger">4d 6h</span><span class="tcard__spacer"></span><span class="mono">DA</span></div>
+                </div>
+              </div>
+              <div class="tcard" style="opacity:.75">
+                <span class="tcard__label tcard__label--ok"></span>
+                <div class="tcard__who">bola@example.com</div>
+                <div class="tcard__load"><span class="tcard__qty">6</span> spools</div>
+              </div>
+            </div>
+            <div class="list__add" style="color:var(--accent);font-weight:600">Release to book a pickup →</div>
+          </div>
+
+          <div class="list" style="opacity:.6">
+            <div class="list__head"><span class="list__name">Picked up</span><span class="list__n">1</span><span class="list__spacer"></span><span class="list__more">⋯</span></div>
+            <div class="list__body">
+              <div class="tcard"><span class="tcard__label"></span><div class="tcard__who">Ifeanyi O.</div><div class="tcard__load"><span class="tcard__qty">5</span> spools</div></div>
+            </div>
+            <div class="list__add">&nbsp;</div>
+          </div>
+
+          <div class="list" style="opacity:.6">
+            <div class="list__head"><span class="list__name">Received</span><span class="list__n">0</span><span class="list__spacer"></span><span class="list__more">⋯</span></div>
+            <div class="list__body"><div class="stub">Nothing on the bench</div></div>
+            <div class="list__add">&nbsp;</div>
+          </div>
+
+        </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="cap">
+    <b>The drop is the intent; the form is the act.</b> Releasing here does not silently move the card — a
+    pickup needs a date and a driver, so the schedule form opens with the card held in place, and the move
+    commits when the form does. The same is true of Received, which needs counted quantities and cannot be
+    completed by a gesture. Lists that would refuse the card are dimmed while it is in hand, and a card
+    dropped on one springs back with a line saying which rule stopped it.
+  </p>
+
+  <hr class="rule">
+
+  <!-- ============================================================ C -->
+  <h2 class="sec">C · Desktop — many at once</h2>
+
+  <div class="frame">
+    <div class="frame__bar"><span class="frame__dot"></span><span class="frame__dot"></span><span class="frame__dot"></span> Desktop · selection active</div>
+    <div class="frame__body frame__flush">
+
+      <div class="selbar" style="margin-top:var(--s4)">
+        <span class="selbar__n">3 selected · 18 spools</span>
+        <span class="btn btn--sm btn--accent">Schedule one pickup for all 3…</span>
+        <span class="btn btn--sm">Add a note</span>
+        <span class="btn btn--sm btn--off">Mark picked up</span>
+        <span class="btn btn--sm btn--off">Inspect</span>
+        <span class="selbar__hint">— greyed actions are not legal for every card you picked</span>
+        <span class="toolbar__spacer"></span>
+        <span class="btn btn--ghost btn--sm">Clear</span>
+      </div>
+
+      <div class="canvas">
+        <div class="laneband">
+          <span class="laneband__name">◉ Maitama District</span>
+          <span class="laneband__spacer"></span>
+          <span class="laneband__facts"><span>Open <b>5</b></span><span>Load <b>29 spools</b></span></span>
+          <span class="btn btn--sm">Select all in Requested</span>
+        </div>
+        <div class="scroller">
+        <div class="lists">
+          <div class="list">
+            <div class="list__head"><span class="list__name">Requested</span><span class="list__n">2 · 2 picked</span><span class="list__spacer"></span><span class="list__more">⋯</span></div>
+            <div class="list__body">
+              <div class="tcard tcard--sel">
+                <span class="tcard__label tcard__label--danger"></span>
+                <div class="tcard__top"><span class="box box--on">✓</span><span class="tcard__who">Dara Adeyemi</span></div>
+                <div class="tcard__load"><span class="tcard__qty">6</span> spools</div>
+                <div class="tcard__foot"><span class="chip chip--danger">4d 6h</span><span class="tcard__spacer"></span><span class="mono">DA</span></div>
+              </div>
+              <div class="tcard tcard--sel">
+                <span class="tcard__label"></span>
+                <div class="tcard__top"><span class="box box--on">✓</span><span class="tcard__who">Tolu Bassey</span></div>
+                <div class="tcard__load"><span class="tcard__qty">4</span> spools</div>
+                <div class="tcard__foot"><span class="chip">9h</span><span class="tcard__spacer"></span><span class="mono">TB</span></div>
+              </div>
+            </div>
+            <div class="list__add">＋ Log a return</div>
+          </div>
+          <div class="list">
+            <div class="list__head"><span class="list__name">Scheduled</span><span class="list__n">2</span><span class="list__spacer"></span><span class="list__more">⋯</span></div>
+            <div class="list__body">
+              <div class="tcard"><span class="tcard__label tcard__label--ok"></span><div class="tcard__top"><span class="box"></span><span class="tcard__who">Musa Bello</span></div><div class="tcard__load"><span class="tcard__qty">8</span> spools</div></div>
+              <div class="tcard"><span class="tcard__label tcard__label--ok"></span><div class="tcard__top"><span class="box"></span><span class="tcard__who">bola@example.com</span></div><div class="tcard__load"><span class="tcard__qty">6</span> spools</div></div>
+            </div>
+            <div class="list__add">&nbsp;</div>
+          </div>
+          <div class="list">
+            <div class="list__head"><span class="list__name">Picked up</span><span class="list__n">1 · 1 picked</span><span class="list__spacer"></span><span class="list__more">⋯</span></div>
+            <div class="list__body">
+              <div class="tcard tcard--sel">
+                <span class="tcard__label"></span>
+                <div class="tcard__top"><span class="box box--on">✓</span><span class="tcard__who">Ifeanyi O.</span></div>
+                <div class="tcard__load"><span class="tcard__qty">5</span> spools</div>
+                <div class="tcard__foot"><span class="chip">in transit</span><span class="tcard__spacer"></span><span class="mono">IO</span></div>
+              </div>
+            </div>
+            <div class="list__add">&nbsp;</div>
+          </div>
+          <div class="list">
+            <div class="list__head"><span class="list__name">Received</span><span class="list__n">0</span><span class="list__spacer"></span><span class="list__more">⋯</span></div>
+            <div class="list__body"><div class="stub">Drag the selection here to receive all three</div></div>
+            <div class="list__add">&nbsp;</div>
+          </div>
+        </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="cap">
+    <b>The rule that keeps this honest.</b> The bar offers only actions legal for <em>every</em> card picked —
+    the intersection of what the server allows each one. Two Requested cards and one Picked-up card share only
+    “schedule” and “note”, so the rest are greyed <em>with the reason</em> rather than hidden: a control that
+    silently disappears reads as a bug. A selection can also be dragged as one stack.
+  </p>
+
+  <hr class="rule">
+
+  <!-- ============================================================ D -->
+  <h2 class="sec">D · Desktop — one card, opened</h2>
+  <p class="note">
+    A centre modal over a blurred board, the way Trello does it: the board stays visibly there, so the modal
+    reads as a card lifted off it rather than as a page you navigated to.
+  </p>
+
+  <div class="frame">
+    <div class="frame__bar"><span class="frame__dot"></span><span class="frame__dot"></span><span class="frame__dot"></span> Desktop · card open</div>
+    <div class="frame__body frame__flush">
+      <div class="stage" style="height:38rem">
+
+        <div class="stage__behind">
+          <div class="canvas" style="height:38rem">
+            <div class="laneband"><span class="laneband__name">◉ Wuse II District</span><span class="laneband__spacer"></span><span class="laneband__facts"><span>Open <b>3</b></span><span>Load <b>21 spools</b></span></span></div>
+            <div class="lists">
+              <div class="list"><div class="list__head"><span class="list__name">Requested</span><span class="list__n">1</span></div><div class="list__body"><div class="tcard"><span class="tcard__label"></span><div class="tcard__who">Ada Nwosu</div><div class="tcard__load"><span class="tcard__qty">4</span> spools</div></div></div><div class="list__add">＋ Log a return</div></div>
+              <div class="list"><div class="list__head"><span class="list__name">Scheduled</span><span class="list__n">0</span></div><div class="list__body"><div class="stub">—</div></div><div class="list__add">&nbsp;</div></div>
+              <div class="list"><div class="list__head"><span class="list__name">Picked up</span><span class="list__n">1</span></div><div class="list__body"><div class="tcard"><span class="tcard__label"></span><div class="tcard__who">seyi@example.com</div><div class="tcard__load"><span class="tcard__qty">5</span> spools</div></div></div><div class="list__add">&nbsp;</div></div>
+              <div class="list"><div class="list__head"><span class="list__name">Received</span><span class="list__n">1</span></div><div class="list__body"><div class="tcard"><span class="tcard__label tcard__label--warn"></span><div class="tcard__who">chi@example.com</div><div class="tcard__load"><span class="tcard__qty">12</span> spools</div></div></div><div class="list__add">&nbsp;</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="stage__scrim"></div>
+
+        <div class="modal">
+          <div class="modal__bar">
+            <span class="field" style="height:1.9rem"><b>Received</b> ▾</span>
+            <span class="chip">Wuse II</span>
+            <span class="chip">Guest — no account</span>
+            <span class="toolbar__spacer"></span>
+            <span class="btn btn--ghost btn--sm">⋯</span>
+            <span class="btn btn--ghost btn--sm">✕</span>
+          </div>
+
+          <div class="modal__grid">
+            <div class="modal__main">
+              <div>
+                <div class="modal__who">chi@example.com</div>
+                <div class="modal__row" style="margin-top:var(--s2)">
+                  <span class="chip chip--danger">Waiting 2d 1h</span>
+                  <span style="font-family:var(--font-mono);font-size:.75rem;color:var(--ink-5)">ret_77ab09</span>
+                </div>
+              </div>
+
+              <div class="modal__row">
+                <span class="btn btn--sm">＋ Note</span>
+                <span class="btn btn--sm">Reschedule…</span>
+                <span class="btn btn--sm">Change area…</span>
+                <span class="btn btn--sm btn--danger">Reject all…</span>
+              </div>
+
+              <div>
+                <span class="label">This return</span>
+                <dl class="kv" style="margin-top:var(--s2)">
+                  <dt>Declared</dt><dd>12 spools</dd>
+                  <dt>Program</dt><dd>Spool Returns</dd>
+                  <dt>Rate promised</dt><dd>10 / spool</dd>
+                  <dt>Requested</dt><dd>10 Aug</dd>
+                  <dt>Collected by</dt><dd>Sade · 12 Aug</dd>
+                  <dt>Address</dt><dd>21 Aminu Kano Cres, Wuse II</dd>
+                </dl>
+              </div>
+
+              <div>
+                <span class="label">What it is worth</span>
+                <div class="money" style="margin-top:var(--s2)">
+                  <span><span class="money__n">120</span> <span class="money__lbl">Spool Points</span></span>
+                  <span class="money__lbl">12 × 10</span>
+                </div>
+                <div class="modal__row" style="margin-top:var(--s3)">
+                  <span class="label" style="width:100%">Add a bonus</span>
+                  <span class="stepper"><span>−</span><b>25</b><span>+</span></span>
+                  <span class="field field--grow">Reason — kept for good ▾</span>
+                </div>
+                <div class="money" style="margin-top:var(--s2);background:var(--paper-sunken);border-color:var(--rule)">
+                  <span><span class="money__n" style="color:var(--ink)">145</span> <span class="money__lbl">total to award</span></span>
+                  <span class="money__lbl">120 + 25 bonus</span>
+                </div>
+              </div>
+
+              <span class="btn btn--accent" style="justify-content:center">Count what arrived…</span>
+            </div>
+
+            <aside class="modal__side">
+              <div>
+                <span class="label">This customer</span>
+                <dl class="kv" style="margin-top:var(--s2)">
+                  <dt>Balance now</dt><dd>340</dd>
+                  <dt>Earned all time</dt><dd>1,180</dd>
+                  <dt>Returns before</dt><dd>4 · last 22 Jul</dd>
+                  <dt>Ever rejected</dt><dd>1 — contaminated</dd>
+                </dl>
+                <span class="btn btn--ghost btn--sm" style="margin-top:var(--s2)">Open their ledger →</span>
+              </div>
+
+              <div style="border-top:1px solid var(--rule);padding-top:var(--s3)">
+                <span class="label">Activity</span>
+                <div class="field" style="margin:var(--s2) 0">Write a note…</div>
+                <div class="tl">
+                  <div class="tl__row"><span class="tl__dot"></span><span class="tl__what"><b>Received</b> at the warehouse — Tunde</span><span class="tl__when">12 Aug</span></div>
+                  <div class="tl__row"><span class="tl__dot tl__dot--past"></span><span class="tl__what"><b>Picked up</b> by Sade</span><span class="tl__when">12 Aug</span></div>
+                  <div class="tl__row"><span class="tl__dot tl__dot--past"></span><span class="tl__what"><b>Scheduled</b> Fri 10:00 — “call at the gate”</span><span class="tl__when">11 Aug</span></div>
+                  <div class="tl__row"><span class="tl__dot tl__dot--past"></span><span class="tl__what"><b>Requested</b> 12 spools</span><span class="tl__when">10 Aug</span></div>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+  <p class="cap">
+    <b>The layout maps onto Trello's, and the mapping is not an accident.</b> The stage sits top-left as a
+    dropdown, so the card can be moved from inside itself. The left column is the card: what it is, what it
+    is worth, and the one action that closes it. The right column is Trello's “Comments and activity” —
+    here it is the append-only timeline with a note composer above it. The bonus lives inside “what it is
+    worth” because that is the only place the arithmetic is visible: 120 becomes 145 in front of you, with a
+    reason kept forever.
+  </p>
+
+  <hr class="rule">
+
+  <!-- ============================================================ E -->
+  <h2 class="sec">E · Phone — the top half never moves</h2>
+  <p class="note">
+    The stage tabs are the drop targets, so they are pinned. Cards scroll underneath them; a card picked up
+    can be carried to any tab without the target moving away.
+  </p>
+
+  <div class="phones">
+
+    <div>
+      <div class="phone"><div class="phone__scr">
+        <div class="phone__fixed">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span class="phone__title">Returns</span>
+            <span class="btn btn--sm btn--primary">Log…</span>
+          </div>
+          <div class="deskline"><span>⚑ WAITING ON YOU · 6</span><span>Open</span></div>
+          <div class="areapick"><span>◉ Maitama District · 29 spools</span><span style="display:flex;gap:var(--s2);align-items:center"><span class="badge">3</span>▾</span></div>
+          <div class="tabs">
+            <span class="tab tab--on">Requested 2</span>
+            <span class="tab">Scheduled 2</span>
+            <span class="tab">Picked up 1</span>
+            <span class="tab">Received 0</span>
+          </div>
+        </div>
+        <div class="phone__scrollarea">
+          <div class="tcard">
+            <span class="tcard__label tcard__label--danger"></span>
+            <div class="tcard__who">Dara Adeyemi</div>
+            <div class="tcard__load"><span class="tcard__qty">6</span> spools</div>
+            <div class="tcard__foot"><span class="chip chip--danger">4d 6h</span><span class="tcard__worth">→ 60 pts</span><span class="tcard__spacer"></span><span class="mono">DA</span></div>
+            <div class="tcard__foot"><span class="tcard__ph">3rd return · Maitama</span></div>
+          </div>
+          <div class="tcard">
+            <span class="tcard__label"></span>
+            <div class="tcard__who">Tolu Bassey</div>
+            <div class="tcard__load"><span class="tcard__qty">4</span> spools</div>
+            <div class="tcard__foot"><span class="chip">9h</span><span class="tcard__worth">→ 40 pts</span><span class="tcard__spacer"></span><span class="mono">TB</span></div>
+          </div>
+          <div class="tcard">
+            <span class="tcard__label"></span>
+            <div class="tcard__who">kemi@example.com</div>
+            <div class="tcard__load"><span class="tcard__qty">3</span> spools</div>
+            <div class="tcard__foot"><span class="chip chip--warn">no address</span><span class="tcard__spacer"></span><span class="mono">KE</span></div>
+          </div>
+          <div class="stub">End of Requested</div>
+        </div>
+      </div></div>
+      <p class="cap" style="max-width:340px"><b>At rest.</b> Everything above the canvas is fixed: title, the desk line, the area, and the tabs. Only the cards scroll.</p>
+    </div>
+
+    <div>
+      <div class="phone"><div class="phone__scr">
+        <div class="phone__fixed">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span class="phone__title">Returns</span>
+            <span class="btn btn--sm">Cancel</span>
+          </div>
+          <div class="deskline" style="opacity:.35"><span>⚑ WAITING ON YOU · 6</span><span>Open</span></div>
+          <div class="areapick" style="opacity:.35"><span>◉ Maitama District</span><span class="badge">3</span></div>
+          <!-- The tabs become targets the instant a card leaves the surface. -->
+          <div class="tabs">
+            <span class="tab tab--armed">Requested</span>
+            <span class="tab tab--target">Scheduled ⤵</span>
+            <span class="tab tab--armed">Picked up</span>
+            <span class="tab" style="opacity:.35">Received</span>
+          </div>
+        </div>
+        <div class="phone__scrollarea">
+          <div class="tcard tcard--ghost" style="border-color:var(--rule-strong);color:var(--ink-5)">taken from here</div>
+          <div class="tcard" style="opacity:.5">
+            <span class="tcard__label"></span>
+            <div class="tcard__who">Tolu Bassey</div>
+            <div class="tcard__load"><span class="tcard__qty">4</span> spools</div>
+          </div>
+          <div class="tcard" style="opacity:.5">
+            <span class="tcard__label"></span>
+            <div class="tcard__who">kemi@example.com</div>
+            <div class="tcard__load"><span class="tcard__qty">3</span> spools</div>
+          </div>
+        </div>
+        <!-- the card in hand, and the thumb carrying it -->
+        <div class="hand">
+          <div class="tcard tcard--lift">
+            <span class="tcard__label tcard__label--danger"></span>
+            <div class="tcard__who">Dara Adeyemi</div>
+            <div class="tcard__load"><span class="tcard__qty">6</span> spools</div>
+            <div class="tcard__foot"><span class="chip chip--danger">4d 6h</span><span class="tcard__spacer"></span><span class="mono">DA</span></div>
+          </div>
+        </div>
+        <div class="thumb"></div>
+      </div></div>
+      <p class="cap" style="max-width:340px"><b>Carried.</b> Long-press lifts the card; the tabs light up as targets and the one under the thumb's travel is outlined. Tabs the card cannot legally enter go flat. Releasing on <em>Scheduled</em> opens the pickup form — the drop is still only the intent.</p>
+    </div>
+
+    <div>
+      <div class="phone"><div class="phone__scr">
+        <div class="phone__fixed" style="opacity:.5">
+          <div style="display:flex;justify-content:space-between;align-items:center"><span class="phone__title">Returns</span></div>
+          <div class="areapick"><span>◉ Wuse II District</span><span style="display:flex;gap:var(--s2);align-items:center"><span class="badge">2</span>▾</span></div>
+        </div>
+        <div class="phone__scrollarea" style="opacity:.5">
+          <div class="tcard"><span class="tcard__label tcard__label--warn"></span><div class="tcard__who">chi@example.com</div></div>
+        </div>
+        <div class="scrim-full"></div>
+        <div class="sheet">
+          <div class="sheet__grab"></div>
+          <div class="sheet__body">
+            <div>
+              <div class="modal__who" style="font-size:1.05rem">chi@example.com</div>
+              <div class="modal__row" style="margin-top:var(--s2)">
+                <span class="chip chip--danger">Received · 2d</span><span class="chip">Guest</span><span class="chip">Wuse II</span>
+              </div>
+            </div>
+            <dl class="kv">
+              <dt>Declared</dt><dd>12 spools</dd>
+              <dt>Collected by</dt><dd>Sade · 12 Aug</dd>
+              <dt>Balance now</dt><dd>340 pts</dd>
+              <dt>Returns before</dt><dd>4 · 1 rejected</dd>
+            </dl>
+            <div class="money">
+              <span><span class="money__n">120</span> <span class="money__lbl">Spool Points</span></span>
+              <span class="money__lbl">12 × 10</span>
+            </div>
+            <div class="modal__row">
+              <span class="stepper"><span>−</span><b>0</b><span>+</span></span>
+              <span class="field field--grow">Add a bonus…</span>
+            </div>
+            <div>
+              <span class="label">Activity</span>
+              <div class="tl" style="margin-top:var(--s2)">
+                <div class="tl__row"><span class="tl__dot"></span><span class="tl__what"><b>Received</b> — Tunde</span><span class="tl__when">12 Aug</span></div>
+                <div class="tl__row"><span class="tl__dot tl__dot--past"></span><span class="tl__what"><b>Picked up</b> — Sade</span><span class="tl__when">12 Aug</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="sheet__foot"><span class="btn btn--accent" style="justify-content:center">Count what arrived…</span></div>
+        </div>
+      </div></div>
+      <p class="cap" style="max-width:340px"><b>Tapped.</b> The desktop modal's content, in the order a thumb reaches it — who and where, the facts, the money, the history — with the one action pinned to the floor.</p>
+    </div>
+
+  </div>
+
+  <hr class="rule">
+
+  <!-- ============================================================ F -->
+  <h2 class="sec">F · The card, annotated</h2>
+
+  <div class="anatomy">
+    <div>
+      <div class="tcard" style="box-shadow:0 4px 14px rgb(0 0 0 / 10%)">
+        <span class="tcard__label tcard__label--danger"></span>
+        <div class="tcard__who">Dara Adeyemi</div>
+        <div class="tcard__load"><span class="tcard__qty">6</span> spools</div>
+        <div class="tcard__foot"><span class="chip chip--danger">4d 6h</span><span class="tcard__worth">→ 60 pts</span><span class="tcard__spacer"></span><span class="mono">DA</span></div>
+      </div>
+      <p class="cap" style="margin-top:var(--s3)">Four lines, none needing a second glance to decode.</p>
+    </div>
+
+    <div class="calls">
+      <div class="call"><span class="call__n">1</span><div><b>The label bar.</b> Trello's coloured strip, doing real work: it is the waiting band — red past 96h, amber past 48h, nothing when nothing is wrong. It is what makes a late card findable from the far side of the board. <em>This replaces the dots that used to sit beside the column names</em>: the state belongs to the card, not to the column, because every card in a column has a different age.</div></div>
+      <div class="call"><span class="call__n">2</span><div><b>Who.</b> Their name when there is one, their checkout email when there is not. Returns are keyed on email, so an address is never wrong — only less friendly.</div></div>
+      <div class="call"><span class="call__n">3</span><div><b>The load, in the programme's own words.</b> “6 spools” is rendered from the programme's unit labels — rename it to canisters and every card says canisters. The number decides van capacity, so it is the boldest thing after the name.</div></div>
+      <div class="call"><span class="call__n">4</span><div><b>The wait, again, in words.</b> Colour is never the only carrier: “4d 6h” says it for anyone who cannot separate the red bar from the amber one.</div></div>
+      <div class="call"><span class="call__n">5</span><div><b>What it is worth.</b> Quantity × the rate promised when it was requested, so a 12-spool return is visibly worth ten times a small one before you decide whose van to fill.</div></div>
+      <div class="call"><span class="call__n">6</span><div><b>The monogram.</b> Where Trello puts a member's avatar we put the customer's initials — this app has no member photos, and two letters are enough to tell two rows apart while scanning.</div></div>
+    </div>
+  </div>
+
+  <hr class="rule">
+
+  <!-- ============================================================ G -->
+  <h2 class="sec">G · Where the districts come from</h2>
+  <p class="note">
+    Checked against the real service before writing it down: <b>Overpass</b>, OpenStreetMap's query API. Free,
+    no key, no account. This query returns Abuja's districts by name.
+  </p>
+
+  <div class="frame" style="margin-bottom:var(--s4)">
+    <div class="frame__bar">POST https://overpass-api.de/api/interpreter</div>
+    <div class="frame__body" style="font-family:var(--font-mono);font-size:0.8rem;color:var(--ink-2);white-space:pre-wrap;line-height:1.5">[out:json][timeout:80];
+node["place"~"^(suburb|quarter|neighbourhood|district)$"](8.90,7.30,9.15,7.60);
+out tags;</div>
+  </div>
+
+  <p class="note">
+    What it actually returned, run on 13 August: <b>Maitama District · Wuse District · Wuse II District ·
+    Garki · Garki II District · Asokoro District · Central Business District · Guzape District · Gudu
+    District · Durumi District · Jabi District · Jahi District · Kado District · Katampe District · Kaura
+    District · Kukwaba District · Mabushi District · Utako District · Wuye District · Dakibiyu District ·
+    Gwarinpa</b> — plus a little noise (“CBN Quaters Lugbe Phase 2”, “NCCE Quarters Karmo”) that a human
+    should strike out once.
+  </p>
+
+  <div class="why">
+    <strong>Fetch it once, not on every request.</strong> Overpass is a shared public service with no uptime
+    promise — one of the two calls made while writing this came back “the server is probably too busy”, which
+    is a fine thing to meet in a terminal and a terrible thing to meet in a customer's address form. So the
+    list is pulled once, curated by hand, and checked in as the served-districts config the admin can edit.
+    It is business data anyway: which districts you <em>serve</em> is a decision about drivers, not a fact
+    about geography, and the day you stop covering Kubwa you edit a list rather than wait for OpenStreetMap
+    to agree with you.
+    <br><br>
+    Two things the query does <em>not</em> give you, so add them by hand: <b>Wuse Zone 1–7</b>, which locals
+    use constantly and OSM files under Wuse; and the aliases people actually type — “Wuse 2”, “Wuse II”,
+    “VI” — which the address matcher needs so a customer is not told they are outside Abuja for spelling it
+    their own way.
+  </div>
+
+  <table class="spec">
+    <thead><tr><th style="width:9rem">Also on the bar</th><th></th></tr></thead>
+    <tbody>
+      <tr><td><b>Sort in list</b></td><td>Oldest first (default) · largest load · customer name.</td></tr>
+      <tr><td><b>Filter</b></td><td>Programme, age band, driver, and a search over email or a whole return id.</td></tr>
+      <tr><td><b>Saved views</b></td><td>“Maitama Friday run”, “Everything overdue”. Later, not v1.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="why">
+    <strong>What the board must not become.</strong> Dragging is a state transition, and two of these cannot
+    be completed by a gesture: <b>inspecting</b> needs counted quantities and <b>rejecting</b> needs a reason.
+    So a drop opens the form that finishes the move rather than moving the card silently — and if the form is
+    abandoned, the card goes back where it was. A board that lets a gesture award points is a board that will
+    award points by accident.
+  </div>
+
+  <p class="note" style="margin-top:var(--s6)">
+    <b>Not drawn, deliberately:</b> the filter menus' contents, the settings behind a programme, and the
+    inspection form itself — that one exists already and is not changing. This wireframe is about where a
+    return <em>lives</em>, how it moves, and how many can move at once.
+  </p>
+
+</div>
