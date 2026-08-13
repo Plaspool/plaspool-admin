@@ -275,6 +275,14 @@ a.mktstat:hover {
 .mktpanel + .mktgrid {
   margin-top: var(--s5);
 }
+/* A tab strip that filters the panel under it — the ledger's kinds. The strip
+   carries its own top margin and no bottom one, so without this the panel sits
+   flush against the tabs and reads as their container rather than as what they
+   filter. Its own rule because the queue's strip lives in the masthead, where
+   this pairing does not arise. */
+.mkttabs + .mktpanel {
+  margin-top: var(--s5);
+}
 .mktpanel__head {
   display: flex;
   align-items: center;
@@ -669,6 +677,11 @@ a.mktstat:hover {
  * declares `.chip--cancelled` and `.chip--active` in this bundle, and a second
  * declaration of a class another session owns is a merge conflict waiting for
  * whichever of us edits it first.
+ *
+ * `--guest` is not a status but wears the same quiet pair: it marks a customer
+ * with no account, which on a shop where checkout needs none is the DEFAULT
+ * population — a chip that flagged the normal case in a warning colour would
+ * flag most of the directory.
  */
 .mktchip--requested,
 .mktchip--received {
@@ -677,7 +690,8 @@ a.mktstat:hover {
 }
 .mktchip--scheduled,
 .mktchip--collected,
-.mktchip--paused {
+.mktchip--paused,
+.mktchip--guest {
   background: var(--paper-inset);
   color: var(--ink-3);
 }
