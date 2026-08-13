@@ -668,6 +668,40 @@ describe('the returns queue', () => {
     expect(within(sheet()).getByText(`bode@example.com · ${requestedNew.id}`)).toBeTruthy();
   });
 
+  it('is three stops on the way through the page, not three per row', async () => {
+    const user = userEvent.setup();
+    withPrograms();
+    when('/api/marketing/returns', returnsPage);
+    mount('/marketing/returns?view=all');
+    await screen.findByText(requestedOld.id);
+
+    /*
+     * THE OTHER HALF OF THE ROVING TABINDEX, and the half the arrow-key test
+     * above cannot see. ↑/↓ keep working perfectly if every row is left in the
+     * tab order — the regression is invisible from the keyboard spine and shows
+     * up only as Tab, Tab, Tab, twenty-four times, between the search box and
+     * the pager. Eight rows carry three focusable things each; exactly one row's
+     * worth may be reachable with Tab.
+     */
+    const list = screen.getByRole('list', { name: 'Return requests' });
+    const stops = [...list.querySelectorAll('li.mktqrow, a, button')].filter(
+      (el) => el.getAttribute('tabindex') !== '-1',
+    );
+    expect(stops).toHaveLength(3);
+    const first = row(requestedOld.id);
+    expect(stops.every((el) => el === first || first.contains(el))).toBe(true);
+
+    // And the walk agrees with the attributes: into the row, across its two
+    // controls, then out of the list entirely rather than into row two.
+    first.focus();
+    await user.tab();
+    expect(first.contains(document.activeElement)).toBe(true);
+    await user.tab();
+    expect(first.contains(document.activeElement)).toBe(true);
+    await user.tab();
+    expect(list.contains(document.activeElement)).toBe(false);
+  });
+
   it('names the dialog after the action the server offered, whatever it offered', async () => {
     const user = userEvent.setup();
     withPrograms();

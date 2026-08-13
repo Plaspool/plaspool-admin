@@ -1516,6 +1516,40 @@ a.mktstat:hover {
   box-shadow: none;
 }
 
+/* ------------------------------------------------------ nothing to show */
+
+/*
+ * The Discounts screen, which is a screen about not having been built. `.empty`
+ * from `dashboard.css` is already the section's voice for "there is nothing
+ * here" and is borrowed unchanged; these two rules are the whole difference
+ * between an empty LIST and an unbuilt SCREEN.
+ *
+ * `--measure` rather than `.empty__body`'s own 32ch: a caption under a missing
+ * table is one line and reads better narrow, and this is a paragraph about what
+ * the thing will be when it exists. At 32ch that paragraph is a column six
+ * words wide, which is a shape people skip.
+ */
+.mktsoon {
+  max-width: var(--measure);
+  margin: 0 auto;
+}
+.mktsoon .empty__body {
+  max-width: none;
+}
+/* What is deliberately undecided, quieter than the sentence above it. No
+   marker glyph: these are centred, and a centred list with bullets hangs its
+   text off an invisible left edge that is different on every line. */
+.mktsoon__later {
+  display: grid;
+  gap: var(--s1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--step--1);
+  line-height: 1.5;
+  color: var(--ink-4);
+}
+
 /* ------------------------------------------------------- touch targets */
 
 /*
