@@ -22,5 +22,21 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  /*
+   * TESTS ARE NOT APP SOURCES, and this is the build that produces the bundle.
+   *
+   * They were inside `include` by omission rather than by decision, and the
+   * consequence surfaced the day a suite needed to read a file off disk: a
+   * `node:fs` import in a test typechecks under the root config, passes
+   * `vitest`, and fails `tsc -b` — which is the first half of `npm run build`,
+   * which is the command the deployment runs. So a test could break a deploy
+   * while every check a person runs locally stayed green.
+   *
+   * `types: ["vite/client"]` above is the rule this protects: browser code may
+   * not reach for `process` or `Buffer`, and a test that reads the repository
+   * is not browser code. The suites are still typechecked — `tsc --noEmit` at
+   * the root covers them, and `vitest` runs them.
+   */
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/__tests__/**"]
 }

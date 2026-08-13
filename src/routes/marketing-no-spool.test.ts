@@ -1,5 +1,55 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+
+/*
+ * `node:fs` FOR THE STYLESHEET AND NOTHING ELSE, and it is legal here only
+ * because `tsconfig.app.json` now excludes test files from the bundle's build.
+ * The alternative every other suite uses — Vite's `?raw` — cannot read a `.css`
+ * file under vitest: the css pipeline answers before the query does and hands
+ * back the empty string, which is a guard that passes by reading nothing. The
+ * first assertion below is what caught that.
+ */
+const MARKETING_CSS = readFileSync('src/routes/marketing.css', 'utf8');
+
+/*
+ * VITE'S `?raw`, NOT `node:fs` — the rule `src/sw.test.ts` and
+ * `src/brand.test.tsx` each state at their own first line, and which this file
+ * was written in violation of. `tsconfig.app.json` declares
+ * `types: ["vite/client"]` and nothing else, so a `node:fs` import here
+ * typechecks under the root config and fails `tsc -b` — i.e. it passes
+ * `vitest`, passes `tsc --noEmit`, and breaks `npm run build`, which is the
+ * command the deployment runs.
+ *
+ * `import.meta.glob` is also a better fit for what this test is FOR: the
+ * patterns are resolved by the bundler at build time, so a glob that stops
+ * matching is a glob with no keys rather than a directory read that silently
+ * returns nothing — and the first assertion below checks exactly that.
+ */
+const SOURCES: Record<string, string> = {
+  ...import.meta.glob('./Marketing*.tsx', { query: '?raw', import: 'default', eager: true }),
+  ...import.meta.glob('./marketing/**/*.{ts,tsx}', {
+    query: '?raw',
+    import: 'default',
+    eager: true,
+  }),
+  './marketing.css': MARKETING_CSS,
+  /* The client itself, NOT its suite: `api-marketing.test.ts` asserts the noun
+     is absent and therefore has to spell it, exactly as this file does. */
+  ...import.meta.glob('../data/api-marketing.ts', {
+    query: '?raw',
+    import: 'default',
+    eager: true,
+  }),
+  ...import.meta.glob('../data/marketing-fixtures.ts', {
+    query: '?raw',
+    import: 'default',
+    eager: true,
+  }),
+};
+
+/** Glob keys are relative to this file; the assertions read in repo terms. */
+const repoPath = (key: string): string =>
+  key.replace(/^\.\.\/data\//, 'src/data/').replace(/^\.\//, 'src/routes/');
 
 /**
  * The section's naming promise, enforced against its own source instead of
@@ -57,28 +107,14 @@ const ROUTES = 'src/routes';
  * callers are all in here.
  */
 function sources(): string[] {
-  const screens = readdirSync(ROUTES)
-    .filter((name) => /^Marketing.*\.tsx$/.test(name))
-    .map((name) => `${ROUTES}/${name}`);
-  /* `recursive` rather than one level: without it a directory here is dropped
-     by the `isFile` filter in silence, and everything under it stops being
-     checked with nothing going red — the same "list that quietly stopped
-     covering things" this function exists to avoid, one level down. */
-  const shared = readdirSync(`${ROUTES}/marketing`, { withFileTypes: true, recursive: true })
-    .filter((entry) => entry.isFile())
-    // Windows joins the nested half with backslashes; the assertions below and
-    // the failure messages are all written in the repository's own idiom.
-    .map((entry) => `${entry.parentPath.replaceAll('\\', '/')}/${entry.name}`);
-  return [
-    ...screens,
-    ...shared,
-    'src/data/api-marketing.ts',
-    'src/data/marketing-fixtures.ts',
-    `${ROUTES}/marketing.css`,
-  ];
+  return Object.keys(SOURCES).map(repoPath).sort();
 }
 
-const read = (file: string): string => readFileSync(file, 'utf8');
+const read = (file: string): string => {
+  const key = Object.keys(SOURCES).find((k) => repoPath(k) === file);
+  if (key === undefined) throw new Error(`no source read for ${file}`);
+  return SOURCES[key];
+};
 
 describe('the marketing section’s sources', () => {
   /*
