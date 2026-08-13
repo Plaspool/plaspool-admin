@@ -84,8 +84,20 @@ export function QtyStepper({
     settle(ceiling(Number(digits)));
   }
 
+  /**
+   * The floor belongs to the way DOWN only. Applied upward it would walk a
+   * typed 3 against a minimum of 5 straight to 5 — one tap moving the number by
+   * two, with 4 unreachable from the buttons at all. That is the same rewrite
+   * the typing rule above refuses, wearing a button; below the minimum the
+   * buttons still count, and the route still answers `below_minimum`.
+   *
+   * The ceiling applies in both directions, because a `max` that DROPS (the
+   * Received box lowering what Accepted may be) leaves the value above a limit
+   * it never crossed: one press of `[−]` should land inside the limit rather
+   * than one below wherever it was stranded.
+   */
   function step(by: 1 | -1): void {
-    const next = Math.max(min, ceiling(value + by));
+    const next = ceiling(by === -1 ? Math.max(min, value - 1) : value + 1);
     if (next !== value) settle(next);
   }
 

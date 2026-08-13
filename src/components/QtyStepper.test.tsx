@@ -106,6 +106,52 @@ describe('QtyStepper', () => {
     expect(changed).not.toHaveBeenCalled();
   });
 
+  it('STILL COUNTS BY ONE FROM BELOW THE MINIMUM — the floor is not a magnet', async () => {
+    const user = userEvent.setup();
+    const changed = vi.fn();
+    // 3 against a minimum of 5 is a state the typing rule above deliberately
+    // allows, so it is a state the buttons have to behave in.
+    render(<Counting initial={3} min={5} onChange={changed} />);
+
+    await user.click(more());
+
+    // 5 would be a single tap moving the number by two, and would leave 4
+    // unreachable from the buttons entirely.
+    expect(field().value).toBe('4');
+    expect(changed).toHaveBeenLastCalledWith(4);
+  });
+
+  it('steps DOWN into a ceiling that dropped under the value it was holding', async () => {
+    const user = userEvent.setup();
+    const changed = vi.fn();
+    // Accepted holds 6 and Received has just been corrected to 4: the value is
+    // above a limit it never crossed, and `[+]` is already refusing.
+    render(<Counting initial={6} max={4} onChange={changed} />);
+    expect(more().disabled).toBe(true);
+
+    await user.click(less());
+
+    // 5 would still be more units than were received.
+    expect(field().value).toBe('4');
+    expect(changed).toHaveBeenLastCalledWith(4);
+  });
+
+  it('does not tell the form a number it is already holding', async () => {
+    const user = userEvent.setup();
+    const changed = vi.fn();
+    render(<Counting initial={6} onChange={changed} />);
+
+    await user.clear(field());
+    await user.type(field(), '6');
+
+    // Retyping the same number is not an edit. Every screen in this section
+    // recomputes the live award sentence on this callback, and B4 re-runs a
+    // 409 auto-heal from it, so a keystroke that changed nothing must not
+    // announce itself as a change.
+    expect(field().value).toBe('6');
+    expect(changed).not.toHaveBeenCalled();
+  });
+
   it('takes a typed number, for the jump the buttons would take forty taps to reach', async () => {
     const user = userEvent.setup();
     const changed = vi.fn();

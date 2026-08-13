@@ -13,11 +13,14 @@
    Two hundred duplicated lines are cheaper than that, and the
    duplication is inert — nothing here changes when the shop's does.
 
-   Borrowed rather than copied, because `main.tsx` loads them before
-   anything renders and they belong to no section: `.btn`, `.input`,
-   `.label`, `.chip`, `.notice`, `.skeleton` from `base.css`, and
-   `.empty` from `dashboard.css` — which is already what an empty
-   library, a missing post and a failed search all look like.
+   Borrowed from `base.css`, which `main.tsx` loads before anything
+   renders: `.btn`, `.input`, `.label`, `.chip`, `.notice`,
+   `.skeleton`. Borrowed from `dashboard.css`: `.empty`, already what
+   an empty library, a missing post and a failed search all look
+   like, and `.searchbox`, which belongs to no section. Those two
+   arrive through `Dashboard.tsx`'s static import rather than through
+   `main.tsx` — the shop borrows `.empty` on the same terms, and the
+   day a route is lazy-loaded both files answer for it together.
 
    TOKENS ONLY. Not one literal colour anywhere in this file: every
    value comes from `tokens.css`, which is what makes both themes
@@ -190,12 +193,21 @@ a.mktstat:hover {
 
 /* -------------------------------------------------------------- panels */
 
-/* `.panel` from `shop.css`, renamed. */
+/* `.panel` from `shop.css`, renamed — with one word changed, and the change is
+   the reason this block has a comment at all.
+
+   `clip`, NOT `hidden`. Both round off a flush list's last row against the
+   panel's corner, which is the whole job here. But `overflow: hidden` also
+   makes the panel a SCROLL CONTAINER, and a scroll container is what a
+   `position: sticky` descendant sticks inside — so a sticky heading in a panel
+   that never scrolls simply never sticks, silently and at every width. The
+   ledger's day headings live in a panel and are required to stick; `clip`
+   clips without claiming the scroll. */
 .mktpanel {
   border: 1px solid var(--rule);
   border-radius: var(--radius-l);
   background: var(--paper-raised);
-  overflow: hidden;
+  overflow: clip;
 }
 .mktpanel + .mktpanel,
 .mkttiles + .mktpanel,
@@ -1006,6 +1018,18 @@ a.mktstat:hover {
      375px, where it would push the reason to two words a line. */
   .mktaudit__when {
     grid-column: 2;
+  }
+  /* Sticky here and not above, because the phone is where the ledger becomes a
+     long scroll: "+60" with the date gone off the top is a credit with no
+     answer to "when", and this is the surface a balance gets disputed from.
+     `--paper-raised` is the panel's own fill — an opaque backdrop, or the rows
+     read through the heading as it passes over them. (It sticks at all only
+     because `.mktpanel` clips rather than hides; see that block.) */
+  .mktaudit__day {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--paper-raised);
   }
 }
 
