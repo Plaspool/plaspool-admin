@@ -60,12 +60,16 @@ vi.mock('../data/sync', () => ({ revalidate: vi.fn() }));
 
 import {
   NOW,
+  awardedRow,
   capsProgram,
   endedBanner,
   freshSummary,
+  ledgerWalk,
   programs,
   receivedRow,
+  requestedNew,
   requestedOld,
+  scheduledRow,
   settings,
   summary,
 } from '../data/marketing-fixtures';
@@ -235,7 +239,15 @@ describe('the marketing overview', () => {
   });
 
   it('offers each open return the step the server named, and sends inspection to its own form', async () => {
-    withEverything();
+    /*
+     * A CLOSED ROW RIDES ALONG. `oldestOpen` is open returns by contract, but
+     * the only thing standing between this panel and "Add a note" as a row's
+     * headline step is one predicate — and a payload the screen is not braced
+     * for is exactly what a summary route written in another session might
+     * hand it. Dara's award is closed and her new request is open, which is a
+     * state the one-open-return-per-email index permits.
+     */
+    withEverything({ ...summary, oldestOpen: [...summary.oldestOpen, awardedRow] });
     mount();
 
     await landed();
@@ -256,10 +268,34 @@ describe('the marketing overview', () => {
     });
     expect(inspect.getAttribute('href')).toBe('/marketing/returns?id=ret_tunde_1&act=inspect');
 
+    // Terminal: a note is the only action the server allows and a note is not
+    // a step, so the row goes quiet rather than headlining "Add a note".
+    expect(awardedRow.allowedActions).toEqual(['note']);
+    expect(
+      within(row(open, awardedRow.id))
+        .getByRole('link', { name: 'View — dara@example.com' })
+        .getAttribute('href'),
+    ).toBe('/marketing/returns?id=ret_dara_0');
+
     // The row says what is coming back in the program's own words, and how
     // long it has been saying it.
     expect(within(open).getAllByText('6 canisters').length).toBeGreaterThan(0);
-    expect(within(row(open, requestedOld.id)).getByText('waiting 4d')).toBeTruthy();
+
+    /*
+     * AGE IS TEXT AND COLOUR, NEVER COLOUR ALONE — and the two bands are
+     * thresholds rather than "anything with an age on it". Three rows, one per
+     * band, because a screen that reddens everything is a screen nobody reads
+     * the red on.
+     */
+    expect(within(row(open, requestedOld.id)).getByText('waiting 4d').className).toContain(
+      'mktage--danger',
+    );
+    expect(within(row(open, scheduledRow.id)).getByText('waiting 2d').className).toContain(
+      'mktage--warn',
+    );
+    const fresh = within(row(open, requestedNew.id)).getByText('waiting 3h').className;
+    expect(fresh).toContain('mktage');
+    expect(fresh).not.toContain('mktage--');
   });
 
   it('reads the ledger in the words each row was written in, not today’s', async () => {
@@ -287,6 +323,25 @@ describe('the marketing overview', () => {
     // A debit reads as one, in the same words.
     expect(within(activity).getByText('−40 Bottle Caps')).toBeTruthy();
     expect(within(activity).getByText('Goodwill — box arrived crushed')).toBeTruthy();
+  });
+
+  it('draws no more of the ledger than a panel beside three others can hold', async () => {
+    /*
+     * The contract says `latestLedger` is eight rows at most, so this asks what
+     * happens when it isn't. A panel that renders whatever it is handed turns a
+     * server-side pagination slip into a summary screen scrolled past the
+     * things it exists to summarise — and the cap costs one `slice`.
+     */
+    const flood = Array.from({ length: 14 }, (_, i) => ({
+      ...ledgerWalk[0],
+      id: `pts_flood_${i}`,
+      customerEmail: 'dara@example.com',
+    }));
+    withEverything({ ...summary, latestLedger: flood });
+    mount();
+
+    await landed();
+    expect(within(panel('Latest rewards activity')).getAllByRole('listitem')).toHaveLength(8);
   });
 
   it('chips a banner with the status the clock gives it, not the one stored on it', async () => {
@@ -324,6 +379,16 @@ describe('the marketing overview', () => {
 
   it('shows every first step on a fresh install, with the preset’s editor behind the first two', async () => {
     withEverything(freshSummary);
+    /*
+     * THE PRESET IS LAST IN THE LIST, DELIBERATELY. `seeded` is the only handle
+     * on it — the key is un-editable but never matched on, because matching the
+     * key is exactly what the hardcoded-noun guard forbids (spec D2a/D11) — and
+     * a fixture whose seeded row happens to be first cannot tell "found by its
+     * flag" apart from "took the first row it was given". Reversed, the first
+     * row is an unseeded program on revision 2: a screen reading position gets
+     * a reviewed program and drops both naming lines.
+     */
+    withPrograms([...programs].reverse());
     mount();
 
     await landed();
@@ -359,6 +424,25 @@ describe('the marketing overview', () => {
     expect(within(card).getAllByRole('listitem')).toHaveLength(2);
     expect(within(card).queryByText('Log the first return')).toBeNull();
     expect(within(card).queryByText('Put something on the site')).toBeNull();
+  });
+
+  it('stops asking for a first return the moment one is in flight, not when one is awarded', async () => {
+    /*
+     * THE DAY BETWEEN. A return has been logged and nothing has been awarded
+     * yet, so the ledger is still empty — and a checklist reading only the
+     * ledger would spend that whole week telling the person who logged it to
+     * log their first return. The banner line is untouched by any of it, which
+     * is what proves the two lines are two questions.
+     */
+    withEverything({ ...freshSummary, oldestOpen: [requestedOld] });
+    mount();
+
+    await landed();
+    const card = panel('First steps');
+
+    expect(within(card).queryByText('Log the first return')).toBeNull();
+    expect(within(card).getByText('Put something on the site')).toBeTruthy();
+    expect(within(card).getAllByRole('listitem')).toHaveLength(3);
   });
 
   it('takes the card away entirely once somebody has been through the preset', async () => {
@@ -422,6 +506,11 @@ describe('the marketing overview', () => {
     expect(screen.getAllByText('Nothing is waiting.')).toHaveLength(2);
     expect(screen.getByText('No pickup is booked.')).toBeTruthy();
 
+    // And no ops line: an empty outbox is not news, and "0 notifications are
+    // waiting" on a screen whose whole subject is what is waiting on somebody
+    // is a line that has to be read before it can be ignored.
+    expect(screen.queryByText(/waiting to be sent/)).toBeNull();
+
     // And every panel says what empty MEANS, in the voice of a section whose
     // intake is admin-driven — nothing here promises requests that arrive on
     // their own.
@@ -453,6 +542,18 @@ describe('the marketing overview', () => {
     // Absent rather than empty — an empty panel would be a claim about state
     // this screen does not have.
     expect(screen.queryByText('Oldest open returns')).toBeNull();
+
+    /*
+     * AND THE CHECKLIST SAYS ONLY WHAT IT KNOWS. The two lines the programs
+     * answered are there; the two the summary would have answered are not,
+     * because a failed request is UNKNOWN and unknown is not empty. Read as
+     * empty, this screen would tell a shop with a full pipeline and a live
+     * banner to go and create its first of each — the most confident possible
+     * wrong answer, on the one card an operator is most likely to trust.
+     */
+    expect(within(panel('First steps')).getAllByRole('listitem')).toHaveLength(2);
+    expect(screen.queryByText('Log the first return')).toBeNull();
+    expect(screen.queryByText('Put something on the site')).toBeNull();
 
     broken = false;
     await user.click(screen.getByRole('button', { name: 'Try again' }));
