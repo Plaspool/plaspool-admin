@@ -74,18 +74,25 @@ beforeEach(async () => {
 // --------------------------------------------------------------- catalogue readers
 
 /**
- * The database column name a drizzle column object carries.
+ * A drizzle column, read back as the three things the database also knows about
+ * it: its column NAME, its SQL TYPE and whether it is NULLABLE.
  *
- * Read off the column rather than off the property key: the two differ by design
- * (`updatedAt` is `updated_at`), and comparing property keys against
- * `information_schema` would compare two different things and pass for the wrong
- * reason. `typeof value === 'object'` is doing real work — a drizzle table object
- * also carries METHODS (`enableRLS`), and a function has a `.name` too.
+ * The name is read off the column rather than off the property key, because the
+ * two differ by design (`updatedAt` is `updated_at`) and comparing property keys
+ * against `information_schema` would compare two different things and pass for
+ * the wrong reason. `typeof value === 'object'` is doing real work — a drizzle
+ * table object also carries METHODS (`enableRLS`), and a function has a `.name`.
+ *
+ * `getSQLType()` happens to return exactly the vocabulary `information_schema`
+ * reports (`text`, `integer`, `bigint`, `boolean`, `jsonb`, `uuid`), so the two
+ * sides compare with no translation table in between — and a translation table
+ * is precisely the thing that would let a drift through by being wrong itself.
  */
-function nameOf(value: unknown): string {
-  if (typeof value !== 'object' || value === null) return '';
-  const name = (value as { name?: unknown }).name;
-  return typeof name === 'string' ? name : '';
+function columnOf(value: unknown): [string, { type: string; nullable: boolean }] | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const col = value as { name?: unknown; notNull?: unknown; getSQLType?: unknown };
+  if (typeof col.name !== 'string' || typeof col.getSQLType !== 'function') return null;
+  return [col.name, { type: (col.getSQLType as () => string)(), nullable: col.notNull !== true }];
 }
 
 async function columns(table: string): Promise<Map<string, { type: string; nullable: boolean }>> {
@@ -101,13 +108,26 @@ async function columns(table: string): Promise<Map<string, { type: string; nulla
   );
 }
 
-/** Every CHECK on a table, by name, with the expression Postgres reparsed. */
+/**
+ * Every CHECK on a table, by name, with the expression Postgres REPARSED.
+ *
+ * The expression matters as much as the name. A CHECK keeps its name when its
+ * predicate is weakened — `status IN ('active','paused')` edited down to
+ * `status <> ''` is still `marketing_programs_status_ck` — so a suite that
+ * compares only names watches a constraint be gutted and stays green.
+ *
+ * Whitespace is collapsed because `pg_get_constraintdef` re-emits the expression
+ * from the parse tree: the formatting is Postgres's, not this file's, and it
+ * wraps long predicates at a width nothing here should depend on.
+ */
 async function checks(table: string): Promise<Map<string, string>> {
   const res = await db.execute(sql`
     SELECT conname, pg_get_constraintdef(oid) AS def
       FROM pg_constraint
      WHERE conrelid = ${table}::regclass AND contype = 'c'`);
-  return new Map(res.rows.map((row) => [String(row.conname), String(row.def)]));
+  return new Map(
+    res.rows.map((row) => [String(row.conname), String(row.def).replace(/\s+/g, ' ')]),
+  );
 }
 
 async function indexDef(name: string): Promise<string | null> {
@@ -206,6 +226,12 @@ describe('migration 0011 is applied', () => {
      * creates the tables — migration 0011 is. So it is exactly the kind of thing
      * that rots: correct on the day it is written, silently wrong after the first
      * migration nobody mirrors into it. This reads both sides and compares them.
+     *
+     * NAME, TYPE AND NULLABILITY, not just name. `$inferSelect` is what the whole
+     * subsystem's row types are built from, so a column declared `text` that the
+     * database made `integer` — or declared nullable that the database made NOT
+     * NULL — is a lie every consumer typechecks against. A name-only comparison
+     * sees a matching set of strings and says nothing.
      */
     const pairs: [string, object][] = [
       ['marketing_programs', marketingPrograms],
@@ -219,8 +245,12 @@ describe('migration 0011 is applied', () => {
       ['marketing_discount_codes', marketingDiscountCodes],
     ];
     for (const [table, declared] of pairs) {
-      const names = Object.values(declared).map(nameOf).filter(Boolean).sort();
-      expect(names, table).toEqual([...(await columns(table)).keys()].sort());
+      const shape = Object.values(declared)
+        .map(columnOf)
+        .filter((entry) => entry !== null);
+      expect(Object.fromEntries(shape), table).toEqual(
+        Object.fromEntries(await columns(table)),
+      );
     }
   });
 
@@ -285,98 +315,159 @@ describe('migration 0011 is applied', () => {
     }
   });
 
-  it('carries every CHECK the spec names, and no more', async () => {
+  it('carries every CHECK by name AND by predicate, exactly', async () => {
     /*
-     * Exact set equality per table, not `toContain`. A CHECK that quietly
-     * disappears in a later edit is the failure mode this file exists for, and a
-     * containment assertion cannot see it.
+     * Exact equality per table — every name AND every expression — rather than
+     * `toContain` over a list of names.
+     *
+     * Names alone are not the property worth pinning, and the mutation that
+     * proves it is one line: edit `status IN ('active','paused')` down to
+     * `status <> ''` and the constraint keeps its name, keeps its place in the
+     * catalogue, and enforces nothing. Six of these CHECKs were weakened exactly
+     * that way while this suite was under review and it stayed entirely green.
+     * The expressions below are `pg_get_constraintdef` output — Postgres's own
+     * reparse of what shipped — so this compares what the DATABASE understands,
+     * not what the file appears to say.
+     *
+     * This is a SUPERSET of the CHECKs spec §Database names: the five
+     * `*_revision_ck` guards are house hardening on the CAS columns, on the rule
+     * `server/db/schema.ts` states about enum-ish and bounded columns, and a
+     * revision of 0 would make `expectedRevision` ambiguous with a missing field.
+     * The spec names no CHECK this file omits.
+     *
+     * A failure here is either a real weakening (fix the migration) or a
+     * deliberate change (update the string, and know that you did).
      */
-    const expected: Record<string, string[]> = {
-      marketing_programs: [
-        'marketing_programs_key_ck',
-        'marketing_programs_kind_ck',
-        'marketing_programs_name_ck',
-        'marketing_programs_points_labels_ck',
-        'marketing_programs_min_units_ck',
-        'marketing_programs_points_per_unit_ck',
-        'marketing_programs_kind_fields_ck',
-        'marketing_programs_status_ck',
-        'marketing_programs_revision_ck',
-      ],
-      marketing_settings: [
-        'marketing_settings_id_ck',
-        'marketing_settings_points_labels_ck',
-        'marketing_settings_rate_points_ck',
-        'marketing_settings_rate_minor_ck',
-        'marketing_settings_enabled_rate_ck',
-        'marketing_settings_currency_ck',
-        'marketing_settings_min_redeem_ck',
-        'marketing_settings_max_bps_ck',
-        'marketing_settings_revision_ck',
-      ],
-      marketing_return_requests: [
-        'marketing_return_requests_email_ck',
-        'marketing_return_requests_qty_declared_ck',
-        'marketing_return_requests_qty_counts_ck',
-        'marketing_return_requests_points_snapshot_ck',
-        'marketing_return_requests_points_awarded_ck',
-        'marketing_return_requests_source_ck',
-        'marketing_return_requests_status_ck',
-        'marketing_return_requests_award_ck',
-        'marketing_return_requests_revision_ck',
-      ],
-      marketing_return_events: [
-        'marketing_return_events_type_ck',
-        'marketing_return_events_actor_ck',
-      ],
-      marketing_ledger: [
-        'marketing_ledger_email_ck',
-        'marketing_ledger_kind_ck',
-        'marketing_ledger_delta_ck',
-        'marketing_ledger_balance_after_ck',
-        'marketing_ledger_reason_ck',
-        'marketing_ledger_actor_ck',
-        'marketing_ledger_award_link_ck',
-        'marketing_ledger_order_link_ck',
-        'marketing_ledger_award_sign_ck',
-        'marketing_ledger_redemption_sign_ck',
-        'marketing_ledger_release_sign_ck',
-      ],
-      marketing_balances: [
-        'marketing_balances_email_ck',
-        'marketing_balances_balance_ck',
-        'marketing_balances_lifetime_ck',
-      ],
-      marketing_email_intents: [
-        'marketing_email_intents_kind_ck',
-        'marketing_email_intents_bodies_ck',
-        'marketing_email_intents_attempts_ck',
-      ],
-      marketing_banners: [
-        'marketing_banners_title_ck',
-        'marketing_banners_cta_url_ck',
-        'marketing_banners_cta_pair_ck',
-        'marketing_banners_placement_ck',
-        'marketing_banners_status_ck',
-        'marketing_banners_window_ck',
-        'marketing_banners_revision_ck',
-      ],
-      marketing_discount_codes: [
-        'marketing_discount_codes_code_ck',
-        'marketing_discount_codes_kind_ck',
-        'marketing_discount_codes_percent_ck',
-        'marketing_discount_codes_amount_ck',
-        'marketing_discount_codes_currency_ck',
-        'marketing_discount_codes_kind_fields_ck',
-        'marketing_discount_codes_status_ck',
-        'marketing_discount_codes_window_ck',
-        'marketing_discount_codes_max_redemptions_ck',
-        'marketing_discount_codes_redeemed_count_ck',
-        'marketing_discount_codes_revision_ck',
-      ],
+    const expected: Record<string, Record<string, string>> = {
+      marketing_programs: {
+        marketing_programs_key_ck:
+          "CHECK (((key <> ''::text) AND (key = lower(key)) AND (key ~ '^[a-z0-9][a-z0-9_-]*$'::text)))",
+        marketing_programs_kind_ck:
+          "CHECK ((kind = ANY (ARRAY['unit_return'::text, 'adhoc'::text])))",
+        marketing_programs_name_ck: "CHECK (((name <> ''::text) AND (name = btrim(name))))",
+        marketing_programs_points_labels_ck:
+          "CHECK (((points_label_singular <> ''::text) AND (points_label_plural <> ''::text)))",
+        marketing_programs_min_units_ck:
+          'CHECK (((min_units_per_return IS NULL) OR (min_units_per_return > 0)))',
+        marketing_programs_points_per_unit_ck:
+          'CHECK (((points_per_unit IS NULL) OR (points_per_unit > 0)))',
+        marketing_programs_kind_fields_ck:
+          "CHECK (((kind = 'unit_return'::text) = ((unit_label_singular IS NOT NULL) AND (unit_label_plural IS NOT NULL) AND (min_units_per_return IS NOT NULL) AND (points_per_unit IS NOT NULL))))",
+        marketing_programs_status_ck:
+          "CHECK ((status = ANY (ARRAY['active'::text, 'paused'::text])))",
+        marketing_programs_revision_ck: 'CHECK ((revision > 0))',
+      },
+      marketing_settings: {
+        marketing_settings_id_ck: "CHECK ((id = 'main'::text))",
+        marketing_settings_points_labels_ck:
+          "CHECK (((points_label_singular <> ''::text) AND (points_label_plural <> ''::text)))",
+        marketing_settings_rate_points_ck: 'CHECK ((redemption_rate_points > 0))',
+        marketing_settings_rate_minor_ck: 'CHECK ((redemption_rate_minor >= 0))',
+        marketing_settings_enabled_rate_ck:
+          'CHECK (((NOT redemption_enabled) OR (redemption_rate_minor > 0)))',
+        marketing_settings_currency_ck:
+          "CHECK ((redemption_currency ~ '^[A-Z]{3}$'::text))",
+        marketing_settings_min_redeem_ck: 'CHECK ((min_redeem_points >= 0))',
+        marketing_settings_max_bps_ck:
+          'CHECK (((max_redeem_bps >= 1) AND (max_redeem_bps <= 10000)))',
+        marketing_settings_revision_ck: 'CHECK ((revision > 0))',
+      },
+      marketing_return_requests: {
+        marketing_return_requests_email_ck:
+          "CHECK (((customer_email <> ''::text) AND (customer_email = lower(customer_email))))",
+        marketing_return_requests_qty_declared_ck: 'CHECK ((qty_declared > 0))',
+        marketing_return_requests_qty_counts_ck:
+          'CHECK ((((qty_accepted IS NULL) OR (qty_accepted >= 0)) AND ((qty_rejected IS NULL) OR (qty_rejected >= 0))))',
+        marketing_return_requests_points_snapshot_ck:
+          'CHECK ((points_per_unit_snapshot > 0))',
+        marketing_return_requests_points_awarded_ck:
+          'CHECK (((points_awarded IS NULL) OR (points_awarded >= 0)))',
+        marketing_return_requests_source_ck:
+          "CHECK ((source = ANY (ARRAY['customer'::text, 'admin'::text])))",
+        marketing_return_requests_status_ck:
+          "CHECK ((status = ANY (ARRAY['requested'::text, 'scheduled'::text, 'collected'::text, 'received'::text, 'awarded'::text, 'rejected'::text, 'cancelled'::text])))",
+        marketing_return_requests_award_ck:
+          "CHECK (((status <> 'awarded'::text) OR ((qty_accepted >= 1) AND (qty_rejected IS NOT NULL) AND (points_awarded = (qty_accepted * points_per_unit_snapshot)))))",
+        marketing_return_requests_revision_ck: 'CHECK ((revision > 0))',
+      },
+      marketing_return_events: {
+        marketing_return_events_type_ck:
+          "CHECK ((type = ANY (ARRAY['requested'::text, 'scheduled'::text, 'collected'::text, 'received'::text, 'inspected'::text, 'rejected'::text, 'cancelled'::text, 'note'::text])))",
+        marketing_return_events_actor_ck:
+          "CHECK ((actor_type = ANY (ARRAY['admin'::text, 'customer'::text, 'system'::text])))",
+      },
+      marketing_ledger: {
+        marketing_ledger_email_ck:
+          "CHECK (((customer_email <> ''::text) AND (customer_email = lower(customer_email))))",
+        marketing_ledger_kind_ck:
+          "CHECK ((kind = ANY (ARRAY['return_award'::text, 'manual'::text, 'redemption'::text, 'redemption_release'::text])))",
+        marketing_ledger_delta_ck: 'CHECK ((delta <> 0))',
+        marketing_ledger_balance_after_ck: 'CHECK ((balance_after >= 0))',
+        marketing_ledger_reason_ck: "CHECK ((reason <> ''::text))",
+        marketing_ledger_actor_ck:
+          "CHECK ((actor_type = ANY (ARRAY['admin'::text, 'customer'::text, 'system'::text])))",
+        marketing_ledger_award_link_ck:
+          "CHECK (((kind = 'return_award'::text) = (return_request_id IS NOT NULL)))",
+        marketing_ledger_order_link_ck:
+          "CHECK (((kind <> ALL (ARRAY['redemption'::text, 'redemption_release'::text])) OR (order_id IS NOT NULL)))",
+        marketing_ledger_award_sign_ck:
+          "CHECK (((kind <> 'return_award'::text) OR ((delta > 0) AND (program_id IS NOT NULL))))",
+        marketing_ledger_redemption_sign_ck:
+          "CHECK (((kind <> 'redemption'::text) OR (delta < 0)))",
+        marketing_ledger_release_sign_ck:
+          "CHECK (((kind <> 'redemption_release'::text) OR (delta > 0)))",
+      },
+      marketing_balances: {
+        marketing_balances_email_ck:
+          "CHECK (((customer_email <> ''::text) AND (customer_email = lower(customer_email))))",
+        marketing_balances_balance_ck: 'CHECK ((balance >= 0))',
+        marketing_balances_lifetime_ck: 'CHECK ((lifetime_earned >= 0))',
+      },
+      marketing_email_intents: {
+        marketing_email_intents_kind_ck:
+          "CHECK ((kind = ANY (ARRAY['return_awarded'::text, 'return_rejected'::text])))",
+        marketing_email_intents_bodies_ck:
+          "CHECK (((to_email <> ''::text) AND (subject <> ''::text) AND (text <> ''::text) AND (html <> ''::text)))",
+        marketing_email_intents_attempts_ck: 'CHECK ((attempts >= 0))',
+      },
+      marketing_banners: {
+        marketing_banners_title_ck: "CHECK (((title <> ''::text) AND (title = btrim(title))))",
+        marketing_banners_cta_url_ck:
+          "CHECK (((cta_url IS NULL) OR (cta_url ~ '^(https?://|/)'::text)))",
+        marketing_banners_cta_pair_ck: 'CHECK (((cta_text IS NULL) = (cta_url IS NULL)))',
+        marketing_banners_placement_ck:
+          "CHECK ((placement = ANY (ARRAY['top_bar'::text, 'popup'::text, 'section'::text])))",
+        marketing_banners_status_ck:
+          "CHECK ((status = ANY (ARRAY['draft'::text, 'live'::text, 'archived'::text])))",
+        marketing_banners_window_ck:
+          'CHECK (((starts_at IS NULL) OR (ends_at IS NULL) OR (ends_at > starts_at)))',
+        marketing_banners_revision_ck: 'CHECK ((revision > 0))',
+      },
+      marketing_discount_codes: {
+        marketing_discount_codes_code_ck:
+          "CHECK (((code = upper(code)) AND (code ~ '^[A-Z0-9][A-Z0-9_-]{2,31}$'::text)))",
+        marketing_discount_codes_kind_ck:
+          "CHECK ((kind = ANY (ARRAY['percent'::text, 'fixed_amount'::text])))",
+        marketing_discount_codes_percent_ck:
+          'CHECK (((percent_bps IS NULL) OR ((percent_bps >= 1) AND (percent_bps <= 10000))))',
+        marketing_discount_codes_amount_ck:
+          'CHECK (((amount_minor IS NULL) OR (amount_minor > 0)))',
+        marketing_discount_codes_currency_ck:
+          "CHECK (((currency IS NULL) OR (currency ~ '^[A-Z]{3}$'::text)))",
+        marketing_discount_codes_kind_fields_ck:
+          "CHECK ((((kind = 'percent'::text) = (percent_bps IS NOT NULL)) AND ((kind = 'fixed_amount'::text) = ((amount_minor IS NOT NULL) AND (currency IS NOT NULL)))))",
+        marketing_discount_codes_status_ck:
+          "CHECK ((status = ANY (ARRAY['active'::text, 'disabled'::text])))",
+        marketing_discount_codes_window_ck:
+          'CHECK (((starts_at IS NULL) OR (ends_at IS NULL) OR (ends_at > starts_at)))',
+        marketing_discount_codes_max_redemptions_ck:
+          'CHECK (((max_redemptions IS NULL) OR (max_redemptions > 0)))',
+        marketing_discount_codes_redeemed_count_ck: 'CHECK ((redeemed_count >= 0))',
+        marketing_discount_codes_revision_ck: 'CHECK ((revision > 0))',
+      },
     };
-    for (const [table, names] of Object.entries(expected)) {
-      expect([...(await checks(table)).keys()].sort(), table).toEqual([...names].sort());
+    for (const [table, defs] of Object.entries(expected)) {
+      expect(Object.fromEntries(await checks(table)), table).toEqual(defs);
     }
   });
 });
@@ -732,6 +823,15 @@ describe('ledger — idempotency lives in partial uniques, not in code', () => {
         (id, customer_email, kind, delta, balance_after, reason, order_id, actor_type, created_at)
       VALUES ('pts_b', ${EMAIL}, 'redemption', 10, 35, 'why', ${ORDER}, 'system', ${T0})`);
     expect(positiveRedemption.constraint).toBe('marketing_ledger_redemption_sign_ck');
+
+    // The third sign, and the one it is easiest to leave unpinned: a RELEASE is
+    // the compensating credit for a cancelled order, so a negative one debits a
+    // customer a second time for a purchase that never happened.
+    const negativeRelease = await refused(sql`
+      INSERT INTO marketing_ledger
+        (id, customer_email, kind, delta, balance_after, reason, order_id, actor_type, created_at)
+      VALUES ('pts_c', ${EMAIL}, 'redemption_release', -10, 15, 'why', ${ORDER}, 'system', ${T0})`);
+    expect(negativeRelease.constraint).toBe('marketing_ledger_release_sign_ck');
   });
 
   it('refuses a zero delta, an empty reason and a negative running balance', async () => {
