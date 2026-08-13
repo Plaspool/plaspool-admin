@@ -13,6 +13,7 @@ export function Dialog({
   children,
   footer,
   width = '28rem',
+  sheet = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -21,6 +22,17 @@ export function Dialog({
   children?: ReactNode;
   footer?: ReactNode;
   width?: string;
+  /**
+   * Rise from the bottom edge on a phone instead of floating in the middle.
+   *
+   * For dialogs an operator opens repeatedly with one hand — a pickup being
+   * scheduled, a quantity being counted in a warehouse. A centred panel puts its
+   * fields under the thumb's reach and its buttons above it; a sheet puts both
+   * where the thumb already is. Inert above 640px, and it is the same element
+   * either way, so the native `<dialog>` focus trap and the top layer are
+   * unchanged — this is a class, not a second dialog.
+   */
+  sheet?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
 
@@ -47,7 +59,7 @@ export function Dialog({
   return (
     <dialog
       ref={ref}
-      className="dialog"
+      className={sheet ? 'dialog dialog--sheet' : 'dialog'}
       style={{ ['--dialog-w' as string]: width }}
       onCancel={(e) => {
         e.preventDefault();
@@ -83,6 +95,7 @@ export function ConfirmDialog({
   description,
   confirmLabel = 'Confirm',
   danger = false,
+  sheet = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -91,6 +104,8 @@ export function ConfirmDialog({
   description?: ReactNode;
   confirmLabel?: string;
   danger?: boolean;
+  /** Forwarded to `Dialog` — a confirmation is the commonest one-handed dialog. */
+  sheet?: boolean;
 }) {
   return (
     <Dialog
@@ -98,6 +113,7 @@ export function ConfirmDialog({
       onClose={onClose}
       title={title}
       description={description}
+      sheet={sheet}
       footer={
         <>
           <button className="btn btn--ghost" onClick={onClose}>

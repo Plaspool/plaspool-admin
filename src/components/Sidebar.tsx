@@ -12,6 +12,8 @@ import {
 import { Link, useLocation } from 'react-router-dom';
 import {
   Archive,
+  Award,
+  BadgePercent,
   ChevronLeft,
   Globe,
   History,
@@ -24,12 +26,16 @@ import {
   Package,
   PanelLeft,
   PanelLeftClose,
+  PanelTop,
   PencilLine,
   Receipt,
+  RotateCcw,
   Settings as SettingsIcon,
   ShoppingBag,
+  TicketPercent,
   Trash2,
   Users,
+  Wallet,
   X,
 } from 'lucide-react';
 import { Tooltip } from './ui/Switch';
@@ -71,7 +77,7 @@ import './sidebar.css';
  *   you have to dismiss twice.
  */
 
-type SectionId = 'posts' | 'shop' | 'emails' | 'settings';
+type SectionId = 'posts' | 'shop' | 'marketing' | 'emails' | 'settings';
 
 interface Section {
   id: SectionId;
@@ -84,6 +90,13 @@ interface Section {
 const SECTIONS: Section[] = [
   { id: 'posts', label: 'Posts', to: '/', icon: Newspaper },
   { id: 'shop', label: 'Shop', to: '/shop', icon: ShoppingBag },
+  /*
+   * Rewards, returns, banners and discount codes — the things that bring people
+   * to the shop rather than the things it sells. `Megaphone` would have been the
+   * obvious icon and is already Broadcasts, so this is the discount tag; Emails
+   * stays a section of its own because it is a channel, and this is a toolbox.
+   */
+  { id: 'marketing', label: 'Marketing', to: '/marketing', icon: BadgePercent },
   /*
    * Straight to the templates screen. `/emails` exists and redirects here, but
    * sending the rail through a redirect would put a dead entry in the history
@@ -152,6 +165,22 @@ const SECTION_PAGES: Partial<Record<SectionId, SectionPage[]>> = {
     { key: 'customers', label: 'Customers', to: '/shop/customers', icon: Users },
     { key: 'audit', label: 'History', to: '/shop/audit', icon: History },
   ],
+  marketing: [
+    { key: 'overview', label: 'Overview', to: '/marketing', icon: LayoutDashboard },
+    /*
+     * Returns sits second, above the things that configure it, because it is the
+     * screen somebody opens every morning — the rest are opened once and then
+     * when something changes. It is also the only entry that carries a count:
+     * the queue publishes how many requests are waiting on a person.
+     */
+    { key: 'returns', label: 'Returns', to: '/marketing/returns', icon: RotateCcw },
+    { key: 'rewards', label: 'Rewards', to: '/marketing/rewards', icon: Award },
+    // A wallet, not a second `Users`: this screen is about balances, and the rail
+    // already spends `Users` on the shop's customers and the email subscribers.
+    { key: 'customers', label: 'Customers', to: '/marketing/customers', icon: Wallet },
+    { key: 'banners', label: 'Banners', to: '/marketing/banners', icon: PanelTop },
+    { key: 'discounts', label: 'Discounts', to: '/marketing/discounts', icon: TicketPercent },
+  ],
   emails: [
     { key: 'templates', label: 'Templates', to: '/emails/templates', icon: LayoutTemplate },
     { key: 'broadcasts', label: 'Broadcasts', to: '/emails/broadcasts', icon: Megaphone },
@@ -211,6 +240,7 @@ export function useSidebarCounts(counts: Counts | null): void {
  */
 export function sectionOf(pathname: string): SectionId {
   if (/^\/shop(\/|$)/.test(pathname)) return 'shop';
+  if (/^\/marketing(\/|$)/.test(pathname)) return 'marketing';
   if (/^\/emails(\/|$)/.test(pathname)) return 'emails';
   if (/^\/settings(\/|$)/.test(pathname)) return 'settings';
   return 'posts';

@@ -73,6 +73,51 @@
   flex-wrap: wrap;
 }
 
+/* --------------------------------------------------------------- sheet
+
+   A dialog that rises from the bottom edge on a phone, opted into per call
+   site (`<Dialog sheet />`). It exists for the dialogs an operator opens with
+   one hand while holding something else — scheduling a pickup, counting a
+   quantity — where a centred panel puts the fields under the thumb and the
+   buttons out of reach.
+
+   ONLY BELOW 640px. Above it the class is inert and the dialog is the centred
+   panel it has always been, because a sheet on a desktop is just a panel that
+   has wandered to the bottom of the screen. Nothing here is a second dialog:
+   same element, same native focus trap, same top layer — the panel is being
+   told where to sit and how to arrive. */
+@media (max-width: 640px) {
+  .dialog--sheet {
+    place-items: end stretch;
+  }
+  .dialog--sheet .dialog__panel {
+    width: 100%;
+    margin: 0;
+    /* Square at the floor, rounded at the top: the panel reads as attached to
+       the bottom edge rather than as a card that stopped short of it. */
+    border-radius: var(--radius-l) var(--radius-l) 0 0;
+    border-bottom: 0;
+    /* The home indicator sits over the last ~20px on a modern iPhone, and a
+       confirm button underneath it is a button that takes two tries. */
+    padding-bottom: calc(var(--s5) + env(safe-area-inset-bottom));
+    max-height: calc(100dvh - var(--s7));
+    animation: sheet-in var(--dur-3) var(--ease-out);
+  }
+  .dialog--sheet.dialog--leaving .dialog__panel {
+    animation: sheet-out var(--dur-2) var(--ease) forwards;
+  }
+  @keyframes sheet-in {
+    from {
+      transform: translateY(100%);
+    }
+  }
+  @keyframes sheet-out {
+    to {
+      transform: translateY(100%);
+    }
+  }
+}
+
 /* Closing plays the entrance in reverse before the element is removed. */
 .dialog--leaving .dialog__panel {
   animation: dialog-out var(--dur-2) var(--ease) forwards;

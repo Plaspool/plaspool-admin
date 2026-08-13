@@ -31,6 +31,12 @@ import ShopAudit from './routes/ShopAudit';
 import EmailTemplates from './routes/EmailTemplates';
 import EmailBroadcasts from './routes/EmailBroadcasts';
 import EmailSubscribers from './routes/EmailSubscribers';
+import MarketingOverview from './routes/MarketingOverview';
+import MarketingReturns from './routes/MarketingReturns';
+import MarketingRewards from './routes/MarketingRewards';
+import MarketingCustomers from './routes/MarketingCustomers';
+import MarketingBanners from './routes/MarketingBanners';
+import MarketingDiscounts from './routes/MarketingDiscounts';
 
 // Hash routing: this app is pure static and must work from file:// or any
 // host without server rewrite rules.
@@ -162,6 +168,23 @@ const router = createHashRouter([
        * the redirect again. The sidebar links straight to `/emails/templates`
        * for the same reason; this entry exists for a hand-typed URL.
        */
+      /*
+       * Marketing, flat like the rest and pointed at a real index screen rather
+       * than a redirect: `/marketing` is the section's overview, so the rail
+       * links straight to it and Back out of it leaves the section.
+       *
+       * `/marketing/returns` renders both the queue and one request — the detail
+       * lives at `?id=`, the way the shop's product editor does. Two routes for
+       * a list and its rows would put every record an operator opened into the
+       * back stack, and clearing a queue of thirty means thirty presses of Back
+       * to get out of it.
+       */
+      { path: '/marketing', element: <MarketingOverview />, errorElement: <RouteError /> },
+      { path: '/marketing/returns', element: <MarketingReturns />, errorElement: <RouteError /> },
+      { path: '/marketing/rewards', element: <MarketingRewards />, errorElement: <RouteError /> },
+      { path: '/marketing/customers', element: <MarketingCustomers />, errorElement: <RouteError /> },
+      { path: '/marketing/banners', element: <MarketingBanners />, errorElement: <RouteError /> },
+      { path: '/marketing/discounts', element: <MarketingDiscounts />, errorElement: <RouteError /> },
       { path: '/emails', element: <Navigate to="/emails/templates" replace />, errorElement: <RouteError /> },
       { path: '/emails/templates', element: <EmailTemplates />, errorElement: <RouteError /> },
       { path: '/emails/broadcasts', element: <EmailBroadcasts />, errorElement: <RouteError /> },

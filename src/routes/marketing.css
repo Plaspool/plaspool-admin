@@ -1,0 +1,88 @@
+/* ---------------------------------------------------------------
+   The marketing section's six screens share one frame: masthead,
+   body. Everything visual in here is a `mkt`-prefixed COPY of a
+   pattern that already exists in `shop.css` or `dashboard.css`,
+   and the copying is deliberate rather than lazy.
+
+   WHY COPY INSTEAD OF IMPORT. `shop.css` says at the top of itself
+   that it declares its own rather than reaching into `editor.css`,
+   for independence — the same argument applies one level out. It
+   is also owned by another session working this repository at the
+   same time: a shared class is a shared edit, and a shared edit is
+   a merge conflict in the one file both sections render through.
+   Two hundred duplicated lines are cheaper than that, and the
+   duplication is inert — nothing here changes when the shop's does.
+
+   Borrowed rather than copied, because `main.tsx` loads them before
+   anything renders and they belong to no section: `.btn`, `.input`,
+   `.label`, `.chip`, `.notice`, `.skeleton` from `base.css`, and
+   `.empty` from `dashboard.css` — which is already what an empty
+   library, a missing post and a failed search all look like.
+
+   TOKENS ONLY. Not one literal colour anywhere in this file: every
+   value comes from `tokens.css`, which is what makes both themes
+   free rather than a second palette somebody has to maintain.
+
+   Quantities and points are `font-variant-numeric: tabular-nums`
+   everywhere they appear, for the reason the shop gives about
+   money: a column of figures that does not line up is a column an
+   operator reads digit by digit.
+----------------------------------------------------------------- */
+
+.mktscr {
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  padding: var(--s7) var(--s5) var(--s9);
+}
+
+.mktscr__head {
+  padding-bottom: var(--s5);
+  border-bottom: 1px solid var(--rule);
+}
+
+/* Title left, primary action right, and both wrap onto their own line before
+   either is allowed to push the other off a 375px screen. */
+.mktscr__headrow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s4);
+  flex-wrap: wrap;
+}
+
+.mktscr__title {
+  font-family: var(--font-display);
+  font-size: var(--step-4);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: var(--ink);
+}
+
+.mktscr__lede {
+  margin-top: var(--s2);
+  max-width: 52ch;
+  font-size: var(--step--1);
+  line-height: 1.6;
+  color: var(--ink-4);
+}
+
+.mktscr__body {
+  margin-top: var(--s6);
+}
+
+/* --------------------------------------------------------------- figures */
+
+.mktnum {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .mktscr {
+    padding: var(--s5) var(--s4) var(--s8);
+  }
+  .mktscr__title {
+    font-size: var(--step-3);
+  }
+}

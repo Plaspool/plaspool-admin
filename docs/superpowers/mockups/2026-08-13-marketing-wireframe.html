@@ -1,0 +1,1871 @@
+<title>Marketing section — UI plan</title>
+
+<style>
+/* ================================================================
+   Marketing section — UI plan (static wireframes)
+   Tokens are inlined verbatim from src/styles/tokens.css so the
+   frames read as the real app, not a wireframe kit. Every colour
+   in this file is a var(); nothing is defined only behind a
+   media/[data-theme] block.
+   ================================================================ */
+
+:root {
+  color-scheme: light dark;
+
+  /* surfaces */
+  --paper: #fbfaf7;
+  --paper-raised: #ffffff;
+  --paper-sunken: #f2f0ea;
+  --paper-inset: #e8e5da;
+
+  /* ink */
+  --ink: #16150f;
+  --ink-2: #3a372d;
+  --ink-3: #5c584a;
+  --ink-4: #64604f;
+  --ink-5: #9a9384;
+
+  /* lines */
+  --rule: #e2ded2;
+  --rule-strong: #c7c0ae;
+
+  /* accent — deep botanical green */
+  --accent: #1c6b4b;
+  --accent-hover: #17573d;
+  --accent-soft: #e4efe9;
+  --accent-line: #b6d4c5;
+  --accent-ink: #ffffff;
+
+  /* state */
+  --danger: #962c1c;
+  --danger-soft: #f8ebe8;
+  --warn: #7a5610;
+  --warn-soft: #f6eeda;
+
+  /* type (same stacks; webfonts fall back to system faces offline) */
+  --font-display: 'Spectral', 'Iowan Old Style', 'Palatino Linotype', Palatino,
+    Georgia, 'Times New Roman', serif;
+  --font-ui: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    Roboto, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono',
+    Menlo, Consolas, monospace;
+
+  --shadow-1: 0 1px 2px rgba(22, 21, 15, 0.05), 0 1px 1px rgba(22, 21, 15, 0.03);
+  --shadow-2: 0 4px 16px -4px rgba(22, 21, 15, 0.1), 0 2px 4px rgba(22, 21, 15, 0.04);
+  --shadow-3: 0 24px 60px -12px rgba(22, 21, 15, 0.22), 0 8px 20px -8px rgba(22, 21, 15, 0.12);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --paper: #14140f;
+    --paper-raised: #1c1c16;
+    --paper-sunken: #232219;
+    --paper-inset: #2c2a20;
+
+    --ink: #f4f1e6;
+    --ink-2: #ddd8c8;
+    --ink-3: #b3ad9b;
+    --ink-4: #9d9784;
+    --ink-5: #6b6659;
+
+    --rule: #33322a;
+    --rule-strong: #4a483d;
+
+    --accent: #5cbd90;
+    --accent-hover: #75cba3;
+    --accent-soft: #1c2c25;
+    --accent-line: #2f4c3e;
+    --accent-ink: #0d1b14;
+
+    --danger: #e88b78;
+    --danger-soft: #2e1d18;
+    --warn: #d9b164;
+    --warn-soft: #2b2418;
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-2: 0 4px 16px -4px rgba(0, 0, 0, 0.5), 0 2px 4px rgba(0, 0, 0, 0.3);
+    --shadow-3: 0 24px 60px -12px rgba(0, 0, 0, 0.6), 0 8px 20px -8px rgba(0, 0, 0, 0.4);
+  }
+}
+
+:root[data-theme='dark'] {
+  --paper: #14140f;
+  --paper-raised: #1c1c16;
+  --paper-sunken: #232219;
+  --paper-inset: #2c2a20;
+
+  --ink: #f4f1e6;
+  --ink-2: #ddd8c8;
+  --ink-3: #b3ad9b;
+  --ink-4: #9d9784;
+  --ink-5: #6b6659;
+
+  --rule: #33322a;
+  --rule-strong: #4a483d;
+
+  --accent: #5cbd90;
+  --accent-hover: #75cba3;
+  --accent-soft: #1c2c25;
+  --accent-line: #2f4c3e;
+  --accent-ink: #0d1b14;
+
+  --danger: #e88b78;
+  --danger-soft: #2e1d18;
+  --warn: #d9b164;
+  --warn-soft: #2b2418;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 4px 16px -4px rgba(0, 0, 0, 0.5), 0 2px 4px rgba(0, 0, 0, 0.3);
+  --shadow-3: 0 24px 60px -12px rgba(0, 0, 0, 0.6), 0 8px 20px -8px rgba(0, 0, 0, 0.4);
+}
+
+/* ------------------------------------------------ page scaffolding */
+
+* { box-sizing: border-box; }
+h1, h2, h3, p, dl, dd, dt, ul, li, figure, figcaption { margin: 0; padding: 0; }
+ul { list-style: none; }
+a { color: inherit; }
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.wf-wrap { max-width: 1120px; margin: 0 auto; padding: 48px 24px 96px; }
+
+.wf-masthead { padding-bottom: 24px; border-bottom: 1px solid var(--rule); }
+.wf-kicker {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--accent-hover);
+}
+.wf-title {
+  font-family: var(--font-display); font-size: clamp(30px, 4.5vw, 42px);
+  font-weight: 600; letter-spacing: -0.02em; line-height: 1.12; margin-top: 8px;
+}
+.wf-lede { max-width: 62ch; margin-top: 12px; color: var(--ink-3); font-size: 15px; }
+.wf-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.wf-metachip {
+  font-size: 11px; color: var(--ink-4); background: var(--paper-sunken);
+  border: 1px solid var(--rule); border-radius: 999px; padding: 3px 10px; white-space: nowrap;
+}
+.wf-metachip code { font-family: var(--font-mono); font-size: 10.5px; }
+
+.wf-toc { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+.wf-toc a {
+  display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
+  font-size: 13px; font-weight: 500; color: var(--ink-2);
+  background: var(--paper-raised); border: 1px solid var(--rule);
+  border-radius: 10px; padding: 6px 12px;
+}
+.wf-toc a:hover { border-color: var(--accent-line); color: var(--accent-hover); }
+.wf-toc .n { font-family: var(--font-mono); font-size: 11px; color: var(--ink-4); }
+
+.wf-section { margin-top: 72px; scroll-margin-top: 24px; }
+.wf-h2row { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.wf-h2 {
+  font-family: var(--font-display); font-size: 27px; font-weight: 600;
+  letter-spacing: -0.015em;
+}
+.wf-route {
+  font-family: var(--font-mono); font-size: 12px; color: var(--ink-3);
+  background: var(--paper-sunken); border: 1px solid var(--rule);
+  border-radius: 6px; padding: 2px 8px; white-space: nowrap;
+}
+.wf-intro { max-width: 72ch; margin-top: 10px; color: var(--ink-3); font-size: 14px; }
+.wf-intro strong { color: var(--ink-2); font-weight: 600; }
+
+.wf-pair {
+  display: grid; grid-template-columns: 1fr; gap: 40px;
+  justify-items: start; align-items: start; margin-top: 28px;
+}
+@media (min-width: 1060px) { .wf-pair { grid-template-columns: auto auto; gap: 44px; } }
+
+.wf-frameblock { min-width: 0; max-width: 100%; }
+.wf-framelabel {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-4);
+}
+.wf-framelabel .wf-route { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.wf-caption {
+  margin-top: 12px; max-width: 60ch; font-size: 13px; line-height: 1.55; color: var(--ink-4);
+}
+.wf-caption strong { color: var(--ink-3); font-weight: 600; }
+
+/* Scaled device frames. The viewport, not the page, owns any overflow. */
+.wf-viewport { overflow-x: auto; max-width: 100%; padding-bottom: 4px; }
+.wf-scale { width: calc(var(--fw) * var(--k) * 1px); height: calc(var(--fh) * var(--k) * 1px); }
+.device {
+  width: calc(var(--fw) * 1px); height: calc(var(--fh) * 1px);
+  transform: scale(var(--k)); transform-origin: top left;
+  border: 1px solid var(--rule-strong); border-radius: 14px;
+  background: var(--paper); box-shadow: var(--shadow-2); overflow: hidden;
+}
+.wf-frameblock--desktop { --k: 0.68; }
+.wf-frameblock--phone { --k: 0.85; }
+@media (max-width: 720px) {
+  .wf-frameblock--desktop { --k: 0.56; }
+  .wf-frameblock--phone { --k: 0.8; }
+}
+@media (max-width: 480px) {
+  .wf-frameblock--desktop { --k: 0.44; }
+  .wf-frameblock--phone { --k: 0.76; }
+}
+
+/* browser chrome (desktop frames) */
+.device__bar {
+  height: 36px; display: flex; align-items: center; gap: 10px; padding: 0 14px;
+  background: var(--paper-sunken); border-bottom: 1px solid var(--rule);
+}
+.device__dots { display: flex; gap: 5px; }
+.device__dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--rule-strong); }
+.device__url {
+  flex: 1; max-width: 380px; margin: 0 auto; text-align: center;
+  font-family: var(--font-mono); font-size: 11px; color: var(--ink-4);
+  background: var(--paper); border: 1px solid var(--rule); border-radius: 999px;
+  padding: 3px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.device__sp { width: 34px; }
+
+/* phone chrome */
+.device--phone { border-radius: 28px; border-width: 2px; }
+.device__status {
+  height: 28px; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 18px; font-size: 11px; font-weight: 600; color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.device__glyphs { display: inline-flex; align-items: flex-end; gap: 5px; }
+.device__glyphs .sig { display: inline-flex; align-items: flex-end; gap: 1.5px; }
+.device__glyphs .sig i { width: 3px; border-radius: 1px; background: var(--ink-3); }
+.device__glyphs .sig i:nth-child(1) { height: 4px; }
+.device__glyphs .sig i:nth-child(2) { height: 6px; }
+.device__glyphs .sig i:nth-child(3) { height: 8px; }
+.device__glyphs .bat {
+  width: 20px; height: 10px; border: 1px solid var(--ink-3); border-radius: 3px;
+  position: relative; display: inline-block;
+}
+.device__glyphs .bat::before {
+  content: ''; position: absolute; inset: 1.5px 30% 1.5px 1.5px;
+  background: var(--ink-3); border-radius: 1px;
+}
+
+/* ------------------------------------------------ in-frame: shell */
+
+.screen {
+  display: flex; height: calc(var(--fh) * 1px - 36px); overflow: hidden;
+  background: var(--paper); color: var(--ink);
+  font-family: var(--font-ui); font-size: 15px; line-height: 1.5; text-align: left;
+}
+.screen--ph { display: block; height: calc(var(--fh) * 1px - 28px); position: relative; }
+
+.rail {
+  flex: none; width: 56px; display: flex; flex-direction: column; gap: 12px;
+  padding: 12px 8px; background: var(--paper-raised); border-right: 1px solid var(--rule);
+  overflow: hidden;
+}
+.rail--open { width: 232px; }
+.rail__list { display: grid; gap: 2px; }
+.rail__foot { margin-top: auto; display: grid; gap: 2px; }
+.rail__rule { height: 1px; background: var(--rule); margin: 2px 4px; }
+.ri {
+  position: relative; display: flex; align-items: center; gap: 12px; height: 36px;
+  padding: 0 12px; border-radius: 10px; color: var(--ink-3);
+  font-size: 13px; font-weight: 500; white-space: nowrap;
+}
+.ri svg { flex: none; }
+.ri.is-on { background: var(--accent-soft); color: var(--accent-hover); font-weight: 600; }
+.ri__n {
+  margin-left: auto; font-size: 11px; color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+.ri.is-on .ri__n { color: inherit; }
+.rail--icons .ri { justify-content: center; padding: 0; width: 40px; margin: 0 auto; }
+.ri__bub {
+  position: absolute; top: 1px; right: 1px; min-width: 15px; height: 15px; padding: 0 3px;
+  border-radius: 999px; background: var(--accent); color: var(--accent-ink);
+  font-size: 9px; font-weight: 700; display: grid; place-items: center;
+}
+
+.tbar {
+  height: 48px; display: flex; align-items: center; gap: 12px; padding: 0 16px;
+  background: var(--paper-raised); border-bottom: 1px solid var(--rule);
+  color: var(--ink-2);
+}
+.tbar__t { font-size: 15px; font-weight: 600; }
+.tbar__av {
+  margin-left: auto; width: 26px; height: 26px; border-radius: 50%;
+  background: var(--paper-inset); color: var(--ink-3);
+  display: grid; place-items: center; font-size: 10px; font-weight: 700;
+}
+
+/* ------------------------------------------------ in-frame: page frame */
+
+.scr { flex: 1; min-width: 0; overflow: hidden; padding: 24px 24px 48px; }
+.scr--ph { padding: 16px 16px 48px; }
+.scr__back {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 500; color: var(--ink-4); margin-bottom: 10px;
+}
+.scr__headrow {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+}
+.scr__title {
+  font-family: var(--font-display); font-size: 34px; font-weight: 600;
+  letter-spacing: -0.02em; line-height: 1.15;
+}
+.scr__title--sub { font-size: 26px; }
+.scr__title--mono { font-family: var(--font-mono); font-size: 21px; letter-spacing: 0; }
+.scr--ph .scr__title { font-size: 27px; }
+.scr--ph .scr__title--mono { font-size: 17px; }
+.scr__lede { margin-top: 6px; max-width: 52ch; font-size: 13px; color: var(--ink-4); }
+.scr__titlerow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* tabs */
+.tabs { display: flex; gap: 4px; margin-top: 20px; overflow: hidden; }
+.tabs--mask { position: relative; }
+.tabs--mask::after {
+  content: ''; position: absolute; top: 0; right: 0; bottom: 0; width: 40px;
+  background: linear-gradient(to right, transparent, var(--paper));
+}
+.tab {
+  display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px;
+  border-radius: 10px; color: var(--ink-3); font-size: 13px; font-weight: 500;
+  white-space: nowrap;
+}
+.tab.is-active { background: var(--ink); color: var(--paper); }
+.tab__n { font-size: 11px; opacity: 0.55; font-variant-numeric: tabular-nums; }
+
+/* filters */
+.filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.searchbox {
+  display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px;
+  background: var(--paper-raised); border: 1px solid var(--rule); border-radius: 10px;
+  color: var(--ink-4); font-size: 13px; flex: 1; min-width: 200px;
+}
+.searchbox--full { width: 100%; flex: none; }
+
+/* stat tiles */
+.stattiles {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px; margin-top: 24px;
+}
+.stattiles--duo { grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; }
+.stat {
+  display: grid; gap: 3px; align-content: start; padding: 14px 16px; min-height: 72px;
+  border: 1px solid var(--rule); border-radius: 16px; background: var(--paper-raised);
+}
+.stat__label {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-4);
+}
+.stat__value {
+  font-family: var(--font-display); font-size: 26px; font-weight: 600;
+  letter-spacing: -0.015em; color: var(--ink); font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+.stat__note { font-size: 12px; color: var(--ink-4); line-height: 1.45; }
+.stat--alert { border-color: var(--warn); background: var(--warn-soft); }
+.stat--alert .stat__value { color: var(--warn); }
+.stattiles--duo .stat { padding: 12px; border-radius: 12px; }
+.stattiles--duo .stat__value { font-size: 22px; }
+.stattiles--duo .stat__note { font-size: 11px; }
+
+/* layout grid + panels */
+.grid32 { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; margin-top: 20px; }
+.grid32__col { display: grid; gap: 16px; align-content: start; min-width: 0; }
+.panel {
+  border: 1px solid var(--rule); border-radius: 16px; background: var(--paper-raised);
+  overflow: hidden;
+}
+.panel__head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 11px 16px; border-bottom: 1px solid var(--rule); flex-wrap: wrap;
+}
+.panel__title {
+  font-size: 11.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink-3);
+}
+.panel__body { padding: 16px; }
+.panel__body--flush { padding: 0; }
+.panel__note { font-size: 12px; color: var(--ink-4); line-height: 1.55; }
+.panel__more {
+  padding: 9px 16px; border-top: 1px solid var(--rule);
+  font-size: 12px; font-weight: 500; color: var(--ink-3);
+}
+.scr--ph .grid32 { grid-template-columns: 1fr; }
+
+/* chips */
+.chip {
+  display: inline-flex; align-items: center; gap: 4px; border-radius: 6px;
+  padding: 2.5px 8px; font-size: 10.5px; text-transform: uppercase; font-weight: 500;
+  letter-spacing: 0.02em; background: var(--paper-sunken); color: var(--ink-3);
+  border: 1px solid transparent; white-space: nowrap;
+}
+.chip--accent { background: var(--accent-soft); color: var(--accent-hover); }
+.chip--warn { background: var(--warn-soft); color: var(--warn); }
+.chip--danger { background: var(--danger-soft); color: var(--danger); }
+.chip--inset { background: var(--paper-inset); color: var(--ink-3); }
+
+/* buttons (visual only) */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: 32px; padding: 0 14px; border: 1px solid transparent; border-radius: 10px;
+  font-size: 12.5px; font-weight: 500; letter-spacing: 0.01em; white-space: nowrap;
+  color: var(--ink-2); user-select: none;
+}
+.btn--primary { background: var(--accent); color: var(--accent-ink); }
+.btn--outline { border-color: var(--rule-strong); background: var(--paper-raised); }
+.btn--ghost { color: var(--ink-3); }
+.btn--danger { color: var(--danger); }
+.btn--lg { height: 38px; padding: 0 16px; font-size: 13px; }
+.btn--sm { height: 28px; padding: 0 10px; font-size: 12px; }
+.btn--block { width: 100%; height: 42px; font-size: 13.5px; }
+
+/* forms (visual only) */
+.frm { display: grid; gap: 18px; }
+.field { display: grid; gap: 6px; min-width: 0; }
+.lbl {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-3);
+}
+.inp {
+  display: flex; align-items: center; height: 36px; padding: 0 12px;
+  background: var(--paper-raised); border: 1px solid var(--rule); border-radius: 10px;
+  font-size: 14px; color: var(--ink); white-space: nowrap; overflow: hidden;
+}
+.inp--area { height: auto; min-height: 58px; padding: 9px 12px; white-space: normal;
+  line-height: 1.5; font-size: 13.5px; align-items: flex-start; }
+.inp--ph { color: var(--ink-4); }
+.inp .sfx { margin-left: auto; font-size: 12px; color: var(--ink-4); padding-left: 8px; }
+.sel { justify-content: space-between; gap: 8px; }
+.sel svg { color: var(--ink-4); flex: none; }
+.hint { font-size: 11.5px; color: var(--ink-4); line-height: 1.5; }
+.err { font-size: 11.5px; color: var(--danger); line-height: 1.5; }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.scr--ph .split--stack { grid-template-columns: 1fr; }
+.actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.actions .spacer { flex: 1; }
+
+/* switch */
+.sw {
+  width: 36px; height: 20px; border-radius: 999px; background: var(--rule-strong);
+  position: relative; display: inline-block; flex: none;
+}
+.sw::after {
+  content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+  border-radius: 50%; background: var(--paper-raised); box-shadow: var(--shadow-1);
+}
+.sw--on { background: var(--accent); }
+.sw--on::after { left: auto; right: 2px; }
+.swrow { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--ink-2); }
+
+/* qty stepper */
+.qty {
+  display: inline-flex; align-items: stretch; border: 1px solid var(--rule);
+  border-radius: 10px; overflow: hidden; background: var(--paper-raised);
+}
+.qty b {
+  width: 34px; display: grid; place-items: center; background: var(--paper-sunken);
+  color: var(--ink-3); font-weight: 500; font-size: 15px;
+}
+.qty i {
+  width: 48px; display: grid; place-items: center; font-style: normal;
+  font-family: var(--font-mono); font-size: 14px; height: 34px;
+  border-left: 1px solid var(--rule); border-right: 1px solid var(--rule);
+}
+
+/* math line */
+.mathline {
+  background: var(--accent-soft); border: 1px solid var(--accent-line);
+  border-radius: 10px; padding: 10px 12px; font-size: 13px; color: var(--ink-2);
+  line-height: 1.5;
+}
+.mathline strong { color: var(--accent-hover); font-weight: 600; }
+
+/* stage path */
+.stagepath {
+  display: grid; grid-template-columns: repeat(5, 1fr); margin-top: 18px;
+  max-width: 560px;
+}
+.sp { display: grid; justify-items: center; gap: 6px; position: relative; }
+.sp::before, .sp::after {
+  content: ''; position: absolute; top: 7px; height: 2px; width: 50%;
+  background: var(--rule);
+}
+.sp::before { left: 0; }
+.sp::after { right: 0; }
+.sp:first-child::before, .sp:last-child::after { display: none; }
+.sp--done::before, .sp--done::after, .sp--now::before { background: var(--accent-line); }
+.sp__dot {
+  width: 16px; height: 16px; border-radius: 50%; background: var(--paper-raised);
+  border: 2px solid var(--rule-strong); z-index: 1; display: grid; place-items: center;
+  color: var(--accent-ink);
+}
+.sp--done .sp__dot { background: var(--accent); border-color: var(--accent); }
+.sp--now .sp__dot { border-color: var(--accent); }
+.sp--now .sp__dot::after {
+  content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+}
+.sp__t { font-size: 10.5px; color: var(--ink-4); }
+.sp--done .sp__t { color: var(--ink-3); }
+.sp--now .sp__t { color: var(--accent-hover); font-weight: 600; }
+.stagepath--mini {
+  display: flex; align-items: center; gap: 5px; margin: 10px 0 0; max-width: none;
+}
+.stagepath--mini i {
+  width: 9px; height: 9px; border-radius: 50%; background: var(--paper-inset);
+  border: 1.5px solid var(--rule-strong);
+}
+.stagepath--mini i.d { background: var(--accent); border-color: var(--accent); }
+.stagepath--mini i.c { background: var(--paper-raised); border-color: var(--accent); }
+.stagepath--mini .t { font-size: 12px; color: var(--ink-3); margin-left: 6px; }
+.stagepath--mini .t b { color: var(--accent-hover); font-weight: 600; }
+
+/* key-value details */
+.kv { display: grid; grid-template-columns: 108px 1fr; row-gap: 9px; column-gap: 12px; }
+.kv dt {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
+  color: var(--ink-4); padding-top: 2px;
+}
+.kv dd { font-size: 13px; color: var(--ink-2); min-width: 0; overflow-wrap: anywhere; }
+.kv dd .mono { font-family: var(--font-mono); font-size: 12px; }
+.kv dd .cp { color: var(--ink-5); margin-left: 4px; vertical-align: -2px; }
+
+/* timeline */
+.tl { display: grid; gap: 14px; position: relative; }
+.tl::before {
+  content: ''; position: absolute; left: 11px; top: 10px; bottom: 10px; width: 2px;
+  background: var(--rule);
+}
+.tle { display: grid; grid-template-columns: 24px 1fr; gap: 10px; position: relative; }
+.tle__ic {
+  width: 24px; height: 24px; border-radius: 50%; background: var(--paper-sunken);
+  border: 1px solid var(--rule); display: grid; place-items: center; color: var(--ink-4);
+  z-index: 1;
+}
+.tle--hot .tle__ic {
+  background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-hover);
+}
+.tle__t { font-size: 13px; color: var(--ink-2); line-height: 1.4; }
+.tle__t b { font-weight: 600; color: var(--ink); }
+.tle__m {
+  font-size: 11px; color: var(--ink-4); margin-top: 1px; font-variant-numeric: tabular-nums;
+}
+.tle__note {
+  margin-top: 5px; font-size: 12px; color: var(--ink-3); background: var(--paper-sunken);
+  border-radius: 8px; padding: 6px 9px; line-height: 1.45;
+}
+.composer { display: flex; gap: 8px; margin-bottom: 16px; }
+.composer .inp { flex: 1; height: 32px; font-size: 12.5px; }
+
+/* queue rows (desktop grid ⇄ phone cards: same DOM, different layout) */
+.qgroup {
+  padding: 7px 16px; background: var(--paper-sunken);
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--ink-4); border-bottom: 1px solid var(--rule);
+}
+.qrow {
+  display: grid; grid-template-columns: minmax(0, 1fr) 90px 110px 92px auto;
+  gap: 12px; align-items: center; padding: 9px 16px; border-bottom: 1px solid var(--rule);
+}
+.qrow:last-child { border-bottom: 0; }
+.qrow__who { min-width: 0; }
+.qrow__email {
+  font-size: 13px; font-weight: 500; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.qrow__id { font-family: var(--font-mono); font-size: 11px; color: var(--ink-4); }
+.qrow__qty { font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.age { font-size: 12px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+.age--warn { color: var(--warn); font-weight: 500; }
+.age--danger { color: var(--danger); font-weight: 600; }
+.qcard { display: grid; gap: 9px; padding: 13px 16px; border-bottom: 1px solid var(--rule); }
+.qcard__r { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.qcard .btn { width: 100%; height: 40px; }
+
+/* ledger rows */
+.led {
+  display: flex; align-items: baseline; gap: 10px; padding: 7px 16px;
+  border-bottom: 1px solid var(--rule); font-size: 12.5px;
+}
+.led:last-child { border-bottom: 0; }
+.led__d {
+  min-width: 46px; font-weight: 600; font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+}
+.led__d.up { color: var(--accent-hover); }
+.led__d.down { color: var(--danger); }
+.led__body { flex: 1; min-width: 0; }
+.led__who {
+  font-weight: 500; color: var(--ink-2); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; font-size: 12.5px;
+}
+.led__why {
+  font-size: 11px; color: var(--ink-4); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis;
+}
+.led__when { font-size: 11px; color: var(--ink-4); white-space: nowrap; }
+
+/* pager */
+.pager {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-top: 16px; flex-wrap: wrap;
+}
+.pager__note { font-size: 12px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+
+/* empty state */
+.empty { padding: 26px 16px; text-align: center; color: var(--ink-4); font-size: 12.5px; }
+.empty b { display: block; color: var(--ink-3); font-size: 13px; font-weight: 600; margin-bottom: 3px; }
+
+/* first-run checklist */
+.ck { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--rule); }
+.ck:last-child { border-bottom: 0; }
+.ck__dot {
+  width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--rule-strong);
+  display: grid; place-items: center; color: var(--accent-ink); flex: none;
+}
+.ck--done .ck__dot { background: var(--accent); border-color: var(--accent); }
+.ck__t { font-size: 12.5px; color: var(--ink-2); flex: 1; }
+.ck--done .ck__t { color: var(--ink-4); text-decoration: line-through; }
+.ck__go { font-size: 12px; font-weight: 600; color: var(--accent-hover); white-space: nowrap; }
+
+/* sticky mobile action bar */
+.mktbar {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 10px 16px 16px;
+  background: var(--paper-raised); border-top: 1px solid var(--rule);
+  box-shadow: var(--shadow-2);
+}
+.mktbar .btn { width: 100%; height: 44px; font-size: 14px; }
+.homebar { width: 110px; height: 4px; border-radius: 999px; background: var(--ink-5); margin: 10px auto 0; }
+
+/* plain-words / naming preview */
+.plain { font-size: 14.5px; line-height: 1.6; color: var(--ink-2); }
+.plain strong { color: var(--ink); font-weight: 600; }
+.samples { display: grid; gap: 6px; margin-top: 12px; }
+.samples li { font-size: 12px; color: var(--ink-4); display: flex; gap: 8px; }
+.samples li b { color: var(--ink-3); font-weight: 500; }
+.mailpreview {
+  margin-top: 14px; border: 1px solid var(--rule); border-radius: 10px;
+  background: var(--paper-sunken); overflow: hidden;
+}
+.mailpreview__tag {
+  padding: 6px 12px; font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--ink-4); border-bottom: 1px solid var(--rule);
+}
+.mailpreview__subj { padding: 9px 12px 2px; font-size: 13px; font-weight: 600; color: var(--ink); }
+.mailpreview__body { padding: 0 12px 10px; font-size: 12px; color: var(--ink-3); line-height: 1.5; }
+
+/* banner preview stage */
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; }
+.seg b {
+  padding: 4px 12px; font-size: 11.5px; font-weight: 500; color: var(--ink-3);
+  background: var(--paper-raised);
+}
+.seg b.is-on { background: var(--ink); color: var(--paper); }
+.seg b + b { border-left: 1px solid var(--rule); }
+.stage {
+  border: 1px dashed var(--rule-strong); border-radius: 12px; overflow: hidden;
+  background: var(--paper); margin-top: 12px;
+}
+.bnr-top {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  background: var(--accent); color: var(--accent-ink); font-size: 11.5px;
+  padding: 7px 12px; line-height: 1.4;
+}
+.bnr-top u { font-weight: 600; text-underline-offset: 2px; }
+.bnr-top .x { margin-left: 6px; opacity: 0.7; font-size: 12px; }
+.mk-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--rule); }
+.mk-logo { width: 10px; height: 10px; border-radius: 50%; background: var(--ink-5); }
+.mk-nav { display: flex; gap: 6px; margin-left: auto; }
+.mk-nav i { width: 26px; height: 6px; border-radius: 3px; background: var(--paper-inset); }
+.mk-hero { height: 58px; margin: 12px; border-radius: 8px; background: var(--paper-inset); }
+.mk-cards { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin: 0 12px 12px; }
+.mk-cards i { height: 52px; border-radius: 8px; background: var(--paper-sunken); border: 1px solid var(--rule); }
+
+/* footnotes */
+.wf-foot { margin-top: 72px; padding-top: 24px; border-top: 1px solid var(--rule); }
+.wf-foot h2 { font-family: var(--font-display); font-size: 22px; font-weight: 600; }
+.wf-foot ul { margin-top: 12px; display: grid; gap: 8px; max-width: 78ch; }
+.wf-foot li { font-size: 13px; color: var(--ink-3); padding-left: 18px; position: relative; }
+.wf-foot li::before {
+  content: ''; position: absolute; left: 2px; top: 0.55em; width: 6px; height: 6px;
+  border-radius: 50%; background: var(--rule-strong);
+}
+.wf-foot li b { color: var(--ink-2); font-weight: 600; }
+.wf-colophon { margin-top: 28px; font-size: 12px; color: var(--ink-5); }
+.wf-colophon code { font-family: var(--font-mono); font-size: 11px; }
+</style>
+
+<!-- icon sprite (inline; no external requests) -->
+<svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+  <defs>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-dash" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></symbol>
+    <symbol id="i-return" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></symbol>
+    <symbol id="i-award" viewBox="0 0 24 24"><circle cx="12" cy="8" r="6"/><path d="M15.5 12.9 17 22l-5-3-5 3 1.5-9.1"/></symbol>
+    <symbol id="i-wallet" viewBox="0 0 24 24"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/></symbol>
+    <symbol id="i-paneltop" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/></symbol>
+    <symbol id="i-ticket" viewBox="0 0 24 24"><path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="m9 9 6 6"/><circle cx="9.5" cy="9.5" r=".5"/><circle cx="14.5" cy="14.5" r=".5"/></symbol>
+    <symbol id="i-pen" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></symbol>
+    <symbol id="i-bag" viewBox="0 0 24 24"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></symbol>
+    <symbol id="i-mail" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 5L2 7"/></symbol>
+    <symbol id="i-cal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></symbol>
+    <symbol id="i-truck" viewBox="0 0 24 24"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.62l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/></symbol>
+    <symbol id="i-pkg" viewBox="0 0 24 24"><path d="m16 16 2 2 4-4"/><path d="M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l2-1.14"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></symbol>
+    <symbol id="i-msg" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m20 6-11 11-5-5"/></symbol>
+    <symbol id="i-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></symbol>
+  </defs>
+</svg>
+
+<div class="wf-wrap">
+
+<header class="wf-masthead">
+  <div class="wf-kicker">Wireframe plan &middot; before anything is built</div>
+  <h1 class="wf-title">Marketing section &mdash; UI plan</h1>
+  <p class="wf-lede">
+    Static wireframes for the planned Marketing section &mdash; spool returns, points, and
+    website banners &mdash; rendered in the app&rsquo;s own design tokens so they read as the
+    real product. Every name shown (&ldquo;Spool Points&rdquo;, &ldquo;spools&rdquo;) is the
+    <em>seeded preset</em>: it is config the owner can rename on day one, never hard-coded copy.
+  </p>
+  <div class="wf-meta">
+    <span class="wf-metachip">Spec: <code>docs/superpowers/specs/2026-08-13-marketing-design.md</code></span>
+    <span class="wf-metachip">Tokens mirrored from <code>src/styles/tokens.css</code></span>
+    <span class="wf-metachip">Light &amp; dark follow your system theme</span>
+    <span class="wf-metachip">Sample data throughout &mdash; nothing here is live</span>
+  </div>
+  <nav class="wf-toc">
+    <a href="#landing"><span class="n">1</span> Section landing</a>
+    <a href="#queue"><span class="n">2</span> Returns queue</a>
+    <a href="#detail"><span class="n">3</span> Return detail</a>
+    <a href="#program"><span class="n">4</span> Program editor</a>
+    <a href="#banners"><span class="n">5</span> Banners editor</a>
+  </nav>
+</header>
+
+<style>
+  .qrow--ov { grid-template-columns: minmax(0, 1fr) 74px 96px auto; }
+</style>
+
+<section class="wf-section" id="landing">
+  <div class="wf-h2row">
+    <h2 class="wf-h2">1 &middot; Section landing</h2>
+    <span class="wf-route">/marketing</span>
+  </div>
+  <p class="wf-intro">
+    A new top-level section, peer of Posts / Shop / Emails, with six subsections in the rail:
+    Overview, Returns, Rewards, Customers, Banners, Discounts. The landing page is a
+    <strong>workload router</strong>: four stat tiles that are links into the returns queue,
+    the oldest open returns with their next action inline, the latest points activity, and a
+    self-removing first-run checklist driven by real state.
+  </p>
+
+  <div class="wf-pair">
+    <figure class="wf-frameblock wf-frameblock--desktop">
+      <div class="wf-framelabel">Desktop &middot; 960&thinsp;px <span class="wf-route">/marketing</span></div>
+      <div class="wf-viewport"><div class="wf-scale" style="--fw:960; --fh:1010">
+        <div class="device" style="--fw:960; --fh:1010">
+          <div class="device__bar">
+            <div class="device__dots"><i></i><i></i><i></i></div>
+            <div class="device__url">/marketing</div>
+            <div class="device__sp"></div>
+          </div>
+          <div class="screen" style="--fh:1010">
+
+            <div class="rail rail--open">
+              <div class="rail__list">
+                <div class="ri"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-left"/></svg>All sections</div>
+              </div>
+              <div class="rail__rule"></div>
+              <div class="rail__list">
+                <div class="ri is-on"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-dash"/></svg>Overview</div>
+                <div class="ri"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-return"/></svg>Returns<span class="ri__n">7</span></div>
+                <div class="ri"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-award"/></svg>Rewards</div>
+                <div class="ri"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-wallet"/></svg>Customers</div>
+                <div class="ri"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-paneltop"/></svg>Banners</div>
+                <div class="ri"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-ticket"/></svg>Discounts</div>
+              </div>
+              <div class="rail__foot">
+                <div class="rail__rule"></div>
+                <div class="ri"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-out"/></svg>Sign out</div>
+              </div>
+            </div>
+
+            <div class="scr">
+              <div class="scr__headrow">
+                <div>
+                  <h1 class="scr__title">Marketing</h1>
+                  <p class="scr__lede">Returns, points and banners &mdash; the work that brings customers back.</p>
+                </div>
+              </div>
+
+              <div class="stattiles">
+                <div class="stat stat--alert">
+                  <div class="stat__label">Needs scheduling</div>
+                  <div class="stat__value">3</div>
+                  <div class="stat__note">oldest waiting 2d 4h</div>
+                </div>
+                <div class="stat">
+                  <div class="stat__label">Out for pickup</div>
+                  <div class="stat__value">2</div>
+                  <div class="stat__note">next pickup Thu 2:00 PM</div>
+                </div>
+                <div class="stat stat--alert">
+                  <div class="stat__label">To inspect</div>
+                  <div class="stat__value">4</div>
+                  <div class="stat__note">oldest waiting 4d 2h</div>
+                </div>
+                <div class="stat">
+                  <div class="stat__label">Awarded &middot; 30 days</div>
+                  <div class="stat__value">1,240</div>
+                  <div class="stat__note">Spool Points &middot; 18 returns</div>
+                </div>
+              </div>
+
+              <div class="grid32">
+                <div class="grid32__col">
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">Oldest open returns</span></div>
+                    <div class="panel__body panel__body--flush">
+                      <div class="qrow qrow--ov">
+                        <div class="qrow__who"><div class="qrow__email">amaka.obi@gmail.com</div><div class="qrow__id">ret_mkc7ht29</div></div>
+                        <span class="age age--danger">4d 2h</span>
+                        <span class="chip chip--warn">Received</span>
+                        <span class="btn btn--outline btn--sm">Inspect</span>
+                      </div>
+                      <div class="qrow qrow--ov">
+                        <div class="qrow__who"><div class="qrow__email">dara.okafor@gmail.com</div><div class="qrow__id">ret_mkd2r8q1</div></div>
+                        <span class="age age--warn">2d 4h</span>
+                        <span class="chip chip--warn">Requested</span>
+                        <span class="btn btn--outline btn--sm">Schedule pickup</span>
+                      </div>
+                      <div class="qrow qrow--ov">
+                        <div class="qrow__who"><div class="qrow__email">femi.ojo@gmail.com</div><div class="qrow__id">ret_mkd88s1x</div></div>
+                        <span class="age age--warn">2d 1h</span>
+                        <span class="chip chip--warn">Received</span>
+                        <span class="btn btn--outline btn--sm">Inspect</span>
+                      </div>
+                      <div class="qrow qrow--ov">
+                        <div class="qrow__who"><div class="qrow__email">tobi.a@yahoo.com</div><div class="qrow__id">ret_mke01xz3</div></div>
+                        <span class="age">1d 6h</span>
+                        <span class="chip chip--warn">Requested</span>
+                        <span class="btn btn--outline btn--sm">Schedule pickup</span>
+                      </div>
+                      <div class="qrow qrow--ov">
+                        <div class="qrow__who"><div class="qrow__email">hauwa.b@gmail.com</div><div class="qrow__id">ret_mkdd4n55</div></div>
+                        <span class="age">1d 3h</span>
+                        <span class="chip chip--warn">Received</span>
+                        <span class="btn btn--outline btn--sm">Inspect</span>
+                      </div>
+                      <div class="panel__more">View all 11 open &rarr;</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="grid32__col">
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">Latest rewards activity</span></div>
+                    <div class="panel__body panel__body--flush">
+                      <div class="led"><span class="led__d up">+90</span><div class="led__body"><div class="led__who">amara.k@gmail.com</div><div class="led__why">Return ret_mkbz1q7c &middot; 9 spools accepted</div></div><span class="led__when">08:45</span></div>
+                      <div class="led"><span class="led__d down">&minus;200</span><div class="led__body"><div class="led__who">bello.s@gmail.com</div><div class="led__why">Redeemed on order ord_9f2kd1</div></div><span class="led__when">Aug 12</span></div>
+                      <div class="led"><span class="led__d up">+60</span><div class="led__body"><div class="led__who">chidi.eze@outlook.com</div><div class="led__why">Return ret_mkaw3e18 &middot; 6 spools accepted</div></div><span class="led__when">Aug 12</span></div>
+                      <div class="led"><span class="led__d up">+25</span><div class="led__body"><div class="led__who">kemi.l@gmail.com</div><div class="led__why">Manual &middot; Goodwill &mdash; walk-in return</div></div><span class="led__when">Aug 11</span></div>
+                      <div class="led"><span class="led__d up">+120</span><div class="led__body"><div class="led__who">ngozi.n@gmail.com</div><div class="led__why">Return ret_mkas7734 &middot; 12 spools accepted</div></div><span class="led__when">Aug 10</span></div>
+                    </div>
+                  </div>
+
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">Banners</span></div>
+                    <div class="panel__body panel__body--flush">
+                      <div class="empty"><b>No banners yet</b>The storefront checks for live banners every minute &mdash; create one and it shows within a minute.</div>
+                    </div>
+                  </div>
+
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">Getting started</span></div>
+                    <div class="panel__body" style="padding-top:6px;padding-bottom:6px">
+                      <div class="ck ck--done"><span class="ck__dot"><svg width="10" height="10" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span><span class="ck__t">Review the preset naming &mdash; points &amp; unit labels</span></div>
+                      <div class="ck ck--done"><span class="ck__dot"><svg width="10" height="10" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span><span class="ck__t">Confirm the rules &mdash; minimum 5, 10 points per spool</span></div>
+                      <div class="ck"><span class="ck__dot"></span><span class="ck__t">Create your first banner</span><span class="ck__go">Banners &rarr;</span></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div></div>
+      <figcaption class="wf-caption"><strong>Every tile is a link into the queue view it counts</strong> &mdash; the overview routes work rather than reporting it, and a tile whose oldest item waits &gt;48h flips to the warn variant.</figcaption>
+    </figure>
+
+    <figure class="wf-frameblock wf-frameblock--phone">
+      <div class="wf-framelabel">Phone &middot; 375&thinsp;px <span class="wf-route">/marketing</span></div>
+      <div class="wf-viewport"><div class="wf-scale" style="--fw:375; --fh:812">
+        <div class="device device--phone" style="--fw:375; --fh:812">
+          <div class="device__status"><span>9:41</span><span class="device__glyphs"><span class="sig"><i></i><i></i><i></i></span><span class="bat"></span></span></div>
+          <div class="screen screen--ph" style="--fh:812">
+            <div class="tbar">
+              <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#i-menu"/></svg>
+              <span class="tbar__t">Marketing</span>
+              <span class="tbar__av">NU</span>
+            </div>
+            <div class="scr scr--ph">
+              <h1 class="scr__title">Marketing</h1>
+
+              <div class="stattiles stattiles--duo">
+                <div class="stat stat--alert">
+                  <div class="stat__label">Needs scheduling</div>
+                  <div class="stat__value">3</div>
+                  <div class="stat__note">oldest 2d 4h</div>
+                </div>
+                <div class="stat">
+                  <div class="stat__label">Out for pickup</div>
+                  <div class="stat__value">2</div>
+                  <div class="stat__note">next Thu 2:00 PM</div>
+                </div>
+                <div class="stat stat--alert">
+                  <div class="stat__label">To inspect</div>
+                  <div class="stat__value">4</div>
+                  <div class="stat__note">oldest 4d 2h</div>
+                </div>
+                <div class="stat">
+                  <div class="stat__label">Awarded &middot; 30d</div>
+                  <div class="stat__value">1,240</div>
+                  <div class="stat__note">Spool Points</div>
+                </div>
+              </div>
+
+              <div class="grid32">
+                <div class="grid32__col">
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">Oldest open returns</span></div>
+                    <div class="panel__body panel__body--flush">
+                      <div class="qcard">
+                        <div class="qcard__r"><span class="qrow__email">amaka.obi@gmail.com</span><span class="age age--danger">4d 2h</span></div>
+                        <div class="qcard__r"><span class="chip chip--warn">Received</span><span class="btn btn--outline btn--sm" style="width:auto">Inspect</span></div>
+                      </div>
+                      <div class="qcard">
+                        <div class="qcard__r"><span class="qrow__email">dara.okafor@gmail.com</span><span class="age age--warn">2d 4h</span></div>
+                        <div class="qcard__r"><span class="chip chip--warn">Requested</span><span class="btn btn--outline btn--sm" style="width:auto">Schedule pickup</span></div>
+                      </div>
+                      <div class="qcard">
+                        <div class="qcard__r"><span class="qrow__email">femi.ojo@gmail.com</span><span class="age age--warn">2d 1h</span></div>
+                        <div class="qcard__r"><span class="chip chip--warn">Received</span><span class="btn btn--outline btn--sm" style="width:auto">Inspect</span></div>
+                      </div>
+                      <div class="panel__more">View all 11 open &rarr;</div>
+                    </div>
+                  </div>
+
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">Latest rewards activity</span></div>
+                    <div class="panel__body panel__body--flush">
+                      <div class="led"><span class="led__d up">+90</span><div class="led__body"><div class="led__who">amara.k@gmail.com</div><div class="led__why">Return &middot; 9 spools accepted</div></div><span class="led__when">08:45</span></div>
+                      <div class="led"><span class="led__d down">&minus;200</span><div class="led__body"><div class="led__who">bello.s@gmail.com</div><div class="led__why">Redeemed on order ord_9f2kd1</div></div><span class="led__when">Aug 12</span></div>
+                      <div class="led"><span class="led__d up">+60</span><div class="led__body"><div class="led__who">chidi.eze@outlook.com</div><div class="led__why">Return &middot; 6 spools accepted</div></div><span class="led__when">Aug 12</span></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div></div>
+      <figcaption class="wf-caption"><strong>Tiles go 2&times;2 and stay &ge;72&thinsp;px tap targets</strong>; panels stack in the same order, and nothing on this page ever scrolls sideways.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="wf-section" id="queue">
+  <div class="wf-h2row">
+    <h2 class="wf-h2">2 &middot; Returns queue</h2>
+    <span class="wf-route">/marketing/returns</span>
+  </div>
+  <p class="wf-intro">
+    The hero surface. One list, grouped by stage in pipeline order, under a counted tab strip fed
+    by a real <strong>counts sidecar</strong> on every response &mdash; no fake tab numbers.
+    Each row carries the server-computed <strong>allowedActions</strong>, so it shows exactly one
+    next-action button; schedule / collect / receive open in place, while Inspect always
+    navigates to the detail form. Waiting time warns at 48h and escalates at 96h &mdash; colour
+    plus text, never hover-only.
+  </p>
+
+  <div class="wf-pair">
+    <figure class="wf-frameblock wf-frameblock--desktop">
+      <div class="wf-framelabel">Desktop &middot; 960&thinsp;px <span class="wf-route">/marketing/returns?view=needs_action</span></div>
+      <div class="wf-viewport"><div class="wf-scale" style="--fw:960; --fh:760">
+        <div class="device" style="--fw:960; --fh:760">
+          <div class="device__bar">
+            <div class="device__dots"><i></i><i></i><i></i></div>
+            <div class="device__url">/marketing/returns?view=needs_action</div>
+            <div class="device__sp"></div>
+          </div>
+          <div class="screen" style="--fh:760">
+
+            <div class="rail rail--icons">
+              <div class="rail__list">
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-left"/></svg></div>
+              </div>
+              <div class="rail__rule"></div>
+              <div class="rail__list">
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-dash"/></svg></div>
+                <div class="ri is-on"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-return"/></svg><span class="ri__bub">7</span></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-award"/></svg></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-wallet"/></svg></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-paneltop"/></svg></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-ticket"/></svg></div>
+              </div>
+              <div class="rail__foot">
+                <div class="rail__rule"></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-out"/></svg></div>
+              </div>
+            </div>
+
+            <div class="scr">
+              <div class="scr__headrow">
+                <div>
+                  <h1 class="scr__title">Returns</h1>
+                  <p class="scr__lede">Pickups, inspections and awards &mdash; oldest first, so nothing quietly rots.</p>
+                </div>
+                <span class="btn btn--outline">Record a return&hellip;</span>
+              </div>
+
+              <div class="tabs">
+                <span class="tab is-active">Needs action <span class="tab__n">7</span></span>
+                <span class="tab">Requested <span class="tab__n">3</span></span>
+                <span class="tab">Scheduled <span class="tab__n">2</span></span>
+                <span class="tab">Picked up <span class="tab__n">2</span></span>
+                <span class="tab">To inspect <span class="tab__n">4</span></span>
+                <span class="tab">Done <span class="tab__n">41</span></span>
+                <span class="tab">All <span class="tab__n">52</span></span>
+              </div>
+
+              <div class="filters">
+                <span class="searchbox"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#i-search"/></svg>Search email or ret_ id</span>
+              </div>
+
+              <div class="panel" style="margin-top:16px">
+                <div class="panel__body panel__body--flush">
+                  <div class="qgroup">Requested &mdash; schedule a pickup &middot; 3</div>
+                  <div class="qrow">
+                    <div class="qrow__who"><div class="qrow__email">dara.okafor@gmail.com</div><div class="qrow__id">ret_mkd2r8q1</div></div>
+                    <span class="qrow__qty">6 spools</span>
+                    <span class="age age--warn">waiting 2d 4h</span>
+                    <span class="chip chip--warn">Requested</span>
+                    <span class="btn btn--outline btn--sm">Schedule pickup</span>
+                  </div>
+                  <div class="qrow">
+                    <div class="qrow__who"><div class="qrow__email">tobi.a@yahoo.com</div><div class="qrow__id">ret_mke01xz3</div></div>
+                    <span class="qrow__qty">12 spools</span>
+                    <span class="age">waiting 1d 6h</span>
+                    <span class="chip chip--warn">Requested</span>
+                    <span class="btn btn--outline btn--sm">Schedule pickup</span>
+                  </div>
+                  <div class="qrow" style="border-bottom:0">
+                    <div class="qrow__who"><div class="qrow__email">chidinma.eze@outlook.com</div><div class="qrow__id">ret_mke9pp42</div></div>
+                    <span class="qrow__qty">5 spools</span>
+                    <span class="age">waiting 4h</span>
+                    <span class="chip chip--warn">Requested</span>
+                    <span class="btn btn--outline btn--sm">Schedule pickup</span>
+                  </div>
+                  <div class="qgroup" style="border-top:1px solid var(--rule)">Received &mdash; inspect &amp; award &middot; 4</div>
+                  <div class="qrow">
+                    <div class="qrow__who"><div class="qrow__email">amaka.obi@gmail.com</div><div class="qrow__id">ret_mkc7ht29</div></div>
+                    <span class="qrow__qty">9 spools</span>
+                    <span class="age age--danger">waiting 4d 2h</span>
+                    <span class="chip chip--warn">Received</span>
+                    <span class="btn btn--outline btn--sm">Inspect</span>
+                  </div>
+                  <div class="qrow">
+                    <div class="qrow__who"><div class="qrow__email">femi.ojo@gmail.com</div><div class="qrow__id">ret_mkd88s1x</div></div>
+                    <span class="qrow__qty">6 spools</span>
+                    <span class="age age--warn">waiting 2d 1h</span>
+                    <span class="chip chip--warn">Received</span>
+                    <span class="btn btn--outline btn--sm">Inspect</span>
+                  </div>
+                  <div class="qrow">
+                    <div class="qrow__who"><div class="qrow__email">hauwa.b@gmail.com</div><div class="qrow__id">ret_mkdd4n55</div></div>
+                    <span class="qrow__qty">15 spools</span>
+                    <span class="age">waiting 1d 3h</span>
+                    <span class="chip chip--warn">Received</span>
+                    <span class="btn btn--outline btn--sm">Inspect</span>
+                  </div>
+                  <div class="qrow">
+                    <div class="qrow__who"><div class="qrow__email">ike.nwosu@gmail.com</div><div class="qrow__id">ret_mkecm802</div></div>
+                    <span class="qrow__qty">5 spools</span>
+                    <span class="age">waiting 7h</span>
+                    <span class="chip chip--warn">Received</span>
+                    <span class="btn btn--outline btn--sm">Inspect</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="pager">
+                <span class="pager__note">Showing all 7 &mdash; oldest first within each stage</span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div></div>
+      <figcaption class="wf-caption"><strong>Counts are honest</strong> (a real aggregate ships with every list response) and each row gets <strong>exactly one next-action button</strong>, chosen by the server&rsquo;s allowedActions &mdash; the UI cannot drift from the state machine.</figcaption>
+    </figure>
+
+    <figure class="wf-frameblock wf-frameblock--phone">
+      <div class="wf-framelabel">Phone &middot; 375&thinsp;px <span class="wf-route">/marketing/returns</span></div>
+      <div class="wf-viewport"><div class="wf-scale" style="--fw:375; --fh:812">
+        <div class="device device--phone" style="--fw:375; --fh:812">
+          <div class="device__status"><span>9:41</span><span class="device__glyphs"><span class="sig"><i></i><i></i><i></i></span><span class="bat"></span></span></div>
+          <div class="screen screen--ph" style="--fh:812">
+            <div class="tbar">
+              <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#i-menu"/></svg>
+              <span class="tbar__t">Returns</span>
+              <span class="tbar__av">NU</span>
+            </div>
+            <div class="scr scr--ph">
+              <div class="tabs tabs--mask" style="margin-top:2px">
+                <span class="tab is-active">Needs action <span class="tab__n">7</span></span>
+                <span class="tab">Requested <span class="tab__n">3</span></span>
+                <span class="tab">Scheduled <span class="tab__n">2</span></span>
+                <span class="tab">Picked up</span>
+              </div>
+              <div class="filters">
+                <span class="searchbox searchbox--full"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#i-search"/></svg>Search email or ret_ id</span>
+              </div>
+
+              <div class="panel" style="margin-top:14px">
+                <div class="panel__body panel__body--flush">
+                  <div class="qgroup">Requested &mdash; schedule a pickup &middot; 3</div>
+                  <div class="qcard">
+                    <div class="qcard__r"><span class="qrow__email">dara.okafor@gmail.com</span><span class="qrow__qty">6 spools</span></div>
+                    <div class="qcard__r"><span class="qrow__id">ret_mkd2r8q1</span><span class="age age--warn">waiting 2d 4h</span></div>
+                    <span class="btn btn--outline">Schedule pickup</span>
+                  </div>
+                  <div class="qcard">
+                    <div class="qcard__r"><span class="qrow__email">tobi.a@yahoo.com</span><span class="qrow__qty">12 spools</span></div>
+                    <div class="qcard__r"><span class="qrow__id">ret_mke01xz3</span><span class="age">waiting 1d 6h</span></div>
+                    <span class="btn btn--outline">Schedule pickup</span>
+                  </div>
+                  <div class="qcard">
+                    <div class="qcard__r"><span class="qrow__email">chidinma.eze@outlook.com</span><span class="qrow__qty">5 spools</span></div>
+                    <div class="qcard__r"><span class="qrow__id">ret_mke9pp42</span><span class="age">waiting 4h</span></div>
+                    <span class="btn btn--outline">Schedule pickup</span>
+                  </div>
+                  <div class="qgroup" style="border-top:1px solid var(--rule)">Received &mdash; inspect &amp; award &middot; 4</div>
+                  <div class="qcard">
+                    <div class="qcard__r"><span class="qrow__email">amaka.obi@gmail.com</span><span class="qrow__qty">9 spools</span></div>
+                    <div class="qcard__r"><span class="qrow__id">ret_mkc7ht29</span><span class="age age--danger">waiting 4d 2h</span></div>
+                    <span class="btn btn--outline">Inspect</span>
+                  </div>
+                  <div class="qcard">
+                    <div class="qcard__r"><span class="qrow__email">femi.ojo@gmail.com</span><span class="qrow__qty">6 spools</span></div>
+                    <div class="qcard__r"><span class="qrow__id">ret_mkd88s1x</span><span class="age age--warn">waiting 2d 1h</span></div>
+                    <span class="btn btn--outline">Inspect</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div></div>
+      <figcaption class="wf-caption"><strong>The same row DOM reflows into two-line cards</strong> &mdash; no second mobile render to drift &mdash; and the one action becomes a full-width 44&thinsp;px button; the tab strip scrolls under a mask fade.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="wf-section" id="detail">
+  <div class="wf-h2row">
+    <h2 class="wf-h2">3 &middot; Return detail &mdash; lifecycle &amp; stage actions</h2>
+    <span class="wf-route">/marketing/returns?id=ret_&hellip;</span>
+  </div>
+  <p class="wf-intro">
+    Request &rarr; schedule &rarr; pick up &rarr; receive &rarr; inspect &rarr; award, drawn as a
+    five-dot stage path. The left panel always offers <strong>one primary next step</strong> for
+    the current stage &mdash; here, the inspection form: staff type <strong>Received</strong> and
+    <strong>Accepted</strong>, <strong>Rejected is derived</strong> (never typed, so the
+    sum-mismatch error cannot exist), and one interpolated sentence
+    (&ldquo;5 accepted &times; 10 = 50 Spool Points&hellip;&rdquo;) travels unchanged into the
+    confirm dialog, the toast, the timeline and the email.
+  </p>
+
+  <div class="wf-pair">
+    <figure class="wf-frameblock wf-frameblock--desktop">
+      <div class="wf-framelabel">Desktop &middot; 960&thinsp;px <span class="wf-route">?id=ret_mkd88s1x&amp;act=inspect</span></div>
+      <div class="wf-viewport"><div class="wf-scale" style="--fw:960; --fh:800">
+        <div class="device" style="--fw:960; --fh:800">
+          <div class="device__bar">
+            <div class="device__dots"><i></i><i></i><i></i></div>
+            <div class="device__url">/marketing/returns?id=ret_mkd88s1x&amp;act=inspect</div>
+            <div class="device__sp"></div>
+          </div>
+          <div class="screen" style="--fh:800">
+
+            <div class="rail rail--icons">
+              <div class="rail__list">
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-left"/></svg></div>
+              </div>
+              <div class="rail__rule"></div>
+              <div class="rail__list">
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-dash"/></svg></div>
+                <div class="ri is-on"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-return"/></svg><span class="ri__bub">7</span></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-award"/></svg></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-wallet"/></svg></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-paneltop"/></svg></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-ticket"/></svg></div>
+              </div>
+              <div class="rail__foot">
+                <div class="rail__rule"></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-out"/></svg></div>
+              </div>
+            </div>
+
+            <div class="scr">
+              <div class="scr__back"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-left"/></svg>Returns &middot; Needs action</div>
+              <div class="scr__titlerow">
+                <h1 class="scr__title scr__title--mono">ret_mkd88s1x</h1>
+                <span class="chip chip--warn">Received</span>
+                <span style="font-size:13px;color:var(--ink-3);text-decoration:underline;text-underline-offset:2px">femi.ojo@gmail.com</span>
+              </div>
+
+              <div class="stagepath">
+                <div class="sp sp--done"><span class="sp__dot"><svg width="9" height="9" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span><span class="sp__t">Requested</span></div>
+                <div class="sp sp--done"><span class="sp__dot"><svg width="9" height="9" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span><span class="sp__t">Scheduled</span></div>
+                <div class="sp sp--done"><span class="sp__dot"><svg width="9" height="9" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span><span class="sp__t">Picked up</span></div>
+                <div class="sp sp--now"><span class="sp__dot"></span><span class="sp__t">Received</span></div>
+                <div class="sp"><span class="sp__dot"></span><span class="sp__t">Awarded</span></div>
+              </div>
+
+              <div class="grid32">
+                <div class="grid32__col">
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">Next step &mdash; inspect &amp; award</span></div>
+                    <div class="panel__body">
+                      <div class="frm">
+                        <p class="panel__note">Customer declared <b>6 spools</b>. Count what actually arrived &mdash; rejected is worked out for you.</p>
+                        <div class="split" style="grid-template-columns:1fr 1fr 1fr">
+                          <div class="field">
+                            <span class="lbl">Received</span>
+                            <span class="qty"><b>&minus;</b><i>6</i><b>+</b></span>
+                          </div>
+                          <div class="field">
+                            <span class="lbl">Accepted</span>
+                            <span class="qty"><b>&minus;</b><i>5</i><b>+</b></span>
+                          </div>
+                          <div class="field">
+                            <span class="lbl">Rejected &middot; derived</span>
+                            <span class="inp" style="border-style:dashed;color:var(--ink-3)">1 spool</span>
+                          </div>
+                        </div>
+                        <div class="split">
+                          <div class="field">
+                            <span class="lbl">Rejection reason</span>
+                            <span class="inp sel">Damaged<svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chev"/></svg></span>
+                          </div>
+                          <div class="field">
+                            <span class="lbl">Note &middot; optional</span>
+                            <span class="inp inp--ph">Cracked flange, kept aside</span>
+                          </div>
+                        </div>
+                        <div class="mathline"><strong>5 accepted &times; 10 = 50 Spool Points</strong> to femi.ojo@gmail.com</div>
+                        <div class="actions">
+                          <span class="btn btn--primary btn--lg">Record &amp; award 50 Spool Points</span>
+                          <span class="btn btn--ghost">Reject everything&hellip;</span>
+                          <span class="btn btn--ghost btn--danger">Cancel return&hellip;</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="grid32__col">
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">Details</span></div>
+                    <div class="panel__body">
+                      <dl class="kv">
+                        <dt>Customer</dt><dd>Femi Ojo &middot; femi.ojo@gmail.com</dd>
+                        <dt>Phone</dt><dd>+234 803 442 1187</dd>
+                        <dt>Pickup</dt><dd>14B Adeola Odeku St, Victoria Island, Lagos</dd>
+                        <dt>Declared</dt><dd>6 spools</dd>
+                        <dt>Program</dt><dd>Spool Returns</dd>
+                        <dt>Rate held</dt><dd>10 Spool Points / spool &mdash; frozen at request</dd>
+                        <dt>Requested</dt><dd>Aug 11, 09:47</dd>
+                        <dt>Received</dt><dd>Aug 13, 09:12</dd>
+                        <dt>Request id</dt><dd><span class="mono">ret_mkd88s1x</span><span class="cp"><svg width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-copy"/></svg></span></dd>
+                      </dl>
+                    </div>
+                  </div>
+
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">Timeline</span></div>
+                    <div class="panel__body">
+                      <div class="composer"><span class="inp inp--ph" style="flex:1;height:32px;font-size:12.5px">Add a note for the team&hellip;</span><span class="btn btn--outline btn--sm">Add note</span></div>
+                      <div class="tl">
+                        <div class="tle tle--hot">
+                          <span class="tle__ic"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-pkg"/></svg></span>
+                          <div><div class="tle__t"><b>Received at warehouse</b></div><div class="tle__m">Tunde &middot; Aug 13, 09:12</div></div>
+                        </div>
+                        <div class="tle">
+                          <span class="tle__ic"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-truck"/></svg></span>
+                          <div><div class="tle__t"><b>Picked up</b> by driver</div><div class="tle__m">Emeka O. &middot; Aug 12, 15:38</div></div>
+                        </div>
+                        <div class="tle">
+                          <span class="tle__ic"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cal"/></svg></span>
+                          <div><div class="tle__t"><b>Pickup scheduled</b> &mdash; Tue Aug 12, 2:00 PM</div><div class="tle__m">Tunde &middot; Aug 11, 16:20</div><div class="tle__note">Driver Emeka O. &middot; 0803 555 0117</div></div>
+                        </div>
+                        <div class="tle">
+                          <span class="tle__ic"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-msg"/></svg></span>
+                          <div><div class="tle__t"><b>Note</b> from customer</div><div class="tle__m">Aug 11, 09:47</div><div class="tle__note">Gate code #4421 &mdash; please call on arrival.</div></div>
+                        </div>
+                        <div class="tle">
+                          <span class="tle__ic"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-clock"/></svg></span>
+                          <div><div class="tle__t"><b>Return requested</b> &mdash; 6 spools declared</div><div class="tle__m">customer &middot; Aug 11, 09:47</div></div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div></div>
+      <figcaption class="wf-caption"><strong>One primary action per stage, and honest quantities</strong>: Received and Accepted are typed, Rejected is derived and displayed; the award sentence is the same string the confirm, toast, timeline and email will carry.</figcaption>
+    </figure>
+
+    <figure class="wf-frameblock wf-frameblock--phone">
+      <div class="wf-framelabel">Phone &middot; 375&thinsp;px <span class="wf-route">?id=ret_mkd88s1x</span></div>
+      <div class="wf-viewport"><div class="wf-scale" style="--fw:375; --fh:812">
+        <div class="device device--phone" style="--fw:375; --fh:812">
+          <div class="device__status"><span>9:41</span><span class="device__glyphs"><span class="sig"><i></i><i></i><i></i></span><span class="bat"></span></span></div>
+          <div class="screen screen--ph" style="--fh:812">
+            <div class="tbar">
+              <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#i-menu"/></svg>
+              <span class="tbar__t">Returns</span>
+              <span class="tbar__av">NU</span>
+            </div>
+            <div class="scr scr--ph" style="padding-bottom:96px">
+              <div class="scr__back"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-left"/></svg>Returns &middot; Needs action</div>
+              <div class="scr__titlerow">
+                <h1 class="scr__title scr__title--mono">ret_mkd88s1x</h1>
+                <span class="chip chip--warn">Received</span>
+              </div>
+              <div class="stagepath--mini stagepath--mini">
+                <i class="d"></i><i class="d"></i><i class="d"></i><i class="c"></i><i></i>
+                <span class="t">Step <b>4 of 5</b> &mdash; Received</span>
+              </div>
+
+              <div class="grid32" style="margin-top:14px">
+                <div class="grid32__col">
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">Details</span></div>
+                    <div class="panel__body">
+                      <dl class="kv" style="grid-template-columns:92px 1fr">
+                        <dt>Customer</dt><dd>Femi Ojo &middot; femi.ojo@gmail.com</dd>
+                        <dt>Pickup</dt><dd>14B Adeola Odeku St, VI, Lagos</dd>
+                        <dt>Declared</dt><dd>6 spools</dd>
+                        <dt>Rate held</dt><dd>10 Spool Points / spool</dd>
+                      </dl>
+                    </div>
+                  </div>
+
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">Next step &mdash; inspect &amp; award</span></div>
+                    <div class="panel__body">
+                      <div class="frm" style="gap:14px">
+                        <div class="split">
+                          <div class="field">
+                            <span class="lbl">Received</span>
+                            <span class="qty" style="width:100%"><b>&minus;</b><i style="flex:1">6</i><b>+</b></span>
+                          </div>
+                          <div class="field">
+                            <span class="lbl">Accepted</span>
+                            <span class="qty" style="width:100%"><b>&minus;</b><i style="flex:1">5</i><b>+</b></span>
+                          </div>
+                        </div>
+                        <div class="field">
+                          <span class="lbl">Rejected &middot; derived</span>
+                          <span class="inp" style="border-style:dashed;color:var(--ink-3)">1 spool &mdash; pick a reason below</span>
+                        </div>
+                        <div class="field">
+                          <span class="lbl">Rejection reason</span>
+                          <span class="inp sel">Damaged<svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chev"/></svg></span>
+                        </div>
+                        <div class="mathline"><strong>5 accepted &times; 10 = 50 Spool Points</strong> to femi.ojo@gmail.com</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="mktbar">
+              <span class="btn btn--primary">Record &amp; award 50 Spool Points</span>
+              <div class="homebar"></div>
+            </div>
+          </div>
+        </div>
+      </div></div>
+      <figcaption class="wf-caption"><strong>Thumb order</strong>: status &rarr; facts &rarr; action &rarr; history, with the stage&rsquo;s one primary action mirrored in a fixed bottom bar that unrenders on terminal stages and while dialogs are open.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="wf-section" id="program">
+  <div class="wf-h2row">
+    <h2 class="wf-h2">4 &middot; Rewards &mdash; program editor</h2>
+    <span class="wf-route">/marketing/rewards?id=prg_&hellip;</span>
+  </div>
+  <p class="wf-intro">
+    Nothing about the naming is fixed: program name, points labels and unit labels are
+    <strong>form fields, not copy</strong>. The right-hand panel restates the rules in plain words
+    and renders a <strong>sample email from the draft labels</strong>, so a rename is verified
+    against the customer-facing artifact before it is saved. History keeps its old wording &mdash;
+    a rename changes the future, never the past. Owner-only; writers see a read-only recap.
+  </p>
+
+  <div class="wf-pair">
+    <figure class="wf-frameblock wf-frameblock--desktop">
+      <div class="wf-framelabel">Desktop &middot; 960&thinsp;px <span class="wf-route">?id=prg_spool01</span></div>
+      <div class="wf-viewport"><div class="wf-scale" style="--fw:960; --fh:860">
+        <div class="device" style="--fw:960; --fh:860">
+          <div class="device__bar">
+            <div class="device__dots"><i></i><i></i><i></i></div>
+            <div class="device__url">/marketing/rewards?id=prg_spool01</div>
+            <div class="device__sp"></div>
+          </div>
+          <div class="screen" style="--fh:860">
+
+            <div class="rail rail--icons">
+              <div class="rail__list">
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-left"/></svg></div>
+              </div>
+              <div class="rail__rule"></div>
+              <div class="rail__list">
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-dash"/></svg></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-return"/></svg><span class="ri__bub">7</span></div>
+                <div class="ri is-on"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-award"/></svg></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-wallet"/></svg></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-paneltop"/></svg></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-ticket"/></svg></div>
+              </div>
+              <div class="rail__foot">
+                <div class="rail__rule"></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-out"/></svg></div>
+              </div>
+            </div>
+
+            <div class="scr">
+              <div class="scr__back"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-left"/></svg>Rewards</div>
+              <div class="scr__titlerow">
+                <h1 class="scr__title scr__title--sub">Spool Returns</h1>
+                <span class="chip chip--inset">Seeded preset</span>
+                <span class="chip chip--accent">Active</span>
+              </div>
+
+              <div class="grid32" style="margin-top:18px">
+                <div class="grid32__col">
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">What it&rsquo;s called</span></div>
+                    <div class="panel__body">
+                      <div class="frm" style="gap:14px">
+                        <div class="field">
+                          <span class="lbl">Program name</span>
+                          <span class="inp">Spool Returns</span>
+                        </div>
+                        <div class="split">
+                          <div class="field">
+                            <span class="lbl">Points label &middot; singular</span>
+                            <span class="inp">Spool Point</span>
+                          </div>
+                          <div class="field">
+                            <span class="lbl">Points label &middot; plural</span>
+                            <span class="inp">Spool Points</span>
+                          </div>
+                        </div>
+                        <div class="split">
+                          <div class="field">
+                            <span class="lbl">Unit label &middot; singular</span>
+                            <span class="inp">spool</span>
+                          </div>
+                          <div class="field">
+                            <span class="lbl">Unit label &middot; plural</span>
+                            <span class="inp">spools</span>
+                          </div>
+                        </div>
+                        <p class="hint">Shown to customers everywhere &mdash; emails included.</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">The rules</span></div>
+                    <div class="panel__body">
+                      <div class="frm" style="gap:14px">
+                        <div class="split">
+                          <div class="field">
+                            <span class="lbl">Minimum per request</span>
+                            <span class="inp">5<span class="sfx">spools</span></span>
+                          </div>
+                          <div class="field">
+                            <span class="lbl">Points per accepted unit</span>
+                            <span class="inp">10<span class="sfx">Spool Points / spool</span></span>
+                          </div>
+                        </div>
+                        <p class="hint">Future conditions &mdash; expiry, multipliers &mdash; slot into program config with no schema change.</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">Status</span></div>
+                    <div class="panel__body">
+                      <div class="swrow"><span class="sw sw--on"></span>Active &mdash; accepting new return requests</div>
+                      <p class="hint" style="margin-top:8px">Paused programs stop accepting new return requests; open returns finish normally. Programs are never deleted &mdash; history refers to them.</p>
+                    </div>
+                  </div>
+
+                  <div class="actions">
+                    <span class="btn btn--primary btn--lg">Save changes</span>
+                    <span class="btn btn--ghost">Cancel</span>
+                  </div>
+                </div>
+
+                <div class="grid32__col">
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">In plain words</span></div>
+                    <div class="panel__body">
+                      <p class="plain">Customers who send back at least <strong>5 spools</strong> earn <strong>10 Spool Points</strong> per accepted <strong>spool</strong>.</p>
+                      <ul class="samples">
+                        <li><b>Balance tile</b> &mdash; 240 Spool Points</li>
+                        <li><b>Singular</b> &mdash; 1 Spool Point</li>
+                        <li><b>Queue row</b> &mdash; 6 spools</li>
+                      </ul>
+                      <div class="mailpreview">
+                        <div class="mailpreview__tag">Sample email &mdash; rendered from your draft labels</div>
+                        <div class="mailpreview__subj">You&rsquo;ve earned 50 Spool Points</div>
+                        <div class="mailpreview__body">We accepted 5 of your 6 spools. 50 Spool Points were added to your balance.</div>
+                      </div>
+                      <p class="hint" style="margin-top:10px">Renaming is safe &mdash; history keeps its old wording.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div></div>
+      <figcaption class="wf-caption"><strong>Naming is data</strong>: labels are split singular/plural fields, and the plain-words sentence plus the sample email re-render live from the draft values &mdash; the rename is checked against what customers will actually read.</figcaption>
+    </figure>
+
+    <figure class="wf-frameblock wf-frameblock--phone">
+      <div class="wf-framelabel">Phone &middot; 375&thinsp;px &middot; scrolled to Save <span class="wf-route">?id=prg_spool01</span></div>
+      <div class="wf-viewport"><div class="wf-scale" style="--fw:375; --fh:812">
+        <div class="device device--phone" style="--fw:375; --fh:812">
+          <div class="device__status"><span>9:41</span><span class="device__glyphs"><span class="sig"><i></i><i></i><i></i></span><span class="bat"></span></span></div>
+          <div class="screen screen--ph" style="--fh:812">
+            <div class="tbar" style="position:relative;z-index:2">
+              <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#i-menu"/></svg>
+              <span class="tbar__t">Rewards</span>
+              <span class="tbar__av">NU</span>
+            </div>
+            <div class="scr scr--ph" style="margin-top:-178px;position:relative;z-index:1">
+              <div class="panel">
+                <div class="panel__head"><span class="panel__title">What it&rsquo;s called</span></div>
+                <div class="panel__body">
+                  <div class="frm" style="gap:14px">
+                    <div class="field">
+                      <span class="lbl">Program name</span>
+                      <span class="inp">Spool Returns</span>
+                    </div>
+                    <div class="split">
+                      <div class="field">
+                        <span class="lbl">Points &middot; singular</span>
+                        <span class="inp">Spool Point</span>
+                      </div>
+                      <div class="field">
+                        <span class="lbl">Points &middot; plural</span>
+                        <span class="inp">Spool Points</span>
+                      </div>
+                    </div>
+                    <div class="split">
+                      <div class="field">
+                        <span class="lbl">Unit &middot; singular</span>
+                        <span class="inp">spool</span>
+                      </div>
+                      <div class="field">
+                        <span class="lbl">Unit &middot; plural</span>
+                        <span class="inp">spools</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="panel" style="margin-top:14px">
+                <div class="panel__head"><span class="panel__title">The rules</span></div>
+                <div class="panel__body">
+                  <div class="split">
+                    <div class="field">
+                      <span class="lbl">Minimum</span>
+                      <span class="inp">5<span class="sfx">spools</span></span>
+                    </div>
+                    <div class="field">
+                      <span class="lbl">Points / unit</span>
+                      <span class="inp">10<span class="sfx">Spool Points</span></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="panel" style="margin-top:14px">
+                <div class="panel__head"><span class="panel__title">Status</span></div>
+                <div class="panel__body">
+                  <div class="swrow"><span class="sw sw--on"></span>Active</div>
+                </div>
+              </div>
+
+              <div class="panel" style="margin-top:14px">
+                <div class="panel__head"><span class="panel__title">In plain words</span></div>
+                <div class="panel__body">
+                  <p class="plain" style="font-size:13.5px">Customers who send back at least <strong>5 spools</strong> earn <strong>10 Spool Points</strong> per accepted <strong>spool</strong>.</p>
+                  <div class="mailpreview">
+                    <div class="mailpreview__tag">Sample email</div>
+                    <div class="mailpreview__subj">You&rsquo;ve earned 50 Spool Points</div>
+                    <div class="mailpreview__body">We accepted 5 of your 6 spools. 50 Spool Points were added to your balance.</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="actions" style="margin-top:14px">
+                <span class="btn btn--primary" style="flex:1;height:42px">Save changes</span>
+                <span class="btn btn--ghost">Cancel</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div></div>
+      <figcaption class="wf-caption"><strong>On phones the plain-words recap reorders to sit directly above Save</strong> &mdash; the last thing read before committing a rename; config forms keep in-flow actions (no sticky bar &mdash; that is reserved for the pipeline).</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="wf-section" id="banners">
+  <div class="wf-h2row">
+    <h2 class="wf-h2">5 &middot; Banners &mdash; editor with live preview</h2>
+    <span class="wf-route">/marketing/banners?id=bnr_&hellip;</span>
+  </div>
+  <p class="wf-intro">
+    Banners are content + placement + window + priority. The <strong>enabled switch maps
+    draft&nbsp;&harr;&nbsp;live</strong>; scheduled / ended are <em>derived</em> from the window at
+    read time by one shared pure function (the same logic the public endpoint runs), and the
+    editor says the result in a sentence. There is <strong>no delete</strong> &mdash; archive is a
+    separate, confirmed action. The preview repaints from current values in admin tokens.
+  </p>
+
+  <div class="wf-pair">
+    <figure class="wf-frameblock wf-frameblock--desktop">
+      <div class="wf-framelabel">Desktop &middot; 960&thinsp;px <span class="wf-route">?id=bnr_mk3f8a2c</span></div>
+      <div class="wf-viewport"><div class="wf-scale" style="--fw:960; --fh:990">
+        <div class="device" style="--fw:960; --fh:990">
+          <div class="device__bar">
+            <div class="device__dots"><i></i><i></i><i></i></div>
+            <div class="device__url">/marketing/banners?id=bnr_mk3f8a2c</div>
+            <div class="device__sp"></div>
+          </div>
+          <div class="screen" style="--fh:990">
+
+            <div class="rail rail--icons">
+              <div class="rail__list">
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-left"/></svg></div>
+              </div>
+              <div class="rail__rule"></div>
+              <div class="rail__list">
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-dash"/></svg></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-return"/></svg><span class="ri__bub">7</span></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-award"/></svg></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-wallet"/></svg></div>
+                <div class="ri is-on"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-paneltop"/></svg></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-ticket"/></svg></div>
+              </div>
+              <div class="rail__foot">
+                <div class="rail__rule"></div>
+                <div class="ri"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-out"/></svg></div>
+              </div>
+            </div>
+
+            <div class="scr" style="padding-top:20px">
+              <div class="scr__back"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-left"/></svg>Banners</div>
+              <div class="scr__titlerow">
+                <h1 class="scr__title scr__title--sub">Free pickup week</h1>
+                <span class="chip chip--warn">Scheduled &middot; starts Aug 20</span>
+              </div>
+
+              <div class="grid32" style="margin-top:16px">
+                <div class="grid32__col">
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">Content</span></div>
+                    <div class="panel__body" style="padding:14px 16px">
+                      <div class="frm" style="gap:12px">
+                        <div class="field">
+                          <span class="lbl">Title</span>
+                          <span class="inp">Free pickup week</span>
+                        </div>
+                        <div class="field">
+                          <span class="lbl">Body</span>
+                          <span class="inp inp--area">Returning 5+ empty spools earns Spool Points &mdash; book a free doorstep pickup this week.</span>
+                        </div>
+                        <div class="split">
+                          <div class="field">
+                            <span class="lbl">CTA text</span>
+                            <span class="inp">Book a pickup</span>
+                          </div>
+                          <div class="field">
+                            <span class="lbl">CTA URL</span>
+                            <span class="inp" style="font-family:var(--font-mono);font-size:13px">/returns</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">Where</span></div>
+                    <div class="panel__body" style="padding:14px 16px">
+                      <div class="field">
+                        <span class="lbl">Placement</span>
+                        <span class="inp sel">Top bar<svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chev"/></svg></span>
+                        <span class="hint">A slim strip above the storefront header &mdash; best for one short sentence.</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">When</span></div>
+                    <div class="panel__body" style="padding:14px 16px">
+                      <div class="split">
+                        <div class="field">
+                          <span class="lbl">Starts</span>
+                          <span class="inp">Aug 20, 2026 &middot; 09:00<span class="sfx"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cal"/></svg></span></span>
+                        </div>
+                        <div class="field">
+                          <span class="lbl">Ends</span>
+                          <span class="inp">Aug 27, 2026 &middot; 18:00<span class="sfx"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cal"/></svg></span></span>
+                        </div>
+                      </div>
+                      <span class="hint" style="display:block;margin-top:8px">Empty start = immediately &middot; empty end = until you turn it off. Local time (Africa/Lagos).</span>
+                    </div>
+                  </div>
+
+                  <div class="panel">
+                    <div class="panel__head"><span class="panel__title">Priority &amp; status</span></div>
+                    <div class="panel__body" style="padding:14px 16px">
+                      <div class="split" style="align-items:end">
+                        <div class="field">
+                          <span class="lbl">Priority</span>
+                          <span class="inp">10<span class="sfx">highest wins per placement</span></span>
+                        </div>
+                        <div class="swrow" style="height:36px"><span class="sw sw--on"></span>Enabled</div>
+                      </div>
+                      <span class="hint" style="display:block;margin-top:8px;color:var(--warn)">Will go Live on Aug 20, 09:00 &mdash; Scheduled until then.</span>
+                    </div>
+                  </div>
+
+                  <div class="actions">
+                    <span class="btn btn--primary btn--lg">Save changes</span>
+                    <span class="btn btn--ghost">Cancel</span>
+                    <span class="spacer"></span>
+                    <span class="btn btn--ghost btn--danger">Archive banner&hellip;</span>
+                  </div>
+                </div>
+
+                <div class="grid32__col">
+                  <div class="panel">
+                    <div class="panel__head">
+                      <span class="panel__title">Preview</span>
+                      <span class="seg"><b class="is-on">Desktop</b><b>Phone</b></span>
+                    </div>
+                    <div class="panel__body" style="padding:14px 16px">
+                      <div class="stage" style="margin-top:0">
+                        <div class="bnr-top"><span><b>Free pickup week</b> &mdash; Returning 5+ empty spools earns Spool Points. <u>Book a pickup</u></span><span class="x">&times;</span></div>
+                        <div class="mk-head"><span class="mk-logo"></span><span class="mk-nav"><i></i><i></i><i></i></span></div>
+                        <div class="mk-hero"></div>
+                        <div class="mk-cards"><i></i><i></i><i></i></div>
+                      </div>
+                      <p class="hint" style="margin-top:10px">An approximation in your site&rsquo;s tokens &mdash; not a screenshot of the storefront.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div></div>
+      <figcaption class="wf-caption"><strong>Draft &harr; live is a switch, archive is a separate confirmed action</strong> (no delete), and the derived-status sentence states what saving will actually do; the preview repaints beside the form as values change.</figcaption>
+    </figure>
+
+    <figure class="wf-frameblock wf-frameblock--phone">
+      <div class="wf-framelabel">Phone &middot; 375&thinsp;px &middot; preview takeover <span class="wf-route">?id=bnr_mk3f8a2c&amp;preview=1</span></div>
+      <div class="wf-viewport"><div class="wf-scale" style="--fw:375; --fh:812">
+        <div class="device device--phone" style="--fw:375; --fh:812">
+          <div class="device__status"><span>9:41</span><span class="device__glyphs"><span class="sig"><i></i><i></i><i></i></span><span class="bat"></span></span></div>
+          <div class="screen screen--ph" style="--fh:812">
+            <div class="tbar">
+              <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-left"/></svg>
+              <span class="tbar__t">Back to editing</span>
+              <span style="margin-left:auto;font-size:12px;color:var(--ink-4)">Preview</span>
+            </div>
+            <div class="scr scr--ph" style="padding:12px 12px 24px">
+              <div class="stage" style="margin-top:0">
+                <div class="bnr-top" style="text-align:left;justify-content:flex-start"><span><b>Free pickup week</b> &mdash; Returning 5+ empty spools earns Spool Points. <u>Book a pickup</u></span><span class="x" style="margin-left:auto">&times;</span></div>
+                <div class="mk-head"><span class="mk-logo"></span><span class="mk-nav"><i></i><i></i></span></div>
+                <div class="mk-hero" style="height:96px"></div>
+                <div class="mk-cards" style="grid-template-columns:1fr 1fr"><i style="height:84px"></i><i style="height:84px"></i><i style="height:84px"></i><i style="height:84px"></i></div>
+                <div style="margin:0 12px 14px;display:grid;gap:7px">
+                  <span style="display:block;height:9px;border-radius:5px;background:var(--paper-inset);width:82%"></span>
+                  <span style="display:block;height:9px;border-radius:5px;background:var(--paper-inset);width:64%"></span>
+                  <span style="display:block;height:9px;border-radius:5px;background:var(--paper-inset);width:71%"></span>
+                </div>
+              </div>
+              <p class="hint" style="margin-top:10px">An approximation in your site&rsquo;s tokens &mdash; not a screenshot of the storefront.</p>
+            </div>
+          </div>
+        </div>
+      </div></div>
+      <figcaption class="wf-caption"><strong>On phones the preview is a ?preview=1 full-screen takeover</strong> with a sticky way back &mdash; editor and preview never try to split a 375&thinsp;px screen.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<footer class="wf-foot">
+  <h2>Drawn elsewhere, not forgotten</h2>
+  <ul>
+    <li><b>Customers</b> &mdash; balance lookup with guests as first-class citizens, an append-only day-grouped ledger (&ldquo;120 &rarr; 180&rdquo; from stored balance-after), and the owner-only adjust-balance dialog.</li>
+    <li><b>Rewards settings panel</b> &mdash; owner-only block at the top of Rewards (cross-program labels, redemption rate, default program); it earns no seventh nav item.</li>
+    <li><b>Discounts</b> &mdash; ships as an honest static placeholder: no dead buttons, no fetches; the API lands first.</li>
+    <li><b>Dialogs</b> &mdash; schedule pickup, reject/cancel reasons and confirmations become bottom sheets at &le;640&thinsp;px (same component, same focus trap).</li>
+    <li><b>Error treatments</b> &mdash; every 409 carries the re-read entity, so conflicts auto-heal: the true stage re-renders, a toast says so, and mid-edit inputs are preserved behind a notice instead of wiped.</li>
+    <li><b>States</b> &mdash; delayed skeletons, real zeros on fresh installs, per-region errors with Retry; a stats failure never blanks a panel.</li>
+  </ul>
+  <p class="wf-colophon">
+    Wireframe plan &middot; 2026-08-13 &middot; spec <code>docs/superpowers/specs/2026-08-13-marketing-design.md</code>
+    &middot; tokens mirrored from <code>src/styles/tokens.css</code> &middot; static mockup &mdash; no code shipped.
+  </p>
+</footer>
+
+</div>
