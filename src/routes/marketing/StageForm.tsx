@@ -199,6 +199,7 @@ export function StageForm({
   busy,
   problem,
   banner,
+  formId,
   onSubmit,
   onCancel,
 }: {
@@ -208,6 +209,15 @@ export function StageForm({
   busy: boolean;
   /** The caller's refusal — a server one. Client-side refusals are this form's own. */
   problem: StageProblem | null;
+  /**
+   * Names the `<form>` so a button OUTSIDE it can submit it (`form=` on the
+   * button). The return detail's mobile action bar is fixed to the bottom of
+   * the viewport and cannot be a descendant of the panel it acts on, and the
+   * bar MIRRORS the inline submit rather than owning a second code path — one
+   * `handleSubmit`, so the client-side refusals below run whichever button was
+   * pressed. Omitted everywhere the form's own submit is the only one.
+   */
+  formId?: string;
   /**
    * Anything the caller must say ABOVE the fields: the stale-write conflict band
    * with its "Load theirs", the collected stage's note about when points are
@@ -305,7 +315,7 @@ export function StageForm({
   }
 
   return (
-    <form className="mktform" onSubmit={handleSubmit} noValidate>
+    <form id={formId} className="mktform" onSubmit={handleSubmit} noValidate>
       {banner}
 
       {action === 'schedule' && (

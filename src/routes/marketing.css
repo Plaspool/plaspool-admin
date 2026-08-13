@@ -199,6 +199,40 @@ a.mktstat:hover {
   }
 }
 
+/*
+ * The return detail's three panels, whose reading order is NOT the same at
+ * both widths — which is why they are direct children of the grid rather than
+ * two `.mktgrid__col` stacks. `order` can only reshuffle a child within its
+ * own stack, never move one from the narrow column into the wide one, and a
+ * second render of a panel to fix the order is the dual-DOM drift the queue
+ * block below argues against.
+ *
+ * DOM order is the phone's reading order, thumb-first: what this return IS
+ * (Details), what to do about it (Next step), what has already happened
+ * (Timeline). Above 900px the action panel is the point of the screen, so it
+ * is placed top-left in the wide column and the two reference panels stack
+ * beside it.
+ */
+@media (min-width: 901px) {
+  .mktgrid--detail > .mktdetail--act {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+  .mktgrid--detail > .mktdetail--ref {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .mktgrid--detail > .mktdetail--log {
+    grid-column: 2;
+    grid-row: 2;
+  }
+}
+/* The grid's own `gap` already separates them; the stacking margin below would
+   add a second one on top of it. */
+.mktgrid--detail > .mktpanel + .mktpanel {
+  margin-top: 0;
+}
+
 /* -------------------------------------------------------------- panels */
 
 /* `.panel` from `shop.css`, renamed — with one word changed, and the change is

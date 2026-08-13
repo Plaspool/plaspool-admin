@@ -797,11 +797,15 @@ describe('the returns queue', () => {
   it('keeps a return’s own URL out of the queue', async () => {
     withPrograms();
     when('/api/marketing/returns', returnsPage);
+    when(`/api/marketing/returns/${requestedOld.id}`, returnDetails.requested);
     mount(`/marketing/returns?view=all&id=${requestedOld.id}`);
 
-    // `?id=` is a destination, not the queue with something on top of it: the
-    // detail screen is Task B4's and this stands in its place until it lands.
-    expect(await screen.findByText('Not on this screen yet')).toBeTruthy();
+    // `?id=` is a DESTINATION, not the queue with something on top of it: the
+    // tab strip and the filters are gone rather than hidden behind it, and the
+    // way back carries the view somebody was actually looking at.
+    // (What the detail then does with the return is `MarketingReturnDetail`'s
+    // own suite; this one only asserts the switch.)
+    expect(await screen.findByText('Details')).toBeTruthy();
     expect(screen.queryByRole('navigation', { name: 'Return stages' })).toBeNull();
     expect(screen.getByRole('link', { name: 'Back to the queue' }).getAttribute('href')).toBe(
       '/marketing/returns?view=all',
