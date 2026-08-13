@@ -1801,8 +1801,15 @@ function ReturnDetail({ id }: { id: string }) {
          * connection produces. Treated as anything else, a retry would tell an
          * operator their inspection failed while the customer's points were
          * already in the ledger.
+         *
+         * AND IT SWEEPS, for the same reason. The attempt that landed inserted
+         * the customer's mail intent and then lost its answer — so it is
+         * precisely the attempt whose fire-and-forget never fired. Nothing
+         * schedules the sweep (spec D6), so skipping it here is how a letter
+         * ends up queued for good over a dropped connection.
          */
         notify('That inspection was already recorded.');
+        sweepQuietly();
         await load();
         return;
       }

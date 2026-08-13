@@ -344,6 +344,64 @@ describe('the return detail', () => {
     ).toContain('Pick a reason');
   });
 
+  it('refuses a count that keeps more than arrived, and says so under the box', async () => {
+    const user = userEvent.setup();
+    await open(returnDetails.received);
+
+    /*
+     * The one contradiction two boxes CAN still hold. Accepted is ceilinged at
+     * Received while it is being typed, but lowering Received afterwards strands
+     * a number above a limit it never crossed — a driver who brought four back
+     * against six already counted. The form says so where the wrong number is,
+     * and refuses to open a confirmation about arithmetic it will not take.
+     */
+    await user.click(inPanel().getByRole('button', { name: 'Decrease Received' }));
+    await user.click(inPanel().getByRole('button', { name: 'Decrease Received' }));
+    expect(box('Received').value).toBe('4');
+    expect(box('Accepted').value).toBe('6');
+    expect(inPanel().getByText('Accepted can’t be more than received.')).toBeTruthy();
+
+    await user.click(inPanel().getByRole('button', { name: 'Record & award 42 Bottle Caps' }));
+    expect(() => sheet()).toThrow();
+    expect(calls.some((c) => c.path.includes('/inspect'))).toBe(false);
+
+    // And it clears itself the moment the numbers agree again — the refusal is
+    // about the pair, not a flag somebody has to dismiss.
+    await user.click(inPanel().getByRole('button', { name: 'Increase Received' }));
+    await user.click(inPanel().getByRole('button', { name: 'Increase Received' }));
+    expect(inPanel().queryByText('Accepted can’t be more than received.')).toBeNull();
+  });
+
+  it('leaves the reason out of an inspection that refused nothing', async () => {
+    const user = userEvent.setup();
+    when('/api/marketing/programs', { programs: [] });
+    when(path(receivedRow.id), returnDetails.received);
+    when(`${path(receivedRow.id)}/inspect`, {
+      request: returnDetails.awarded.request,
+      award: { points: 42, balance: 222 },
+    });
+    when('/api/marketing/sweep', { sent: 1, failed: 0, skipped: 0 });
+    mount(`/marketing/returns?id=${receivedRow.id}`);
+    await landed();
+
+    await user.click(inPanel().getByRole('button', { name: 'Record & award 42 Bottle Caps' }));
+    await user.click(within(sheet()).getByRole('button', { name: 'Record & award 42 Bottle Caps' }));
+
+    await waitFor(() => expect(asked(`${path(receivedRow.id)}/inspect`)).toBeTruthy());
+    /*
+     * EXACTLY these three. `rejectedReason` is a sentence the customer reads
+     * back off the ledger and out of their email, so an inspection that refused
+     * nothing must not carry one — the unchosen picker's placeholder travelling
+     * as a stored reason is a nonsense the server has no way to spot, and an
+     * empty note is absence rather than a blank line on the timeline.
+     */
+    expect(sent(`${path(receivedRow.id)}/inspect`, 'POST')).toEqual({
+      expectedRevision: receivedRow.revision,
+      qtyAccepted: 6,
+      qtyRejected: 0,
+    });
+  });
+
   it('records five of six, says so in the same sentence, and sends the letter it owes', async () => {
     const user = userEvent.setup();
     const awarded = asSelf(returnDetails.awarded, receivedRow.id, receivedRow.customerEmail);
@@ -535,6 +593,13 @@ describe('the return detail', () => {
     expect(await screen.findByText('That inspection was already recorded.')).toBeTruthy();
     expect(screen.queryByText(/Somebody else/)).toBeNull();
     await waitFor(() => expect(reads(path(receivedRow.id))).toBe(2));
+    /*
+     * And the letter still goes. The attempt that landed is the one whose answer
+     * was lost, so it is exactly the attempt whose fire-and-forget never fired —
+     * and nothing schedules the sweep, so a replay that skipped it would leave
+     * the customer's mail queued for good over a dropped connection.
+     */
+    expect(asked('/api/marketing/sweep')).toBeTruthy();
   });
 
   it('turns a missing mail transport into a setup note rather than a retry loop', async () => {
@@ -591,6 +656,33 @@ describe('the return detail', () => {
       expect(screen.getByText(what)).toBeTruthy();
     }
     expect(screen.getByText('Queued — sends with the next sweep')).toBeTruthy();
+  });
+
+  it('says a notification is queued or stuck, and never that it was delivered', async () => {
+    const stuck: ReturnDetail = {
+      ...returnDetails.awarded,
+      emailIntents: [
+        { kind: 'return_awarded', sentAt: null, attempts: 3, lastError: 'Recipient rejected' },
+      ],
+    };
+    await open(stuck);
+
+    // Three tries and still nothing — said out loud, with the mailer's own words
+    // beside it, because the alternative is an award that looks delivered.
+    expect(screen.getByText('3 failed attempts — still queued')).toBeTruthy();
+    expect(document.querySelector('.mktmail__err')?.textContent).toBe('Recipient rejected');
+
+    cleanup();
+    // A row that HAS left is proof of a hand-off, never of a delivery: this
+    // screen only ever knows that the mailer took it.
+    await open({
+      ...returnDetails.awarded,
+      emailIntents: [
+        { kind: 'return_awarded', sentAt: NOW - HOUR, attempts: 1, lastError: null },
+      ],
+    });
+    expect(screen.getByText(/^Handed to the mailer/)).toBeTruthy();
+    expect(document.body.textContent ?? '').not.toMatch(/\bSent\b/);
   });
 
   it('adds a note without moving the return', async () => {
@@ -693,6 +785,10 @@ describe('the return detail', () => {
     // And pressing it reaches the same confirmation the inline submit does.
     await user.click(mirror);
     expect(within(sheet()).getByText(ALL_SIX)).toBeTruthy();
+    // …at which point the bar is GONE rather than sitting over the sheet it
+    // opened: it is fixed to the bottom of the viewport, which is exactly where
+    // a bottom sheet puts its own confirm button.
+    expect(document.querySelector('.mktbar')).toBeNull();
   });
 
   it('says how a closed return ended instead of drawing a sixth dot', async () => {
