@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { toResponse } from '../middleware/errors';
 import { MailNotConfiguredError } from '../mail/port';
 import { routes as programRoutes } from './programs/routes';
+import { routes as returnRoutes } from './returns/routes';
 import { routes as settingsRoutes } from './settings/routes';
 import {
   AlreadyAwardedError,
@@ -307,6 +308,19 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
    * swallowed by it (spec §Risks; A5 pins the order with its own test).
    */
   marketing.route('/', settingsRoutes);
+
+  /*
+   * RETURNS — contract #4-14. The lifecycle, the queue that drives it, and the
+   * one PUBLIC route this sub-app has.
+   *
+   * IT MOUNTS AFTER THE OTHER TWO AND THE ORDER STILL DOES NOT MATTER, for the
+   * reason above: `/returns*` is disjoint from `/programs*` and `/settings`.
+   * What DOES matter is the order INSIDE that router, and it is settled there:
+   * `POST /returns/request` — the customer intake, the only unauthenticated
+   * route under this prefix — registers above every `/returns/:id` pattern, so
+   * a later `POST /returns/:id` cannot swallow it. `returns/routes.ts` pins it.
+   */
+  marketing.route('/', returnRoutes);
 
   /*
    * HELD, NOT YET READ. The first consumer is the sweep route, which arrives
