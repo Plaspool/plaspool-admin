@@ -225,13 +225,31 @@ describe('the mount', () => {
     const res = await anon.get(`${PUBLIC}/banners?placement=sidebar`);
     expect(res.status).toBe(400);
     expect(await json(res)).toMatchObject({ error: 'bad_request', detail: 'placement' });
-    /*
-     * `toResponse` builds a FRESH response and a thrown error skips the
-     * post-`next()` middleware entirely, so without the router's own `onError`
-     * a browser sees an opaque CORS failure instead of a readable 400 — a worse
-     * outcome than the error itself.
-     */
     expect(res.headers.get('access-control-allow-origin')).toBe('*');
+
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * THE SAME REFUSAL, THROUGH THE ROUTER ALONE — because through the real app
+     * the two assertions above prove less than they look.
+     *
+     * `createPublicRoutes` is mounted FIRST and registers its own post-`next()`
+     * middleware at `/api/public/*`, a superset of this path; the app's global
+     * `onError` renders the body. Measured by mutation: deleting this router's
+     * `onError` AND its own CORS middleware AND the header in `send()` leaves
+     * every assertion above green, because the blog's reading API is quietly
+     * supplying all three. That is a real belt, but it belongs to a file this
+     * subsystem does not own and could be re-scoped without a test noticing.
+     *
+     * Mounted alone, nothing else can answer: the router's own `onError` is the
+     * only thing that turns a thrown `BadRequestError` into a readable 400
+     * instead of Hono's default 500, and the only thing that puts the header on
+     * it. This is the assertion that fails when the CORS block is removed.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    const alone = await publicApp(T0).request(`${PUBLIC}/banners?placement=sidebar`);
+    expect(alone.status).toBe(400);
+    expect(await json(alone)).toMatchObject({ error: 'bad_request', detail: 'placement' });
+    expect(alone.headers.get('access-control-allow-origin')).toBe('*');
 
     // `.strict()`: a mistyped filter that is silently ignored would answer with
     // every placement and look like a working one.
@@ -278,6 +296,29 @@ describe('the mount', () => {
         priority: 3,
       },
     ]);
+
+    /*
+     * AND THE WAY BACK DOWN IS THE SAME WRITE. "Archive banner…" is a PATCH of
+     * this one column — there is no DELETE anywhere in this subsystem, because a
+     * banner that ran is a record of what the shop said in public — so taking it
+     * down leaves the row where it is and the read-time predicate simply stops
+     * selecting it. Asserted as one trip rather than as two suites that each
+     * assume the other's half.
+     */
+    const archived = await owner.patch(`${API}/banners/${banner.id}`, {
+      expectedRevision: (await json<{ banner: Banner }>(live)).banner.revision,
+      status: 'archived',
+    });
+    expect(archived.status).toBe(200);
+
+    expect(
+      (await json<{ banners: PublicBanner[] }>(await anon.get(`${PUBLIC}/banners`))).banners,
+    ).toEqual([]);
+
+    // Gone from the internet, still on the admin's list — which is the whole
+    // difference between archiving and deleting.
+    const admin = await json<{ banners: Banner[] }>(await owner.get(`${API}/banners`));
+    expect(admin.banners.find((b) => b.id === banner.id)?.status).toBe('archived');
   });
 });
 
