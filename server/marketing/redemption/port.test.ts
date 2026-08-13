@@ -12,8 +12,10 @@
  *
  * 1. **A replay is never a refusal.** A webhook that fires twice, a shop that
  *    switched redemption off this morning, a wallet that has since been spent to
- *    zero — none of them may turn "redeem this order again" into anything but the
- *    entry that already exists. Three tests, one per way it could go wrong.
+ *    zero, an order already cancelled and released — none of them may turn
+ *    "redeem this order again" into anything but the entry that already exists.
+ *    One test per way it could go wrong, and the last section stages the two
+ *    that need a writer this database cannot run concurrently.
  * 2. **No overdraft, and no second implementation of balance arithmetic.** Every
  *    movement goes through A6's executors, so `balance_after` is what the counter
  *    holds and the refusal is the SQL guard rather than a check in TypeScript.
@@ -37,6 +39,7 @@ import { credit, debit, readBalance } from '../ledger/repo';
 import { REDEMPTION_ADJUSTMENT_CODE, redemptionPort } from './port';
 import type { Db } from '../../db/client';
 import type { PointsRedemptionPort } from '../../../shared/marketing/redemption';
+import type { LedgerKind } from '../ledger/fragments';
 
 let db: Db;
 let close: () => Promise<void>;
@@ -188,6 +191,45 @@ const cart = (cartTotalMinor: number, over: Partial<{ pointsRequested: number }>
   ...over,
 });
 
+/**
+ * A handle whose FIRST look at the ledger cannot see one kind of row.
+ *
+ * THE RACE, IN A DATABASE WITH ONE CONNECTION. `port.ts` has two `catch` blocks
+ * that only a concurrent writer reaches, and nothing above gets near them: every
+ * replay staged there is answered by the up-front read long before a write is
+ * attempted, so the recovery those blocks perform was asserted by no test at
+ * all. PGlite cannot issue two statements at once — but the interleaving is not
+ * the property. The property is what happens FROM the state it leaves: a first
+ * read that missed a row which is already committed, and every statement after
+ * it seeing the truth. That is what this reproduces, and it is the same argument
+ * `ledger/repo.test.ts` makes for the debit's guard.
+ *
+ * The `Proxy` shape is `returns/mutate.test.ts`'s `countingMutant`, minus the
+ * rewrite — nothing about the statement's own SQL is under test here, only what
+ * the port does with an answer that is one row short. The count is asserted, so
+ * a refactor that stopped reading the ledger first would fail rather than
+ * silently make these tests about nothing.
+ */
+function blindOnce(kind: LedgerKind): { db: Db; blinded: () => number } {
+  let blinded = 0;
+  const proxy = new Proxy(db, {
+    get(target, prop) {
+      const value: unknown = Reflect.get(target, prop);
+      if (prop !== 'execute' || typeof value !== 'function') return value;
+      const execute = value as (
+        ...args: unknown[]
+      ) => Promise<{ rows: Record<string, unknown>[] }>;
+      return async (...args: unknown[]) => {
+        const res = await execute.apply(target, args);
+        if (blinded > 0) return res;
+        blinded += 1;
+        return { ...res, rows: res.rows.filter((row) => row.kind !== kind) };
+      };
+    },
+  });
+  return { db: proxy, blinded: () => blinded };
+}
+
 // ---------------------------------------------------------------------- quote
 
 describe('quote — what a balance is worth against a cart', () => {
@@ -313,6 +355,45 @@ describe('quote — what a balance is worth against a cart', () => {
     // The opening balance and its one ledger row, untouched.
     expect(await readBalance(db, EMAIL)).toBe(300);
     expect(await ledgerCount()).toBe(1);
+  });
+
+  it('refuses a cart total that is not a whole number of minor units', async () => {
+    await fund(300);
+
+    /*
+     * NOT `null`. Every other refusal here is "render no widget", but a float
+     * total is a CALLER'S bug, and hiding it behind the same silent answer would
+     * make the one number the cap is computed from something nobody ever
+     * notices being wrong.
+     */
+    const err = await rejection<BadRequestError>(port.quote(cart(100.5)));
+    expect(err).toBeInstanceOf(BadRequestError);
+    expect(err.detail).toBe('cartTotalMinor');
+  });
+
+  it('refuses a negative request rather than quietly treating it as none', async () => {
+    await fund(300);
+
+    // Left unchecked this clamps to a negative `spend`, falls out of the
+    // `points <= 0` gate and renders as "no widget" — a wrong argument wearing
+    // an ordinary answer.
+    const err = await rejection<BadRequestError>(
+      port.quote(cart(100_000, { pointsRequested: -5 })),
+    );
+    expect(err.detail).toBe('pointsRequested');
+  });
+
+  it('carries the machine code the shop matches on, spelled out', async () => {
+    await fund(300);
+
+    /*
+     * THE LITERAL, not the constant this file imports. Asserting the import
+     * against itself is true by construction, and `code` is precisely the field
+     * that must survive the rename that moves the label beside it — it is what
+     * the shop's totals, its invoices and any later reconciliation match on.
+     */
+    expect((await port.quote(cart(100_000)))?.adjustment.code).toBe('points_redemption');
+    expect(REDEMPTION_ADJUSTMENT_CODE).toBe('points_redemption');
   });
 
   it('names the points in the settings words, never the shipped preset’s', async () => {
@@ -452,6 +533,27 @@ describe('redeem — the debit at order commit', () => {
     const err = await rejection<BadRequestError>(port.redeem(spend({ orderId: '  ' })));
     expect(err.detail).toBe('orderId');
   });
+
+  it('replays to the redemption even after the order has been released', async () => {
+    await fund(300);
+    const first = await port.redeem(spend());
+    await port.release({ orderId: ORDER, reason: 'the order was cancelled' });
+
+    /*
+     * A paid webhook re-firing after a cancellation finds TWO rows carrying this
+     * order id, and only one of them is an answer to "redeem it again". Nothing
+     * else in this suite puts a release row in front of a replay, so without
+     * this the ordering of `orderEntries`' two arms is what would be deciding —
+     * and `UNION ALL` promises nothing about that.
+     */
+    expect(await port.redeem(spend())).toEqual({
+      ok: true,
+      entryId: first.ok ? first.entryId : null,
+      balance: 300,
+    });
+    expect(await rowsOfKind('redemption')).toHaveLength(1);
+    expect(await rowsOfKind('redemption_release')).toHaveLength(1);
+  });
 });
 
 // -------------------------------------------------------------------- release
@@ -534,5 +636,79 @@ describe('release — the compensating credit', () => {
     const err = await rejection<BadRequestError>(port.release(undo('   ')));
     expect(err.detail).toBe('reason');
     expect(await rowsOfKind('redemption_release')).toHaveLength(0);
+  });
+});
+
+// ----------------------------------------------------------------- the races
+
+/**
+ * What the two `catch` blocks are for — see `blindOnce` for why a
+ * single-connection database can still assert it.
+ *
+ * EVERY REPLAY ABOVE IS ANSWERED BY THE UP-FRONT READ, so each of these paths
+ * was reachable only in production until now: both partial uniques could be
+ * named wrongly, and the recovery both refusals fall into could be deleted
+ * outright, with the suite green. What a shop would see instead of an idempotent
+ * answer is a 500 on a webhook it will keep retrying.
+ */
+describe('a first look that missed a row — the interleavings one connection cannot issue', () => {
+  const spend = () => ({ orderId: ORDER, email: EMAIL, points: 100, currency: CURRENCY });
+
+  it('answers a redemption from the row its own index refused to duplicate', async () => {
+    await fund(300);
+    const first = await port.redeem(spend());
+
+    const blind = blindOnce('redemption');
+    const replayed = await redemptionPort(blind.db, () => NOW).redeem(spend());
+
+    expect(blind.blinded()).toBe(1);
+    expect(replayed).toEqual(first);
+    expect(await rowsOfKind('redemption')).toHaveLength(1);
+    /*
+     * 200, NOT 100. The refused INSERT took its whole statement down with it,
+     * the balance CTE included — which is the property one statement buys and a
+     * `db.transaction` would only appear to.
+     */
+    expect(await readBalance(db, EMAIL)).toBe(200);
+  });
+
+  it('answers a replay the wallet can no longer afford, rather than refusing it', async () => {
+    await fund(100);
+    const first = await port.redeem(spend());
+    expect(await readBalance(db, EMAIL)).toBe(0);
+
+    const blind = blindOnce('redemption');
+    const replayed = await redemptionPort(blind.db, () => NOW).redeem(spend());
+
+    /*
+     * Here the debit's guard refuses BEFORE the index is reached, so the two
+     * refusals arrive as different exceptions and must end at the same answer.
+     * `insufficient_balance` for an order that was in fact paid for with points
+     * is the failure this branch exists to prevent — the shop's policy on that
+     * code is to flag the order for a human.
+     */
+    expect(replayed).toEqual(first);
+    expect(await rowsOfKind('redemption')).toHaveLength(1);
+  });
+
+  it('answers a release from its own refused row, and the refusal moves nothing', async () => {
+    await fund(300);
+    await port.redeem(spend());
+    const first = await port.release({ orderId: ORDER, reason: 'the order was cancelled' });
+    expect(await lifetimeEarned()).toBe(400);
+
+    const blind = blindOnce('redemption_release');
+    const second = await redemptionPort(blind.db, () => NOW).release({
+      orderId: ORDER,
+      reason: 'cancelled again, by a second worker',
+    });
+
+    expect(blind.blinded()).toBe(1);
+    expect(second).toEqual(first);
+    expect(await rowsOfKind('redemption_release')).toHaveLength(1);
+    expect(await readBalance(db, EMAIL)).toBe(300);
+    // `lifetime_earned` moves in the same statement as the ledger row, so a
+    // refused credit cannot leave the counter ahead of the history it explains.
+    expect(await lifetimeEarned()).toBe(400);
   });
 });
