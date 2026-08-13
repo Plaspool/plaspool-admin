@@ -374,6 +374,24 @@ function statusIn(statuses: readonly ReturnStatus[]): SQL {
 }
 
 /**
+ * A typed pickup address, or nothing at all.
+ *
+ * A BLANK IS NOT AN ADDRESS, and normalising it to `undefined` in one place is
+ * what keeps the two readers of the field agreeing. `SCHEDULE`'s `COALESCE`
+ * only defends against NULL: left as whitespace, `pickupAddress: '   '` is not
+ * `undefined`, so it would skip `schedule`'s "on the row or in the body" check
+ * AND overwrite the address the customer actually gave — a driver dispatched to
+ * a blank doorstep, with the good address gone from the row. Every other human
+ * string in this file is trimmed at this layer (`reject`'s reason, `addNote`'s
+ * note, `createRequest`'s email) for the same reason: A5's zod is the first
+ * caller, not the only one.
+ */
+function address(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === '' ? undefined : trimmed;
+}
+
+/**
  * What a 409 carries: the row that is actually there, plus what may be done to
  * it.
  *
@@ -603,7 +621,7 @@ export async function createRequest(db: Db, input: CreateReturnInput): Promise<R
           (id, program_id, customer_email, customer_name, customer_phone, pickup_address,
            qty_declared, points_per_unit_snapshot, source, created_at, updated_at)
         VALUES (${id}, ${program.id}, ${email}, ${input.customerName ?? null},
-                ${input.customerPhone ?? null}, ${input.pickupAddress ?? null},
+                ${input.customerPhone ?? null}, ${address(input.pickupAddress) ?? null},
                 ${input.qtyDeclared}, ${pointsPerUnit}, ${input.source},
                 ${input.now}, ${input.now})
         RETURNING ${REQUEST_COLUMNS}
@@ -694,6 +712,7 @@ const SCHEDULE: Transition<ScheduleInput> = {
 
 /** Contract #8. */
 export async function schedule(db: Db, id: string, input: ScheduleInput): Promise<ReturnRow> {
+  const arg: ScheduleInput = { ...input, pickupAddress: address(input.pickupAddress) };
   /*
    * "Pickup address must exist on row or in body" (contract #8), refused as a
    * FIELD error rather than left to a driver who arrives with no address. This
@@ -701,12 +720,12 @@ export async function schedule(db: Db, id: string, input: ScheduleInput): Promis
    * the read — the same shape as `patchSettings`'s zero-rate rule, and like that
    * one it never decides the race.
    */
-  if (input.pickupAddress === undefined) {
+  if (arg.pickupAddress === undefined) {
     const read = await readReturn(db, id);
     if (!read) throw new NotFoundError(id);
     if (read.request.pickupAddress === null) throw new BadRequestError('pickupAddress');
   }
-  return runTransition(db, id, SCHEDULE, input);
+  return runTransition(db, id, SCHEDULE, arg);
 }
 
 export interface StepInput extends Cas {

@@ -228,6 +228,26 @@ describe('GET /programs', () => {
       VALUES ('pts_agg_one', 'c@example.test', ${program.id}, 'return_award', 35, 35,
               '5 accepted × 7 = 35 Bottle Caps', 'ret_agg_done', 'admin', ${now})`);
 
+    /*
+     * A MANUAL ADJUSTMENT TAGGED WITH THE SAME PROGRAM, WHICH MUST NOT MOVE
+     * `awardedTotal`. Contract #18 lets an adjustment carry a `programId`, and
+     * `marketing_ledger_award_sign_ck` only forces a program ONTO `return_award`
+     * rows — nothing stops a `manual` one from having it. So the sum's
+     * `kind = 'return_award'` filter is the only thing separating "what this
+     * programme awarded" from "what happens to be tagged with it".
+     *
+     * A DEBIT rather than a credit, because that is the sharp direction: without
+     * the filter a clawback would silently REDUCE the lifetime figure the Rewards
+     * table shows, which reads as an award being un-awarded rather than as an
+     * adjustment being made.
+     */
+    await ctx.db.execute(sql`
+      INSERT INTO marketing_ledger
+        (id, customer_email, program_id, kind, delta, balance_after, reason,
+         actor_type, created_at)
+      VALUES ('pts_agg_manual', 'c@example.test', ${program.id}, 'manual', -5, 30,
+              'Goodwill clawback', 'admin', ${now})`);
+
     const found = (await list()).find((p) => p.id === program.id);
     expect(found?.openReturns).toBe(2);
     expect(found?.awardedTotal).toBe(35);
@@ -236,6 +256,46 @@ describe('GET /programs', () => {
     // reads zero with another program's history in the same tables.
     expect((await list()).find((p) => p.seeded)?.awardedTotal).toBe(0);
     expect((await list()).find((p) => p.seeded)?.openReturns).toBe(0);
+  });
+
+  it('orders by creation, oldest first', async () => {
+    /*
+     * DETERMINISTIC TIMESTAMPS, WRITTEN BY SQL. The route stamps `Date.now()`, so
+     * two programs created through it can tie on `created_at` and fall through to
+     * the `id ASC` tie-break — stable, but not a thing to assert an ordering
+     * against. The property under test is the `ORDER BY`, not the clock.
+     *
+     * `ORDER BY created_at DESC` — the ordering a queue wants — reverses these
+     * two, which is the change this pins: on the one screen where the reader is
+     * editing the rows they are looking at, a list that reshuffles on every save
+     * loses their place.
+     *
+     * IT DELIBERATELY DOES NOT ASSERT THAT THE SEEDED PRESET IS FIRST. Migration
+     * 0011 stamps that row with a fixed authoring-time constant rather than a
+     * clock read, so whether it sorts above a row created today depends on which
+     * side of that constant the clock is on. `seeded` is the handle that does not.
+     */
+    const insert = async (id: string, key: string, createdAt: number) => {
+      await ctx.db.execute(sql`
+        INSERT INTO marketing_programs
+          (id, key, kind, name, points_label_singular, points_label_plural,
+           unit_label_singular, unit_label_plural, min_units_per_return,
+           points_per_unit, created_at, updated_at)
+        VALUES (${id}, ${key}, 'unit_return', 'Ordering Fixture',
+                'Bottle Cap', 'Bottle Caps', 'canister', 'canisters', 4, 7,
+                ${createdAt}, ${createdAt})`);
+    };
+    // Inserted newest-first, so a list that merely echoed insertion order passes
+    // for the wrong reason.
+    await insert('prg_order_late', 'order-late', 2_000);
+    await insert('prg_order_early', 'order-early', 1_000);
+
+    // Both predate every other row in the table — the seed's constant and the
+    // suite's own clock readings are both far above 2000 — so they lead the list.
+    expect((await list()).map((p) => p.id).slice(0, 2)).toEqual([
+      'prg_order_early',
+      'prg_order_late',
+    ]);
   });
 
   it('carries the aggregates on the create and patch responses too', async () => {
@@ -360,6 +420,54 @@ describe('POST /programs', () => {
       expect([res.status, field]).toEqual([400, field]);
       expect(await json(res)).toMatchObject({ error: 'bad_request', detail: field });
     }
+  });
+
+  it('refuses values the columns would refuse, naming the field', async () => {
+    /*
+     * THE SAME TABLE THE SETTINGS SUITE CARRIES, AND FOR THE SAME REASON. Every
+     * value below reaches a CHECK or an `integer`'s limit if the schema lets it
+     * through, and 23514 / 22003 have no row in the error table — so the answer
+     * would be a 500 that the client's retry policy re-sends five times for input
+     * that can never be stored. The route's validators exist to make each of these
+     * an inline error on a named input instead; nothing pinned that until now.
+     */
+    const cases: [string, unknown][] = [
+      // `name <> '' AND name = btrim(name)`: a field of spaces is the empty field
+      // it actually is, not a label that renders as nothing.
+      ['name', '   '],
+      // `points_label_singular <> ''` and its plural — the words a customer reads.
+      ['pointsLabelPlural', '  '],
+      ['unitLabelSingular', ''],
+      // `min_units_per_return > 0` / `points_per_unit > 0`. A minimum of zero is a
+      // rule that refuses nothing; a rate of zero awards nothing for a return the
+      // customer was told was worth something.
+      ['minUnitsPerReturn', 0],
+      ['pointsPerUnit', 0],
+      // `integer` columns: a fraction is not one, and anything past int4 is 22003.
+      ['minUnitsPerReturn', 1.5],
+      ['pointsPerUnit', 2_147_483_648],
+    ];
+
+    for (const [field, value] of cases) {
+      const res = await owner.post('/api/marketing/programs', draft({ [field]: value }));
+      expect([res.status, field, value]).toEqual([400, field, value]);
+      expect(await json(res)).toMatchObject({ error: 'bad_request', detail: field });
+    }
+  });
+
+  it('trims surrounding space instead of failing the btrim CHECK', async () => {
+    /*
+     * THE OTHER HALF OF `marketing_programs_name_ck`, which is `name <> '' AND
+     * name = btrim(name)`. A stray leading space is a CHECK violation and so a 500
+     * for one keystroke; trimmed at the boundary it is simply the name the admin
+     * meant. Asserted on the STORED row as well as on the response, because a trim
+     * applied on the way out would leave the untrimmed value in the column, where
+     * the next write to touch that row would still fail the CHECK.
+     */
+    const created = await create({ name: '  Cap Returns  ', pointsLabelSingular: ' Bottle Cap ' });
+    expect(created.name).toBe('Cap Returns');
+    expect(created.pointsLabelSingular).toBe('Bottle Cap');
+    expect((await list()).find((p) => p.id === created.id)?.name).toBe('Cap Returns');
   });
 
   it('answers a NUL byte with 400, not a 500', async () => {
@@ -511,6 +619,37 @@ describe('PATCH /programs/:id', () => {
       expect([patch.status, field]).toEqual([400, field]);
       expect(await json(patch)).toMatchObject({ error: 'bad_request', detail: field });
     }
+  });
+
+  it('refuses the same out-of-range values on the way in as on the way up', async () => {
+    /*
+     * THE PATCH SCHEMA IS A SECOND DECLARATION OF THE SAME LIMITS, and this is the
+     * path that matters more: a create with a bad rate never becomes a row, while
+     * a PATCH is aimed at a program that already has returns hanging off it. The
+     * create suite pins the shared constants; this pins that the patch body
+     * actually reuses them rather than declaring `z.number()` and letting the
+     * column answer 22003.
+     */
+    const created = await create();
+    const cases: [string, unknown][] = [
+      ['name', '  '],
+      ['pointsLabelSingular', ''],
+      ['pointsPerUnit', 0],
+      ['minUnitsPerReturn', 2_147_483_648],
+    ];
+
+    for (const [field, value] of cases) {
+      const res = await owner.patch(`/api/marketing/programs/${created.id}`, {
+        expectedRevision: created.revision,
+        [field]: value,
+      });
+      expect([res.status, field, value]).toEqual([400, field, value]);
+      expect(await json(res)).toMatchObject({ error: 'bad_request', detail: field });
+    }
+
+    // Nothing was written by any of them — a refused patch must not have spent the
+    // revision the caller is still holding.
+    expect((await list()).find((p) => p.id === created.id)?.revision).toBe(created.revision);
   });
 
   it('answers a NUL byte in the id with 400, not a 500', async () => {

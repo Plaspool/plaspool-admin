@@ -457,6 +457,45 @@ describe('creating a return', () => {
     );
   });
 
+  it('reports the permanent refusal ahead of the temporary one when a program is both', async () => {
+    /*
+     * KIND BEFORE STATUS, pinned. Neither fixture above has both conditions, so
+     * the two checks could be swapped without either of them noticing — and the
+     * swap costs an admin a wasted trip: `program_paused` links to a status
+     * toggle that will never make an `adhoc` program take returns, while
+     * `program_type_mismatch` says the thing that is actually true.
+     */
+    const both = await makeProgram({ kind: 'adhoc', status: 'paused' });
+    await expect(makeReturn({ programId: both })).rejects.toBeInstanceOf(
+      ProgramTypeMismatchError,
+    );
+  });
+
+  it('names the return that is open and not an older closed one', async () => {
+    /*
+     * `readOpenReturn` filters by the same four statuses the partial unique
+     * indexes — without that filter it would answer with whichever row the scan
+     * reached first, and the admin's "open return" link would land on a
+     * cancelled one. The two rows are given different statuses so the assertion
+     * can tell them apart.
+     */
+    const closed = await returnAt('requested');
+    await cancel(db, closed.id, {
+      expectedRevision: closed.revision,
+      reason: 'Customer changed their mind',
+      actorId: ACTOR,
+      now: NOW,
+    });
+    const open = await returnAt('scheduled', { programId: closed.programId });
+
+    const err = await rejection<ReturnAlreadyOpenError>(
+      makeReturn({ programId: closed.programId }),
+    );
+    expect(err).toBeInstanceOf(ReturnAlreadyOpenError);
+    expect(err.existingId).toBe(open.id);
+    expect(err.status).toBe('scheduled');
+  });
+
   it('treats an unknown programId as a field error, not a missing page', async () => {
     const err = await rejection<BadRequestError>(makeReturn({ programId: 'prg_nope' }));
     expect(err).toBeInstanceOf(BadRequestError);
@@ -685,6 +724,31 @@ describe('the transition guards', () => {
     ]);
   });
 
+  it('names the stage rather than the revision when both halves of the CAS refused', async () => {
+    /*
+     * BOTH WRONG AT ONCE — `reject` is illegal from `collected` AND the token is
+     * behind — which is the only case that can tell the order of the two checks
+     * in `refuse` apart. It is the realistic race, not a contrived one: a second
+     * admin advanced the return while this form sat open, so the row moved and
+     * the revision moved with it. Spec D7 makes `invalid_transition` the
+     * actionable answer (the screen re-renders the true stage from `request`);
+     * `stale_write` would offer "Load theirs" for a write that is now illegal
+     * however fresh the token gets.
+     */
+    const row = await returnAt('collected');
+    const err = await rejection<InvalidTransitionError>(
+      reject(db, row.id, {
+        expectedRevision: row.revision - 1,
+        reason: 'Not ours',
+        actorId: ACTOR,
+        now: NOW,
+      }),
+    );
+    expect(err).toBeInstanceOf(InvalidTransitionError);
+    expect(err.status).toBe('collected');
+    expect(err.action).toBe('reject');
+  });
+
   it('refuses to schedule a pickup with no address anywhere', async () => {
     const programId = await makeProgram();
     const row = await createRequest(db, {
@@ -699,6 +763,54 @@ describe('the transition guards', () => {
       schedule(db, row.id, {
         expectedRevision: row.revision,
         pickupAt: NOW,
+        actorId: ACTOR,
+        now: NOW,
+      }),
+    );
+    expect(err).toBeInstanceOf(BadRequestError);
+    expect(err.detail).toBe('pickupAddress');
+  });
+
+  it('treats a blank pickup address as no address at all', async () => {
+    /*
+     * `COALESCE` ONLY DEFENDS AGAINST NULL. A body carrying whitespace is not
+     * `undefined`, so it would skip the "on the row or in the body" check and
+     * then overwrite the address the customer actually gave — a driver
+     * dispatched to a blank doorstep, and the good address gone from the row.
+     * Every other human string in this file is trimmed at this layer for the
+     * same reason (`reject`'s reason, `addNote`'s note, `createRequest`'s
+     * email): the routes' zod is not the only caller.
+     */
+    const scheduled = await returnAt('scheduled');
+    const again = await schedule(db, scheduled.id, {
+      expectedRevision: scheduled.revision,
+      pickupAt: NOW + 3_600_000,
+      pickupAddress: '   ',
+      actorId: ACTOR,
+      now: NOW,
+    });
+    expect(again.pickupAddress).toBe('12 Yaba Road');
+
+    /* And with nothing on the row either, a blank is the same field error as
+     * omitting the field — which also pins that `createRequest` stored the
+     * blank it was given as NULL rather than as whitespace. */
+    const programId = await makeProgram();
+    const bare = await createRequest(db, {
+      email: 'kemi@example.test',
+      qtyDeclared: 6,
+      programId,
+      pickupAddress: '  ',
+      source: 'admin',
+      actorId: ACTOR,
+      now: NOW,
+    });
+    expect(bare.pickupAddress).toBeNull();
+
+    const err = await rejection<BadRequestError>(
+      schedule(db, bare.id, {
+        expectedRevision: bare.revision,
+        pickupAt: NOW,
+        pickupAddress: '   ',
         actorId: ACTOR,
         now: NOW,
       }),

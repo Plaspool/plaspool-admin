@@ -15,7 +15,7 @@
  * exact `ret_` id, contract #4). Changing one is a data migration, not a rename,
  * so each is written out below rather than derived.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ID, newId } from './ids';
 
 describe('newId', () => {
@@ -40,10 +40,33 @@ describe('newId', () => {
      * stable order — and a cursor that resumes mid-page cannot skip or repeat a
      * row. The base-36 time prefix is what makes that true; the 64 bits after it
      * are the uniqueness, not the ordering.
+     *
+     * MINTED UNDER A DRIVEN CLOCK, NOT HAND-BUILT. Two literal strings compared
+     * with `<` assert a property of `Number.prototype.toString(36)` and never
+     * reach `newId` at all — they stay green with the timestamp moved to the END
+     * of the id, which is exactly the arrangement that destroys the ordering
+     * this test is named for. So the clock moves and the real function answers.
+     *
+     * CONSECUTIVE MILLISECONDS, and forty of them, because the interesting case
+     * is a carry: `…zz` → `…001` rolls the last base-36 digit over, and only a
+     * fixed-width encoding keeps numeric order and lexicographic order the same
+     * across it. A gap of a whole second would hide a dozen broken encodings.
      */
-    const early = `${ID.ledger}${(1_700_000_000_000).toString(36)}0000000000000000`;
-    const late = `${ID.ledger}${(1_800_000_000_000).toString(36)}0000000000000000`;
-    expect(early < late).toBe(true);
+    vi.useFakeTimers();
+    try {
+      const base = Date.parse('2026-08-13T00:00:00.000Z');
+      const minted = Array.from({ length: 40 }, (_, i) => {
+        vi.setSystemTime(base + i);
+        return newId(ID.ledger);
+      });
+      expect(minted).toEqual([...minted].sort());
+      // …and the ordering is the TIME's, not the randomness's: same instant,
+      // so everything up to the 64 random bits must be identical.
+      vi.setSystemTime(base);
+      expect(newId(ID.ledger).slice(0, -16)).toBe(newId(ID.ledger).slice(0, -16));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not repeat across a burst', () => {
@@ -69,10 +92,16 @@ describe('the prefixes', () => {
 
   it('collides with nothing the shop mints', () => {
     /*
-     * WRITTEN OUT, NOT IMPORTED. `server/shop/orders/ids.ts` is the other half of
-     * this comparison and importing it is exactly the coupling spec D9 forbids —
-     * so the shop's set is a literal here, and this test is the thing that fails
-     * if the two subsystems ever reach for the same three letters.
+     * WRITTEN OUT, NOT IMPORTED. Those files are the other half of this
+     * comparison and importing them is exactly the coupling spec D9 forbids — so
+     * the shop's set is a literal here, and this test is the thing that fails if
+     * the two subsystems ever reach for the same three letters.
+     *
+     * ALL THREE OF THE SHOP'S MINTS, not just orders'. Orders is the module whose
+     * ids marketing actually stores, but the collision this guards against is
+     * with anything the shop hands out: a marketing `cus_` or `prd_` would be
+     * just as unanswerable in a log line, and a list that covered one module
+     * would go green for the other two.
      *
      * It is not a cosmetic worry. `marketing_ledger.order_id` stores an `ord_`
      * from another subsystem in the same row as a `pts_` of our own, and the
@@ -80,9 +109,23 @@ describe('the prefixes', () => {
      * support conversations. Two subsystems minting one prefix makes "which
      * table is this row in" unanswerable from the id.
      */
-    const shopPrefixes = ['ord_', 'oln_', 'ful_', 'fll_', 'oev_', 'evt_', 'eml_'];
+    const shopPrefixes = [
+      // server/shop/orders/ids.ts
+      'ord_', 'oln_', 'ful_', 'fll_', 'oev_', 'evt_', 'eml_',
+      // server/shop/cart/ids.ts
+      'cus_', 'crt_', 'crl_', 'res_', 'adr_',
+      // server/shop/catalog/mapping.ts#newCatalogId
+      'prd_', 'var_', 'prc_', 'prv_',
+    ];
     for (const prefix of Object.values(ID)) {
       expect(shopPrefixes).not.toContain(prefix);
+    }
+
+    // The blog half mints `p_` and `r_` (too short to reach a three-letter
+    // prefix) and `img_` (not). Asserted here rather than in a suite of its own
+    // because the failure is the same one: two tables, one prefix.
+    for (const prefix of Object.values(ID)) {
+      expect(prefix).not.toBe('img_');
     }
   });
 

@@ -158,7 +158,15 @@ describe('programs', () => {
   });
 
   it('patches by id with the CAS token', async () => {
-    await marketingApi.patchProgram('prg_caps', { expectedRevision: 3, name: 'Canister Returns' });
+    answers(200, { program: everyFixture.renamedProgram });
+    const patched = await marketingApi.patchProgram('prg_caps', {
+      expectedRevision: 3,
+      name: 'Canister Returns',
+    });
+    // Unwrapped from `{program}` exactly as the POST is. Read as a bare row this
+    // hands the editor `undefined` and the bumped revision goes missing, so the
+    // next save CASes against a number the store has already passed.
+    expect(patched).toEqual(everyFixture.renamedProgram);
     expect(asked()).toBe('/api/marketing/programs/prg_caps');
     expect(method()).toBe('PATCH');
     expect(sentBody()).toEqual({ expectedRevision: 3, name: 'Canister Returns' });
@@ -209,7 +217,8 @@ describe('returns', () => {
   });
 
   it('posts an admin intake without the optional boxes the form left blank', async () => {
-    await marketingApi.createReturn({
+    answers(200, returnDetails.requested);
+    const created = await marketingApi.createReturn({
       email: 'dara@example.com',
       qtyDeclared: 6,
       customerName: '',
@@ -217,6 +226,10 @@ describe('returns', () => {
       pickupAddress: '12 Adeola Odeku Street, Lagos',
       note: '',
     });
+    // #5 answers the DETAIL BARE — no wrapper, unlike every other create on this
+    // surface. Reaching for a key here would hand the queue `undefined` and call
+    // it the row it just made.
+    expect(created).toEqual(returnDetails.requested);
     expect(asked()).toBe('/api/marketing/returns');
     expect(method()).toBe('POST');
     expect(sentBody()).toEqual({
@@ -362,12 +375,16 @@ describe('customers, ledger and adjustments', () => {
   });
 
   it('posts an adjustment with its sign intact', async () => {
-    await marketingApi.adjust({
+    answers(200, { entry: ledgerWalk[0], balance: 180 });
+    const result = await marketingApi.adjust({
       email: 'dara@example.com',
       delta: -40,
       reason: 'Correction — counted twice',
       programId: '',
     });
+    // #18 answers `{entry, balance}` BARE — the balance rides beside the row so
+    // the tile and the ledger refetch together off one response.
+    expect(result).toEqual({ entry: ledgerWalk[0], balance: 180 });
     expect(asked()).toBe('/api/marketing/adjustments');
     expect(method()).toBe('POST');
     expect(sentBody()).toEqual({
@@ -421,7 +438,13 @@ describe('settings, banners, discounts', () => {
   });
 
   it('archives through a status patch, because there is no delete route', async () => {
-    await marketingApi.patchBanner('bnr_live', { expectedRevision: 3, status: 'archived' });
+    answers(200, { banner: everyFixture.archivedBanner });
+    const archived = await marketingApi.patchBanner('bnr_live', {
+      expectedRevision: 3,
+      status: 'archived',
+    });
+    // Unwrapped from `{banner}`, like the POST beside it.
+    expect(archived).toEqual(everyFixture.archivedBanner);
     expect(asked()).toBe('/api/marketing/banners/bnr_live');
     expect(method()).toBe('PATCH');
     expect(sentBody()).toEqual({ expectedRevision: 3, status: 'archived' });
@@ -621,9 +644,21 @@ describe('deriveBannerStatus', () => {
   });
 
   it('lets archived and draft ignore the clock entirely', () => {
-    const window = { startsAt: NOW - DAY, endsAt: NOW + DAY };
-    expect(deriveBannerStatus({ status: 'archived', ...window }, NOW)).toBe('archived');
-    expect(deriveBannerStatus({ status: 'draft', ...window }, NOW)).toBe('draft');
+    /*
+     * THE WINDOWS HERE ARE DELIBERATELY NOT OPEN, and that is the whole test.
+     * An archived row measured against a window that happens to be running
+     * answers 'archived' whichever order the checks run in — the clock branches
+     * return nothing, so the fixture never reaches the precedence being claimed.
+     * A future start would say 'scheduled' and a finished window would say
+     * 'ended'; both are wrong for a row nobody switched on, and only a fixture
+     * where the clock WOULD answer differently can prove the status wins.
+     */
+    const notYet = { startsAt: NOW + DAY, endsAt: NOW + 2 * DAY };
+    const over = { startsAt: NOW - 2 * DAY, endsAt: NOW - DAY };
+    expect(deriveBannerStatus({ status: 'archived', ...notYet }, NOW)).toBe('archived');
+    expect(deriveBannerStatus({ status: 'archived', ...over }, NOW)).toBe('archived');
+    expect(deriveBannerStatus({ status: 'draft', ...notYet }, NOW)).toBe('draft');
+    expect(deriveBannerStatus({ status: 'draft', ...over }, NOW)).toBe('draft');
   });
 
   it('IS LIVE AT THE EXACT MOMENT IT STARTS', () => {

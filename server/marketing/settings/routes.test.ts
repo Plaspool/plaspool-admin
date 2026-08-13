@@ -296,6 +296,14 @@ describe('PATCH /settings', () => {
       ['redemptionRatePoints', 0],
       ['minRedeemPoints', -1],
       ['redemptionRateMinor', -1],
+      // `integer` columns: past int4 is SQLSTATE 22003, i.e. a 500 for a number
+      // somebody typed. The ceiling is the storage's, not a business rule — what a
+      // sensible rate is belongs to the owner and is edited on this same screen.
+      ['redemptionRatePoints', 2_147_483_648],
+      ['redemptionRateMinor', 2_147_483_648],
+      ['minRedeemPoints', 2_147_483_648],
+      // …and fractions, which no `integer` column can hold either.
+      ['minRedeemPoints', 2.5],
       // `^[A-Z]{3}$`, the `PriceBody` precedent: `str().length(3)` alone accepts
       // "ngn", which `money()` then refuses by throwing — a 500 for a case.
       ['redemptionCurrency', 'ngn'],

@@ -14,12 +14,15 @@
  * never read each other's code; this file is the only thing they agree on, so a
  * change here is a change to somebody else's half. Amend the spec first.
  *
- * NOTHING IN THIS FILE MAY SAY "SPOOL". Every customer-facing noun — the
- * program's name, its points word, its unit word — travels on the API response
- * that needs it, because a rewards program that can be renamed is a program
- * whose words cannot live in the client. "Spool Points" is seed data in
- * migration 0011 and nowhere else; `marketing-no-spool.test.ts` greps this file
- * and the screens to keep it that way.
+ * NO CUSTOMER-FACING NOUN IS WRITTEN DOWN HERE. The program's name, its points
+ * word, its unit word — each travels on the API response that needs it, because
+ * a rewards program that can be renamed is a program whose words cannot live in
+ * the client. The seeded preset's wording is data in migration 0011 and nowhere
+ * else, and the section's hardcoded-noun grep test (plan B9, the one guard file
+ * under `src/routes/`) reads THIS FILE BY NAME looking for that preset's noun.
+ * Which is why the noun appears nowhere above — not in a string, not in a
+ * comment, and not in the guard's own filename quoted back at it. The grep
+ * reads source text and cannot exempt prose that is about the grep.
  */
 import { apiFetch, type Page } from './api';
 import {
@@ -78,8 +81,8 @@ export interface Program {
   conditions: Record<string, never>;
   /**
    * True only for rows migration 0011 seeded. The "Seeded preset" chip reads
-   * THIS — never `key === 'spool-return'`, which the grep guard forbids and
-   * which would be wrong the moment a second preset ships.
+   * THIS — never a match against the preset's `key`, which the grep guard
+   * forbids naming and which would be wrong the moment a second preset ships.
    */
   seeded: boolean;
   awardedTotal: number;
@@ -531,16 +534,21 @@ const BASE = '/marketing';
  * a 400 naming a field the operator never filled in. `api-shop.ts` does the
  * same thing inline for a price's `reason`; this is that rule with a name.
  *
- * `null` AND `0` AND `false` SURVIVE, deliberately. `null` is how a banner
- * clears its end date and how settings clear the default program — dropping it
- * would turn "unset this" into "leave it alone", which is the worst kind of
- * silent no-op: the form says saved and the value is still there.
+ * `0` SURVIVES, and on these bodies that is the load-bearing one: `qtyAccepted:
+ * 0` is a complete rejection — the one inspection that awards nothing — so a
+ * pruner written as `if (!value)` would strip the number that makes it a
+ * rejection and post a body the server refuses for a missing field. `null` and
+ * `false` survive too, but nothing routed through here carries either today;
+ * they are kept for the day a nullable optional lands on one of these bodies,
+ * not because a caller relies on it.
  *
  * Applied ONLY to the bodies whose optional fields are genuinely optional
  * (intake, transitions, adjustments). Program/settings/banner patches are left
  * alone on purpose: every field those forms show is one the operator meant, so
  * an empty required label has to come back as a 400 they can see rather than a
- * key that quietly never left the browser.
+ * key that quietly never left the browser — and because `null` is a REAL VALUE
+ * on exactly those three ("clear the end date", "clear the default program"),
+ * which is a decision this function should never be in a position to reverse.
  */
 function filled<T extends object>(body: T): T {
   const out: Record<string, unknown> = {};

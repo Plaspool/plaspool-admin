@@ -4,11 +4,13 @@
  *
  * EVERY FIXTURE USES ABSURD LABELS — "Bottle Cap"/"Bottle Caps" for the points
  * word, "canister"/"canisters" for the unit — and that is the point of the file
- * existing at all. The programme this section ships with is about returning
- * spools, so a screen that hardcoded "spool" would pass any test written with
- * realistic fixtures and fail the first customer who renamed the program. With
- * these, a hardcode is visible: the assertion asks for "6 canisters", and the
- * suites additionally assert `/spool/i` appears nowhere in what was rendered.
+ * existing at all. The programme this section ships with counts one particular
+ * returnable thing, so a screen that hardcoded THAT noun would pass any test
+ * written with realistic fixtures and fail the first customer who renamed the
+ * program. With these, a hardcode is visible: the assertion asks for "6
+ * canisters", and the suites additionally assert the seeded preset's own noun
+ * appears nowhere in what was rendered. The noun is not spelled out in this
+ * comment either — the guard greps source, so prose about it would trip it.
  *
  * THE SECOND RENAME IS BUILT IN, and it is the part worth reading. The ledger
  * rows and the `inspected` timeline event below say "Jar Lid" — the wording the

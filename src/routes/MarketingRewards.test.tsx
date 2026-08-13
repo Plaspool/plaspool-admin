@@ -252,7 +252,17 @@ const retype = async (
 
 describe('the rewards screen', () => {
   it('chips exactly the rows the server called seeded', async () => {
-    withPrograms();
+    /*
+     * A TWIN OF THE PRESET, SAME HANDLE, NOT SEEDED — and it is the whole point
+     * of this fixture list. Every other row differs from the preset in its key
+     * AND in its `seeded` column at once, so an implementation that chipped
+     * `program.key === 'bottle-caps'` — the hardcode this screen exists to avoid
+     * — rendered exactly the same chips and passed every assertion below.
+     * Mutating the guard proved it. With a row that disagrees with itself, only
+     * the column can be right.
+     */
+    const twin = { ...capsProgram, id: 'prg_twin', name: 'A Second Try', seeded: false };
+    withPrograms([...programs, twin]);
     withSettings();
     mount();
 
@@ -260,12 +270,13 @@ describe('the rewards screen', () => {
 
     /*
      * ONE CHIP, on the row whose `seeded` column is true — not on the row whose
-     * key happens to look like a preset's. Three programs are listed and two of
+     * key happens to look like a preset's. Four programs are listed and three of
      * them were made by hand.
      */
     expect(screen.getAllByText('Seeded preset')).toHaveLength(1);
     const seeded = rowOf();
     expect(within(seeded).getByText('Seeded preset')).toBeTruthy();
+    expect(within(rowOf(twin)).queryByText('Seeded preset')).toBeNull();
     expect(within(rowOf(renamedProgram)).queryByText('Seeded preset')).toBeNull();
 
     // The rule reads in the program's own words, and the by-hand program says so

@@ -187,9 +187,17 @@ function rowToProgram(row: Record<string, unknown>): Program {
  * ORDERED BY CREATION, OLDEST FIRST, and that is a choice about a CONFIG table.
  * `updated_at DESC` — the ordering a queue wants — would make a list reshuffle
  * itself under the cursor every time somebody saved a row, on the one screen
- * where the reader is editing the rows they are looking at. Oldest-first also
- * puts the seeded preset at the top of a fresh install without anything having to
- * know which row that is.
+ * where the reader is editing the rows they are looking at. Creation order never
+ * moves, so a row stays where its reader last saw it.
+ *
+ * IT DOES NOT PROMISE THE SEEDED PRESET IS FIRST, and an earlier draft of this
+ * comment claimed it did. Migration 0011 stamps that row with a fixed
+ * authoring-time constant rather than a clock read (deliberately — a seed dated
+ * `now()` makes two databases disagree about when the shop opened), so whether it
+ * sorts above a program created today depends on nothing more than which side of
+ * that constant the clock is on. The UI finds the preset by the `seeded` flag,
+ * which is the only handle that is true whatever the clock says — and is the same
+ * flag the "Seeded preset" chip already reads.
  */
 export async function listPrograms(db: Db): Promise<Program[]> {
   const res = await db.execute(sql`

@@ -20,7 +20,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { SEED_PASSWORD, freshDb } from '../../test/harness';
 import { httpClient, json } from '../../test/http';
-import { INTAKE_EMAIL_LIMIT } from './routes';
+import { INTAKE_EMAIL_LIMIT, INTAKE_IP_LIMIT } from './routes';
 import type { TestCtx } from '../../test/harness';
 import type { HttpClient } from '../../test/http';
 import type { AuthUser } from '../../../shared/types';
@@ -319,6 +319,13 @@ describe('the public intake — contract #6', () => {
     // And the row is real, attributed to the CUSTOMER rather than to staff.
     const detail = await json<Detail>(await owner.get(`${API}/returns/${body.requestId}`));
     expect(detail.request.customerEmail).toBe(email);
+    /* THE RENAME, asserted with values rather than with nulls: this body spells
+     * them `name`/`phone` while the row spells them `customerName`/
+     * `customerPhone`, and a hand-written mapping between two pairs of
+     * same-typed strings is exactly the kind that can be swapped without any
+     * shape assertion noticing. */
+    expect(detail.request.customerName).toBe('Dara');
+    expect(detail.request.customerPhone).toBe('0801');
     /* Attributed to the CUSTOMER: a history that credited every request to
      * whoever happened to be signed in could not answer "did they ask, or did
      * we log it for them". */
@@ -347,6 +354,62 @@ describe('the public intake — contract #6', () => {
     // fall through marketing's own renderer rather than be re-rendered by it.
     expect(Number(limited.headers.get('retry-after'))).toBeGreaterThan(0);
     expect(await json(limited)).toMatchObject({ error: 'rate_limited' });
+  });
+
+  it('bounds one host with the IP budget, and spends it before the body is read', async () => {
+    /*
+     * THE OTHER BUCKET, and a per-email budget cannot stand in for it: thirty
+     * addresses from one host spend thirty separate email budgets and none of
+     * their own, so without this the create path is a free loop for anybody
+     * willing to vary the address.
+     *
+     * Driven with an INVALID body ON PURPOSE. The IP limiter is registered
+     * ABOVE `readJson`, so a request refused by the schema has already cost
+     * budget — which is the whole reason it sits there ("a limiter cannot bound
+     * work that runs after it"). Move it below the parse and this loop becomes
+     * free, and the 429 below becomes a 201.
+     */
+    const ip = '203.0.113.7';
+    for (let i = 0; i < INTAKE_IP_LIMIT; i += 1) {
+      expect((await anon.post(`${API}/returns/request`, { nope: true }, fromIp(ip))).status).toBe(400);
+    }
+
+    const limited = await anon.post(
+      `${API}/returns/request`,
+      { email: nextEmail(), qtyDeclared: 4 },
+      fromIp(ip),
+    );
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers.get('retry-after'))).toBeGreaterThan(0);
+
+    // Keyed on the HOST and not globally: the office behind the next NAT is
+    // untouched, which is the difference between a rate limit and an outage.
+    const elsewhere = await anon.post(
+      `${API}/returns/request`,
+      { email: nextEmail(), qtyDeclared: 4 },
+      fromIp('203.0.113.8'),
+    );
+    expect(elsewhere.status).toBe(201);
+  });
+
+  it('is refused cross-origin — that is what stands where the session would be', async () => {
+    /*
+     * The one route in this subsystem with no `requireAuth` behind it, so the
+     * guard that replaces the session is pinned HERE rather than left to the
+     * generic middleware suite: `originGuard` is mounted above the whole
+     * sub-app (`server/index.ts`, well below the marketing mount), and this is
+     * the route whose entire safety argument rests on that being true.
+     *
+     * DEPLOY NOTE: the storefront's origin must be in `APP_ORIGINS`, or every
+     * customer submitting the form sees exactly this.
+     */
+    const res = await anon.post(
+      `${API}/returns/request`,
+      { email: nextEmail(), qtyDeclared: 4 },
+      { headers: { origin: 'https://not-the-storefront.test', 'x-real-ip': '203.0.113.9' } },
+    );
+    expect(res.status).toBe(403);
+    expect(await json(res)).toMatchObject({ error: 'forbidden' });
   });
 
   it('carries the minimum in below_minimum, in the program\'s own words', async () => {
@@ -799,6 +862,32 @@ describe('the queue — contract #4', () => {
       unitLabelSingular: 'canister',
       unitLabelPlural: 'canisters',
     });
+
+    /*
+     * THE WHOLE KEY SET, against the frozen `ReturnListItem` in
+     * `src/data/api-marketing.ts`. Asserting only the fields this test happens
+     * to care about would let a column be added that Stream B has no type for,
+     * or dropped from `LIST_COLUMNS` and left null-mapped — and the queue is
+     * drawn from these rows alone, so either lands on a screen before it lands
+     * in a failure.
+     */
+    expect(Object.keys(row).sort()).toEqual([
+      'allowedActions',
+      'createdAt',
+      'customerEmail',
+      'customerName',
+      'id',
+      'pickupAddress',
+      'pickupScheduledAt',
+      'pointsAwarded',
+      'program',
+      'qtyAccepted',
+      'qtyDeclared',
+      'qtyRejected',
+      'revision',
+      'status',
+      'updatedAt',
+    ]);
   });
 
   it('matches an email prefix and an exact ret_ id, and nothing else', async () => {

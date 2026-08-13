@@ -1094,8 +1094,11 @@ function ProgramEditor({ id }: { id: string }) {
     } catch (err) {
       const fresh = carried<Program>(err, 'program');
       if (err instanceof StaleWriteError && fresh !== null) setConflict(fresh);
-      else if (err instanceof ApiError && err.code === 'duplicate_program_key')
-        setProblem({ field: 'name', message: 'Another program already has that handle.' });
+      /* No `duplicate_program_key` arm here, deliberately: a patch cannot carry a
+         key, so the only way to receive that code on this request is for the
+         invariant above to have been broken — and answering it with a message
+         under the Name box would say a handle collided while pointing at a field
+         that is not the handle. It falls through to the generic write failure. */
       else if (err instanceof ApiError && err.status === 400 && err.detail !== undefined)
         setProblem({ field: err.detail, message: fieldMessage(err.detail) });
       else if (err instanceof NotFoundError) setMissing(true);
@@ -1121,6 +1124,12 @@ function ProgramEditor({ id }: { id: string }) {
       void create();
       return;
     }
+    // The form is read BEFORE the confirmation, not after it: asking somebody to
+    // agree to a pause and then refusing the save for an empty label is two
+    // decisions in the wrong order, and the second one arrives behind a dialog
+    // that has already closed.
+    const read = readDraft();
+    if (!read.ok) return setProblem(read.problem);
     if (needsPauseConfirm) {
       setConfirmPause(true);
       return;
