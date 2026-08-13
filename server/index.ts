@@ -15,6 +15,11 @@ import { routes as categories } from './routes/categories';
 import { routes as images } from './routes/images';
 import { createEmailRoutes, createUnsubscribeRoutes } from './routes/email';
 import { createPublicRoutes } from './routes/public';
+import {
+  MARKETING_PREFIX,
+  createMarketingPublicRoutes,
+  marketingApp,
+} from './marketing/app';
 import { portMailer } from './shop/orders/mailer';
 import { registerOrdersDefaults } from './shop/orders/ports';
 import { resendMailer } from './mail/resend';
@@ -303,6 +308,34 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    */
   app.route(API_PREFIX, createPublicRoutes({ origins: deps.origins }));
 
+  /*
+   * THE PUBLIC MARKETING READS — the live banners a page asks for by placement,
+   * and the rewards copy the storefront renders its own "send your empties back"
+   * page from entirely out of config (marketing spec D8).
+   *
+   * BESIDE `createPublicRoutes` AND ABOVE `sessionMiddleware`, FOR THAT
+   * ROUTER'S OWN REASON. Both of these responses carry `Cache-Control: public`,
+   * so a shared cache may store one and hand it to a different reader — and a
+   * cacheable response that is ABLE to vary by cookie is one bug away from
+   * serving one reader's view to another (threat T6). Mounted here,
+   * `c.get('user')` is `undefined` on every request that reaches the router,
+   * because the middleware that would resolve a session has not run and cannot
+   * be reached from inside it. Cookieless by CONSTRUCTION, not by review.
+   *
+   * A SECOND ROUTER RATHER THAN TWO MORE ROUTES IN `createPublicRoutes`, because
+   * that file belongs to the blog's reading API and this one is versioned,
+   * cached and evolved with the marketing contract. Same mount, same guarantee,
+   * separate ownership.
+   *
+   * THE ONE PUBLIC MUTATION IS NOT IN IT. `POST /api/marketing/returns/request`
+   * — the customer asking for a pickup — sits in the marketing app below, under
+   * `originGuard` and a rate limit. A mutation inside a cacheable router puts
+   * "may be stored by a shared cache" and "writes a row" in one file, which is
+   * the confusion this split exists to prevent (see `createUnsubscribeRoutes`
+   * above, which makes the same argument from the other direction).
+   */
+  app.route(API_PREFIX, createMarketingPublicRoutes());
+
   app.use(`${API_PREFIX}/*`, originGuard(deps.origins));
 
   app.use(`${API_PREFIX}/*`, sessionMiddleware());
@@ -356,6 +389,54 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * mounted far above, next to the payments webhook. See the note there.
    */
   app.route(API_PREFIX, createEmailRoutes({ mailer: deps.mailer }));
+
+  /*
+   * MARKETING — rewards programs, the spool-return lifecycle, the points ledger
+   * with its balances, website banners and discount codes, under
+   * `/api/marketing` (marketing spec §Frozen API contract).
+   *
+   * ONE LINE, LIKE THE SHOP'S, AND FOR THE SAME REASON. `marketingApp()` is a
+   * sub-app that the marketing subsystems mount their own routers into, so a
+   * feature built by several agents in sequence costs this file a single edit
+   * rather than one per subsystem.
+   *
+   * It inherits everything above it — the request id, the origin guard, the lazy
+   * database factory, the session middleware — because it is mounted after them,
+   * and it re-declares none of them. Auth is attached PER ROUTE inside it, never
+   * as a blanket `use('*')`, so an unrouted path under this prefix is still the
+   * 404 it should be rather than a 401 (`server/routes/posts.ts` measured that
+   * one). The only thing it adds to the chain is an `onError` rendering
+   * marketing's own conflict codes with the payloads their screens read —
+   * `invalid_transition` carrying the re-read request, `return_already_open`
+   * carrying the id to link to — falling through to `toResponse` for every other
+   * row of the §8 table.
+   *
+   * `deps.mailer`, exactly as the email routes take it: ONE transport for the
+   * deployment, so a suite that injects a recorder sees the return-award
+   * notifications through the same recorder rather than through a second,
+   * invisible one. Nothing is read at construction — the sweep is the only
+   * consumer and it runs per request.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * THE REDEMPTION SEAM IS DELIBERATELY NOT WIRED, AND THIS IS WHERE IT WOULD BE.
+   *
+   * Spending points at checkout is a `PointsRedemptionPort` — declared in
+   * `shared/marketing/redemption.ts`, implemented over the ledger in
+   * `server/marketing/`, and consumed by the cart, which today hard-codes
+   * `adjustments: []`. Marketing may not import `server/shop/**` and the shop may
+   * not import `server/marketing/**` (spec D9), so the two halves can only meet
+   * in a composition root — this file, the way `createPaymentRoutes({ checkout:
+   * checkoutPort() })` below joins Cart and Payments. When it lands,
+   * `ShopCartDeps` gains an optional `redemption?` and it is injected HERE.
+   *
+   * Left unwired in v1 on purpose: the cart's files belong to another session,
+   * and a port with no caller is a much smaller thing to carry than a half-wired
+   * one. The gap the shop must not assume away is written down in spec D9 — a
+   * quote does not RESERVE, so a balance can drop between the checkout quote and
+   * the paid-webhook redeem.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  app.route(`${API_PREFIX}${MARKETING_PREFIX}`, marketingApp({ mailer: deps.mailer }));
 
   /*
    * PAYMENTS' STOREFRONT AND ADMIN ROUTES — behind the guard and the session,
