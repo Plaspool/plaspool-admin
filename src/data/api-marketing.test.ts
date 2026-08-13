@@ -387,6 +387,8 @@ describe('settings, banners, discounts', () => {
     expect(await marketingApi.patchSettings({ expectedRevision: 4, minRedeemPoints: 50 })).toEqual(
       everyFixture.settings,
     );
+    // Same path, and the singleton takes no id — there is one settings row.
+    expect(asked()).toBe('/api/marketing/settings');
     expect(method()).toBe('PATCH');
   });
 
@@ -411,7 +413,11 @@ describe('settings, banners, discounts', () => {
       placement: 'section',
     });
     expect(created).toEqual(everyFixture.draftBanner);
+    expect(asked()).toBe('/api/marketing/banners');
     expect(method()).toBe('POST');
+    // No `status` on the way out: what this screen creates is a draft, and the
+    // server decides that rather than taking the client's word for it.
+    expect(sentBody()).not.toHaveProperty('status');
   });
 
   it('archives through a status patch, because there is no delete route', async () => {
