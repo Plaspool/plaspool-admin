@@ -71,6 +71,26 @@ function mount() {
 
 const address = (): string => screen.getByTestId('address').textContent ?? '';
 
+/**
+ * Every word the screen puts in front of somebody — including the ones only a
+ * screen reader hears.
+ *
+ * `textContent` alone would miss them, and the miss is not hypothetical: an
+ * `aria-label` is a whole sentence and this file already carries one. The
+ * section's file-level grep covers the PRESET'S noun in an attribute; nothing
+ * covers the generic currency word, because "points" is far too ordinary a
+ * string to grep a source tree for. This screen is the only place it can be
+ * pinned at all, so it is pinned over the whole surface rather than half of it.
+ */
+const COPY_ATTRS = ['aria-label', 'title', 'alt', 'placeholder'];
+
+function everyWord(container: HTMLElement): string {
+  const spoken = [...container.querySelectorAll('*')].flatMap((el) =>
+    COPY_ATTRS.map((name) => el.getAttribute(name) ?? ''),
+  );
+  return [container.textContent ?? '', ...spoken].join(' ');
+}
+
 // ============================================================================
 
 describe('the discounts placeholder', () => {
@@ -116,7 +136,7 @@ describe('the discounts placeholder', () => {
 
   it('names neither the preset’s noun nor a currency it cannot look one up for', () => {
     const { container } = mount();
-    const words = container.textContent ?? '';
+    const words = everyWord(container);
 
     expect(words).not.toMatch(new RegExp(PRESET_NOUN, 'i'));
     /*

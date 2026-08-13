@@ -60,9 +60,15 @@ function sources(): string[] {
   const screens = readdirSync(ROUTES)
     .filter((name) => /^Marketing.*\.tsx$/.test(name))
     .map((name) => `${ROUTES}/${name}`);
-  const shared = readdirSync(`${ROUTES}/marketing`, { withFileTypes: true })
+  /* `recursive` rather than one level: without it a directory here is dropped
+     by the `isFile` filter in silence, and everything under it stops being
+     checked with nothing going red — the same "list that quietly stopped
+     covering things" this function exists to avoid, one level down. */
+  const shared = readdirSync(`${ROUTES}/marketing`, { withFileTypes: true, recursive: true })
     .filter((entry) => entry.isFile())
-    .map((entry) => `${ROUTES}/marketing/${entry.name}`);
+    // Windows joins the nested half with backslashes; the assertions below and
+    // the failure messages are all written in the repository's own idiom.
+    .map((entry) => `${entry.parentPath.replaceAll('\\', '/')}/${entry.name}`);
   return [
     ...screens,
     ...shared,
