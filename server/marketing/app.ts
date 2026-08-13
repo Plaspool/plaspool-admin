@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { toResponse } from '../middleware/errors';
 import { MailNotConfiguredError } from '../mail/port';
+import { routes as ledgerRoutes } from './ledger/routes';
 import { routes as programRoutes } from './programs/routes';
 import { routes as returnRoutes } from './returns/routes';
 import { routes as settingsRoutes } from './settings/routes';
@@ -321,6 +322,19 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
    * a later `POST /returns/:id` cannot swallow it. `returns/routes.ts` pins it.
    */
   marketing.route('/', returnRoutes);
+
+  /*
+   * LEDGER — contract #15-18. The customer directory, one customer's balance and
+   * history, and the manual adjustment that is the only way points are created
+   * or destroyed without a return.
+   *
+   * THE ORDER DOES NOT MATTER HERE EITHER: `/customers*` and `/adjustments` are
+   * disjoint from every path above. What this router does share with returns is
+   * the discipline that made the order matter there — `/customers` is registered
+   * above `/customers/:email` inside it, so a fixed segment can never be
+   * swallowed by a parameterised one.
+   */
+  marketing.route('/', ledgerRoutes);
 
   /*
    * HELD, NOT YET READ. The first consumer is the sweep route, which arrives
