@@ -88,6 +88,14 @@
   .mktscr__title {
     font-size: var(--step-3);
   }
+  /* The screen's primary stays in the masthead on a phone rather than moving
+     into the content, and takes the full width once it has wrapped onto its own
+     line — a 44px target the thumb cannot miss, in the place it was on the
+     desktop. */
+  .mktscr__headrow > .btn {
+    width: 100%;
+    min-height: var(--tap-min);
+  }
 }
 
 /* --------------------------------------------------------------- tiles */
@@ -369,6 +377,11 @@ a.mktstat:hover {
 .mkttabs::-webkit-scrollbar {
   display: none;
 }
+/* `text-decoration` because a tab here is a real <a>: a view is URL state, so
+   the strip is links that ⌘-click and can be sent to somebody, the way
+   `.shoptabs__tab` is — and that file declares this same line for the same
+   reason. The dashboard's original wore this class on a <button>, which is why
+   the source it was copied from did not need it. */
 .mkttabs__tab {
   display: inline-flex;
   align-items: center;
@@ -380,6 +393,7 @@ a.mktstat:hover {
   border-radius: var(--radius-m);
   background: none;
   color: var(--ink-3);
+  text-decoration: none;
   scroll-snap-align: start;
   font-size: var(--step--1);
   font-weight: 500;
