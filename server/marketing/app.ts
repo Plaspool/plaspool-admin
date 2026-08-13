@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { toResponse } from '../middleware/errors';
 import { MailNotConfiguredError } from '../mail/port';
+import { routes as bannerRoutes } from './banners/routes';
 import { routes as ledgerRoutes } from './ledger/routes';
 import { createNotifyRoutes } from './notify/routes';
 import { routes as programRoutes } from './programs/routes';
@@ -352,37 +353,34 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
    */
   marketing.route('/', createNotifyRoutes({ mailer: deps.mailer }));
 
+  /*
+   * BANNERS — contract #21-23. The admin half of the only thing in this
+   * subsystem the public internet reads.
+   *
+   * `/banners*` is disjoint from every path above, so the order does not matter
+   * here either. What is worth saying instead is where the OTHER half is:
+   * `GET /api/public/marketing/banners` is not in this sub-app at all. It is in
+   * `./public.ts`, mounted above `sessionMiddleware` so it cannot read a cookie
+   * — the two surfaces share `banners/repo.ts` and nothing else, and the
+   * read-time schedule predicate lives there so both of them mean the same
+   * thing by "live" (spec D8).
+   */
+  marketing.route('/', bannerRoutes);
+
   return marketing;
 }
 
 /**
- * The public reading surface — `/api/public/marketing/*` (spec D8).
+ * The public reading surface — re-exported so `server/index.ts` keeps ONE import
+ * from this file and needs no edit as the subsystem grows.
  *
- * A SEPARATE ROUTER BECAUSE OF WHERE IT IS MOUNTED, not because of what it
- * contains. `server/index.ts` mounts this ABOVE `sessionMiddleware`, beside
- * `createPublicRoutes`, so `c.get('user')` is structurally `undefined` on every
- * request that reaches it. That is what makes `Cache-Control: public` safe by
- * CONSTRUCTION rather than by review: a response that may be stored by a shared
- * cache and handed to a different reader cannot vary by cookie if the middleware
- * that would resolve one has not run and cannot be reached from inside.
- * `server/routes/public.ts` carries the long version of the argument (threat T6).
- *
- * A FACTORY, matching `createPublicRoutes`, so the mount reads the same and so a
- * later dependency (a clock, an origin list) arrives as an argument rather than
- * as a module import that a suite cannot replace.
- *
- * EMPTY UNTIL A9, which adds the two GETs — banners filtered by placement and
- * evaluated against the schedule AT READ TIME, and the rewards copy the
- * storefront renders its "return your empties" page from. Both are reads with a
- * `Cache-Control` and an `Access-Control-Allow-Origin: *`; neither reads a
- * cookie, and this mount is what guarantees it.
- *
- * THE ONE PUBLIC MUTATION IS NOT HERE. `POST /api/marketing/returns/request`
- * (customer intake) lives in the session-mounted app above, under `originGuard`
- * and a rate limit — spec D8. A mutation inside a cacheable router would put "may
- * be stored by a shared cache" and "writes a row" in one file, which is the
- * confusion this split exists to prevent.
+ * IT LIVES IN `./public.ts` because of what it is rather than where it is
+ * imported from: a cookieless, cacheable router mounted ABOVE
+ * `sessionMiddleware` beside `createPublicRoutes`, with a different security
+ * posture from every route in the sub-app above. Keeping the two in one file
+ * would put "may be stored by a shared cache and handed to another reader" and
+ * "resolves a session" in one route table. The long argument, the cache TTLs and
+ * the clock seam are all in that file.
  */
-export function createMarketingPublicRoutes(): Hono<AppEnv> {
-  return new Hono<AppEnv>();
-}
+export { createMarketingPublicRoutes } from './public';
+export type { MarketingPublicDeps } from './public';
