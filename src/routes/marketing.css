@@ -140,12 +140,67 @@ a.mktstat:hover {
   border-color: var(--accent);
 }
 
+/* The label and its mark share a line, so the number below starts at the tile's
+   left edge whatever the label's length. */
+.mktstat__top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s3);
+}
+
 .mktstat__label {
   font-size: var(--step--2);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ink-4);
+}
+
+/*
+ * THE TILE'S COLOUR, AND WHAT EACH ONE MEANS.
+ *
+ * Three tones, each standing for a kind of waiting rather than for a screen:
+ * `warn` is a stage where WE are the blocker, `calm` is one where somebody else
+ * is (a driver has the box), `good` is money already earned. A row of tiles
+ * therefore reads as a state of the world before any of its numbers are — two
+ * amber marks and a green one is "we owe two things" from across the room.
+ *
+ * EVERY VALUE IS AN EXISTING TOKEN. No hue is invented here: a fourth colour
+ * would have to mean a fourth thing, and there are three kinds of waiting on
+ * this screen. `--tone` is set once per modifier and read three times below, so
+ * a tile cannot end up with its mark one colour and its edge another.
+ */
+.mktstat {
+  --tone: var(--ink-4);
+  --tone-soft: var(--paper-sunken);
+  /* The edge is the quiet half of the signal — a 2px seam, not a banner. */
+  border-top: 2px solid var(--tone);
+}
+.mktstat--warn {
+  --tone: var(--warn);
+  --tone-soft: var(--warn-soft);
+}
+.mktstat--calm {
+  --tone: var(--ink-4);
+  --tone-soft: var(--paper-sunken);
+}
+.mktstat--good {
+  --tone: var(--accent);
+  --tone-soft: var(--accent-soft);
+}
+
+/* The mark carries the colour at a size worth seeing; the number stays ink, so
+   the figure is legible rather than decorative. */
+.mktstat__mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--radius-full);
+  background: var(--tone-soft);
+  color: var(--tone);
 }
 .mktstat__value {
   font-family: var(--font-display);
@@ -1303,6 +1358,89 @@ a.mktstat:hover {
    useful on the day somebody is setting the section up from a phone. */
 .mktsteps__go {
   justify-self: start;
+}
+
+/*
+ * ACROSS RATHER THAN DOWN, on the Overview.
+ *
+ * The same items, laid out as cards side by side: four one-line instructions
+ * stacked vertically read as a form to fill in and push everything under them
+ * off a laptop screen, while four across are taken in at a glance. `auto-fit`
+ * with a floor rather than a fixed count, so three steps are three cards and
+ * two are two — the row never leaves a hole where a completed step used to be.
+ *
+ * Below 720px it collapses to one column on its own, because the floor is wider
+ * than the viewport. That is the whole mobile story: no second rule.
+ */
+.mktsteps--across {
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: var(--s4);
+}
+.mktsteps--across .mktsteps__item {
+  /* A card each — the divider is what stops four adjacent paragraphs reading
+     as one. Aligned to the top so the numbers sit on one line whatever the
+     sentences under them do. */
+  padding: var(--s4);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper);
+  align-content: start;
+}
+/* Numbered and coloured here, unlike the plain list: side by side there is no
+   reading order but the numbers, so they have to carry it. */
+.mktsteps--across .mktsteps__mark {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ------------------------------------------------------- panel tools */
+
+/*
+ * A panel's filter and sort — two small Selects under its heading.
+ *
+ * A ROW OF ITS OWN rather than crowded into `.mktpanel__head` beside the title
+ * and its link: at 375px four controls on one line wrap into a ragged block
+ * that reads as chrome rather than as a choice. On its own row they are a
+ * toolbar, and the head above stays the panel's name and its way out.
+ */
+.mkttools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3) var(--s5);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper-sunken);
+}
+.mkttools__field {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+}
+.mkttools__label {
+  font-size: var(--step--2);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------- empty states */
+
+/*
+ * `.empty` from `dashboard.css`, sat inside a panel rather than filling a
+ * screen — so the padding comes down and the mark with it. Two of these exist
+ * per panel and they say different things: nothing has happened yet, versus
+ * nothing survived the filter. The component decides which; this only makes
+ * either of them fit in a box a third of a screen tall.
+ */
+.mktempty {
+  padding: var(--s6) var(--s4);
+}
+.mktempty .empty__mark svg {
+  width: 1.75rem;
+  height: 1.75rem;
 }
 
 /* ------------------------------------------------------ banner preview */

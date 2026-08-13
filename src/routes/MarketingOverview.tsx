@@ -1,6 +1,16 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Award, RotateCcw, TicketPercent, Wallet } from 'lucide-react';
+import {
+  Award,
+  CalendarClock,
+  Inbox,
+  PackageSearch,
+  PanelTop,
+  RotateCcw,
+  TicketPercent,
+  Truck,
+  Wallet,
+} from 'lucide-react';
 import {
   deriveBannerStatus,
   fmtPoints,
@@ -18,6 +28,7 @@ import {
   type ReturnListItem,
 } from '../data/api-marketing';
 import { ApiError, NotFoundError, OfflineError } from '../data/errors';
+import { Select } from '../components/ui/Select';
 import { Skeleton } from '../components/ui/Feedback';
 import { useDelayed } from '../components/ui/useDelayed';
 import { ACTION_VERB, STATUS_LABEL } from './marketing/StageForm';
@@ -355,25 +366,28 @@ export default function MarketingOverview() {
           </div>
         )}
 
-        {summary === null ? (
-          steps.length > 0 && <FirstSteps steps={steps} />
-        ) : (
-          <div className="mktgrid">
-            <div className="mktgrid__col">
-              <OpenReturns rows={open} />
-            </div>
-            <div className="mktgrid__col">
-              {/*
-                FIRST IN THIS COLUMN, not last: the card exists only while the
-                three panels under it are empty, and a first-day operator should
-                not have to scroll past three empty panels on a phone to find
-                the only thing on the screen that tells them what to do.
-              */}
-              {steps.length > 0 && <FirstSteps steps={steps} />}
-              <Ledger entries={activity} points={points} />
-              <Banners banners={live} />
-            </div>
-          </div>
+        {/*
+          ONE COLUMN, FULL WIDTH, IN THE ORDER THE MORNING IS READ: what to do
+          first, then what is waiting, then what moved, then what the site is
+          showing.
+
+          It used to be two columns with the checklist and two panels stacked in
+          a narrow right-hand rail. That rail made every table in it half a
+          screen wide — a returns row had to choose between the address and the
+          action, and a banner table had room for two columns — while the left
+          column held one panel and a great deal of nothing. A summary screen is
+          read top to bottom, not in parallel, so the panels get the whole
+          measure and the checklist sits across the top where a first-day
+          operator meets it before anything else.
+        */}
+        {steps.length > 0 && <FirstSteps steps={steps} />}
+
+        {summary !== null && (
+          <>
+            <OpenReturns rows={open} />
+            <Ledger entries={activity} points={points} />
+            <Banners banners={live} />
+          </>
         )}
       </div>
     </div>
@@ -410,6 +424,8 @@ function Tiles({
         value={needsScheduling.count}
         note={oldest(needsScheduling.oldestAgeMs)}
         alert={stale(needsScheduling.oldestAgeMs)}
+        icon={CalendarClock}
+        tone="warn"
         to="/marketing/returns?view=requested"
       />
       {/* Booked, not yet collected — which is why the figure beside it is the
@@ -423,6 +439,8 @@ function Tiles({
             : `Next pickup ${WHEN.format(new Date(outForPickup.nextPickupAt))}.`
         }
         alert={false}
+        icon={Truck}
+        tone="calm"
         to="/marketing/returns?view=scheduled"
       />
       <Tile
@@ -430,6 +448,8 @@ function Tiles({
         value={toInspect.count}
         note={oldest(toInspect.oldestAgeMs)}
         alert={stale(toInspect.oldestAgeMs)}
+        icon={PackageSearch}
+        tone="warn"
         to="/marketing/returns?view=received"
       />
       {/*
@@ -452,31 +472,168 @@ function Tiles({
             : `${fmtPoints(awarded30d.points, points)} earned across them.`
         }
         alert={false}
+        icon={Award}
+        tone="good"
         to="/marketing/returns?view=done"
       />
     </div>
   );
 }
 
+/**
+ * A tile's colour, and why it is not decoration.
+ *
+ * THREE TONES, EACH MEANING SOMETHING: `warn` is a stage where the business is
+ * the blocker, `calm` is one where somebody else is (a driver has it), and
+ * `good` is money already earned. So the row reads as a state of the world
+ * before a single number is — two amber tiles and a green one is "we owe two
+ * things" at a glance from across a room.
+ *
+ * They are the design system's own `--warn`, `--ink-4` and `--accent`. No new
+ * hue is introduced anywhere on this screen: a fourth colour would have to mean
+ * a fourth thing, and there are only three kinds of waiting here.
+ *
+ * `alert` is separate and louder — it fires on AGE rather than on stage, and it
+ * is what turns a warn tile from "this is our move" into "this has been our
+ * move for two days".
+ */
+type Tone = 'warn' | 'calm' | 'good';
+
 function Tile({
   label,
   value,
   note,
   alert,
+  icon: Icon,
+  tone,
   to,
 }: {
   label: string;
   value: number;
   note: string;
   alert: boolean;
+  icon: typeof Award;
+  tone: Tone;
   to: string;
 }) {
   return (
-    <Link className={`mktstat${alert ? ' mktstat--alert' : ''}`} to={to}>
-      <span className="mktstat__label">{label}</span>
+    <Link
+      className={`mktstat mktstat--${tone}${alert ? ' mktstat--alert' : ''}`}
+      to={to}
+    >
+      <span className="mktstat__top">
+        <span className="mktstat__label">{label}</span>
+        <span className="mktstat__mark" aria-hidden="true">
+          <Icon className="ui-ic" />
+        </span>
+      </span>
       <span className="mktstat__value">{value.toLocaleString()}</span>
       <span className="mktstat__note">{note}</span>
     </Link>
+  );
+}
+
+// ============================================================================
+// PANEL FURNITURE — shared by all three panels below
+// ============================================================================
+
+/**
+ * A panel's filter and sort, as two small Selects under its heading.
+ *
+ * CLIENT-SIDE, OVER ROWS THE SCREEN ALREADY HAS. Each panel holds at most a
+ * handful of rows that arrived in one summary response, so filtering is an
+ * array operation rather than a request — which is what makes it safe to offer
+ * on a dashboard at all. Nothing here changes what was fetched, so a filter can
+ * never disagree with a total shown above it: the counts in the tiles describe
+ * the table, and these choose which of the rows on screen are drawn.
+ *
+ * The screen that OWNS each of these lists — the queue, Customers, Banners —
+ * filters on the server against the whole table, and every panel head links to
+ * it. This is triage; that is search.
+ */
+function PanelTools<F extends string, S extends string>({
+  what,
+  filter,
+  sort,
+}: {
+  /** What the rows ARE, for the two aria-labels: "Filter banners", "Sort banners". */
+  what: string;
+  filter: { label: string; value: F; onChange: (v: F) => void; options: { value: F; label: string }[] };
+  sort: { value: S; onChange: (v: S) => void; options: { value: S; label: string }[] };
+}) {
+  return (
+    <div className="mkttools">
+      <span className="mkttools__field">
+        <span className="mkttools__label">{filter.label}</span>
+        <Select
+          size="sm"
+          label={`Filter ${what}`}
+          value={filter.value}
+          onChange={filter.onChange}
+          options={filter.options}
+        />
+      </span>
+      <span className="mkttools__field">
+        <span className="mkttools__label">Sort</span>
+        <Select
+          size="sm"
+          label={`Sort ${what}`}
+          value={sort.value}
+          onChange={sort.onChange}
+          options={sort.options}
+        />
+      </span>
+    </div>
+  );
+}
+
+/**
+ * The two empty states every panel needs, and the reason they are two.
+ *
+ * "Nothing has happened yet" and "nothing matches what you asked for" are
+ * different facts with different next actions — the first wants the screen that
+ * creates one, the second wants the filter cleared — and a panel that answers
+ * both with one sentence sends a first-day operator looking for a feature that
+ * is working and an experienced one looking for data that is there. `filtered`
+ * is what tells them apart: rows exist, none survived the choice above.
+ */
+function PanelEmpty({
+  icon: Icon,
+  title,
+  body,
+  action,
+}: {
+  icon: typeof Award;
+  title: string;
+  body: React.ReactNode;
+  action?: { to: string; label: string };
+}) {
+  return (
+    <div className="empty mktempty">
+      <div className="empty__mark" aria-hidden="true">
+        <Icon />
+      </div>
+      <p className="empty__title">{title}</p>
+      <p className="empty__body">{body}</p>
+      {action && (
+        <Link className="btn btn--outline btn--sm" to={action.to}>
+          {action.label}
+        </Link>
+      )}
+    </div>
+  );
+}
+
+/** The "you filtered them all away" half of the pair — same shape, no icon. */
+function NoMatch({ onClear }: { onClear: () => void }) {
+  return (
+    <div className="empty mktempty">
+      <p className="empty__title">Nothing matches</p>
+      <p className="empty__body">There are rows here, but none of them fit that choice.</p>
+      <button className="btn btn--ghost btn--sm" onClick={onClear}>
+        Clear the filter
+      </button>
+    </div>
   );
 }
 
@@ -493,29 +650,87 @@ function Tile({
  * keyboard spine: a roving tabindex belongs to the list somebody works through,
  * and five rows in a summary panel are five ordinary tab stops.
  */
+type ReturnFilter = 'all' | ReturnListItem['status'];
+type ReturnSort = 'waiting' | 'newest' | 'quantity';
+
 function OpenReturns({ rows }: { rows: ReturnListItem[] }) {
   const now = Date.now();
+  const [filter, setFilter] = useState<ReturnFilter>('all');
+  const [sort, setSort] = useState<ReturnSort>('waiting');
+
+  /*
+   * The stages OFFERED are the stages PRESENT, so the control never lists a
+   * choice that empties the panel — on five rows a filter that can only ever
+   * show nothing is a trap rather than a tool.
+   */
+  const stages = useMemo(
+    () => [...new Set(rows.map((row) => row.status))],
+    [rows],
+  );
+
+  const shown = useMemo(() => {
+    const kept = filter === 'all' ? rows : rows.filter((row) => row.status === filter);
+    const by: Record<ReturnSort, (a: ReturnListItem, b: ReturnListItem) => number> = {
+      // Oldest first — the panel's whole premise, and the server's own ordering.
+      waiting: (a, b) => a.createdAt - b.createdAt,
+      newest: (a, b) => b.createdAt - a.createdAt,
+      quantity: (a, b) => b.qtyDeclared - a.qtyDeclared,
+    };
+    return [...kept].sort(by[sort]);
+  }, [rows, filter, sort]);
+
+  /* A `<section>` is only a landmark once it has a name, and these are the
+     units somebody navigates this screen by — so each panel points at its own
+     heading rather than repeating the words in an `aria-label` that would then
+     have to be kept in step with them. */
+  const heading = useId();
 
   return (
-    <section className="mktpanel">
+    <section className="mktpanel mktpanel--returns" aria-labelledby={heading}>
       <div className="mktpanel__head">
-        <h2 className="mktpanel__title">Oldest open returns</h2>
+        <h2 className="mktpanel__title" id={heading}>
+          Oldest open returns
+        </h2>
         <Link className="btn btn--ghost btn--sm" to="/marketing/returns">
           Open the queue
         </Link>
       </div>
+      {rows.length > 0 && (
+        <PanelTools
+          what="returns"
+          filter={{
+            label: 'Stage',
+            value: filter,
+            onChange: setFilter,
+            options: [
+              { value: 'all' as const, label: 'Every stage' },
+              ...stages.map((status) => ({ value: status, label: STATUS_LABEL[status] })),
+            ],
+          }}
+          sort={{
+            value: sort,
+            onChange: setSort,
+            options: [
+              { value: 'waiting' as const, label: 'Waiting longest' },
+              { value: 'newest' as const, label: 'Newest first' },
+              { value: 'quantity' as const, label: 'Largest first' },
+            ],
+          }}
+        />
+      )}
       <div className="mktpanel__body">
         {rows.length === 0 ? (
-          <p className="mktpanel__note">
-            No open returns yet — log one from{' '}
-            <Link className="mkttable__link" to="/marketing/returns">
-              Returns
-            </Link>{' '}
-            when a customer asks.
-          </p>
+          <PanelEmpty
+            icon={Inbox}
+            title="No open returns yet"
+            body="Nothing has been booked, picked up or delivered. A return joins this list the moment one is logged."
+            action={{ to: '/marketing/returns', label: 'Log a return' }}
+          />
+        ) : shown.length === 0 ? (
+          <NoMatch onClear={() => setFilter('all')} />
         ) : (
           <ul className="mktqueue" aria-label="Oldest open returns">
-            {rows.map((row) => {
+            {shown.map((row) => {
               const action = nextStep(row);
               const labels = labelsOf(row.program);
               const waited = now - row.createdAt;
@@ -578,6 +793,9 @@ function OpenReturns({ rows }: { rows: ReturnListItem[] }) {
  * wording while the number beside it carries the current one. The number is
  * arithmetic on a live balance; the sentence is history.
  */
+type LedgerFilterKey = 'all' | 'earned' | 'spent';
+type LedgerSort = 'newest' | 'largest';
+
 function Ledger({
   entries,
   points,
@@ -585,23 +803,76 @@ function Ledger({
   entries: (LedgerEntry & { customerEmail: string })[];
   points: ProgramLabels | null;
 }) {
+  const [filter, setFilter] = useState<LedgerFilterKey>('all');
+  const [sort, setSort] = useState<LedgerSort>('newest');
+
+  const shown = useMemo(() => {
+    /*
+     * EARNED AND SPENT, not the four wire kinds. `return_award` and `manual`
+     * are both "the balance went up" and the operator reading a dashboard is
+     * asking which direction, not which mechanism — the Customers screen filters
+     * by kind, where the mechanism is the question. The sign is the truth here
+     * anyway: a release is a credit however it is named.
+     */
+    const kept =
+      filter === 'all'
+        ? entries
+        : entries.filter((e) => (filter === 'earned' ? e.delta > 0 : e.delta < 0));
+    const by: Record<LedgerSort, (a: typeof kept[number], b: typeof kept[number]) => number> = {
+      newest: (a, b) => b.createdAt - a.createdAt,
+      largest: (a, b) => Math.abs(b.delta) - Math.abs(a.delta),
+    };
+    return [...kept].sort(by[sort]).slice(0, LEDGER_ROWS);
+  }, [entries, filter, sort]);
+
+  const heading = useId();
+
   return (
-    <section className="mktpanel">
+    <section className="mktpanel mktpanel--ledger" aria-labelledby={heading}>
       <div className="mktpanel__head">
-        <h2 className="mktpanel__title">Latest rewards activity</h2>
+        <h2 className="mktpanel__title" id={heading}>
+          Latest rewards activity
+        </h2>
         <Link className="btn btn--ghost btn--sm" to="/marketing/customers">
           Customers
         </Link>
       </div>
+      {entries.length > 0 && (
+        <PanelTools
+          what="activity"
+          filter={{
+            label: 'Show',
+            value: filter,
+            onChange: setFilter,
+            options: [
+              { value: 'all' as const, label: 'Everything' },
+              { value: 'earned' as const, label: 'Earned' },
+              { value: 'spent' as const, label: 'Spent' },
+            ],
+          }}
+          sort={{
+            value: sort,
+            onChange: setSort,
+            options: [
+              { value: 'newest' as const, label: 'Newest first' },
+              { value: 'largest' as const, label: 'Largest first' },
+            ],
+          }}
+        />
+      )}
       <div className="mktpanel__body">
         {entries.length === 0 ? (
-          <p className="mktpanel__note">
-            Nothing has been earned or spent yet. Awards land here the moment a return is
-            inspected.
-          </p>
+          <PanelEmpty
+            icon={Wallet}
+            title="Nothing earned or spent yet"
+            body="An award lands here the moment a return is inspected, and so does anything credited by hand."
+            action={{ to: '/marketing/customers', label: 'Open customers' }}
+          />
+        ) : shown.length === 0 ? (
+          <NoMatch onClear={() => setFilter('all')} />
         ) : (
           <ul className="mktaudit">
-            {entries.slice(0, LEDGER_ROWS).map((entry) => {
+            {shown.map((entry) => {
               const Icon = LEDGER_ICON[entry.kind];
               const up = entry.delta > 0;
               const size = Math.abs(entry.delta);
@@ -647,23 +918,85 @@ function Ledger({
  * one shared function instead of two implementations that agree until they do
  * not.
  */
+type BannerFilter = 'all' | DerivedBannerStatus;
+type BannerSort = 'priority' | 'updated' | 'title';
+
 function Banners({ banners }: { banners: Banner[] }) {
   const now = Date.now();
+  const [filter, setFilter] = useState<BannerFilter>('all');
+  const [sort, setSort] = useState<BannerSort>('priority');
+
+  /* Derived once, because it is both the filter's subject and a column. */
+  const derived = useMemo(
+    () => new Map(banners.map((b) => [b.id, deriveBannerStatus(b, now)])),
+    [banners, now],
+  );
+
+  /* Only the states actually present — see the queue's own note above. */
+  const states = useMemo(
+    () => [...new Set(banners.map((b) => derived.get(b.id)!))],
+    [banners, derived],
+  );
+
+  const shown = useMemo(() => {
+    const kept =
+      filter === 'all' ? banners : banners.filter((b) => derived.get(b.id) === filter);
+    const by: Record<BannerSort, (a: Banner, b: Banner) => number> = {
+      // The storefront's own tie-break: highest priority wins a placement.
+      priority: (a, b) => b.priority - a.priority || b.updatedAt - a.updatedAt,
+      updated: (a, b) => b.updatedAt - a.updatedAt,
+      title: (a, b) => a.title.localeCompare(b.title),
+    };
+    return [...kept].sort(by[sort]);
+  }, [banners, derived, filter, sort]);
+
+  const heading = useId();
 
   return (
-    <section className="mktpanel">
+    <section className="mktpanel mktpanel--banners" aria-labelledby={heading}>
       <div className="mktpanel__head">
-        <h2 className="mktpanel__title">Banners</h2>
+        <h2 className="mktpanel__title" id={heading}>
+          Banners
+        </h2>
         <Link className="btn btn--ghost btn--sm" to="/marketing/banners">
           All banners
         </Link>
       </div>
+      {banners.length > 0 && (
+        <PanelTools
+          what="banners"
+          filter={{
+            label: 'Showing',
+            value: filter,
+            onChange: setFilter,
+            options: [
+              { value: 'all' as const, label: 'Every state' },
+              ...states.map((state) => ({ value: state, label: BANNER_WHAT[state] })),
+            ],
+          }}
+          sort={{
+            value: sort,
+            onChange: setSort,
+            options: [
+              { value: 'priority' as const, label: 'Priority' },
+              { value: 'updated' as const, label: 'Recently changed' },
+              { value: 'title' as const, label: 'By title' },
+            ],
+          }}
+        />
+      )}
       {banners.length === 0 ? (
         <div className="mktpanel__body">
-          <p className="mktpanel__note">
-            Nothing is set up. The storefront asks for live banners every minute — the first one
-            shows within a minute of being switched on.
-          </p>
+          <PanelEmpty
+            icon={PanelTop}
+            title="Nothing is on the site"
+            body="The storefront asks for live banners every minute — the first one shows within a minute of being switched on."
+            action={{ to: '/marketing/banners', label: 'Write one' }}
+          />
+        </div>
+      ) : shown.length === 0 ? (
+        <div className="mktpanel__body">
+          <NoMatch onClear={() => setFilter('all')} />
         </div>
       ) : (
         <div className="mktpanel__body mktpanel__body--flush">
@@ -673,11 +1006,14 @@ function Banners({ banners }: { banners: Banner[] }) {
                 <tr>
                   <th scope="col">Banner</th>
                   <th scope="col">Showing</th>
+                  <th scope="col" className="mkttable__num">
+                    Priority
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {banners.map((banner) => {
-                  const derived = deriveBannerStatus(banner, now);
+                {shown.map((banner) => {
+                  const state = derived.get(banner.id)!;
                   return (
                     <tr key={banner.id}>
                       <td>
@@ -690,10 +1026,12 @@ function Banners({ banners }: { banners: Banner[] }) {
                         <span className="mkttable__sub">{PLACEMENT_WHAT[banner.placement]}</span>
                       </td>
                       <td>
-                        <span className={`chip ${BANNER_CHIP[derived]}`}>
-                          {BANNER_WHAT[derived]}
-                        </span>
+                        <span className={`chip ${BANNER_CHIP[state]}`}>{BANNER_WHAT[state]}</span>
                       </td>
+                      {/* Only meaningful against the others in its placement,
+                          which is why it sits beside the placement rather than
+                          alone in a column of its own. */}
+                      <td className="mkttable__num">{banner.priority}</td>
                     </tr>
                   );
                 })}
@@ -717,12 +1055,22 @@ function Banners({ banners }: { banners: Banner[] }) {
  */
 function FirstSteps({ steps }: { steps: Step[] }) {
   return (
-    <section className="mktpanel">
+    <section className="mktpanel mktpanel--steps">
       <div className="mktpanel__head">
         <h2 className="mktpanel__title">First steps</h2>
+        <span className="mktpanel__note">
+          {steps.length} left — each one disappears once it is done.
+        </span>
       </div>
       <div className="mktpanel__body">
-        <ol className="mktsteps">
+        {/*
+          ACROSS RATHER THAN DOWN. Four short instructions in a single column
+          made a list nobody reads to the bottom of, and put the last of them
+          below the fold on a laptop; side by side they are four cards a person
+          takes in at once, and the numbers still say which comes first. They
+          fall back to one column under 720px, where across is not an option.
+        */}
+        <ol className="mktsteps mktsteps--across">
           {steps.map((step, i) => (
             <li className="mktsteps__item" key={step.key}>
               <span className="mktsteps__mark" aria-hidden="true">

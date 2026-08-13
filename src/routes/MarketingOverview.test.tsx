@@ -142,6 +142,31 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/**
+ * The jsdom gaps Radix's Select falls through — the same block `Shop.test.tsx:83`,
+ * `Emails.test.tsx:55` and `Dashboard.test.tsx:122` all carry.
+ *
+ * ADDED WHEN THE PANELS GREW FILTERS. Without these, opening a Select throws
+ * `hasPointerCapture is not a function` from inside a React handler, which is
+ * reported as a whole-FILE error rather than as a failing assertion — so the
+ * suite goes red somewhere other than where it broke.
+ */
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+  Element.prototype.setPointerCapture = () => {};
+  Element.prototype.releasePointerCapture = () => {};
+}
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+if (!globalThis.ResizeObserver) {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+}
+
 // -------------------------------------------------------------- the harness
 
 const withPrograms = (rows = programs): void =>
@@ -515,8 +540,50 @@ describe('the marketing overview', () => {
     // intake is admin-driven — nothing here promises requests that arrive on
     // their own.
     expect(screen.getByText(/No open returns yet/)).toBeTruthy();
-    expect(screen.getByText(/Nothing has been earned or spent yet/)).toBeTruthy();
-    expect(screen.getByText(/Nothing is set up/)).toBeTruthy();
+    expect(screen.getByText(/Nothing earned or spent yet/)).toBeTruthy();
+    expect(screen.getByText(/Nothing is on the site/)).toBeTruthy();
+
+    // An empty panel offers the screen that would fill it. A dashboard that
+    // reports emptiness and leaves the reader to find the way out is a report
+    // rather than a place to start work.
+    expect(screen.getByRole('link', { name: 'Log a return' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Write one' })).toBeTruthy();
+
+    // AND NO FILTER CONTROLS ANYWHERE. Filtering nothing is a control that can
+    // only ever produce the state it is already in — the panels grow their
+    // toolbars when they have rows to choose between.
+    expect(screen.queryByLabelText('Filter returns')).toBeNull();
+    expect(screen.queryByLabelText('Filter banners')).toBeNull();
+    expect(screen.queryByLabelText('Filter activity')).toBeNull();
+  });
+
+  it('filters a panel down to one stage, and says so when nothing is left', async () => {
+    const user = userEvent.setup();
+    withEverything();
+    mount();
+    await landed();
+
+    const returns = screen.getByRole('region', { name: /oldest open returns/i });
+    const before = within(returns).getAllByRole('listitem').length;
+    expect(before).toBeGreaterThan(1);
+
+    /*
+     * The filter narrows the ROWS ALREADY ON SCREEN — no request is made, which
+     * is what keeps a dashboard's controls from disagreeing with the totals
+     * above them. The stages offered are the stages present, so choosing one
+     * always leaves at least the row it was drawn from.
+     */
+    await user.click(within(returns).getByLabelText('Filter returns'));
+    await user.click(await screen.findByRole('option', { name: 'Received' }));
+
+    const kept = within(returns).getAllByRole('listitem');
+    expect(kept.length).toBeLessThan(before);
+    for (const row of kept) expect(within(row).getByText('Received')).toBeTruthy();
+
+    // And the sort is over what survived, not over the original list.
+    await user.click(within(returns).getByLabelText('Sort returns'));
+    await user.click(await screen.findByRole('option', { name: 'Newest first' }));
+    expect(within(returns).getAllByRole('listitem').length).toBe(kept.length);
   });
 
   it('explains a failed summary in place, and the checklist beside it still stands', async () => {
