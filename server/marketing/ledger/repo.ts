@@ -716,6 +716,35 @@ function matches(email: SQL, customerId: SQL, term: string): SQL {
               OR starts_with(${customerId}, ${term}))`;
 }
 
+/**
+ * A WALLET IS ALSO FOUND BY THE ID OF THE ACCOUNT BEHIND ITS ADDRESS, not only
+ * by the id it happened to snapshot.
+ *
+ * `marketing_balances.customer_id` is filled in only when a writer knew one, and
+ * the writer that fills most wallets is an AWARD — contract #5/#6 accept no
+ * `customerId` at all, so a customer who earned every point they have by sending
+ * things back has a wallet whose id column is NULL. Matching that column alone
+ * made `?query=cus_…` answer "no customers" for a person this same function
+ * renders WITH that id the moment the address is typed instead: `accountLateral`
+ * resolves the account on the way out, and nothing consulted it on the way in.
+ * Spec D10 describes this arm as balances LEFT JOINed to the account for exactly
+ * that reason.
+ *
+ * AN `EXISTS` RATHER THAN A SECOND JOIN. The account is wanted as a predicate
+ * here — the projection already has one, through the lateral whose `LIMIT 1`
+ * collapses the two-rows-differing-only-in-case pair — and joining again would
+ * put that duplicate row back. The cost is a semi-join over `shop_customers`,
+ * the same table the directory arm already scans, and only when something has
+ * been typed.
+ */
+const walletMatches = (term: string): SQL => sql`(
+    ${matches(sql`b.customer_email`, sql`b.customer_id`, term)}
+    OR EXISTS (
+      SELECT 1 FROM shop_customers c
+       WHERE c.email IS NOT NULL AND lower(c.email) = b.customer_email
+         AND starts_with(c.id, ${term})
+    ))`;
+
 function rowToCustomer(row: Record<string, unknown>): CustomerRow {
   const customerId = row.customer_id == null ? null : String(row.customer_id);
   return {
@@ -783,9 +812,7 @@ export async function listCustomers(db: Db, q: CustomerQuery = {}): Promise<Cust
                b.balance AS balance, b.lifetime_earned AS lifetime_earned,
                b.updated_at AS moved_at
           FROM marketing_balances b
-         WHERE ${
-           term === '' ? sql`true` : matches(sql`b.customer_email`, sql`b.customer_id`, term)
-         }`,
+         WHERE ${term === '' ? sql`true` : walletMatches(term)}`,
   ];
 
   if (term !== '') {

@@ -253,14 +253,26 @@ describe('credit and debit — the counter is maintained, the ledger explains it
   });
 
   it('counts credits into lifetime_earned and leaves it where it is on a debit', async () => {
-    /* "Earned 500 and spent 500" must read as loyal, not as a stranger — which
+    /* "Earned 700 and spent 700" must read as loyal, not as a stranger — which
      * is why the counter is not derivable from the balance. */
     await credit(db, manual({ amount: 500, reason: 'Goodwill' }));
-    await debit(db, manual({ amount: 500, reason: 'Spend', now: NOW + 1 }));
+
+    /*
+     * THE SECOND CREDIT IS THE ONE THAT MATTERS, and a suite that credited once
+     * proved nothing about it: the upsert's INSERT arm sets `lifetime_earned`
+     * from the amount, and its ON CONFLICT arm ADDS to what is already there.
+     * Only the first credit a customer ever receives takes the first arm; every
+     * credit afterwards takes the second. Measured — with the ON CONFLICT arm's
+     * `+ EXCLUDED.lifetime_earned` deleted, a single-credit fixture still passed.
+     */
+    await credit(db, manual({ amount: 200, reason: 'Goodwill again', now: NOW + 1 }));
+    expect(Number((await wallet())?.lifetime_earned)).toBe(700);
+
+    await debit(db, manual({ amount: 700, reason: 'Spend', now: NOW + 2 }));
 
     const row = await wallet();
     expect(Number(row?.balance)).toBe(0);
-    expect(Number(row?.lifetime_earned)).toBe(500);
+    expect(Number(row?.lifetime_earned)).toBe(700);
   });
 
   it('stamps the shop id on a first credit and never overwrites it afterwards', async () => {
@@ -337,6 +349,30 @@ describe('adjust — contract #18', () => {
     );
     expect(err).toBeInstanceOf(BadRequestError);
     expect(err.detail).toBe('programId');
+  });
+
+  it('names the blank reason before it goes looking for the programId', async () => {
+    /*
+     * THE ORDER IS THE ASSERTION, and it is the only thing that earns the blank
+     * check in `adjust` its place: `move` refuses an empty reason too, so a
+     * fixture with one bad field cannot tell the two checks apart. With BOTH
+     * fields wrong the inline error has to land on the box the admin actually
+     * left empty rather than on a `programId` the form filled in from a Select —
+     * delete the check and this reads `programId`, which points at a control
+     * that is not the problem.
+     */
+    const err = await rejection<BadRequestError>(
+      adjust(db, {
+        email: EMAIL,
+        delta: 10,
+        reason: '   ',
+        programId: 'prg_not_here',
+        actorId: ACTOR,
+        now: NOW,
+      }),
+    );
+    expect(err.detail).toBe('reason');
+    expect(await ledgerRows()).toHaveLength(0);
   });
 
   it('credits or debits by the sign, and answers with the entry and the balance', async () => {
@@ -634,6 +670,31 @@ describe('listCustomers — contract #15', () => {
     /* The wallet with no account: a guest, which is the DEFAULT path (spec D10)
      * and not a degenerate case. */
     expect(rows.get('walker@example.test')).toMatchObject({ guest: true, balance: 12 });
+  });
+
+  it('finds a wallet by the id of the account behind it, not only the id it stored', async () => {
+    /*
+     * THE COMMON CASE, NOT A CORNER. Contract #5/#6 accept no `customerId`, so a
+     * customer who earned every point they have by sending things back has a
+     * wallet whose `customer_id` is NULL — and matching that column alone
+     * answered "no customers" for an id this same directory renders the moment
+     * the ADDRESS is typed instead. One screen, two answers about one person,
+     * depending on which of their two handles the admin was given.
+     */
+    await makeAccount('cus_ghost', 'ghost@example.test', 'Ghost');
+    await credit(db, manual({ email: 'ghost@example.test', amount: 10 }));
+    expect((await wallet('ghost@example.test'))?.customer_id).toBeNull();
+
+    const byId = await listCustomers(db, { query: 'cus_ghost' });
+    expect(byId.items.map((r) => r.email)).toEqual(['ghost@example.test']);
+    /* ONE line, carrying the REAL balance — answered by the wallet arm, not by
+     * the directory arm's zero. */
+    expect(byId.items[0]).toMatchObject({
+      balance: 10,
+      lifetimeEarned: 10,
+      customerId: 'cus_ghost',
+      guest: false,
+    });
   });
 
   it('matches an email prefix and a customer-id prefix, and only a prefix', async () => {
