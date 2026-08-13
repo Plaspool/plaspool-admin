@@ -457,6 +457,29 @@ describe('PATCH /discounts/:id', () => {
     expect(saved.status).toBe('active');
   });
 
+  it('clears the START date, and the window rule sees it cleared', async () => {
+    /*
+     * THE OTHER HALF OF "null MEANS CLEAR IT", and the half a merge written as
+     * `patch.startsAt ?? current.startsAt` would get wrong while passing every
+     * row above: `??` cannot tell an absent field from a cleared one, so the
+     * window would be judged against a start date this body just deleted.
+     *
+     * The edit below is legal — the row that results has no start at all, so
+     * `marketing_discount_codes_window_ck` has nothing to compare — and under
+     * `??` it is a 400 naming a field the caller did not get wrong. A false
+     * refusal, not a 500, which is why nothing else here notices it.
+     */
+    const startsAt = 1_800_000_000_000;
+    const discount = await created({ startsAt, endsAt: startsAt + 3_600_000 });
+
+    const res = await save(discount, { startsAt: null, endsAt: startsAt - 3_600_000 });
+    expect(res.status).toBe(200);
+
+    const saved = (await json<{ discount: Discount }>(res)).discount;
+    expect(saved.startsAt).toBeNull();
+    expect(saved.endsAt).toBe(startsAt - 3_600_000);
+  });
+
   it('judges the window on the MERGED row, not on the body', async () => {
     /*
      * ═══════════════════════════════════════════════════════════════════════
@@ -560,5 +583,50 @@ describe('PATCH /discounts/:id', () => {
     });
     expect(gone.status).toBe(404);
     expect(await json(gone)).toMatchObject({ error: 'gone' });
+  });
+});
+
+// ------------------------------------------------------------------ NUL bytes
+
+describe('a NUL byte', () => {
+  const NUL = String.fromCharCode(0);
+
+  it('is a 400 in the id and in the free-text field — never a 5xx', async () => {
+    const discount = await created();
+
+    /*
+     * A COMPLETE, VALID BODY, so the only thing left for the route to refuse is
+     * the segment. `server/nul-bytes.test.ts` walks every registered path
+     * parameter, but it sends `{}` — which this route answers 400 for the
+     * missing `expectedRevision` before `pathParam` is ever consulted. Its
+     * green is therefore not evidence for this route, and deleting `pathParam`
+     * here leaves the whole repository still passing. (`../programs/routes.test.ts`
+     * carries the same probe for the same reason.)
+     */
+    const path = await owner.patch(`${API}/discounts/${encodeURIComponent(NUL)}`, {
+      expectedRevision: 1,
+      status: 'disabled',
+    });
+    expect(path.status).toBe(400);
+    expect(await json(path)).toMatchObject({ error: 'bad_request', detail: 'id' });
+
+    /*
+     * `note` IS THE ONLY FIELD ON THESE ROUTES WHERE `str()` IS LOAD-BEARING,
+     * and its schema ends in a `.transform()` — the NUL check is a `ZodString`
+     * rule and runs BEFORE it, which is the whole reason `str()` is a regex
+     * rather than a refinement (`../returns/routes.test.ts` states it the same
+     * way). `code` cannot stand in: U+0000 is outside `[A-Z0-9_-]`, so the
+     * pattern refuses it and the boundary check is never reached.
+     *
+     * Untranslated this is SQLSTATE 22021 — a 500, with a retry policy behind
+     * it, for a character somebody pasted out of a spreadsheet.
+     */
+    const posted = await create({ note: `Podcast${NUL}read` });
+    expect(posted.status).toBe(400);
+    expect(await json(posted)).toMatchObject({ error: 'bad_request', detail: 'note' });
+
+    const patched = await save(discount, { note: `Podcast${NUL}read` });
+    expect(patched.status).toBe(400);
+    expect(await json(patched)).toMatchObject({ error: 'bad_request', detail: 'note' });
   });
 });
