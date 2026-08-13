@@ -8,6 +8,7 @@ import { createNotifyRoutes } from './notify/routes';
 import { routes as programRoutes } from './programs/routes';
 import { routes as returnRoutes } from './returns/routes';
 import { routes as settingsRoutes } from './settings/routes';
+import { routes as summaryRoutes } from './summary/routes';
 import {
   AlreadyAwardedError,
   BelowMinimumError,
@@ -381,6 +382,18 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
    * the order does not matter here either.
    */
   marketing.route('/', discountRoutes);
+
+  /*
+   * SUMMARY — contract #28. The Overview's single aggregate read, over four of
+   * the tables above.
+   *
+   * MOUNTED LAST AND DEPENDENT ON NONE OF THEM: it reads their tables directly
+   * rather than calling their routes, so it adds no ordering constraint and
+   * `/summary` is disjoint from every path above. It is last because it is the
+   * only router here that is a VIEW over the others rather than a subsystem of
+   * its own — every figure it returns belongs to a table somebody else owns.
+   */
+  marketing.route('/', summaryRoutes);
 
   return marketing;
 }
