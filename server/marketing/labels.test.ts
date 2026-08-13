@@ -4,9 +4,13 @@
  *
  * FIXTURE LABELS ARE ABSURD ON PURPOSE ("Bottle Caps" / "canister"), the
  * discipline spec D11 imposes on both streams. Every assertion below reads the
- * fixture's own words back, so a `resolveLabels` that quietly defaulted to
- * "points" or "spools" for a missing field would fail here rather than ship a
- * word no admin can change.
+ * fixture's own words back by EQUALITY, so a `resolveLabels` that quietly
+ * defaulted to a generic noun for a missing field would fail here rather than
+ * ship a word no admin can change.
+ *
+ * The complementary check — that the seeded preset's own noun appears in no
+ * source file — belongs to `no-hardcoded-labels.test.ts`, which is the one place
+ * in this subsystem allowed to write that word down.
  */
 import { describe, expect, it } from 'vitest';
 import { awardSentence, awardedSubject, fmtPoints, fmtUnits } from '../../shared/marketing/copy';
@@ -119,15 +123,37 @@ describe('resolveLabels', () => {
     expect(fmtUnits(2, labels)).toBe('2 units');
   });
 
-  it('names no product, in any of its outputs', () => {
-    // The rendered-output half of the D11 discipline: absurd fixtures in, absurd
-    // fixtures out, and the seeded preset's noun nowhere near it.
-    const rendered = JSON.stringify([
+  it('emits only words that came out of a row, and invents none of its own', () => {
+    /*
+     * THE D11 DISCIPLINE, STATED POSITIVELY. The usual form of this check greps
+     * rendered output for the preset's noun; asserted the other way round it is
+     * strictly stronger, because it fails for ANY word this function supplied
+     * itself — "points", "Rewards", the preset's own noun, a word nobody has
+     * thought of yet. Everything a caller reads must be traceable to a column.
+     */
+    const fromRows = [
+      '', // the absent program name, which is the one non-word this may emit
+      caps.name,
+      caps.pointsLabelSingular,
+      caps.pointsLabelPlural,
+      caps.unitLabelSingular,
+      caps.unitLabelPlural,
+      thanks.name,
+      thanks.pointsLabelSingular,
+      thanks.pointsLabelPlural,
+      settings.pointsLabelSingular,
+      settings.pointsLabelPlural,
+    ];
+
+    const emitted = [
       resolveLabels(caps, settings),
       resolveLabels(thanks, settings),
       resolveLabels(null, settings),
-    ]);
-    expect(rendered).not.toMatch(/spool/i);
+    ].flatMap((l) => [l.name, l.points.one, l.points.other, l.unit?.one, l.unit?.other]);
+
+    for (const word of emitted.filter((w) => typeof w === 'string')) {
+      expect(fromRows).toContain(word);
+    }
   });
 
   it('copies rather than aliases, so a caller cannot rename a program by mutating labels', () => {

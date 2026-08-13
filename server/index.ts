@@ -391,9 +391,14 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
   app.route(API_PREFIX, createEmailRoutes({ mailer: deps.mailer }));
 
   /*
-   * MARKETING — rewards programs, the spool-return lifecycle, the points ledger
-   * with its balances, website banners and discount codes, under
+   * MARKETING — rewards programs, the return-and-award lifecycle, the points
+   * ledger with its balances, website banners and discount codes, under
    * `/api/marketing` (marketing spec §Frozen API contract).
+   *
+   * The lifecycle is described here by what it DOES rather than by the thing the
+   * first program happens to collect. Every noun a customer reads is a column on
+   * `marketing_programs` (spec D2), the preset ships renameable, and a comment
+   * naming the shipped wording is the first place a rename would start lying.
    *
    * ONE LINE, LIKE THE SHOP'S, AND FOR THE SAME REASON. `marketingApp()` is a
    * sub-app that the marketing subsystems mount their own routers into, so a

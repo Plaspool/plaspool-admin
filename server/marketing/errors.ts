@@ -207,9 +207,11 @@ export class ReturnAlreadyOpenError extends MarketingConflictError {
  * A 400 AND NOT A 409: nothing about the stored state refused this, the number
  * in the box is simply too small, and the fix is to type a bigger one. It
  * carries `min` because the message is interpolated from the PROGRAM's labels —
- * "at least 5 spools", "at least 4 canisters" — and the client cannot know the
- * minimum of a program it has not fetched (spec §Error catalogue, and the intake
- * dialog's error home in §UI).
+ * "at least 4 canisters", "at least 3 crates", whatever this deployment calls
+ * the thing being sent back — and the client cannot know the minimum of a
+ * program it has not fetched (spec §Error catalogue, and the intake dialog's
+ * error home in §UI). Even the EXAMPLES in this comment are renameable words:
+ * no noun a customer reads may be written down in server source.
  *
  * `detail` is `qtyDeclared` on the base class, so a fallback through the global
  * handler still lands the inline error on the right input; only the interpolated
