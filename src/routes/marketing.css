@@ -227,9 +227,11 @@ a.mktstat:hover {
     grid-row: 2;
   }
 }
-/* The grid's own `gap` already separates them; the stacking margin below would
-   add a second one on top of it. */
-.mktgrid--detail > .mktpanel + .mktpanel {
+/* The grid's own `gap` already separates them — in the detail's placed
+   children and inside a `__col` stack alike — and the stacking margin below
+   would add a second one on top of it. */
+.mktgrid--detail > .mktpanel + .mktpanel,
+.mktgrid__col > .mktpanel + .mktpanel {
   margin-top: 0;
 }
 
@@ -512,6 +514,12 @@ a.mktstat:hover {
   margin: var(--s5) 0 0;
   padding: 0;
   list-style: none;
+}
+/* The margin above is the air between the queue and the filters it hangs
+   under on its own screen. The Overview shows the same rows inside a panel,
+   where that air is already the panel's padding. */
+.mktpanel__body > .mktqueue {
+  margin-top: 0;
 }
 
 /* Sticky, because the stage a row belongs to is the first thing a scrolling
@@ -1142,6 +1150,69 @@ a.mktstat:hover {
 .mktsentence__v {
   font-weight: 600;
   color: var(--ink);
+}
+
+/* ----------------------------------------------------------- first run */
+
+/*
+ * The Overview's first-run card, and the one pattern in this file that is not
+ * a copy of an existing one — nothing else in the app has a checklist. It is
+ * assembled from parts that do exist: the ledger row's icon/body two-column
+ * grid (`.mktaudit__row`), the panel's own note type for the sentence, and a
+ * plain `.btn--ghost` for the link.
+ *
+ * ITS OWN FAMILY RATHER THAN `.mktaudit`'s, because that class means history
+ * everywhere else in here and this list is the opposite: each line disappears
+ * the moment it comes true, and a class that lies about what it holds is what
+ * the copy-with-citation rule at the top of this file exists to prevent.
+ */
+.mktsteps {
+  display: grid;
+  gap: var(--s4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.mktsteps__item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--s3);
+  align-items: start;
+}
+/* The number is decoration for a list that renumbers itself as lines leave, so
+   it is `aria-hidden` in the markup: what a screen reader announces is the
+   ordered list the numbers are drawn from. */
+.mktsteps__mark {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-full);
+  background: var(--paper-sunken);
+  color: var(--ink-3);
+  font-size: var(--step--2);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.mktsteps__body {
+  display: grid;
+  gap: var(--s2);
+  min-width: 0;
+}
+.mktsteps__what {
+  font-weight: 600;
+  color: var(--ink);
+}
+.mktsteps__why {
+  font-size: var(--step--1);
+  line-height: 1.55;
+  color: var(--ink-4);
+}
+/* The link sits under its own sentence rather than beside it: a second column
+   at 375px leaves the sentence four words wide, and this card is at its most
+   useful on the day somebody is setting the section up from a phone. */
+.mktsteps__go {
+  justify-self: start;
 }
 
 /* ------------------------------------------------------ banner preview */
