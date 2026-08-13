@@ -75,7 +75,13 @@ const FIELD_MESSAGE: Record<string, string> = {
   status: 'That status wasn’t accepted.',
   startsAt: 'That start couldn’t be read.',
   endsAt: 'The end has to come after the start.',
-  priority: 'A whole number. The highest one wins where two banners share a place.',
+  /*
+   * "ZERO OR MORE", NOT "A WHOLE NUMBER". `-1` IS a whole number, and a refusal
+   * that describes what was typed as the thing it wanted is the error that
+   * teaches nobody anything — the box is refused for being negative, so the
+   * sentence has to say negative.
+   */
+  priority: 'A whole number, zero or more. The highest one wins where two banners share a place.',
 };
 
 const fieldMessage = (field: string): string =>

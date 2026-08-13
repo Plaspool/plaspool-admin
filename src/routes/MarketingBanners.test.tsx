@@ -171,6 +171,10 @@ afterEach(() => {
 
 const BANNERS = '/api/marketing/banners';
 
+/** The fixtures' own step, restated: the file keeps it private, and the tie-break
+ *  below needs two rows a day apart rather than two rows a millisecond apart. */
+const DAY = 24 * 60 * 60 * 1000;
+
 /** The list (#21 — every status, no paging) and, on the same path, the create. */
 function serve(rows: Banner[] = banners, write?: Responder): void {
   when(BANNERS, (url, init) => {
@@ -289,11 +293,33 @@ describe('the banners screen', () => {
     expect(loser.getByText(new RegExp(liveBanner.title))).toBeTruthy();
     expect(loser.getByText(/at 10\./)).toBeTruthy();
 
+    /* The third condition the evaluator walks, and the only one with a date in
+       the future: switched on, beaten by nobody, and simply early. */
+    const early = within(rowOf(scheduledBanner.title));
+    expect(early.getByText(/window doesn’t open until/)).toBeTruthy();
+
     // The winner is showing, so it says nothing…
     expect(within(rowOf(liveBanner.title)).queryByText(/Why not showing/)).toBeNull();
     // …and neither does a draft: unfinished is not "not showing", and a
     // complaint under every row somebody is still writing is noise.
     expect(within(rowOf(draftBanner.title)).queryByText(/Why not showing/)).toBeNull();
+
+    /*
+     * A TIE IS NOT A COIN TOSS. The public route orders `priority DESC,
+     * createdAt DESC` (contract #29), so two rows sharing a number are separated
+     * by age and the newer one wins. The evaluator restates that ORDER BY rather
+     * than guessing, which is the difference between naming the row the site
+     * would actually pick and naming whichever came first in the array.
+     */
+    cleanup();
+    const older: Banner = { ...liveBanner, id: 'bnr_older', title: 'Older twin', createdAt: NOW - 9 * DAY };
+    const newer: Banner = { ...liveBanner, id: 'bnr_newer', title: 'Newer twin', createdAt: NOW - DAY };
+    serve([older, newer]);
+    mount();
+
+    await screen.findByRole('link', { name: 'Older twin' });
+    expect(within(rowOf('Older twin')).getByText(/“Newer twin”/)).toBeTruthy();
+    expect(within(rowOf('Newer twin')).queryByText(/Why not showing/)).toBeNull();
   });
 
   it('switches a draft on, and says what saving will do before it is saved', async () => {
@@ -407,6 +433,69 @@ describe('the banners screen', () => {
     expect(sent(`${BANNERS}/${liveBanner.id}`, 'PATCH')).toMatchObject({
       ctaText: 'Read more',
       ctaUrl: '/returns',
+    });
+  });
+
+  it('refuses a blank title, a link that could run code, and a rank below zero', async () => {
+    const user = userEvent.setup();
+    serve();
+    servePatch(liveBanner);
+    mount(editorFor(liveBanner));
+
+    const title = await screen.findByDisplayValue(liveBanner.title);
+    await user.clear(title);
+    await user.type(title, '   ');
+    await user.click(screen.getByRole('button', { name: 'Save banner' }));
+
+    /* `title <> '' AND title = btrim(title)` is a column CHECK, so three spaces
+       is not a title. Left to the server it comes back as a constraint
+       violation on a row nobody can see. */
+    expect(within(field('Title')).getByText(/A banner needs a title/)).toBeTruthy();
+    expect(sentNothing(`${BANNERS}/${liveBanner.id}`)).toBe(true);
+
+    await user.clear(title);
+    await user.type(title, 'Send them back');
+
+    /*
+     * THE URL CHECK IS A SECURITY CONSTRAINT, NOT TIDINESS, and it is the reason
+     * this assertion exists at all: this is the one table a cookieless public
+     * endpoint serves straight to the storefront, so a `javascript:` destination
+     * is stored XSS with a publish button in front of it. The column refuses it
+     * (`cta_url ~ '^(https?://|/)'`); the form has to refuse it one request
+     * earlier, and on the box, or the operator learns about it from a 400.
+     */
+    const link = screen.getByLabelText('Button link');
+    await user.clear(link);
+    await user.type(link, 'javascript:alert(1)');
+    await user.click(screen.getByRole('button', { name: 'Save banner' }));
+
+    expect(within(field('Button link')).getByText(/full https:\/\/ link/)).toBeTruthy();
+    expect(sentNothing(`${BANNERS}/${liveBanner.id}`)).toBe(true);
+
+    await user.clear(link);
+    await user.type(link, 'https://example.com/returns');
+
+    /* A priority is a place in a queue and there is no minus-first place — and
+       the refusal has to say WHICH thing was wrong with it: `-1` is a whole
+       number, so an error that asks for one names nothing to change. */
+    const rank = screen.getByLabelText('Priority');
+    await user.clear(rank);
+    await user.type(rank, '-1');
+    await user.click(screen.getByRole('button', { name: 'Save banner' }));
+
+    expect(within(field('Priority')).getByText(/zero or more/)).toBeTruthy();
+    expect(sentNothing(`${BANNERS}/${liveBanner.id}`)).toBe(true);
+
+    // Corrected, the three of them travel together.
+    await user.clear(rank);
+    await user.type(rank, '3');
+    await user.click(screen.getByRole('button', { name: 'Save banner' }));
+
+    await waitFor(() => expect(sent(`${BANNERS}/${liveBanner.id}`, 'PATCH')).toBeTruthy());
+    expect(sent(`${BANNERS}/${liveBanner.id}`, 'PATCH')).toMatchObject({
+      title: 'Send them back',
+      ctaUrl: 'https://example.com/returns',
+      priority: 3,
     });
   });
 
