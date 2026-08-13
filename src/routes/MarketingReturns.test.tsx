@@ -64,6 +64,7 @@ import { ToastProvider } from '../components/Toast';
 import {
   NOW,
   capsProgram,
+  collectedRow,
   needsActionPage,
   programs,
   requestedNew,
@@ -127,8 +128,17 @@ type Responder = (url: URL, init: RequestInit) => { status?: number; body: unkno
 const handlers = new Map<string, Responder>();
 let calls: { path: string; init: RequestInit }[] = [];
 
-/** Register a route. Anything unregistered answers 404 `gone`, like the app. */
-function when(pathname: string, body: unknown | Responder, status = 200): void {
+/**
+ * Register a route. Anything unregistered answers 404 `gone`, like the app.
+ *
+ * TWO OVERLOADS RATHER THAN ONE UNION, because `unknown | Responder` collapses
+ * to `unknown` — and a parameter of type `unknown` contributes no contextual
+ * type, so every responder written inline would take `(url, init)` as implicit
+ * `any` and the suite would be asserting against a URL nothing had typed.
+ */
+function when(pathname: string, respond: Responder): void;
+function when(pathname: string, body: unknown, status?: number): void;
+function when(pathname: string, body: unknown, status = 200): void {
   handlers.set(
     pathname,
     typeof body === 'function' ? (body as Responder) : () => ({ status, body }),
@@ -354,7 +364,21 @@ describe('the returns queue', () => {
       init.method === 'POST'
         ? {
             status: 400,
-            body: { error: 'below_minimum', detail: 'qtyDeclared', min: 4, requestId: 'req_1' },
+            body: {
+              error: 'below_minimum',
+              detail: 'qtyDeclared',
+              /*
+               * NINE, WHICH IS NOT THE FOUR THIS SCREEN ALREADY KNOWS. The
+               * program list is a snapshot taken when the queue loaded, and an
+               * owner raising the minimum in the next tab is exactly why the
+               * catalogue puts `min` on the payload at all. Stubbed as the
+               * program's own 4, this test would pass identically against a
+               * dialog that ignored the payload and quoted its stale copy —
+               * the refusal would read plausibly and be a lie.
+               */
+              min: 9,
+              requestId: 'req_1',
+            },
           }
         : { body: needsActionPage },
     );
@@ -369,7 +393,9 @@ describe('the returns queue', () => {
     await user.type(within(sheet()).getByLabelText('Quantity'), '2');
     await user.click(within(sheet()).getByRole('button', { name: 'Log the return' }));
 
-    expect(await within(sheet()).findByText('At least 4 canisters per request.')).toBeTruthy();
+    // The server's number, in the program's units, under the box it belongs to.
+    expect(await within(sheet()).findByText('At least 9 canisters per request.')).toBeTruthy();
+    expect(within(sheet()).queryByText('At least 4 canisters per request.')).toBeNull();
     expect(sent('/api/marketing/returns', 'POST').qtyDeclared).toBe(2);
   });
 
@@ -640,6 +666,34 @@ describe('the returns queue', () => {
     // dialog names the row it is about, because a queue is a list of look-alikes.
     expect(within(sheet()).getByText('Schedule a pickup')).toBeTruthy();
     expect(within(sheet()).getByText(`bode@example.com · ${requestedNew.id}`)).toBeTruthy();
+  });
+
+  it('names the dialog after the action the server offered, whatever it offered', async () => {
+    const user = userEvent.setup();
+    withPrograms();
+    /*
+     * A row whose served actions begin with `cancel`. The queue renders
+     * `allowedActions[0]` and is deliberately not allowed to reason about which
+     * action that will be — so the dialog it opens has to be named from the
+     * action too. Written as a ternary over the three stages somebody had in
+     * mind, the leftover arm titles a cancellation "Mark as received", which is
+     * a confirmation dialog describing the opposite of what pressing it does.
+     */
+    when('/api/marketing/returns', {
+      items: [{ ...collectedRow, allowedActions: ['cancel', 'note'] }],
+      nextCursor: null,
+      counts: returnCounts,
+    });
+    mount('/marketing/returns?view=all');
+    await screen.findByText(collectedRow.id);
+
+    await user.click(
+      within(row(collectedRow.id)).getByRole('button', {
+        name: 'Cancel return — kemi@example.com',
+      }),
+    );
+    expect(within(sheet()).getByText('Cancel this return')).toBeTruthy();
+    expect(within(sheet()).queryByText('Mark as received')).toBeNull();
   });
 
   it('opens the return itself on Enter, keeping the view behind it', async () => {

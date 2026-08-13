@@ -164,6 +164,24 @@ const DONE_MESSAGE: Record<StageAction, string> = {
   cancel: 'Return cancelled',
 };
 
+/**
+ * What the quick-action dialog is called, for the same reason and in the same
+ * shape as the message above.
+ *
+ * A map rather than the ternary chain this was, because the chain's last arm is
+ * whatever is left over: this screen renders `allowedActions[0]` and does not
+ * get to assume which action that is, so an order the server is entitled to
+ * serve would have put "Mark as received" over a form that cancels a return.
+ * The compiler now refuses a missing arm instead.
+ */
+const DIALOG_TITLE: Record<StageAction, string> = {
+  schedule: 'Schedule a pickup',
+  collect: 'Mark as picked up',
+  receive: 'Mark as received',
+  reject: 'Reject this request',
+  cancel: 'Cancel this return',
+};
+
 const WHEN = new Intl.DateTimeFormat(undefined, {
   day: 'numeric',
   month: 'short',
@@ -213,8 +231,14 @@ const isClosed = (status: ReturnStatus): boolean => CLOSED.includes(status);
  * `note` counts as nothing: it is the only action a closed return allows, and a
  * queue button that added a note would be a write where the operator expected
  * to look at something.
+ *
+ * The RETURN TYPE says so as well as the body, and that is load-bearing: the
+ * caller hands what is left — minus `inspect`, which navigates — straight to a
+ * form that performs the five transitions, and `note` is not one of them. Typed
+ * as the whole `ReturnAction`, the compiler could not tell the two apart and
+ * the exhaustive things downstream stop being exhaustive.
  */
-function primaryOf(row: ReturnListItem): ReturnAction | null {
+function primaryOf(row: ReturnListItem): Exclude<ReturnAction, 'note'> | null {
   const first = row.allowedActions?.[0];
   return first === undefined || first === 'note' ? null : first;
 }
@@ -873,13 +897,7 @@ function ReturnQueue() {
           // Inert above 640px, a bottom sheet below it. This is the dialog a
           // warehouse opens one-handed, which is the case the variant exists for.
           sheet
-          title={
-            quick.action === 'schedule'
-              ? 'Schedule a pickup'
-              : quick.action === 'collect'
-                ? 'Mark as picked up'
-                : 'Mark as received'
-          }
+          title={DIALOG_TITLE[quick.action]}
           description={`${quickRow.customerEmail} · ${quickRow.id}`}
           // The form brings its own actions, so the dialog draws no footer of
           // its own — one row of buttons, in the order the fields lead to them.
