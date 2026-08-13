@@ -28,7 +28,11 @@ import { httpClient, json } from '../../test/http';
 import { MailNotConfiguredError } from '../../mail/port';
 import { collect, createRequest, inspect, receive, schedule } from '../returns/repo';
 import { INTENT_COLUMNS, rowToIntent, toMessage } from './mailer';
-import { MARKETING_ATTEMPT_LIMIT, sweepMarketingEmailIntents } from './sweep';
+import {
+  MARKETING_ATTEMPT_LIMIT,
+  MARKETING_SWEEP_LIMIT,
+  sweepMarketingEmailIntents,
+} from './sweep';
 import type { TestCtx } from '../../test/harness';
 import type { HttpClient } from '../../test/http';
 import type { Db } from '../../db/client';
@@ -146,7 +150,9 @@ let seq = 0;
  * the intent under test is the one a real inspection wrote, with the words of
  * the programme it was awarded under.
  */
-async function queuedAward(qtyAccepted = 5): Promise<{ requestId: string; email: string }> {
+async function queuedAward(
+  qtyAccepted = 5,
+): Promise<{ requestId: string; programId: string; email: string }> {
   seq += 1;
   const programId = `prg_sweep_${seq}`;
   const email = `dara-${seq}@example.test`;
@@ -186,7 +192,7 @@ async function queuedAward(qtyAccepted = 5): Promise<{ requestId: string; email:
     actorId: ACTOR,
     now: NOW,
   });
-  return { requestId: row.id, email };
+  return { requestId: row.id, programId, email };
 }
 
 /** Every queued or delivered letter, oldest first. */
@@ -262,6 +268,24 @@ function countingMutant(
  *  `attempts < $n` cap. */
 const CLAIM_PREDICATE = /AND attempts = \$\d+/;
 
+// ------------------------------------------------------------------ the bounds
+
+describe('the two bounds are contract numbers, not tuning', () => {
+  it('drains fifty letters a sweep and gives up on one after eight attempts', () => {
+    /*
+     * PINNED BY VALUE, WHICH NOTHING ELSE IN THIS FILE DOES. Every other
+     * assertion reads these constants from the module, so both would follow an
+     * edit anywhere it took them — the attempt loop below would simply run three
+     * times instead of eight and stay green. Spec D6 froze the pair, and each is
+     * a promise to somebody: fifty is how fast the queue drains behind a
+     * fire-and-forget that nothing schedules, and eight is how long a customer's
+     * letter survives a provider having a bad afternoon.
+     */
+    expect(MARKETING_SWEEP_LIMIT).toBe(50);
+    expect(MARKETING_ATTEMPT_LIMIT).toBe(8);
+  });
+});
+
 // ------------------------------------------------------------- the happy path
 
 describe('the sweeper delivers what the award already wrote', () => {
@@ -293,6 +317,46 @@ describe('the sweeper delivers what the award already wrote', () => {
       skipped: 0,
     });
     expect(mailer.sent).toHaveLength(1);
+  });
+
+  it('posts the letter March wrote even though the programme was renamed in June', async () => {
+    /*
+     * SPEC D6's HEADLINE PROPERTY, THROUGH THE DELIVERY PATH RATHER THAN AROUND
+     * IT. `mailer.test.ts` proves the stored ROW survives a rename; this proves
+     * the transport is handed that row and not a re-rendering. The two are one
+     * guarantee only because `toMessage` copies four columns — and until a
+     * message that was actually SENT after a rename is inspected, that is an
+     * argument about the code rather than a fact about the mail.
+     */
+    const { programId } = await queuedAward();
+    const [queued] = await intents();
+
+    await db.execute(sql`
+      UPDATE marketing_programs
+         SET name = 'Reel Returns',
+             points_label_singular = 'Reel Credit', points_label_plural = 'Reel Credits',
+             unit_label_singular = 'reel', unit_label_plural = 'reels',
+             revision = revision + 1
+       WHERE id = ${programId}`);
+
+    /* NON-VACUITY, FIRST. A rename that matched no row would make every
+     * `not.toContain` below pass for exactly the wrong reason — a fixture caught
+     * by an unrelated bound before it ever reaches the guard under test. */
+    const renamed = await db.execute(sql`
+      SELECT name FROM marketing_programs WHERE id = ${programId}`);
+    expect(renamed.rows[0].name).toBe('Reel Returns');
+
+    const mailer = new Recorder();
+    expect(await sweepMarketingEmailIntents(db, mailer, SENT_AT)).toMatchObject({ sent: 1 });
+    expect(mailer.sent).toEqual([toMessage(queued)]);
+
+    /* Spelled out as well as compared, because the equality above would also
+     * hold if BOTH sides had been re-rendered through the new labels. */
+    const delivered = [mailer.sent[0].subject, mailer.sent[0].text, mailer.sent[0].html].join('\n');
+    expect(delivered).toContain('Bottle Caps');
+    expect(delivered).toContain('canisters');
+    expect(delivered).not.toContain('Reel Credits');
+    expect(delivered).not.toContain('Reel Returns');
   });
 
   it('an empty queue is zeros, not an error — the fire-and-forget calls it either way', async () => {
