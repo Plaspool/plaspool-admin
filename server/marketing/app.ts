@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import { toResponse } from '../middleware/errors';
 import { MailNotConfiguredError } from '../mail/port';
+import { routes as programRoutes } from './programs/routes';
+import { routes as settingsRoutes } from './settings/routes';
 import {
   AlreadyAwardedError,
   BelowMinimumError,
@@ -269,13 +271,12 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
    * ==========================================================================
    * THE MOUNT MARKER. Two lines per subsystem, as at the top of this file.
    *
-   * NOTHING IS MOUNTED YET, and an unrouted `/api/marketing/anything` is
-   * therefore a 404 `gone` from the application's own `notFound` — which is the
-   * correct answer and the one `app.test.ts` pins. It is worth pinning because
-   * the obvious shortcut for a subsystem where nearly every route needs a
-   * session is `marketing.use('*', requireAuth())`, and that turns every
-   * unrouted path under this prefix into a 401: the guard runs, finds no
-   * session, and refuses a request that had no handler to reach.
+   * AN UNROUTED `/api/marketing/anything` IS STILL A 404 `gone` from the
+   * application's own `notFound`, and `app.test.ts` pins it. It is worth
+   * pinning because the obvious shortcut for a subsystem where nearly every
+   * route needs a session is `marketing.use('*', requireAuth())`, and that
+   * turns every unrouted path under this prefix into a 401: the guard runs,
+   * finds no session, and refuses a request that had no handler to reach.
    * `server/shop/catalog/routes.ts` records the same defect on the blog side.
    * Auth is attached PER ROUTE in this subsystem for that reason.
    *
@@ -285,6 +286,27 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
    * joined, and this is marketing's.
    * ==========================================================================
    */
+
+  /*
+   * PROGRAMS — contract #1-3. The rewards programs themselves: every word a
+   * customer reads, and the two numbers that decide what a return is worth.
+   * Reading the list is `requireAuth`; both writes are `requireOwner`.
+   */
+  marketing.route('/', programRoutes);
+
+  /*
+   * SETTINGS — contract #19-20. The cross-program layer: the words for the
+   * surfaces that span every program, the redemption economics, and which
+   * program the intake defaults to.
+   *
+   * THE ORDER OF THESE TWO DOES NOT MATTER, because they claim disjoint paths
+   * (`/programs*` and `/settings`). Recorded because the next router along will
+   * not be so lucky: returns owns `/returns/request` AND `/returns/:id`, and
+   * Hono resolves two routers claiming one path by registration order — the
+   * public intake must register before the parameterised route or it is
+   * swallowed by it (spec §Risks; A5 pins the order with its own test).
+   */
+  marketing.route('/', settingsRoutes);
 
   /*
    * HELD, NOT YET READ. The first consumer is the sweep route, which arrives
