@@ -86,3 +86,1226 @@
     font-size: var(--step-3);
   }
 }
+
+/* --------------------------------------------------------------- tiles */
+
+/* `.stattiles` / `.stat` from `shop.css`, renamed. `auto-fit` rather than a
+   fixed count: four tiles at 1280px, two at tablet, one at 375px, with no
+   breakpoint arithmetic to get wrong. */
+.mkttiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: var(--s4);
+}
+
+/* The overview's four workload tiles stay TWO across on a phone. Four
+   full-width tiles push the panels under them off the first screen, and those
+   four numbers are what the screen is for; 13rem apiece is also wider than a
+   375px column, so `auto-fit` on its own would stack them. */
+.mkttiles--duo {
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+}
+
+.mktstat {
+  display: grid;
+  gap: var(--s1);
+  align-content: start;
+  padding: var(--s4);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-l);
+  background: var(--paper-raised);
+}
+
+/* Each tile is a Link into the queue view it counts, so the WHOLE card is the
+   hit area rather than a small "view" link inside it. The 4.5rem floor is the
+   72px a thumb wants; the desktop tiles clear it on their own. */
+a.mktstat {
+  min-height: 4.5rem;
+  color: inherit;
+  text-decoration: none;
+  transition: border-color var(--dur-1) var(--ease);
+}
+a.mktstat:hover {
+  border-color: var(--accent);
+}
+
+.mktstat__label {
+  font-size: var(--step--2);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.mktstat__value {
+  font-family: var(--font-display);
+  font-size: var(--step-3);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.mktstat__note {
+  font-size: var(--step--1);
+  color: var(--ink-4);
+  line-height: 1.5;
+}
+/* The one tile that should catch an eye across the room: a return that has
+   been waiting on us for two days. */
+.mktstat--alert {
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+  background: var(--warn-soft);
+}
+.mktstat--alert .mktstat__value {
+  color: var(--warn);
+}
+
+@media (max-width: 640px) {
+  /* Two across, explicitly, rather than whatever `auto-fit` decides at 320px. */
+  .mkttiles--duo {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* -------------------------------------------------------------- layout */
+
+/* `.shopgrid`, renamed. The queue and the timeline are the reading order on a
+   narrow screen; the panels beside them are reference. Two columns only where
+   both fit without either being squeezed. */
+.mktgrid {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: var(--s5);
+  align-items: start;
+}
+.mktgrid__col {
+  display: grid;
+  gap: var(--s5);
+  min-width: 0;
+}
+@media (max-width: 900px) {
+  .mktgrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* -------------------------------------------------------------- panels */
+
+/* `.panel` from `shop.css`, renamed. */
+.mktpanel {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-l);
+  background: var(--paper-raised);
+  overflow: hidden;
+}
+.mktpanel + .mktpanel,
+.mkttiles + .mktpanel,
+.mkttiles + .mktgrid,
+.mktpanel + .mktgrid {
+  margin-top: var(--s5);
+}
+.mktpanel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--rule);
+  flex-wrap: wrap;
+}
+.mktpanel__title {
+  font-size: var(--step--1);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.mktpanel__body {
+  padding: var(--s4);
+}
+.mktpanel__body--flush {
+  padding: 0;
+}
+.mktpanel__note {
+  font-size: var(--step--1);
+  color: var(--ink-4);
+  line-height: 1.55;
+}
+
+/* --------------------------------------------------------------- table */
+
+/* `.dtable` from `shop.css`, renamed — and the scroller comes with it rather
+   than being borrowed, because the table and its scroller are one pattern and
+   half of it living in the other session's file is exactly the shared edit
+   this stylesheet exists to avoid.
+
+   The doctrine that scroller carries is the load-bearing part: THE SCROLLER,
+   NOT THE TABLE, OWNS THE OVERFLOW. A table that widens the PAGE makes every
+   other screen scroll sideways too, which is the failure this wrapper exists
+   to prevent at 375px. */
+.mkttable__scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.mkttable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--step--1);
+}
+.mkttable th {
+  text-align: left;
+  font-size: var(--step--2);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+}
+.mkttable td {
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-2);
+  vertical-align: top;
+}
+.mkttable tr:last-child td {
+  border-bottom: 0;
+}
+.mkttable tbody tr:hover {
+  background: var(--paper-sunken);
+}
+.mkttable__num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.mkttable__strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+.mkttable__sub {
+  display: block;
+  font-size: var(--step--2);
+  color: var(--ink-4);
+}
+.mkttable__link {
+  color: var(--ink);
+  font-weight: 500;
+  text-decoration: none;
+}
+.mkttable__link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.mkttable__empty {
+  padding: var(--s6) var(--s4);
+  text-align: center;
+  color: var(--ink-4);
+}
+
+/* ------------------------------------------------------------ key/value */
+
+/* `.kv` from `shop.css`, renamed. Reference detail — a return's customer and
+   dates, a program shown read-only to a writer — where a form would imply
+   these are things the reader may change. */
+.mktkv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--s2) var(--s4);
+  font-size: var(--step--1);
+}
+.mktkv__k {
+  color: var(--ink-4);
+  white-space: nowrap;
+}
+.mktkv__v {
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mktkv__v--id {
+  font-family: var(--font-mono);
+  font-size: var(--step--2);
+}
+.mktkv__rule {
+  grid-column: 1 / -1;
+  height: 1px;
+  background: var(--rule);
+}
+
+/* ---------------------------------------------------------------- tabs */
+
+/* The dashboard's `.tabs`, renamed, WITH the count `shop.css` deliberately
+   refuses. That refusal is about a list whose only available total is the rows
+   the page happens to hold; the returns route ships a `counts` sidecar on
+   every response, so "To inspect 12" here is the real number and the objection
+   does not apply.
+
+   The height is declared rather than inherited: `base.css` hands its control
+   height to `.tabs__tab` BY NAME, and a renamed copy is not that selector.
+   Same reason the coarse-pointer overlay is copied at the foot of this file. */
+.mkttabs {
+  display: flex;
+  gap: var(--s1);
+  margin-top: var(--s5);
+  overflow-x: auto;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+}
+.mkttabs::-webkit-scrollbar {
+  display: none;
+}
+.mkttabs__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  height: var(--ctl-h-lg);
+  box-sizing: border-box;
+  padding: 0 var(--ctl-pad-x);
+  border: 0;
+  border-radius: var(--radius-m);
+  background: none;
+  color: var(--ink-3);
+  scroll-snap-align: start;
+  font-size: var(--step--1);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.mkttabs__tab:hover {
+  background: var(--paper-sunken);
+  color: var(--ink);
+}
+.mkttabs__tab.is-active {
+  background: var(--ink);
+  color: var(--paper);
+}
+.mkttabs__count {
+  font-size: var(--step--2);
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------- filters */
+
+/* `.shopfilters`, renamed. `.searchbox` and `.ui-select` are borrowed, not
+   copied: neither belongs to a section, and the shop's own filter row borrows
+   the same two. */
+.mktfilters {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  margin-top: var(--s5);
+}
+/* A program name is operator-written and unbounded, and this row still has to
+   fit 375px — cap the trigger and let the label ellipsise inside it. */
+.mktfilters .ui-select {
+  max-width: min(14rem, 100%);
+}
+.mktfilters .ui-select > :first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mktfilters .searchbox {
+  min-width: 14rem;
+  flex: 1;
+}
+
+@media (max-width: 640px) {
+  .mktfilters .searchbox {
+    min-width: 0;
+    width: 100%;
+  }
+  /* Below this the tab strip genuinely overflows, so fade the trailing edge:
+     an off-screen tab must be visibly off-screen, not silently absent. The
+     opaque stop is `--ink` because a mask reads ALPHA and ignores hue — the
+     flat black the copy sources fade from would be the one literal colour in
+     this file, and it would buy nothing. */
+  .mkttabs {
+    mask-image: linear-gradient(to right, var(--ink) calc(100% - 2.5rem), transparent);
+  }
+}
+
+/* --------------------------------------------------------------- queue */
+
+/*
+ * ONE DOM, TWO SHAPES. A queue row is a stacked card on a phone and a row of
+ * columns from 720px up, and it is the SAME elements either way. A separate
+ * table render and card render is two things to keep correct, and the one
+ * that is off screen is the one that goes wrong quietly.
+ *
+ * The group heading is an <li> inside the same flat list rather than a nested
+ * <ul> — the `.auditday` doctrine from `shop.css`: a screen reader announces
+ * one list of returns instead of six sub-lists of one.
+ */
+.mktqueue {
+  display: grid;
+  gap: var(--s1);
+  margin: var(--s5) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Sticky, because the stage a row belongs to is the first thing a scrolling
+   operator loses — and losing it means pressing "Mark picked up" on a row you
+   thought was still waiting for a driver. */
+.mktqgroup {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin-top: var(--s4);
+  padding: var(--s2) var(--s2) var(--s1);
+  background: var(--paper);
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-4);
+  font-size: var(--step--2);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.mktqgroup:first-child {
+  margin-top: 0;
+}
+
+.mktqrow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'who qty'
+    'meta meta'
+    'act act';
+  gap: var(--s2) var(--s3);
+  padding: var(--s3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+  transition: background var(--dur-1) var(--ease);
+}
+.mktqrow:hover {
+  background: var(--paper-sunken);
+}
+/* Roving tabindex: one row is tabbable at a time and ↑/↓ move between them, so
+   the focus ring — `base.css`'s, on `:focus-visible` — is the only thing
+   saying which row Enter and 'a' will act on. It gets the hover fill too, so
+   the answer survives a theme where the ring is subtle. */
+.mktqrow:focus-visible {
+  background: var(--paper-sunken);
+}
+.mktqrow__who {
+  grid-area: who;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.mktqrow__email {
+  color: var(--ink);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.mktqrow__id {
+  font-family: var(--font-mono);
+  font-size: var(--step--2);
+  color: var(--ink-4);
+}
+.mktqrow__qty {
+  grid-area: qty;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.mktqrow__meta {
+  grid-area: meta;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.mktqrow__act {
+  grid-area: act;
+  justify-self: stretch;
+}
+
+@media (min-width: 720px) {
+  /* Where there is room the same four parts lay out as columns. */
+  .mktqrow {
+    grid-template-columns: minmax(0, 2fr) auto minmax(0, 1fr) auto;
+    grid-template-areas: 'who qty meta act';
+    align-items: center;
+  }
+  .mktqrow__act {
+    justify-self: end;
+  }
+}
+
+@media (max-width: 640px) {
+  /* One thumb, one button, the full width of the card. */
+  .mktqrow__act .btn {
+    width: 100%;
+    min-height: var(--tap-min);
+  }
+}
+
+/* ----------------------------------------------------------------- age */
+
+/* How long a return has been waiting, and the two thresholds that make it
+   urgent. TEXT AND COLOUR, never colour alone: "4 days" is the whole message
+   for a reader who cannot tell the warn token from the danger one, and nothing
+   in this section says anything on hover that it does not say in words. */
+.mktage {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--ink-4);
+}
+.mktage--warn {
+  color: var(--warn);
+}
+.mktage--danger {
+  color: var(--danger);
+  font-weight: 500;
+}
+
+/* -------------------------------------------------------------- status */
+
+/*
+ * Statuses on top of `base.css`'s `.chip`. No new colours: warn for what is
+ * waiting on us, the inset paper for what is in motion elsewhere, accent for a
+ * good end, danger for a bad one — the same four meanings `shop.css` maps its
+ * order statuses onto.
+ *
+ * The MODIFIERS are prefixed even though `.chip` is not. `shop.css` already
+ * declares `.chip--cancelled` and `.chip--active` in this bundle, and a second
+ * declaration of a class another session owns is a merge conflict waiting for
+ * whichever of us edits it first.
+ */
+.mktchip--requested,
+.mktchip--received {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.mktchip--scheduled,
+.mktchip--collected,
+.mktchip--paused {
+  background: var(--paper-inset);
+  color: var(--ink-3);
+}
+.mktchip--awarded,
+.mktchip--active {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+.mktchip--rejected,
+.mktchip--cancelled {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* A banner's status is DERIVED (`shared/marketing/banners.ts`), and two of its
+   five words mean something else in the pipeline above — a scheduled banner is
+   waiting to start, a scheduled return is out with a driver. Separate family,
+   so neither vocabulary has to explain the other. `draft` and `archived` come
+   from `base.css` unchanged. */
+.bnrchip--scheduled {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.bnrchip--live {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+.bnrchip--ended {
+  background: var(--paper-inset);
+  color: var(--ink-3);
+}
+
+/* --------------------------------------------------------------- forms */
+
+/* `.shopform`, renamed. `.mktform__error` is the treatment the error
+   catalogue names for `bad_request`: the message belongs under the field the
+   `detail` path points at, never in a toast on its own. */
+.mktform {
+  display: grid;
+  gap: var(--s5);
+}
+.mktform__field {
+  display: grid;
+  gap: var(--s2);
+}
+.mktform__row {
+  display: flex;
+  gap: var(--s2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+.mktform__hint {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+  line-height: 1.5;
+}
+.mktform__error {
+  font-size: var(--step--2);
+  color: var(--danger);
+  line-height: 1.5;
+}
+.mktform__actions {
+  display: flex;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+/* Two columns where there is room, one where there is not. The form is
+   readable at 375px because it stops being two columns, not because anything
+   shrinks. */
+.mktform__split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s4);
+}
+@media (max-width: 640px) {
+  .mktform__split {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ----------------------------------------------------------- stage path */
+
+/*
+ * NEW PRIMITIVE (one of three; the others are `.mktbar` and `.bnrpreview`).
+ * The lifecycle as five labelled dots. Nothing in `shop.css` or
+ * `dashboard.css` draws a progression: an order's timeline is a list of things
+ * that have happened, and this is mostly a promise of things that have not.
+ *
+ * The connector is a pseudo-element on the step that FOLLOWS it, reaching back
+ * to the previous dot, so the rail is built out of the same boxes as the dots
+ * and cannot drift out of alignment with them at any width.
+ */
+.stagepath {
+  display: flex;
+  align-items: flex-start;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.stagepath__step {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  justify-items: center;
+  gap: var(--s1);
+  text-align: center;
+  font-size: var(--step--2);
+  color: var(--ink-4);
+}
+.stagepath__step + .stagepath__step::before {
+  content: '';
+  position: absolute;
+  top: 0.3125rem;
+  right: 50%;
+  left: -50%;
+  height: 2px;
+  background: var(--rule);
+}
+/* The segment ENTERING a stage that has been reached is filled. */
+.stagepath__step + .stagepath__step.is-done::before,
+.stagepath__step + .stagepath__step.is-current::before {
+  background: var(--accent);
+}
+.stagepath__dot {
+  position: relative;
+  z-index: 1;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: var(--radius-full);
+  background: var(--paper);
+  box-shadow: inset 0 0 0 2px var(--rule-strong);
+}
+.stagepath__step.is-done .stagepath__dot {
+  background: var(--accent);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+/* Current is a ring, not a fill: "here" and "done" must not be the same dot. */
+.stagepath__step.is-current .stagepath__dot {
+  box-shadow: inset 0 0 0 3px var(--accent);
+}
+.stagepath__step.is-done {
+  color: var(--ink-3);
+}
+.stagepath__step.is-current {
+  color: var(--ink);
+  font-weight: 600;
+}
+/* Read on a phone, ignored on a desktop: "Step 4 of 5 — Received" says in one
+   line what five labels say across a width that does not exist at 375px. */
+.stagepath__count {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .stagepath__count {
+    display: block;
+    margin-bottom: var(--s2);
+    font-size: var(--step--1);
+    font-weight: 600;
+    color: var(--ink);
+  }
+  /* The dots stay — they are the shape of the thing — but only the current
+     label is drawn. Clipped rather than `display: none`, so a screen reader
+     still reads the whole path in order. */
+  .stagepath__step:not(.is-current) .stagepath__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+/* ---------------------------------------------------- mobile action bar */
+
+/*
+ * NEW PRIMITIVE. One thumb, one action — and ONLY on the returns pipeline
+ * detail, where there is exactly one legal next step and the form that takes
+ * it can be two screens down. Config forms do not get this bar: they have
+ * several actions and no single next one, and a permanent 4rem of fixed
+ * furniture over a long form costs more than it returns.
+ *
+ * It MIRRORS the form's inline submit and never replaces it. The iOS keyboard
+ * covers the bottom of the viewport, so a flow that only worked through the
+ * bar would stop working the moment a field took focus.
+ *
+ * Inert above 640px, where the primary action is already beside the form it
+ * belongs to.
+ */
+.mktbar {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .mktbar {
+    position: fixed;
+    inset: auto 0 0;
+    /* Under the shell's drawer and scrim (48-50) and under the toasts (200):
+       a bar that covers the navigation is a bar you cannot get away from. */
+    z-index: 40;
+    display: flex;
+    gap: var(--s2);
+    padding: var(--s3) var(--s4);
+    /* The home indicator sits over the last ~20px of a modern iPhone, and a
+       submit button underneath it is a button that takes two tries. */
+    padding-bottom: calc(var(--s3) + env(safe-area-inset-bottom));
+    background: var(--paper-raised);
+    border-top: 1px solid var(--rule);
+    box-shadow: var(--shadow-2);
+  }
+  .mktbar .btn {
+    flex: 1;
+    min-height: var(--tap-min);
+  }
+  /* Whatever is last on the page has to clear the bar, or it is unreadable
+     under it. Set by the screen that renders the bar, so screens without one
+     do not pay 6rem of empty page. */
+  .mktscr--barred .mktscr__body {
+    padding-bottom: var(--s9);
+  }
+}
+
+/* ------------------------------------------------------------ timeline */
+
+/* `.timeline` from `shop.css`, renamed, with the dot grown into an icon. An
+   order's history is one shape repeated; a return's is eight kinds deep
+   (requested, scheduled, collected, received, inspected, rejected, cancelled,
+   note), and the icon is what makes a long one skimmable. Append-only, like
+   the table behind it: nothing here carries an edit or a delete. */
+.mkttimeline {
+  display: grid;
+  gap: var(--s4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--step--1);
+}
+.mkttimeline__item {
+  display: grid;
+  grid-template-columns: 1.75rem minmax(0, 1fr);
+  gap: 2px var(--s3);
+  color: var(--ink-2);
+}
+.mkttimeline__icon {
+  grid-row: 1 / -1;
+  align-self: start;
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-full);
+  background: var(--paper-sunken);
+  color: var(--ink-4);
+}
+/* The two events an operator scans for: the award, and the end of the line. */
+.mkttimeline__item--award .mkttimeline__icon {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+.mkttimeline__item--closed .mkttimeline__icon {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.mkttimeline__what {
+  color: var(--ink);
+}
+.mkttimeline__note {
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.mkttimeline__when {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------------- mail */
+
+/* `.mailrow` from `shop.css`, renamed. A notification that failed must not
+   look like one that is merely waiting — and neither may be described as
+   sent, which is why the queued state has words of its own. */
+.mktmail {
+  display: grid;
+  gap: 2px;
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: var(--step--1);
+}
+.mktmail:last-child {
+  border-bottom: 0;
+}
+.mktmail__meta {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+}
+.mktmail__err {
+  font-size: var(--step--2);
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+/* -------------------------------------------------------------- ledger */
+
+/* The `.auditlist` / `.auditday` / `.auditrow` family from `shop.css`,
+   renamed into one block. Same job — an append-only history read newest
+   first, grouped by day — and the same shape, including the 640px collapse at
+   the end of this section.
+   `__was` / `__arrow` carry the balance the ledger row already stores, so
+   "120 → 180" needs no window function and no arithmetic in the client. */
+.mktaudit {
+  display: grid;
+  gap: var(--s1);
+  margin: var(--s3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+/* The day is a heading inside one flat list rather than a nested <ul>, so the
+   reading order a screen reader announces is not broken into sub-lists. */
+.mktaudit__day {
+  margin-top: var(--s4);
+  padding-bottom: var(--s1);
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-4);
+  font-size: var(--step--2);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.mktaudit__day:first-child {
+  margin-top: 0;
+}
+.mktaudit__row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--s3);
+  padding: var(--s3) var(--s2);
+  border-radius: var(--radius-m);
+}
+.mktaudit__row:hover {
+  background: var(--paper-sunken);
+}
+.mktaudit__icon {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-full);
+  background: var(--paper-sunken);
+  color: var(--ink-4);
+}
+.mktaudit__body {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.mktaudit__what {
+  font-size: var(--step-0);
+  font-variant-numeric: tabular-nums;
+}
+/* The old balance is struck through and dimmed: the row leads with the
+   DIFFERENCE, and the number that no longer applies should not compete with
+   the one that does. */
+.mktaudit__was {
+  color: var(--ink-4);
+  text-decoration: line-through;
+}
+.mktaudit__arrow {
+  margin: 0 var(--s1);
+  color: var(--ink-4);
+}
+/* No positive token exists in `tokens.css`; `--accent-hover` is what a good
+   state already means everywhere else, so this follows the convention rather
+   than inventing a seventh colour. */
+.mktaudit__up {
+  color: var(--accent-hover);
+}
+.mktaudit__down {
+  color: var(--danger);
+}
+/* The stored reason, VERBATIM. It was rendered when the entry was written, in
+   the labels of that day, and re-rendering it in today's labels would rewrite
+   history every time somebody renames a program. */
+.mktaudit__why {
+  font-size: var(--step--1);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.mktaudit__why em {
+  color: var(--ink-4);
+}
+.mktaudit__when {
+  color: var(--ink-4);
+  font-size: var(--step--2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .mktaudit__row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  /* The time moves under the text rather than squeezing a third column into
+     375px, where it would push the reason to two words a line. */
+  .mktaudit__when {
+    grid-column: 2;
+  }
+}
+
+/* --------------------------------------------------------------- pager */
+
+/* `.pager` from `shop.css`, renamed. Keyset paging: "Show more", never a page
+   number, because the list underneath it is a cursor walk and page 4 of a
+   cursor walk is not a place you can go back to. */
+.mktpager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  margin-top: var(--s5);
+  flex-wrap: wrap;
+}
+.mktpager__note {
+  font-size: var(--step--1);
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ----------------------------------------------------------- the award */
+
+/*
+ * "5 accepted × 10 = 50 Bottle Caps to dara@example.com" — the one sentence
+ * that travels. It is `awardSentence()` from `shared/marketing/copy.ts`, and
+ * the SAME string appears in this live line, in the confirm dialog, in the
+ * success toast, in the timeline and in the customer's email. The styling is
+ * here so that on the form it reads as the answer to what was just typed
+ * rather than as one more hint about it.
+ */
+.mktmath {
+  padding: var(--s3) var(--s4);
+  border-radius: var(--radius-m);
+  background: var(--accent-soft);
+  color: var(--ink-2);
+  font-size: var(--step-0);
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+/* Nothing accepted is a recorded outcome, not a failure, and must not be
+   dressed as one: same line, quieter paper. */
+.mktmath--zero {
+  background: var(--paper-sunken);
+  color: var(--ink-3);
+}
+
+/* --------------------------------------------------------- plain words */
+
+/* The rules restated in the labels the operator is typing, live, before
+   anything is saved — "Customers who send back at least 4 canisters earn 7
+   Bottle Caps per accepted canister." Larger than a hint on purpose: it is the
+   thing being checked, not an aside about it. */
+.mktsentence {
+  font-size: var(--step-0);
+  line-height: 1.65;
+  color: var(--ink-2);
+}
+/* The draft values inside the sentence. Weight, not colour alone. */
+.mktsentence__v {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* ------------------------------------------------------ banner preview */
+
+/*
+ * NEW PRIMITIVE. An APPROXIMATION of the storefront in the admin's own tokens,
+ * and the caption under it says exactly that: the CSP forbids embedding the
+ * real site, and a preview that pretended to be a screenshot would be a lie
+ * with a border around it.
+ */
+.bnrpreview {
+  display: grid;
+  gap: var(--s3);
+}
+.bnrpreview__tools {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.bnrpreview__stage {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  margin: 0 auto;
+  min-height: 11rem;
+  padding: var(--s4);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-sunken);
+}
+/* The device toggle is a WIDTH, not a skin. What actually differs between a
+   phone and a desktop banner is how many characters land on a line, and that
+   is the thing worth looking at before publishing. */
+.bnrpreview__stage--phone {
+  max-width: 23.5rem;
+}
+.bnrpreview__stage--desktop {
+  max-width: none;
+}
+/* top_bar: the full width of the site, above everything. */
+.bnrpreview__topbar {
+  position: absolute;
+  inset: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  padding: var(--s2) var(--s3);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: var(--step--1);
+  text-align: center;
+}
+/* popup: the stage dims and a card lands on top of it. */
+.bnrpreview__scrim {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--ink) 46%, transparent);
+}
+.bnrpreview__card {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: var(--s2);
+  max-width: 22rem;
+  margin: var(--s5) auto 0;
+  padding: var(--s4);
+  border-radius: var(--radius-l);
+  background: var(--paper-raised);
+  box-shadow: var(--shadow-2);
+}
+.bnrpreview__close {
+  position: absolute;
+  top: var(--s2);
+  right: var(--s2);
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--paper-sunken);
+  color: var(--ink-4);
+  cursor: pointer;
+}
+/* section: a card in the flow of a page, dismissing nothing. */
+.bnrpreview__section {
+  display: grid;
+  gap: var(--s2);
+  padding: var(--s4);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+}
+.bnrpreview__title {
+  font-family: var(--font-display);
+  font-size: var(--step-1);
+  font-weight: 600;
+  color: var(--ink);
+}
+.bnrpreview__body {
+  font-size: var(--step--1);
+  color: var(--ink-3);
+  line-height: 1.6;
+}
+.bnrpreview__cta {
+  justify-self: start;
+}
+.bnrpreview__caption {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+  line-height: 1.5;
+}
+
+/* On a phone the preview is a screen of its own at `?preview=1`, not a pane
+   beside the editor: a 375px column split in two is two columns of nothing.
+   The back control is sticky because the takeover scrolls. */
+.bnrpreview--full {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  overflow-y: auto;
+  padding: var(--s4);
+  padding-bottom: calc(var(--s6) + env(safe-area-inset-bottom));
+  background: var(--paper);
+}
+.bnrpreview--full .bnrpreview__back {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-bottom: var(--s2);
+  background: var(--paper);
+}
+
+/* ------------------------------------------------------ quantity stepper */
+
+/*
+ * `.stepper` from `shop.css`, renamed and grown to touch size for
+ * `src/components/QtyStepper.tsx`. The styles are HERE, in the section's
+ * stylesheet, because the component has exactly one section of callers —
+ * `RequireAuth` and `PostGate` already import a route stylesheet on the same
+ * argument.
+ *
+ * WHY NOT A BARE TEXT BOX (the argument `shop.css` makes, and it is stronger
+ * here): the quantities this control edits are counted off a pallet one unit
+ * at a time, usually by somebody holding something else. The buttons make one
+ * more a single tap and keep the arithmetic on our side; the field stays
+ * typable for the rare jump from 4 to 40.
+ *
+ * `--tap-min` SQUARES, at every pointer. A stepper that is 44px on a phone and
+ * 32px on a desktop is two controls to keep in agreement, and the desktop one
+ * would be the smaller target for the same warehouse laptop with a trackpad.
+ */
+.qtystep {
+  display: inline-flex;
+  align-items: stretch;
+  width: fit-content;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+  overflow: hidden;
+  transition:
+    border-color var(--dur-1) var(--ease),
+    box-shadow var(--dur-1) var(--ease);
+}
+.qtystep:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.qtystep__btn {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: var(--tap-min);
+  min-height: var(--tap-min);
+  border: 0;
+  background: var(--paper-sunken);
+  color: var(--ink-3);
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.qtystep__btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+/* Disabled at the floor and the ceiling: the control refuses what the form
+   would refuse, instead of accepting a number and arguing about it later. */
+.qtystep__btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+/* The field keeps `.input`'s typography and loses its chrome to the group. The
+   height is released because the group is taller than a control now. */
+.qtystep__field.input {
+  width: 5rem;
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  text-align: center;
+  font-size: var(--step-1);
+  font-variant-numeric: tabular-nums;
+}
+.qtystep__field.input:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+/* ------------------------------------------------------- touch targets */
+
+/*
+ * `base.css` reaches the 44px minimum by NAMING its classes — `.btn::after`,
+ * `.tabs__tab::after` and three more — so a renamed copy inherits the look and
+ * not the hit area. Every marketing control that is not a `.btn` gets the same
+ * overlay here: an invisible box centred on the control, so the target grows
+ * without the drawing changing.
+ *
+ * `.qtystep__btn` is deliberately absent: it is already a `--tap-min` square,
+ * and an overlay would only stack a second box of the same size on it.
+ */
+@media (pointer: coarse) {
+  .mkttabs__tab::after,
+  .bnrpreview__close::after {
+    content: '';
+    position: absolute;
+    inset: 50% 0 auto;
+    translate: 0 -50%;
+    height: var(--tap-min);
+    min-width: var(--tap-min);
+  }
+  .mkttabs__tab {
+    position: relative;
+  }
+}
