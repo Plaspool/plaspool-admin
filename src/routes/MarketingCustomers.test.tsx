@@ -292,7 +292,11 @@ describe('the customers screen', () => {
     withSettings();
     withDirectory([]);
     withCustomer(unknownCustomer, []);
-    mount('/marketing/customers?q=nobody@example.com');
+    /* TYPED IN CAPITALS on purpose. `customer_email` is CHECKed `= lower(...)`,
+       so the address this link carries has to be folded or the page it opens is
+       a wallet of zeros sitting beside a real balance nobody can see. The stub
+       below is keyed on the LOWERCASE address, so an unfolded link 404s. */
+    mount('/marketing/customers?q=Nobody@Example.COM');
 
     /*
      * THE WALK-IN ESCAPE. A buyer with no online order matches nothing, and the
@@ -300,7 +304,9 @@ describe('the customers screen', () => {
      * state carries the way through rather than being the end of the road.
      */
     const escape = await screen.findByRole('link', {
-      name: /Credit nobody@example\.com anyway/,
+      // Said back exactly as typed — it is the operator's own spelling being
+      // offered to them, and the check above it is about the spelling.
+      name: /Credit Nobody@Example\.COM anyway/,
     });
     await user.click(escape);
 
@@ -310,6 +316,18 @@ describe('the customers screen', () => {
     // And the page it opens works: #16 answers zeros for an unknown address, so
     // the balance tile and the dialog behind it are live immediately.
     expect(await screen.findByRole('button', { name: 'Adjust balance…' })).toBeTruthy();
+
+    /*
+     * AND ONLY FOR SOMETHING SHAPED LIKE AN ADDRESS. The same box searches
+     * customer-id prefixes (#15), and `?email=cus_39fa` would open a balance
+     * keyed on a string that is not an email — a wallet nothing will ever match
+     * again, credited to nobody. Still the owner here, so the shape is the only
+     * thing holding the offer back.
+     */
+    cleanup();
+    mount('/marketing/customers?q=cus_39fa');
+    expect(await screen.findByText('Nobody matches that')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: /anyway/ })).toBeNull();
 
     // A writer gets the same "nobody matches" copy and no offer to credit —
     // adjustments are `requireOwner`, and the control is absent, not disabled.
@@ -363,6 +381,24 @@ describe('the customers screen', () => {
     // history with a control on its rows is a history somebody can rewrite.
     expect(within(rendered.container.querySelector('.mktaudit') as HTMLElement)
       .queryAllByRole('button')).toHaveLength(0);
+  });
+
+  it('says the figures with no word at all when it cannot learn one', async () => {
+    /* NO `/settings` HANDLER: the stub answers 404, which is what a deployment
+       whose settings row has not landed yet does. The word for a balance is
+       cross-program configuration and this screen has none of its own — so the
+       honest degradation is a bare number, and a screen that supplied a noun
+       here would be wrong for every deployment that renamed the currency. */
+    withCustomer();
+    const view = mount(detail());
+
+    await screen.findByText(/Earned 180/);
+    expect(view.container.querySelector('.mktstat__value')?.textContent).toBe('180');
+    expect(view.container.textContent ?? '').not.toContain('Bottle Caps');
+
+    // The stored reasons are untouched by any of it — they were rendered when
+    // they were written, and nothing here re-renders them.
+    expect(screen.getByText(/5 accepted × 7 = 35 Jar Lids/)).toBeTruthy();
   });
 
   it('groups the history by the day each entry landed on', async () => {
