@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { toResponse } from '../middleware/errors';
 import { MailNotConfiguredError } from '../mail/port';
 import { routes as bannerRoutes } from './banners/routes';
+import { routes as discountRoutes } from './discounts/routes';
 import { routes as ledgerRoutes } from './ledger/routes';
 import { createNotifyRoutes } from './notify/routes';
 import { routes as programRoutes } from './programs/routes';
@@ -366,6 +367,20 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
    * thing by "live" (spec D8).
    */
   marketing.route('/', bannerRoutes);
+
+  /*
+   * DISCOUNTS — contract #24-26. The model, landing ahead of the surface that
+   * will redeem it: `computeTotals` never sees one of these rows in v1 and the
+   * Discounts screen is an honest placeholder (spec D1).
+   *
+   * MOUNTED ANYWAY, rather than held back until something redeems a code,
+   * because the routes are what make the model real: an unreachable table is a
+   * migration nobody can check, while a mounted CRUD surface is one an owner can
+   * fill with the season's codes today and one `server/nul-bytes.test.ts` walks
+   * with everything else. `/discounts*` is disjoint from every path above, so
+   * the order does not matter here either.
+   */
+  marketing.route('/', discountRoutes);
 
   return marketing;
 }
