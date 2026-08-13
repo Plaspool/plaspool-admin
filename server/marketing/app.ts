@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { toResponse } from '../middleware/errors';
 import { MailNotConfiguredError } from '../mail/port';
 import { routes as ledgerRoutes } from './ledger/routes';
+import { createNotifyRoutes } from './notify/routes';
 import { routes as programRoutes } from './programs/routes';
 import { routes as returnRoutes } from './returns/routes';
 import { routes as settingsRoutes } from './settings/routes';
@@ -337,13 +338,19 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
   marketing.route('/', ledgerRoutes);
 
   /*
-   * HELD, NOT YET READ. The first consumer is the sweep route, which arrives
-   * with the notify subsystem. The parameter exists now rather than then because
-   * the line that supplies it lives in `server/index.ts` — a file this task
-   * edits and later ones must not — so the seam is declared once, here, and
-   * filled in at the marker above.
+   * NOTIFY — contract #27. The outbox's only caller: the sweep the admin's own
+   * inspection fires, because nothing schedules one (spec D6).
+   *
+   * THIS IS WHERE `deps.mailer` IS FINALLY READ, at the composition point the
+   * comment on `MarketingAppDeps` promised — the seam declared in A2 and filled
+   * here, so the line that supplies a transport stays in `server/index.ts` and
+   * no later task has to edit it. A deployment with none answers 501
+   * `mail_not_configured` and leaves the queue intact.
+   *
+   * `/sweep` is disjoint from every path above, so the order does not matter
+   * here either.
    */
-  void deps;
+  marketing.route('/', createNotifyRoutes({ mailer: deps.mailer }));
 
   return marketing;
 }
