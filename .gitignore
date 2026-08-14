@@ -30,15 +30,13 @@ dist-ssr
 
 .vercel
 
-# Personal Claude Code overrides for this checkout. `.claude/settings.json`
-# would be the shared, committed one; this is not it. (`*.local` above does not
-# cover it — that matches names ending in `.local`, not `settings.local.json`.)
-.claude/settings.local.json
+# Local tooling and editor state, not project source.
+.claude/
 
 # Server bundle for the Vercel function. Build output, like dist/.
 api-build
 
-# Playwright MCP session artifacts. Tooling output, not project source.
+# Local tooling and editor state, not project source.
 .playwright-mcp/
 
 # Markdown is not published to the remote. Project documentation lives in
