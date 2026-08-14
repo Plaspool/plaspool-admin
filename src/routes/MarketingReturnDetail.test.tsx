@@ -200,8 +200,17 @@ function mount(at: string) {
  */
 const landed = (): Promise<HTMLElement> => screen.findByText('Details');
 
-/** Open the detail of a fixture return and wait for it to land. */
-async function open(detail: ReturnDetail, search = ''): Promise<void> {
+/**
+ * Open the FULL detail screen of a fixture return and wait for it to land.
+ *
+ * `act=` IS WHAT SELECTS THE WHOLE SCREEN, since the board landed. `?id=` alone
+ * now opens the card as a modal over the board — a card lifted off it, which is
+ * what an operator wants when the next thing they do is close it and move a
+ * different one. The INSPECTION is deliberately not a modal: it has derived
+ * quantities, a live award sentence and a confirmation that restates it, and
+ * this suite is about exactly that screen.
+ */
+async function open(detail: ReturnDetail, search = '&act=inspect'): Promise<void> {
   withDetail(detail);
   mount(`/marketing/returns?id=${detail.request.id}${search}`);
   await landed();
@@ -381,7 +390,7 @@ describe('the return detail', () => {
       award: { points: 42, balance: 222 },
     });
     when('/api/marketing/sweep', { sent: 1, failed: 0, skipped: 0 });
-    mount(`/marketing/returns?id=${receivedRow.id}`);
+    mount(`/marketing/returns?id=${receivedRow.id}&act=inspect`);
     await landed();
 
     await user.click(inPanel().getByRole('button', { name: 'Record & award 42 Bottle Caps' }));
@@ -419,7 +428,7 @@ describe('the return detail', () => {
       return { body: { request: awarded.request, award: { points: 35, balance: 215 } } };
     });
     when('/api/marketing/sweep', { sent: 1, failed: 0, skipped: 0 });
-    mount(`/marketing/returns?id=${receivedRow.id}`);
+    mount(`/marketing/returns?id=${receivedRow.id}&act=inspect`);
     await landed();
 
     await countFiveOfSix(user);
@@ -455,7 +464,7 @@ describe('the return detail', () => {
       award: null,
     });
     when('/api/marketing/sweep', { sent: 0, failed: 0, skipped: 1 });
-    mount(`/marketing/returns?id=${receivedRow.id}`);
+    mount(`/marketing/returns?id=${receivedRow.id}&act=inspect`);
     await landed();
 
     // NOT the /reject endpoint — that one is illegal once the goods are in hand.
@@ -500,7 +509,7 @@ describe('the return detail', () => {
         requestId: 'req_9',
       },
     }));
-    mount(`/marketing/returns?id=${receivedRow.id}`);
+    mount(`/marketing/returns?id=${receivedRow.id}&act=inspect`);
     await landed();
 
     await countFiveOfSix(user);
@@ -546,7 +555,7 @@ describe('the return detail', () => {
       };
     });
     when('/api/marketing/sweep', { sent: 0, failed: 0, skipped: 0 });
-    mount(`/marketing/returns?id=${receivedRow.id}`);
+    mount(`/marketing/returns?id=${receivedRow.id}&act=inspect`);
     await landed();
 
     await countFiveOfSix(user);
@@ -578,7 +587,7 @@ describe('the return detail', () => {
       requestId: 'req_11',
     }, 409);
     when('/api/marketing/sweep', { sent: 0, failed: 0, skipped: 0 });
-    mount(`/marketing/returns?id=${receivedRow.id}`);
+    mount(`/marketing/returns?id=${receivedRow.id}&act=inspect`);
     await landed();
 
     await user.click(inPanel().getByRole('button', { name: 'Record & award 42 Bottle Caps' }));
@@ -617,7 +626,7 @@ describe('the return detail', () => {
       { error: 'mail_not_configured', requestId: 'req_12' },
       501,
     );
-    mount(`/marketing/returns?id=${receivedRow.id}`);
+    mount(`/marketing/returns?id=${receivedRow.id}&act=inspect`);
     await landed();
 
     await user.click(inPanel().getByRole('button', { name: 'Record & award 42 Bottle Caps' }));
@@ -700,7 +709,7 @@ describe('the return detail', () => {
         occurredAt: NOW,
       },
     });
-    mount(`/marketing/returns?id=${receivedRow.id}`);
+    mount(`/marketing/returns?id=${receivedRow.id}&act=inspect`);
     await landed();
     const before = reads(path(receivedRow.id));
 
@@ -749,7 +758,7 @@ describe('the return detail', () => {
     when(`${path(requestedOld.id)}/schedule`, {
       request: { ...returnDetails.scheduled.request, id: requestedOld.id },
     });
-    mount(`/marketing/returns?id=${requestedOld.id}`);
+    mount(`/marketing/returns?id=${requestedOld.id}&act=inspect`);
     await landed();
     const before = reads(path(requestedOld.id));
 
@@ -809,7 +818,10 @@ describe('the return detail', () => {
   });
 
   it('goes back to the queue somebody actually had', async () => {
-    await open(returnDetails.cancelled, '&view=all&q=ada');
+    /* `act=inspect` explicitly, because this call overrides the helper's default
+     * — and without it `?id=` opens the card as a modal over the board rather
+     * than the full screen this assertion is about. */
+    await open(returnDetails.cancelled, '&view=all&q=ada&act=inspect');
 
     expect(
       screen.getByRole('link', { name: 'Back to the queue' }).getAttribute('href'),
@@ -823,7 +835,7 @@ describe('the return detail', () => {
   it('says a return is gone rather than offering to try again', async () => {
     when('/api/marketing/programs', { programs: [] });
     // Nothing registered for the detail: a 404 in the real envelope's shape.
-    mount(`/marketing/returns?id=${awardedRow.id}`);
+    mount(`/marketing/returns?id=${awardedRow.id}&act=inspect`);
 
     expect(await screen.findByText('That return no longer exists')).toBeTruthy();
     // `gone` is permanent; a Try again here could only fail identically.
@@ -834,7 +846,7 @@ describe('the return detail', () => {
   it('explains a detail that didn’t load, and offers the read again', async () => {
     when('/api/marketing/programs', { programs: [] });
     when(path(scheduledRow.id), { error: 'internal', requestId: 'req_500' }, 500);
-    mount(`/marketing/returns?id=${scheduledRow.id}`);
+    mount(`/marketing/returns?id=${scheduledRow.id}&act=inspect`);
 
     expect(
       await screen.findByText('Something went wrong on the server — reference req_500.'),

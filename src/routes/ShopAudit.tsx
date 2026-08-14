@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { ArrowDown, ArrowUp, History, Tag } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { ArrowDown, ArrowLeft, ArrowUp, History, Tag } from 'lucide-react';
 import {
   shopApi,
   formatMinor,
@@ -113,9 +113,28 @@ export default function ShopAudit() {
 
   const scoped = variantId || productId;
 
+  /*
+   * THE WAY BACK. This page is reached from a variant — "why is this number
+   * what it is" is asked in front of the number — and until now the only exit
+   * was the sidebar, which lands on the catalogue rather than on the product
+   * whose history you just read. `from` carries the product id on that link;
+   * when it is absent (a bookmarked or hand-edited URL) the first entry knows
+   * which product it belongs to, so the way back survives either way.
+   */
+  const cameFrom = params.get('from') || productId || items?.[0]?.productId || '';
+
   return (
     <div className="shopscr">
       <header className="shopscr__head">
+        {cameFrom && (
+          <Link
+            className="btn btn--ghost btn--sm shopscr__back"
+            to={`/shop/products?id=${encodeURIComponent(cameFrom)}&tab=variants`}
+          >
+            <ArrowLeft className="ui-ic" aria-hidden="true" />
+            Back to the product
+          </Link>
+        )}
         <div className="shopscr__headrow">
           <div>
             <h1 className="shopscr__title">History</h1>

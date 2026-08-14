@@ -239,18 +239,61 @@ export const images = pgTable(
     /** `images/<owner>/<id>`. */
     storageKey: text('storage_key').notNull().unique(),
     contentType: text('content_type').notNull(),
-    width: integer('width').notNull(),
-    height: integer('height').notNull(),
+    /**
+     * NULLABLE, and it has to be: a row is inserted when the SLOT is issued, and
+     * at that moment the server has not seen a single byte of the image. There
+     * is nothing honest to put here.
+     *
+     * Measured against PGlite before migration 0004: `NOT NULL` made
+     * `createSlot` a hard `23502` on the very first insert, so the whole media
+     * flow was unreachable. Filling them with 0 instead would be worse than the
+     * failure — `readDimensions` returns `null` rather than a guess precisely so
+     * that "unknown" survives to storage, and a stored 0 is a number every
+     * consumer downstream believes. Written at commit, from the object's own
+     * bytes, and left NULL when the format's header could not be read.
+     */
+    width: integer('width'),
+    height: integer('height'),
+    /**
+     * The CLIENT-DECLARED size at slot time, CORRECTED from `headObject` at
+     * commit.
+     *
+     * It is a claim until the bytes exist, and it is load-bearing as a claim:
+     * it is signed into the presigned PUT as `content-length`, so R2 itself
+     * refuses an upload of a different size. The correction at commit is what
+     * makes the per-user storage quota count real bytes rather than declared
+     * ones.
+     */
     byteSize: integer('byte_size').notNull(),
     /** SHA-256, for content addressing later. */
     checksum: text('checksum'),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
     /** NULL = upload issued but never confirmed. Swept after 24h. */
     committedAt: bigint('committed_at', { mode: 'number' }),
+    /**
+     * THE QUARANTINE CLOCK (spec §5.4). NULL = the last orphan-collection mark
+     * pass reached this image; non-NULL = the epoch-ms at which it FIRST went
+     * unreferenced and has been unreferenced ever since.
+     *
+     * "Unreferenced at this instant" is not a property it is safe to delete
+     * bytes on, and no age floor on `created_at` or `committed_at` can rescue
+     * it: cutting a months-old image out of one post to paste it into another
+     * leaves it referenced by nothing for the length of one autosave debounce,
+     * and its creation age passed the floor long ago. The property that IS safe
+     * is "unreferenced continuously for 24 hours", which needs a remembered
+     * timestamp — hence a column rather than a cleverer predicate.
+     *
+     * The mark pass CLEARS it on every image the reference walk reaches, so a
+     * re-referenced image starts its clock again from scratch rather than
+     * carrying a stale one to the delete pass.
+     */
+    unreferencedSince: bigint('unreferenced_since', { mode: 'number' }),
   },
   (t) => [
     index('images_owner_idx').on(t.ownerId),
     index('images_committed_idx').on(t.committedAt),
+    /** The delete pass's driving predicate. */
+    index('images_unreferenced_idx').on(t.unreferencedSince),
   ],
 );
 
@@ -266,5 +309,34 @@ export const authAttempts = pgTable('auth_attempts', {
   windowStart: bigint('window_start', { mode: 'number' }).notNull(),
   count: integer('count').notNull(),
 });
+
+/**
+ * Password resets (studio auth).
+ *
+ * The same shape as `invites`, for the same reasons: only the HMAC of the token
+ * is stored (`token_hash`, UNIQUE), the row carries its own expiry, and
+ * "single use" is a nullable timestamp rather than a boolean so a spent row
+ * still says WHEN it was spent.
+ *
+ * `ON DELETE cascade` on `user_id` — unlike `invites.invited_by`, which is
+ * `no action`. An invite records history about the inviter; a reset row is a
+ * live credential FOR the user it names, and a credential that outlives its
+ * account is the one state this table must never be in.
+ */
+export const passwordResets = pgTable(
+  'password_resets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull().unique(),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
+    /** Single use — non-null means spent. */
+    usedAt: bigint('used_at', { mode: 'number' }),
+  },
+  (t) => [index('password_resets_user_idx').on(t.userId)],
+);
 
 export type DbPost = typeof posts.$inferSelect;

@@ -150,6 +150,24 @@ export function formatMinor(amount: number, currency: string, locale?: string): 
   return rendered;
 }
 
+/**
+ * Minor units → the digits a person types. `1990, 'GBP'` → `'19.90'`.
+ *
+ * `formatMinor`'s plain twin, and it lives here for the reason at the top of
+ * this section: the split is done on DIGIT STRINGS, never on a float, so a
+ * stepper that walks a price one unit at a time cannot drift. No symbol, no
+ * grouping separators — the output goes back into an `<input>`, and a comma in
+ * there is something `parseMajor` would then have to strip back out.
+ */
+export function plainMajor(amount: number, currency: string): string {
+  if (!Number.isSafeInteger(amount)) throw new MoneyShapeError(amount);
+  const digits = currencyDigits(currency);
+  const raw = String(Math.abs(amount)).padStart(digits + 1, '0');
+  const whole = raw.slice(0, raw.length - digits);
+  const fraction = digits === 0 ? '' : `.${raw.slice(raw.length - digits)}`;
+  return `${amount < 0 ? '-' : ''}${whole}${fraction}`;
+}
+
 /** Why a typed amount was refused. One reason, one sentence, one place. */
 export type MoneyRefusal =
   | 'empty'
@@ -327,6 +345,12 @@ export interface ShopVariant {
    * settles — the product cover can only show one of them.
    */
   imageId: string | null;
+  /**
+   * The colour code of this option (migration 0010) — `#8b5a2b`, lowercase.
+   * `null` for anything that is not a colour or has not been given one. The
+   * swatch the rail draws while a variant has no photograph yet.
+   */
+  colorHex: string | null;
 }
 
 export interface ShopProductDetail extends ShopProduct {
@@ -585,6 +609,12 @@ export interface ShopCategory {
   count: number;
 }
 
+/** One row of the tag vocabulary — canonical spelling per case-fold group. */
+export interface ShopTag {
+  name: string;
+  count: number;
+}
+
 export interface ShopRefund {
   id: string;
   intentId: string;
@@ -732,6 +762,8 @@ export const shopApi = {
       onHand?: number;
       backorderable?: boolean;
       imageId?: string | null;
+      /** The colour code of this option. The server lowercases it. */
+      colorHex?: string | null;
     },
   ): Promise<ShopVariant> {
     const res = await shopFetch<{ variant: ShopVariant }>(
@@ -751,6 +783,8 @@ export const shopApi = {
       status?: VariantStatus;
       /** `null` clears the colour photograph; a committed image id sets it. */
       imageId?: string | null;
+      /** `null` clears the colour code; `#rrggbb` sets it. */
+      colorHex?: string | null;
     },
   ): Promise<ShopVariant> {
     const res = await shopFetch<{ variant: ShopVariant }>(`${BASE}/variants/${seg(id)}`, {
@@ -846,6 +880,17 @@ export const shopApi = {
    */
   async listCategories(signal?: AbortSignal): Promise<ShopCategory[]> {
     const res = await shopFetch<{ items: ShopCategory[] }>(`${BASE}/categories`, { signal });
+    return res.items ?? [];
+  },
+
+  /**
+   * The tag vocabulary, one row per case-fold group under its canonical
+   * spelling — what the tag box offers while somebody types, so a spelling is
+   * reused rather than re-invented. Same no-params, `.strict()` rule as
+   * categories.
+   */
+  async listTags(signal?: AbortSignal): Promise<ShopTag[]> {
+    const res = await shopFetch<{ items: ShopTag[] }>(`${BASE}/tags`, { signal });
     return res.items ?? [];
   },
 

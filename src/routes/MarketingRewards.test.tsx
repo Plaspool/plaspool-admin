@@ -209,6 +209,15 @@ function mount(at = '/marketing/rewards') {
 const editor = (program = capsProgram): string => `/marketing/rewards?id=${program.id}`;
 
 /**
+ * The settings half, which is a tab rather than the top of the list now.
+ *
+ * The two halves are different kinds of thing — one is section-wide config
+ * touched once, the other is the rows somebody opened Rewards to work with — and
+ * stacked, the table started below a long form nobody came for.
+ */
+const SETTINGS_TAB = '/marketing/rewards?tab=settings';
+
+/**
  * The row for a program, once the list has landed.
  *
  * BY ROLE, not by text: the settings panel's default-program Select renders the
@@ -591,11 +600,44 @@ describe('the rewards screen', () => {
     expect(screen.getByLabelText('Name')).toHaveProperty('value', 'Another one');
   });
 
+  it('opens on the programs, with the settings one tab away', async () => {
+    /*
+     * The table is what somebody opens Rewards to look at. It used to start
+     * below a settings form six fields long — so the screen opened on config
+     * nobody came for and the rows were off the bottom of the window.
+     */
+    withPrograms();
+    withSettings();
+    mount();
+
+    await listed();
+    expect(screen.queryByLabelText('One award')).toBeNull();
+
+    await userEvent.click(screen.getByRole('link', { name: 'Settings' }));
+
+    expect(await screen.findByLabelText('One award')).toBeTruthy();
+    // ...and the table is not underneath it any more, which was the point.
+    expect(screen.queryByRole('table')).toBeNull();
+  });
+
+  it('shows a writer no tab strip, because there is only one half for them', async () => {
+    /* The settings PATCH is `requireOwner`, so the panel is absent rather than
+       disabled — and a tab leading to a panel that is never rendered is a door
+       to a room this person is not in. */
+    fixture.session.user.role = 'writer';
+    withPrograms();
+    withSettings();
+    mount();
+
+    await listed();
+    expect(screen.queryByRole('link', { name: 'Settings' })).toBeNull();
+  });
+
   it('refuses to switch spending on until it knows what a reward is worth', async () => {
     const user = userEvent.setup();
     withPrograms();
     withSettings(freshSettings);
-    mount();
+    mount(SETTINGS_TAB);
 
     const toggle = await screen.findByRole('switch', {
       name: 'Let customers spend what they have earned',
@@ -625,7 +667,7 @@ describe('the rewards screen', () => {
     const user = userEvent.setup();
     withPrograms();
     withSettings();
-    mount();
+    mount(SETTINGS_TAB);
 
     await screen.findByLabelText('One award');
     await retype(user, 'One award', 'Cap');

@@ -25,6 +25,40 @@
   --rule: #e2ded2;
   --rule-strong: #c7c0ae;
 
+  /*
+   * THE PRESSABLE CARD — a hard edge and a hard offset shadow, no blur.
+   *
+   * Neobrutalism in one place so it can be turned up or down in one place. A
+   * blurred shadow says "this floats"; an unblurred one at an offset says
+   * "this is a solid thing sitting on the page", and that is the claim a card
+   * has to make before pressing it down on click reads as physics rather than
+   * as a glitch. The line is warm near-black rather than `--ink` itself so it
+   * belongs to the paper it sits on.
+   *
+   * `--card-paper` is the cream: cards are WARMER than the page here, which
+   * inverts the usual raised-is-lighter rule on purpose — on a near-white page
+   * a white card is a card with no edges.
+   */
+  --card-paper: #fbf7ec;
+  --card-line: #1f1d14;
+  --card-lift: 3px;
+  /*
+   * The shadow is composed at the CARD, not here, and that is a correctness
+   * point rather than a style one: a custom property's `var()`s are substituted
+   * where the property is DECLARED, so a `--card-shadow` written on `:root`
+   * would bake in `:root`'s `--card-line` and keep the dark theme's colour when
+   * the light theme swapped the token underneath it. Measured, in that order.
+   */
+
+  /* The scrollbar thumb, and it is ink at low alpha rather than a flat grey on
+     purpose: these bars sit on four different surfaces — paper, raised panels,
+     sunken insets, the near-black code block — and a solid colour that reads as
+     "barely there" on one of them reads as a smear on another. Alpha inherits
+     whatever it is lying on. See the block in `base.css`. */
+  --scroll-thumb: rgb(22 21 15 / 0.16);
+  --scroll-thumb-hover: rgb(22 21 15 / 0.3);
+  --scroll-thumb-active: rgb(22 21 15 / 0.42);
+
   /* accent — deep botanical green */
   --accent: #1c6b4b;
   --accent-hover: #17573d;
@@ -146,6 +180,17 @@
     --rule: #33322a;
     --rule-strong: #4a483d;
 
+    /* The cream goes away in the dark — a warm near-black card on near-black
+       paper, edged in a grey heavy enough to read as a drawn line. A white
+       border and a white hard shadow would be a page of glowing rectangles. */
+    --card-paper: #1e1e17;
+    --card-line: #4f4d40;
+
+    /* Light ink on dark paper, the same alphas the other way up. */
+    --scroll-thumb: rgb(244 241 230 / 0.16);
+    --scroll-thumb-hover: rgb(244 241 230 / 0.3);
+    --scroll-thumb-active: rgb(244 241 230 / 0.42);
+
     --accent: #5cbd90;
     --accent-hover: #75cba3;
     --accent-soft: #1c2c25;
@@ -180,6 +225,13 @@
 
   --rule: #33322a;
   --rule-strong: #4a483d;
+
+  --card-paper: #1e1e17;
+  --card-line: #4f4d40;
+
+  --scroll-thumb: rgb(244 241 230 / 0.16);
+  --scroll-thumb-hover: rgb(244 241 230 / 0.3);
+  --scroll-thumb-active: rgb(244 241 230 / 0.42);
 
   --accent: #5cbd90;
   --accent-hover: #75cba3;

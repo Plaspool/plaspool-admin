@@ -1,10 +1,19 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { pathParam, readJson, readQuery, str } from '../../middleware/errors';
+import {
+  ForbiddenError,
+  pathParam,
+  readJson,
+  readQuery,
+  str,
+  toResponse,
+  zodDetail,
+} from '../../middleware/errors';
 import { requireAuth } from '../../middleware/session';
 import { clientIp, limit } from '../../middleware/ratelimit';
 import { currentDb, currentUser } from '../../app-env';
-import { NotFoundError } from '../../repo/errors';
+import { BadRequestError, NotFoundError } from '../../repo/errors';
+import { renderMarketingError } from '../wire';
 import {
   addNote,
   allowedActionsFor,
@@ -18,12 +27,12 @@ import {
   reject,
   schedule,
 } from './repo';
-import { listEmailIntents, listReturns, MAX_SEARCH_LENGTH } from './query';
+import { listEmailIntents, listReturns, readListItem, MAX_SEARCH_LENGTH } from './query';
 import type { AppEnv } from '../../app-env';
 import type { Db } from '../../db/client';
 import type { ReturnAction } from '../errors';
 import type { ReturnEventRow, ReturnRow } from './repo';
-import type { EmailIntentState, EmbeddedProgram } from './query';
+import type { EmailIntentState, EmbeddedProgram, ReturnListItem } from './query';
 
 /**
  * The returns lifecycle on the wire — contract #4-14.
@@ -164,6 +173,18 @@ const ListQuery = z
       .default('all'),
     q: str().max(MAX_SEARCH_LENGTH).optional(),
     programId: str().min(1).max(200).optional(),
+    /**
+     * WHICH BOARD. An area id, or the literal `none` for the returns that belong
+     * to no board at all.
+     *
+     * AN ID AND NOT A SPELLING, unlike the intake's `serviceAreaId`. That field
+     * is filled in by a person and has to forgive how they write their own
+     * neighbourhood; this one is filled in by the switcher the client just
+     * rendered, so a token it cannot resolve is a bug rather than a customer.
+     * An unknown id therefore returns an EMPTY board rather than an error —
+     * which is the truth about a district with nothing in it.
+     */
+    district: str().min(1).max(200).optional(),
     cursor: str().optional(),
     /** `pageLimit` decides the range and answers 400 itself; this only makes a
      *  non-numeric `?limit=abc` a 400 here rather than a NaN there. */
@@ -176,6 +197,19 @@ const ListQuery = z
    */
   .strict();
 
+/**
+ * The district this return belongs to — an area id from the picker, or any
+ * spelling its aliases forgive.
+ *
+ * NOT `z.string().uuid()` OR AN `area_` PREFIX CHECK. The field is deliberately
+ * forgiving (a key, a name, "wuse 2"), because the alternative is refusing a
+ * customer for spelling their own neighbourhood their own way — and the
+ * resolution happens against the database, which is the only thing that knows
+ * what is served today. A shape check here would refuse valid input on the one
+ * field where being turned away means "we will not collect from you".
+ */
+const SERVICE_AREA = str().trim().min(1).max(200);
+
 /** Contract #5 — the admin's "Log a return…" dialog. */
 const AdminIntakeBody = z
   .object({
@@ -187,6 +221,19 @@ const AdminIntakeBody = z
     customerName: PERSON,
     customerPhone: PERSON,
     pickupAddress: ADDRESS,
+    /**
+     * OPTIONAL HERE AND REQUIRED ON THE PUBLIC ROUTE, and the asymmetry is the
+     * decision rather than an oversight.
+     *
+     * A phone-in from out of town is a real request that staff must be able to
+     * write down: refusing to record it would not make it stop existing, it
+     * would make it exist only in somebody's memory. So the admin may log one
+     * with no area, it lands in the switcher's out-of-area footer, and it can be
+     * closed with a reason — but it can never be AWARDED, because
+     * `marketing_return_requests_area_award_ck` refuses that in the database.
+     * The gate is kept at the door for the customer and at the till for us.
+     */
+    serviceAreaId: SERVICE_AREA.optional(),
     note: OPTIONAL_NOTE,
   })
   .strict();
@@ -211,6 +258,16 @@ const PublicIntakeBody = z
     name: PERSON,
     phone: PERSON,
     pickupAddress: ADDRESS,
+    /**
+     * REQUIRED, unlike the admin body's. A customer picks their district from a
+     * Select of the places we collect from, so a submission without one is a
+     * form that was bypassed rather than a person with an unusual address — and
+     * a return the storefront accepted that could never be awarded is a promise
+     * the shop cannot keep. `400 bad_request detail: 'serviceAreaId'` puts the
+     * error on the field the person can fix; a MISSING district and an UNSERVED
+     * one are different sentences and get different answers.
+     */
+    serviceAreaId: SERVICE_AREA,
   })
   .strict();
 
@@ -255,6 +312,19 @@ const InspectBody = z
     /** Required iff `qtyRejected > 0`, both ways — the repository holds that
      *  rule, because it is a rule about two fields rather than about one. */
     rejectedReason: REASON.optional(),
+    /**
+     * OWNER-ONLY, enforced in the handler rather than by `requireOwner()` on the
+     * route — inspecting is any staff member's work (spec D12) and only the
+     * top-up is money. A writer sending one gets 403; a writer inspecting
+     * without one is the ordinary path and succeeds.
+     *
+     * The UI does not render the stepper for a writer at all, so this is a
+     * backstop rather than a workflow.
+     */
+    bonusPoints: z.number().int().min(1).max(INT4_MAX).optional(),
+    /** Required iff `bonusPoints` is present — the repository holds that rule,
+     *  because it is a rule about two fields rather than about one. */
+    bonusReason: REASON.optional(),
     note: OPTIONAL_NOTE,
   })
   .strict();
@@ -277,6 +347,73 @@ const CancelBody = z
  *  what a customer just said on the phone. */
 const NoteBody = z.object({ note: NOTE }).strict();
 
+/**
+ * The board's multi-select — contract #6.4.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * FIFTY, AND THE CEILING IS NOT ARBITRARY.
+ *
+ * There are no transactions in this application (spec §Global — the Neon HTTP
+ * driver throws on `transaction()` while PGlite does not, so one would pass every
+ * test here and 500 in production). A bulk call is therefore a LOOP OF SINGLE
+ * STATEMENTS, and every one of them is a round trip. Fifty is a selection a
+ * person made by clicking, and it is small enough that the slowest case still
+ * answers inside a request; five hundred would be a script, and a script should
+ * page.
+ *
+ * `expectedRevision` PER ITEM, not per request. Each card was read at its own
+ * moment and each CAS is its own; a single token for the batch would either
+ * refuse everything because one card moved, or — far worse — be checked against
+ * nothing at all.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+export const BULK_MAX_ITEMS = 50;
+
+const BulkBody = z
+  .object({
+    /**
+     * NO `inspect`. Counting what arrived is a form per return — the quantities
+     * differ by definition — so "inspect fifty returns with one body" is a
+     * sentence with no meaning. The board greys it whenever a selection contains
+     * a received card, and this schema is why that is a contract rather than a
+     * UI convention.
+     */
+    action: z.enum(['schedule', 'collect', 'receive', 'cancel', 'reject', 'note']),
+    items: z
+      .array(
+        z
+          .object({ id: str().min(1).max(200), expectedRevision: EXPECTED_REVISION })
+          .strict(),
+      )
+      .min(1)
+      .max(BULK_MAX_ITEMS),
+    /** The action's own fields, applied to every item. Validated per action
+     *  below, against the SAME schema the single-item route uses — so a body the
+     *  bulk path accepts is a body the single path would have accepted. */
+    body: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
+
+/**
+ * One action, one body schema — the same objects the single-item routes parse.
+ *
+ * SHARED RATHER THAN RESTATED, because the alternative is a bulk path that
+ * accepts a `pickupAt` in the past, or a reject with no reason, on the day
+ * somebody tightens the single-item rule and forgets this one.
+ *
+ * `note` REUSES THE TRANSITION SHAPE, not `NoteBody`: the bulk item already
+ * carries `expectedRevision` for every action, and demanding that the note body
+ * NOT carry one would make the client special-case a single verb.
+ */
+const BULK_BODIES = {
+  schedule: ScheduleBody.omit({ expectedRevision: true }),
+  collect: StepBody.omit({ expectedRevision: true }),
+  receive: StepBody.omit({ expectedRevision: true }),
+  cancel: CancelBody.omit({ expectedRevision: true }),
+  reject: RejectBody.omit({ expectedRevision: true }),
+  note: NoteBody,
+} as const;
+
 // -------------------------------------------------------------- wire shapes
 
 /**
@@ -296,6 +433,35 @@ const NoteBody = z.object({ note: NOTE }).strict();
  * render a stale row in.
  */
 export type WireRequest = ReturnRow & { allowedActions: ReturnAction[] };
+
+/** Contract #6.4's per-item outcome. `request` on success is the LIST shape, so
+ *  the board can swap the card it just moved without a refetch; `error` on
+ *  failure is a code from the frozen catalogue. */
+export type BulkResult =
+  | { id: string; ok: true; request: ReturnListItem }
+  | { id: string; ok: false; error: string };
+
+/**
+ * What ONE failed item is called, in the vocabulary the catalogue already froze.
+ *
+ * MARKETING'S OWN TABLE FIRST, then the shared one — the exact order
+ * `marketing/app.ts`'s `onError` uses, because a bulk item that fails has to be
+ * given the same name it would have had on its own route or the client needs two
+ * error vocabularies for one state machine.
+ *
+ * THE SHARED HALF IS READ OUT OF A REAL `Response`, and that is deliberate
+ * rather than lazy: `toResponse` is the one implementation of the global table,
+ * it is not otherwise exported as a code, and re-deriving `gone` / `bad_request`
+ * / `stale_write` here would be a third copy of a mapping this application has
+ * already written twice. Fifty items is fifty tiny Responses that are never
+ * sent, which costs nothing measurable and cannot drift.
+ */
+async function codeOf(err: unknown, requestId: string): Promise<string> {
+  const rendered = renderMarketingError(err);
+  if (rendered) return String(rendered.body.error);
+  const body = (await toResponse(err, requestId).json()) as { error?: string };
+  return body.error ?? 'internal';
+}
 
 function wireRequest(row: ReturnRow): WireRequest {
   return { ...row, allowedActions: allowedActionsFor(row.status) };
@@ -446,6 +612,7 @@ routes.post('/returns/request', async (c) => {
     customerName: body.name,
     customerPhone: body.phone,
     pickupAddress: body.pickupAddress,
+    serviceAreaId: body.serviceAreaId,
     /* The first timeline entry is attributed to the CUSTOMER, and there is no
      * actor id because there is no account. A history that credited every
      * request to whoever happened to be signed in could not answer "did they
@@ -484,6 +651,105 @@ routes.post('/returns/request', async (c) => {
     },
     201,
   );
+});
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * CONTRACT #6.4 — THE BOARD'S MULTI-SELECT. 200 EVEN WHEN SOME OF IT FAILED.
+ *
+ * PARTIAL SUCCESS IS THE TRUTH, so it is what the response says. There are no
+ * transactions here (spec §Global), which means a bulk call IS a loop of single
+ * statements and there is no honest way to roll the successful ones back. A
+ * route that answered 409 because one of five cards had moved would leave four
+ * transitions applied behind an error, and the screen would have to guess which.
+ *
+ * So every item reports its own outcome and the UI says "4 of 5 scheduled — Tolu
+ * Bassey moved on while you were choosing", refreshes that one card from the
+ * `request` the failure carries, and leaves the other four alone.
+ *
+ * EVERY ITEM RUNS THE REAL TRANSITION. Not a bulk `UPDATE … WHERE id IN (…)` —
+ * that would skip the CAS, the timeline entry, the guard that says reject is
+ * illegal after receipt, and every argument in `repo.ts`. Fifty calls to the
+ * same functions the single-item routes call is the whole design: there is one
+ * state machine, and the board is a second way to press its buttons.
+ *
+ * REGISTERED ABOVE THE `/:id` ROUTES, like the public intake and for the same
+ * reason: `bulk` is a legal value for `:id`, and today nothing collides, so the
+ * ordering costs nothing and buys the guarantee. `routes.test.ts` pins it.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+routes.post('/returns/bulk', auth, async (c) => {
+  const db = currentDb(c);
+  const { action, items, body } = await readJson(c, BulkBody);
+
+  /*
+   * THE SHARED BODY IS PARSED ONCE, BEFORE ANY WRITE. A malformed body is a 400
+   * about the request rather than fifty identical per-item failures — and
+   * parsing it inside the loop would apply the first N before discovering it.
+   */
+  const parsed = BULK_BODIES[action].safeParse(body ?? {});
+  if (!parsed.success) throw new BadRequestError(zodDetail(parsed.error));
+  const fields = parsed.data as Record<string, unknown>;
+
+  const actorId = currentUser(c).id;
+  /* ONE clock reading for the batch, so fifty rows scheduled together carry one
+   * `updated_at` and the timeline reads as the single act it was. */
+  const now = Date.now();
+
+  const results: BulkResult[] = [];
+  for (const item of items) {
+    const cas = { expectedRevision: item.expectedRevision, actorId, now };
+    try {
+      switch (action) {
+        case 'schedule':
+          await schedule(db, item.id, { ...(fields as { pickupAt: number }), ...cas });
+          break;
+        case 'collect':
+          await collect(db, item.id, { ...fields, ...cas });
+          break;
+        case 'receive':
+          await receive(db, item.id, { ...fields, ...cas });
+          break;
+        case 'cancel':
+          await cancel(db, item.id, { ...fields, ...cas });
+          break;
+        case 'reject':
+          await reject(db, item.id, { ...(fields as { reason: string }), ...cas });
+          break;
+        case 'note':
+          /* No CAS: a note is not a change to the return and bumps nothing. The
+           * item's `expectedRevision` is accepted and ignored, because a client
+           * that had to omit one field for one verb is a client that will send
+           * it anyway. */
+          await addNote(db, item.id, {
+            note: String(fields.note),
+            actorType: 'admin',
+            actorId,
+            now,
+          });
+          break;
+      }
+      /*
+       * RE-READ IN THE LIST'S OWN SHAPE. The board replaces the card it just
+       * moved from this, so it has to be the same object a refresh would give —
+       * including the program's labels and the district's name, which the
+       * transition's own return value does not carry.
+       */
+      const request = await readListItem(db, item.id);
+      results.push(request ? { id: item.id, ok: true, request } : { id: item.id, ok: false, error: 'gone' });
+    } catch (err) {
+      /*
+       * THE SAME CODES THE SINGLE-ITEM ROUTES ANSWER WITH, from the same table
+       * (`../wire.ts`) — so a card that fails inside a selection of ten gets the
+       * treatment the catalogue already froze for it, and the screen needs no
+       * second vocabulary. An error the table does not know falls through to the
+       * shared handler exactly as it would on its own route.
+       */
+      results.push({ id: item.id, ok: false, error: await codeOf(err, c.get('requestId') ?? '') });
+    }
+  }
+
+  return c.json({ results });
 });
 
 /** Contract #5 — staff logging a return a customer asked for by phone or at the
@@ -557,12 +823,33 @@ routes.post('/returns/:id/receive', auth, async (c) => {
 routes.post('/returns/:id/inspect', auth, async (c) => {
   const id = pathParam(c, 'id');
   const body = await readJson(c, InspectBody);
-  const { row, award } = await inspect(currentDb(c), id, {
+  const user = currentUser(c);
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * THE BONUS IS THE OWNER'S; THE INSPECTION IS ANYBODY'S.
+   *
+   * `requireOwner()` on this route would be wrong — it would make a writer fetch
+   * the owner to record what arrived in a box, and a count that needs a second
+   * person is a count that stops being recorded (spec D12's role matrix). So the
+   * guard is on the FIELD, not the route: minting points above the programme's
+   * rate is money, and money is owner-only here as it is everywhere else in this
+   * subsystem.
+   *
+   * REFUSED BEFORE ANYTHING IS WRITTEN, so a writer who somehow submitted a
+   * bonus does not get an award recorded with the top-up silently dropped —
+   * which would be the worst of the three outcomes, because the screen would say
+   * 145 and the customer would have 120.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  if (body.bonusPoints !== undefined && user.role !== 'owner') throw new ForbiddenError();
+
+  const { row, award, bonus } = await inspect(currentDb(c), id, {
     ...body,
-    actorId: currentUser(c).id,
+    actorId: user.id,
     now: Date.now(),
   });
-  return c.json({ request: wireRequest(row), award });
+  return c.json({ request: wireRequest(row), award, bonus });
 });
 
 /** Contract #12 — PRE-RECEIPT ONLY. Once the goods are in hand the refusal is

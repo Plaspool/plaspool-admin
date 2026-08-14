@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { EditorContent, useEditor } from '@tiptap/react';
 import Placeholder from '@tiptap/extension-placeholder';
-import { ArrowLeft, ImagePlus, Package, Plus, Search, X } from 'lucide-react';
+import { ArrowLeft, ImagePlus, Package, Plus, Search, Trash2, X } from 'lucide-react';
 import {
   shopApi,
   type ProductStatus,
@@ -10,6 +10,7 @@ import {
   type ShopProduct,
   type ShopProductDetail,
   type ShopProductPatch,
+  type ShopTag,
 } from '../data/api-shop';
 import { api } from '../data/api';
 import { ApiError, NotFoundError, OfflineError, StaleWriteError } from '../data/errors';
@@ -83,6 +84,20 @@ function readStatus(params: URLSearchParams): ProductStatus | 'all' {
   return STATUS_FILTERS.some((s) => s.value === raw) ? (raw as ProductStatus | 'all') : 'all';
 }
 
+/**
+ * The open product's section, in the URL like everything else on this screen —
+ * a reload lands on the tab somebody was reading, and a link can point at "the
+ * variants of this product". `details` is the default and is DELETED from the
+ * query rather than written, so the plain `?id=` URL stays canonical.
+ */
+const FORM_TABS = ['details', 'images', 'variants'] as const;
+type FormTab = (typeof FORM_TABS)[number];
+
+function readTab(params: URLSearchParams): FormTab {
+  const raw = params.get('tab') ?? '';
+  return (FORM_TABS as readonly string[]).includes(raw) ? (raw as FormTab) : 'details';
+}
+
 function withParams(
   base: URLSearchParams,
   patch: Record<string, string | null>,
@@ -106,7 +121,13 @@ export default function ShopProducts() {
   const openId = params.get('id');
 
   return (
-    <div className="shopscr">
+    /*
+      `--form` PULLS THE WHOLE PAGE UP. The list view keeps the masthead's
+      breathing room; the form view starts where the eye starts, because on a
+      detail page every centimetre above the back bar is a centimetre the
+      actual subject is pushed down by.
+    */
+    <div className={`shopscr${openId ? ' shopscr--form' : ''}`}>
       {/*
         HIDDEN ENTIRELY ON A DETAIL PAGE. A page-level "Products" title above a
         form editing ONE product describes the section you left, not the thing in
@@ -125,7 +146,12 @@ export default function ShopProducts() {
             </div>
             <Link
               className="btn btn--primary"
-              to={{ pathname: '/shop/products', search: asSearch(withParams(params, { id: 'new' })) }}
+              to={{
+                pathname: '/shop/products',
+                // `tab: null` — a leaked ?tab=images would open the create
+                // form on its Images tab, title unasked-for.
+                search: asSearch(withParams(params, { id: 'new', tab: null })),
+              }}
             >
               <Plus className="ui-ic" aria-hidden="true" />
               New product
@@ -365,7 +391,10 @@ function ProductList() {
           </p>
           <Link
             className="btn btn--outline"
-            to={{ pathname: '/shop/products', search: asSearch(withParams(params, { id: 'new' })) }}
+            to={{
+              pathname: '/shop/products',
+              search: asSearch(withParams(params, { id: 'new', tab: null })),
+            }}
           >
             New product
           </Link>
@@ -454,6 +483,13 @@ function ProductForm({ id }: { id: string }) {
   const [description, setDescription] = useState<unknown>(null);
   const [coverImageId, setCoverImageId] = useState<string | null>(null);
   const [imageIds, setImageIds] = useState<string[]>([]);
+  /*
+   * The document is a deep tree and diffing it per keystroke buys nothing — a
+   * flag set by the editor's own onUpdate (hydration never fires it) is the
+   * honest "the words changed" bit, cleared when a save lands or `adopt`
+   * re-seeds the buffer from the server.
+   */
+  const [descDirty, setDescDirty] = useState(false);
 
   const adopt = useCallback((next: ShopProductDetail) => {
     setProduct(next);
@@ -463,6 +499,7 @@ function ProductForm({ id }: { id: string }) {
     setDescription(next.description);
     setCoverImageId(next.coverImageId);
     setImageIds(next.imageIds);
+    setDescDirty(false);
   }, []);
 
   const load = useCallback(
@@ -501,6 +538,22 @@ function ProductForm({ id }: { id: string }) {
     return () => ac.abort();
   }, []);
 
+  /*
+   * The tag vocabulary, for the tag box's suggestions. Swallowed on failure
+   * exactly as the categories are: the box still works, it just offers
+   * nothing — and offering nothing is how the PLA/pla/Pla mess was typed in
+   * the first place, so the request is worth making.
+   */
+  const [tagVocab, setTagVocab] = useState<ShopTag[]>([]);
+  useEffect(() => {
+    const ac = new AbortController();
+    void shopApi
+      .listTags(ac.signal)
+      .then((next) => !ac.signal.aborted && setTagVocab(next))
+      .catch(() => {});
+    return () => ac.abort();
+  }, []);
+
   /**
    * Re-read, and take ONLY the variants from the answer.
    *
@@ -524,7 +577,9 @@ function ProductForm({ id }: { id: string }) {
 
   const backTo = {
     pathname: '/shop/products',
-    search: asSearch(withParams(params, { id: null })),
+    // `tab` goes too: it is THIS product's open section, and carried back to
+    // the list it silently decides which tab the NEXT product opens on.
+    search: asSearch(withParams(params, { id: null, tab: null })),
   };
 
   const patch = (): ShopProductPatch => ({
@@ -562,6 +617,13 @@ function ProductForm({ id }: { id: string }) {
       // rather than dropped — re-fetching the whole product to redraw a title
       // would throw away every unsaved variant edit on the screen.
       setProduct((prev) => (prev ? { ...prev, ...saved, variants: prev.variants } : prev));
+      // The server may have re-spelled category and tags onto the catalogue's
+      // canon (fold.ts) — the buffer adopts what was actually stored, so the
+      // boxes show the truth rather than the keystrokes.
+      setTitle(saved.title);
+      setCategory(saved.category);
+      setTags(saved.tags);
+      setDescDirty(false);
       notify('Saved');
     } catch (err) {
       if (err instanceof StaleWriteError) {
@@ -637,9 +699,50 @@ function ProductForm({ id }: { id: string }) {
 
   const status = product?.status ?? 'draft';
 
+  const tab = readTab(params);
+  // Variants attach to a product id; on `?id=new` the tab cannot exist yet.
+  const activeTab: FormTab = isNew && tab === 'variants' ? 'details' : tab;
+  const tabTo = (t: FormTab) => ({
+    pathname: '/shop/products',
+    search: asSearch(withParams(params, { tab: t === 'details' ? null : t })),
+  });
+
+  /*
+   * "Unsaved changes" is computed against the row the form loaded, field by
+   * field — not tracked as a boolean set by every onChange, which reads as
+   * dirty after somebody types a letter and deletes it again. The description
+   * is the one exception (`descDirty` above): a document diff per keystroke
+   * buys nothing.
+   */
+  const dirty =
+    descDirty ||
+    (isNew
+      ? title.trim() !== '' ||
+        category !== '' ||
+        tags.length > 0 ||
+        coverImageId !== null ||
+        imageIds.length > 0
+      : product
+        ? title !== product.title ||
+          category !== product.category ||
+          tags.join(' ') !== product.tags.join(' ') ||
+          coverImageId !== product.coverImageId ||
+          imageIds.join(' ') !== product.imageIds.join(' ')
+        : false);
+
+  const imageCount = (coverImageId ? 1 : 0) + imageIds.length;
+  const variantCount = product?.variants.length ?? 0;
+
   return (
     <>
-      <div className="shopfilters" style={{ marginTop: 0 }}>
+      {/*
+        ONE BAR OWNS THE PRODUCT-WIDE ACTS: where you came from, what state the
+        product is in, the lifecycle moves, and Save. Save lives here and not
+        inside a tab because title, description, category, tags, cover and
+        gallery are ONE PATCH — a Save button that vanished when you clicked
+        over to Images would imply the images save separately, and they do not.
+      */}
+      <div className="prodbar">
         <Link className="btn btn--ghost btn--sm" to={backTo}>
           <ArrowLeft className="ui-ic" aria-hidden="true" />
           Catalogue
@@ -647,11 +750,77 @@ function ProductForm({ id }: { id: string }) {
         {!isNew && (
           <span className={`chip chip--${status}`}>{STATUS_LABEL[status] ?? status}</span>
         )}
-        <span className="pager__note">
+        <span className="prodbar__note">
           {isNew
             ? 'New products start as drafts and sell nothing until published.'
             : `Revision ${product?.revision ?? 0} · updated ${WHEN.format(new Date(product!.updatedAt))}`}
         </span>
+        <span className="prodbar__grow" aria-hidden="true" />
+        {dirty && <span className="prodbar__dirty">Unsaved changes</span>}
+        {!isNew && (
+          <div className="prodbar__ops">
+            {status === 'draft' && (
+              <button
+                className="btn btn--outline btn--sm"
+                onClick={() => void transition('publish')}
+              >
+                Publish
+              </button>
+            )}
+            {status === 'active' && (
+              <button
+                className="btn btn--outline btn--sm"
+                onClick={() => void transition('unpublish')}
+              >
+                Unpublish
+              </button>
+            )}
+            {(status === 'draft' || status === 'active') && (
+              <button
+                className="btn btn--outline btn--sm"
+                onClick={() => void transition('archive')}
+              >
+                Archive
+              </button>
+            )}
+            {status === 'archived' && (
+              <button
+                className="btn btn--outline btn--sm"
+                onClick={() => void transition('unarchive')}
+              >
+                Unarchive
+              </button>
+            )}
+            {status === 'trash' && (
+              <button
+                className="btn btn--outline btn--sm"
+                onClick={() => void transition('restore')}
+              >
+                Restore
+              </button>
+            )}
+            {/* There is deliberately no hard delete: a product referenced by an
+                order line that snapshots its price must not be able to vanish,
+                so the server offers no route that would. */}
+            {status !== 'trash' && (
+              <button
+                className="btn btn--ghost btn--sm"
+                aria-label="Move to trash"
+                title="Move to trash — reversible"
+                onClick={() => setConfirmTrash(true)}
+              >
+                <Trash2 className="ui-ic" aria-hidden="true" />
+              </button>
+            )}
+          </div>
+        )}
+        <button
+          className="btn btn--primary btn--sm"
+          disabled={saving}
+          onClick={() => void save()}
+        >
+          {saving ? 'Saving…' : isNew ? 'Create product' : 'Save changes'}
+        </button>
       </div>
 
       {conflict && (
@@ -675,12 +844,54 @@ function ProductForm({ id }: { id: string }) {
         </div>
       )}
 
-      <div className="shopgrid" style={{ marginTop: 'var(--s5)' }}>
-        <div className="shopgrid__col">
+      {/*
+        THE SECTIONS ARE TABS, AND THE TAB IS IN THE URL. Details, Images and
+        Variants used to sit in one two-column sprawl — the variants (the part
+        with the prices in it) started below the fold on any product with a
+        real description. One section at a time puts every field on screen at
+        the size it deserves, and `?tab=` means a reload or a shared link lands
+        on the same section. Counts are honest: both lists are fully loaded,
+        not paged guesses.
+      */}
+      <nav className="shoptabs prodtabs" aria-label="Product sections">
+        <Link
+          className={`shoptabs__tab${activeTab === 'details' ? ' is-active' : ''}`}
+          aria-current={activeTab === 'details' ? 'page' : undefined}
+          replace
+          to={tabTo('details')}
+        >
+          Details
+        </Link>
+        <Link
+          className={`shoptabs__tab${activeTab === 'images' ? ' is-active' : ''}`}
+          aria-current={activeTab === 'images' ? 'page' : undefined}
+          replace
+          to={tabTo('images')}
+        >
+          Images{imageCount > 0 ? ` (${imageCount})` : ''}
+        </Link>
+        {isNew ? (
+          <span
+            className="shoptabs__tab is-disabled"
+            title="Create the product first — variants attach to it"
+          >
+            Variants
+          </span>
+        ) : (
+          <Link
+            className={`shoptabs__tab${activeTab === 'variants' ? ' is-active' : ''}`}
+            aria-current={activeTab === 'variants' ? 'page' : undefined}
+            replace
+            to={tabTo('variants')}
+          >
+            Variants{variantCount > 0 ? ` (${variantCount})` : ''}
+          </Link>
+        )}
+      </nav>
+
+      <div className="prodbody">
+        {activeTab === 'details' && (
           <section className="panel">
-            <div className="panel__head">
-              <h2 className="panel__title">Details</h2>
-            </div>
             <div className="panel__body shopform">
               <div className="shopform__field">
                 <label className="label" htmlFor="prod-title">
@@ -698,10 +909,16 @@ function ProductForm({ id }: { id: string }) {
 
               <div className="shopform__field">
                 <span className="label">Description</span>
-                <DescriptionEditor value={description} onChange={setDescription} />
+                <DescriptionEditor
+                  value={description}
+                  onChange={(doc) => {
+                    setDescription(doc);
+                    setDescDirty(true);
+                  }}
+                />
                 <p className="shopform__hint">
                   The same editor the blog uses, in a box. Pictures belong in the
-                  images panel, not in here — the description is text on a product
+                  Images tab, not in here — the description is text on a product
                   page, and an image dropped into it is not part of what the shop
                   knows the product owns.
                 </p>
@@ -713,85 +930,31 @@ function ProductForm({ id }: { id: string }) {
                   options={categories}
                   onChange={setCategory}
                 />
-                <TagsField value={tags} onChange={setTags} />
+                <TagsField value={tags} vocabulary={tagVocab} onChange={setTags} />
               </div>
 
-              <div className="shopform__actions">
-                <button className="btn btn--primary" disabled={saving} onClick={() => void save()}>
-                  {saving ? 'Saving…' : isNew ? 'Create product' : 'Save changes'}
-                </button>
-                {!isNew && (
-                  <span className="shopform__hint">
-                    Saves carry the revision this form loaded, so a second tab is
-                    refused rather than silently overwritten.
-                  </span>
-                )}
-              </div>
+              {!isNew && (
+                <p className="shopform__hint">
+                  Saves carry the revision this form loaded, so a second tab is
+                  refused rather than silently overwritten.
+                </p>
+              )}
             </div>
           </section>
+        )}
 
-          {!isNew && product && (
-            <VariantsPanel product={product} onChanged={() => void refreshVariants()} />
-          )}
-        </div>
-
-        <div className="shopgrid__col">
+        {activeTab === 'images' && (
           <ImagesPanel
             coverImageId={coverImageId}
             imageIds={imageIds}
             onCover={setCoverImageId}
             onGallery={setImageIds}
           />
+        )}
 
-          {!isNew && (
-            <section className="panel">
-              <div className="panel__head">
-                <h2 className="panel__title">Lifecycle</h2>
-              </div>
-              <div className="panel__body shopform">
-                <div className="shopform__actions">
-                  {status === 'draft' && (
-                    <button className="btn btn--outline btn--sm" onClick={() => void transition('publish')}>
-                      Publish
-                    </button>
-                  )}
-                  {status === 'active' && (
-                    <button className="btn btn--outline btn--sm" onClick={() => void transition('unpublish')}>
-                      Unpublish
-                    </button>
-                  )}
-                  {(status === 'draft' || status === 'active') && (
-                    <button className="btn btn--outline btn--sm" onClick={() => void transition('archive')}>
-                      Archive
-                    </button>
-                  )}
-                  {status === 'archived' && (
-                    <button className="btn btn--outline btn--sm" onClick={() => void transition('unarchive')}>
-                      Unarchive
-                    </button>
-                  )}
-                  {status === 'trash' && (
-                    <button className="btn btn--outline btn--sm" onClick={() => void transition('restore')}>
-                      Restore
-                    </button>
-                  )}
-                  {status !== 'trash' && (
-                    <button className="btn btn--danger btn--sm" onClick={() => setConfirmTrash(true)}>
-                      Move to trash
-                    </button>
-                  )}
-                </div>
-                {/* There is deliberately no hard delete: a product referenced by
-                    an order line that snapshots its price must not be able to
-                    vanish, so the server offers no route that would. */}
-                <p className="shopform__hint">
-                  Trashing is reversible. Nothing here ever destroys a product —
-                  order history has to keep pointing at something.
-                </p>
-              </div>
-            </section>
-          )}
-        </div>
+        {activeTab === 'variants' && !isNew && product && (
+          <VariantsPanel product={product} onChanged={() => void refreshVariants()} />
+        )}
       </div>
 
       <ConfirmDialog
@@ -922,6 +1085,18 @@ function CategoryField({
 
   const selectValue = naming ? NEW_CATEGORY : value === '' ? NO_CATEGORY : value;
 
+  /*
+   * A typed name that case-matches an existing category IS that category —
+   * the server adopts the stored spelling on save (`catalog/fold.ts`), so the
+   * hint says so while the person is still typing rather than surprising them
+   * after the round trip. The list is folded server-side, so one option per
+   * group is all there is to match against.
+   */
+  const twin = naming
+    ? options.find((o) => o.name.toLowerCase() === value.trim().toLowerCase())
+    : undefined;
+  const adopts = twin !== undefined && twin.name !== value.trim();
+
   return (
     <div className="shopform__field">
       <span className="label">Category</span>
@@ -956,32 +1131,83 @@ function CategoryField({
           aria-label="New category name"
           placeholder="Kitchenware"
           onChange={(e) => onChange(e.target.value)}
+          onBlur={() => {
+            // Adopt the stored spelling in the box itself the moment focus
+            // leaves — the save would do it anyway; doing it here means what
+            // is on screen is what will be stored.
+            if (twin) {
+              onChange(twin.name);
+              setNaming(false);
+            }
+          }}
         />
       )}
       <p className="shopform__hint">
-        {naming
-          ? 'The category exists as soon as a product is saved with it — there is no separate list to add it to.'
-          : 'Drafts count too, so a category with no published product still appears here.'}
+        {adopts
+          ? `Matches the existing “${twin.name}” — that spelling will be used.`
+          : naming
+            ? 'The category exists as soon as a product is saved with it — there is no separate list to add it to.'
+            : 'Drafts count too, so a category with no published product still appears here.'}
       </p>
     </div>
   );
 }
 
+/**
+ * Tags, with the catalogue's own vocabulary offered while typing.
+ *
+ * The tag box was the door the `PLA / pla / Pla / pLA` mess came in through:
+ * with nothing offered, every writer re-invents the spelling. Three defences,
+ * in order of firing: matching existing tags appear as one-click suggestions;
+ * a typed tag that case-matches the vocabulary (or a tag already in the list)
+ * ADOPTS that spelling instead of minting a twin; and the server folds again
+ * on save for whatever slips past a stale vocabulary.
+ */
 function TagsField({
   value,
+  vocabulary,
   onChange,
 }: {
   value: string[];
+  vocabulary: ShopTag[];
   onChange: (tags: string[]) => void;
 }) {
   const [draft, setDraft] = useState('');
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const fold = (s: string) => s.toLowerCase();
+  const has = (tag: string) => value.some((t) => fold(t) === fold(tag));
 
   function add(raw: string) {
-    const tag = raw.trim().replace(/^#/, '').slice(0, TAG_MAX_LEN);
-    if (!tag) return;
-    if (!value.includes(tag) && value.length < MAX_TAGS) onChange([...value, tag]);
+    const typed = raw.trim().replace(/^#/, '').slice(0, TAG_MAX_LEN);
     setDraft('');
+    if (!typed) return;
+    const known = vocabulary.find((t) => fold(t.name) === fold(typed));
+    const tag = known ? known.name : typed;
+    if (has(tag)) {
+      // The entry went somewhere — say where, or a swallowed keystroke reads
+      // as a broken box. Silent only when it is the literal same chip.
+      const twin = value.find((t) => fold(t) === fold(tag));
+      setNotice(twin !== typed ? `“${typed}” is already here as “${twin}”.` : null);
+      return;
+    }
+    if (value.length < MAX_TAGS) {
+      onChange([...value, tag]);
+      setNotice(tag !== typed ? `Added as “${tag}” — the shop’s spelling.` : null);
+    }
   }
+
+  /*
+   * Up to five, matched anywhere in the name, minus what is already chosen.
+   * Suggestions only exist while something is typed — an always-open cloud of
+   * every tag in the shop would dwarf the field it serves.
+   */
+  const suggestions =
+    draft.trim() === ''
+      ? []
+      : vocabulary
+          .filter((t) => fold(t.name).includes(fold(draft.trim())) && !has(t.name))
+          .slice(0, 5);
 
   return (
     <div className="shopform__field">
@@ -1007,7 +1233,10 @@ function TagsField({
             maxLength={TAG_MAX_LEN}
             aria-label="Add a tag"
             placeholder={value.length ? 'Add another' : 'Add a tag'}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              setNotice(null);
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ',') {
                 e.preventDefault();
@@ -1020,6 +1249,31 @@ function TagsField({
           />
         )}
       </div>
+      {notice && <p className="shopform__hint">{notice}</p>}
+      {suggestions.length > 0 && (
+        <div className="shoptags__suggest" aria-label="Existing tags that match">
+          {suggestions.map((t) => (
+            <button
+              key={t.name}
+              type="button"
+              className="shoptags__offer"
+              /*
+               * onMouseDown, because the input's onBlur fires first on click
+               * and would add the TYPED text — then this click would find the
+               * fold-twin already present and do nothing, which reads as a
+               * broken button.
+               */
+              onMouseDown={(e) => {
+                e.preventDefault();
+                add(t.name);
+              }}
+            >
+              {t.name}
+              <span className="shoptags__count">{t.count}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -171,9 +171,49 @@
   color: var(--ink-4);
 }
 
+/*
+ * THE GUTTERS BELONG TO THE EDITOR, AND THAT IS WHY THE GRIP CAN BE REACHED.
+ *
+ * The drag handle plugin hides the grip on the editor element's `mouseleave`
+ * unless the pointer is entering the handle's own wrapper. The grip hangs in
+ * the gutter beside the paragraph — outside the ProseMirror box — so the trip
+ * from the text to the grip crossed a strip of page that belonged to neither:
+ * `mouseleave` fired, the grip was hidden, and it vanished from under the
+ * pointer every single time. The handle was, in practice, undraggable by
+ * anything but a lucky diagonal.
+ *
+ * Padding the surface and pulling it back out with an equal negative margin
+ * moves that strip INSIDE the editor's own box without moving one pixel of
+ * text: the paragraph still ends where it always did, the grip still sits just
+ * past its edge, and the pointer never leaves the element that would hide it.
+ *
+ * Only where there is room for it. Below 720px the `+` moves above the line and
+ * the grip is removed outright on touch (see the coarse-pointer rule further
+ * down), so the padding would be a horizontal scrollbar bought for nothing.
+ */
 .editor__surface {
   min-height: 45vh;
   outline: none;
+}
+/*
+ * 760px IS NOT A GUESS. The page reserves the gutters by widening its own
+ * max-width and its own padding by exactly the same amount, so the text column
+ * stays 39rem — `--measure` less the page padding, the number it has always
+ * been — at every width where this applies. That is only true once the WIDER
+ * max-width binds; below it the padding would eat the writing column instead of
+ * the margin. `--measure` (42rem) + two gutters is 47.5rem, so 760px is the
+ * width where the arithmetic comes out even.
+ */
+@media (min-width: 760px) {
+  .editor__page {
+    --editor-gutter: 2.75rem;
+    max-width: calc(var(--measure) + 2 * var(--editor-gutter));
+    padding-inline: calc(var(--s5) + var(--editor-gutter));
+  }
+  .editor__surface {
+    padding-inline: var(--editor-gutter);
+    margin-inline: calc(var(--editor-gutter) * -1);
+  }
 }
 .editor__surface p.is-editor-empty:first-child::before,
 .editor__surface .is-empty::before {
@@ -813,7 +853,16 @@
   place-items: center;
   width: 1.5rem;
   height: 1.6rem;
-  margin-left: var(--s1);
+  /*
+   * NO GAP BETWEEN THE TEXT AND THE GRIP. The margin used to be `--s1`, which
+   * put 4px of nothing between the paragraph's edge and the grip's hit box —
+   * 4px the pointer had to cross, and the plugin's `mouseleave` was watching.
+   * The surface's padding (above) now owns that strip, but the grip should sit
+   * against the text it belongs to anyway: the closer it is, the shorter the
+   * trip, and the less it looks like a control for the page rather than for
+   * this block.
+   */
+  margin-left: 2px;
   border-radius: var(--radius-s);
   color: var(--ink-4);
   cursor: grab;

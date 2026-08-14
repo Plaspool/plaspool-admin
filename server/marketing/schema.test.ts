@@ -39,6 +39,7 @@ import {
   marketingPrograms,
   marketingReturnEvents,
   marketingReturnRequests,
+  marketingServiceAreas,
   marketingSettings,
 } from './schema';
 import type { SQL } from 'drizzle-orm';
@@ -69,6 +70,22 @@ beforeEach(async () => {
                                 marketing_email_intents, marketing_banners,
                                 marketing_discount_codes CASCADE`);
   await db.execute(sql`DELETE FROM marketing_programs WHERE seeded = false`);
+  /*
+   * SERVICE AREAS ARE CLEANED THE SAME WAY AND FOR THE SAME REASON — by the
+   * `seeded` flag, so migration 0012's ~800 rows survive for the assertions
+   * about them while anything a test typed goes. The requests are truncated
+   * FIRST because they carry the foreign key; the other order would be refused.
+   */
+  await db.execute(sql`DELETE FROM marketing_service_areas WHERE seeded = false`);
+  /*
+   * …and one is put back, because after 0012 a service area is SCENERY for
+   * almost every assertion in this file: `marketing_return_requests_area_award_ck`
+   * refuses an awarded row without one, and the award arithmetic, the quantities
+   * and the ledger's couplings all need an awarded row to be reachable. It is
+   * inserted here rather than in twenty tests for the same reason the seeded
+   * program is left standing.
+   */
+  await db.execute(serviceArea());
 });
 
 // --------------------------------------------------------------- catalogue readers
@@ -95,15 +112,28 @@ function columnOf(value: unknown): [string, { type: string; nullable: boolean }]
   return [col.name, { type: (col.getSQLType as () => string)(), nullable: col.notNull !== true }];
 }
 
+/**
+ * `pg_attribute` AND `format_type`, NOT `information_schema.columns.data_type`.
+ *
+ * The two agree on `text`, `integer`, `bigint`, `boolean`, `jsonb` and `uuid`
+ * and DISAGREE ON ARRAYS: `information_schema` reports the bare word `ARRAY` for
+ * every array column, whatever it holds, while `format_type` reports `text[]` —
+ * which is what drizzle's `getSQLType()` says. Comparing against `ARRAY` would
+ * mean `text[]` and `integer[]` were the same answer, so a column declared as
+ * one and created as the other would pass this test and fail at the first read.
+ *
+ * `attnum > 0 AND NOT attisdropped` excludes the system columns and the ghosts a
+ * dropped column leaves behind, neither of which the declaration knows about.
+ */
 async function columns(table: string): Promise<Map<string, { type: string; nullable: boolean }>> {
   const res = await db.execute(sql`
-    SELECT column_name, data_type, is_nullable
-      FROM information_schema.columns
-     WHERE table_schema = 'public' AND table_name = ${table}`);
+    SELECT attname, format_type(atttypid, atttypmod) AS type, attnotnull
+      FROM pg_attribute
+     WHERE attrelid = ${table}::regclass AND attnum > 0 AND NOT attisdropped`);
   return new Map(
     res.rows.map((row) => [
-      String(row.column_name),
-      { type: String(row.data_type), nullable: row.is_nullable === 'YES' },
+      String(row.attname),
+      { type: String(row.type), nullable: row.attnotnull !== true },
     ]),
   );
 }
@@ -170,11 +200,52 @@ const unitProgram = (id = PROGRAM, key = 'bottle-caps'): SQL => sql`
   VALUES (${id}, ${key}, 'unit_return', 'Bottle Caps', 'Bottle Cap', 'Bottle Caps',
           'canister', 'canisters', 4, 7, ${T0}, ${T0})`;
 
-const returnRequest = (id = REQUEST, email = EMAIL, status = 'requested'): SQL => sql`
+/**
+ * A place a van goes, named after nothing real.
+ *
+ * THE FIXTURE IS ABSURD ON PURPOSE, exactly as the labels are. A test that used
+ * a seeded district's name could not tell code that reads the area off the row
+ * from code that hardcoded the place — both render the expected string. It also
+ * keeps the served city's name out of a source file, which is the second half of
+ * the naming discipline (`no-hardcoded-labels.test.ts` greps for it).
+ */
+const AREA = 'area_cabbage_quarter';
+
+/** `ARRAY['a','b']` rather than a bound parameter: drizzle binds a JS array as a
+ *  single value the driver cannot cast to `text[]` (SQLSTATE 42846), and a
+ *  hand-built `'{…}'` literal would need its own quoting rules for the aliases
+ *  that contain a space. */
+const textArray = (values: readonly string[]): SQL =>
+  values.length === 0
+    ? sql`'{}'::text[]`
+    : sql`ARRAY[${sql.join(values.map((value) => sql`${value}`), sql`, `)}]::text[]`;
+
+const serviceArea = (
+  id = AREA,
+  region = 'Farflung Province',
+  name = 'Cabbage Quarter',
+  active = true,
+  aliases: readonly string[] = ['cabbage', 'the cabbage'],
+): SQL => sql`
+  INSERT INTO marketing_service_areas
+    (id, key, region, name, aliases, active, seeded, sort_order, created_at, updated_at)
+  VALUES (${id}, ${id.replace(/^area_/, '').replace(/_/g, '-')}, ${region}, ${name},
+          ${textArray(aliases)}, ${active}, false, 0, ${T0}, ${T0})`;
+
+/** `service_area_id` DEFAULTS TO THE FIXTURE AREA rather than to NULL, because
+ *  after 0012 an awarded return must have one and most of this file's assertions
+ *  are about awarded rows. The out-of-area case is a deliberate `null`, passed
+ *  by the tests that are actually about it. */
+const returnRequest = (
+  id = REQUEST,
+  email = EMAIL,
+  status = 'requested',
+  areaId: string | null = AREA,
+): SQL => sql`
   INSERT INTO marketing_return_requests
     (id, program_id, customer_email, qty_declared, points_per_unit_snapshot, source,
-     status, created_at, updated_at)
-  VALUES (${id}, ${PROGRAM}, ${email}, 6, 7, 'admin', ${status}, ${T0}, ${T0})`;
+     status, service_area_id, created_at, updated_at)
+  VALUES (${id}, ${PROGRAM}, ${email}, 6, 7, 'admin', ${status}, ${areaId}, ${T0}, ${T0})`;
 
 const award = (id: string, requestId = REQUEST): SQL => sql`
   INSERT INTO marketing_ledger
@@ -203,7 +274,7 @@ const discount = (id: string, code: string, kind = 'percent'): SQL => sql`
 // ------------------------------------------------------------ shape of the DDL
 
 describe('migration 0011 is applied', () => {
-  it('creates all nine tables', async () => {
+  it('creates all ten tables — nine from 0011, service areas from 0012', async () => {
     const res = await db.execute(sql`
       SELECT table_name FROM information_schema.tables
        WHERE table_schema = 'public' AND table_name LIKE 'marketing_%'`);
@@ -216,6 +287,7 @@ describe('migration 0011 is applied', () => {
       'marketing_programs',
       'marketing_return_events',
       'marketing_return_requests',
+      'marketing_service_areas',
       'marketing_settings',
     ]);
   });
@@ -234,6 +306,7 @@ describe('migration 0011 is applied', () => {
      * sees a matching set of strings and says nothing.
      */
     const pairs: [string, object][] = [
+      ['marketing_service_areas', marketingServiceAreas],
       ['marketing_programs', marketingPrograms],
       ['marketing_settings', marketingSettings],
       ['marketing_return_requests', marketingReturnRequests],
@@ -262,6 +335,7 @@ describe('migration 0011 is applied', () => {
      * neither.
      */
     const cols = {
+      marketing_service_areas: ['created_at', 'updated_at'],
       marketing_programs: ['created_at', 'updated_at'],
       marketing_settings: ['updated_at'],
       marketing_return_requests: [
@@ -372,7 +446,24 @@ describe('migration 0011 is applied', () => {
           'CHECK (((max_redeem_bps >= 1) AND (max_redeem_bps <= 10000)))',
         marketing_settings_revision_ck: 'CHECK ((revision > 0))',
       },
+      marketing_service_areas: {
+        marketing_service_areas_key_ck:
+          "CHECK (((key <> ''::text) AND (key = lower(key)) AND (key ~ '^[a-z0-9][a-z0-9_-]*$'::text)))",
+        marketing_service_areas_region_ck:
+          "CHECK (((region <> ''::text) AND (region = btrim(region))))",
+        marketing_service_areas_name_ck:
+          "CHECK (((name <> ''::text) AND (name = btrim(name))))",
+        marketing_service_areas_aliases_ck:
+          "CHECK ((((aliases)::text = lower((aliases)::text)) AND (array_position(aliases, ''::text) IS NULL) AND (array_position(aliases, NULL::text) IS NULL)))",
+        marketing_service_areas_sort_order_ck: 'CHECK ((sort_order >= 0))',
+        marketing_service_areas_revision_ck: 'CHECK ((revision > 0))',
+      },
       marketing_return_requests: {
+        /* 0012's gate. `status <> 'awarded' OR service_area_id IS NOT NULL` is
+         * what makes "an address we do not serve cannot earn" survive every
+         * route above it being wrong. */
+        marketing_return_requests_area_award_ck:
+          "CHECK (((status <> 'awarded'::text) OR (service_area_id IS NOT NULL)))",
         marketing_return_requests_email_ck:
           "CHECK (((customer_email <> ''::text) AND (customer_email = lower(customer_email))))",
         marketing_return_requests_qty_declared_ck: 'CHECK ((qty_declared > 0))',
@@ -406,8 +497,11 @@ describe('migration 0011 is applied', () => {
         marketing_ledger_reason_ck: "CHECK ((reason <> ''::text))",
         marketing_ledger_actor_ck:
           "CHECK ((actor_type = ANY (ARRAY['admin'::text, 'customer'::text, 'system'::text])))",
+        /* AN IMPLICATION SINCE 0012, NOT AN EQUALITY. The reverse direction was
+         * dropped so the inspection's bonus can be a `manual` row that names the
+         * return it came from; an award still cannot exist without one. */
         marketing_ledger_award_link_ck:
-          "CHECK (((kind = 'return_award'::text) = (return_request_id IS NOT NULL)))",
+          "CHECK (((kind <> 'return_award'::text) OR (return_request_id IS NOT NULL)))",
         marketing_ledger_order_link_ck:
           "CHECK (((kind <> ALL (ARRAY['redemption'::text, 'redemption_release'::text])) OR (order_id IS NOT NULL)))",
         marketing_ledger_award_sign_ck:
@@ -599,6 +693,161 @@ describe('settings — a singleton that cannot be enabled without a rate', () =>
 
 // ------------------------------------------------------------ return requests
 
+describe('service areas — where a van goes, and what happens where it does not', () => {
+  it('shapes the key, the region, the name and the aliases', async () => {
+    const bad: [string, SQL][] = [
+      /* The key is the STABLE HANDLE and the only column a rename must not
+       * touch, so its shape is pinned the way the program key's is. */
+      ['marketing_service_areas_key_ck', serviceArea('area_Shouty')],
+      [
+        'marketing_service_areas_region_ck',
+        serviceArea('area_blank_region', '', 'Somewhere'),
+      ],
+      [
+        'marketing_service_areas_name_ck',
+        serviceArea('area_untrimmed', 'Farflung Province', '  Padded  '),
+      ],
+      /* An UPPERCASE alias never matches a folded lookup, so it is dead data
+       * that looks like a working alias — the worst shape a config row takes. */
+      [
+        'marketing_service_areas_aliases_ck',
+        serviceArea('area_shouty_alias', 'Farflung Province', 'Elsewhere', true, ['Cabbage']),
+      ],
+      [
+        'marketing_service_areas_aliases_ck',
+        serviceArea('area_blank_alias', 'Farflung Province', 'Nowhere', true, ['']),
+      ],
+    ];
+    for (const [constraint, statement] of bad) {
+      expect((await refused(statement)).constraint, constraint).toBe(constraint);
+    }
+  });
+
+  it('refuses two areas in one region whose names differ only in case', async () => {
+    /*
+     * `marketing_service_areas_region_name_uq` is an EXPRESSION index over
+     * `(region, lower(name))`, which drizzle-kit cannot model — so this asserts
+     * the REFUSAL rather than the name. An index that existed without the
+     * `lower()` would pass a catalogue check and still let one region hold
+     * "Utako" and "utako" as two separate boards, which is two dispatch lists
+     * for one place.
+     */
+    await db.execute(serviceArea('area_one', 'Farflung Province', 'Turnip Hill'));
+    const err = await refused(serviceArea('area_two', 'Farflung Province', 'TURNIP HILL'));
+    expect(err.code).toBe('23505');
+    expect(err.constraint).toBe('marketing_service_areas_region_name_uq');
+
+    /* …and the SAME name in a DIFFERENT region is fine, which is why the index
+     * is scoped rather than global: place names genuinely repeat across states,
+     * and a global unique would silently cost the second one its area. */
+    await db.execute(serviceArea('area_three', 'Nearby Province', 'Turnip Hill'));
+  });
+
+  it('refuses two areas sharing a key, whatever they are called', async () => {
+    await db.execute(serviceArea('area_one', 'Farflung Province', 'Turnip Hill'));
+    const err = await refused(sql`
+      INSERT INTO marketing_service_areas (id, key, region, name, created_at, updated_at)
+      VALUES ('area_other', 'one', 'Nearby Province', 'Something Else', ${T0}, ${T0})`);
+    expect(err.constraint).toBe('marketing_service_areas_key_uq');
+  });
+
+  it('defaults `active` to false — a forgotten flag costs a sale, not a promise', async () => {
+    /*
+     * THE DIRECTION OF THE DEFAULT IS THE WHOLE SAFETY ARGUMENT. Off by default
+     * means an area nobody thought about answers "we do not collect there",
+     * which loses an order. On by default would mean it answers "yes, we will
+     * send a van", to a place that has no driver.
+     */
+    await db.execute(sql`
+      INSERT INTO marketing_service_areas (id, key, region, name, created_at, updated_at)
+      VALUES ('area_defaults', 'defaults', 'Nearby Province', 'Unasked For', ${T0}, ${T0})`);
+    const row = await db.execute(sql`
+      SELECT active, seeded, aliases, sort_order, revision
+        FROM marketing_service_areas WHERE id = 'area_defaults'`);
+    expect(row.rows[0].active).toBe(false);
+    expect(row.rows[0].seeded).toBe(false);
+    expect(row.rows[0].aliases).toEqual([]);
+    expect(Number(row.rows[0].sort_order)).toBe(0);
+    expect(Number(row.rows[0].revision)).toBe(1);
+  });
+});
+
+describe('the service-area gate, in the database', () => {
+  beforeEach(async () => {
+    await db.execute(unitProgram());
+  });
+
+  it('REFUSES an awarded return that belongs to no area', async () => {
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * THE GATE'S TEETH — the one layer of it that is not code.
+     *
+     * The picker only lists served districts, the intake route answers 409, and
+     * the board has nowhere to put an out-of-area return. All three are code and
+     * code is edited. This is what makes "an address we do not serve cannot earn
+     * points" true with every one of them deleted, and it is asserted by INSERT
+     * as well as by UPDATE because a repair script, an import or a hand-run
+     * statement during an incident is exactly the caller that skips the routes.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    const inserted = await refused(sql`
+      INSERT INTO marketing_return_requests
+        (id, program_id, customer_email, qty_declared, qty_accepted, qty_rejected,
+         points_per_unit_snapshot, points_awarded, source, status, service_area_id,
+         created_at, updated_at)
+      VALUES ('ret_nowhere', ${PROGRAM}, ${EMAIL}, 6, 5, 1, 7, 35, 'admin', 'awarded',
+              NULL, ${T0}, ${T0})`);
+    expect(inserted.constraint).toBe('marketing_return_requests_area_award_ck');
+
+    await db.execute(returnRequest(REQUEST, EMAIL, 'received', null));
+    const updated = await refused(sql`
+      UPDATE marketing_return_requests
+         SET status = 'awarded', qty_accepted = 5, qty_rejected = 1, points_awarded = 35
+       WHERE id = ${REQUEST}`);
+    expect(updated.constraint).toBe('marketing_return_requests_area_award_ck');
+  });
+
+  it('lets an out-of-area return be closed with a reason — just never paid', async () => {
+    /*
+     * A return from out of town is a REAL request that a driver cannot serve. It
+     * lands in the switcher's out-of-area footer, and an operator must be able to
+     * finish it honestly. Refusing `rejected` and `cancelled` alongside `awarded`
+     * would leave those rows open forever with no way to close them.
+     */
+    for (const [id, status] of [
+      ['ret_reject', 'rejected'],
+      ['ret_cancel', 'cancelled'],
+    ] as const) {
+      await db.execute(returnRequest(id, `${id}@test.local`, 'requested', null));
+      await db.execute(sql`
+        UPDATE marketing_return_requests SET status = ${status}, closed_at = ${T0}
+         WHERE id = ${id}`);
+    }
+    const rows = await db.execute(sql`
+      SELECT status FROM marketing_return_requests
+       WHERE service_area_id IS NULL ORDER BY status`);
+    expect(rows.rows.map((r) => String(r.status))).toEqual(['cancelled', 'rejected']);
+  });
+
+  it('will not let an area that has held a return be deleted', async () => {
+    /*
+     * NO `ON DELETE` CLAUSE, so NO ACTION stands — and that is the DDL half of
+     * "there is no DELETE for an area". Switching one off is the retirement: a
+     * van that stops running does not make its old pickups disappear, and a
+     * cascade here would delete the returns instead of protecting them.
+     */
+    await db.execute(returnRequest());
+    const err = await refused(sql`DELETE FROM marketing_service_areas WHERE id = ${AREA}`);
+    expect(err.code).toBe('23503');
+  });
+
+  it('indexes the board’s read: one district, by stage, oldest first', async () => {
+    const def = await indexDef('marketing_return_requests_area_idx');
+    expect(def).toContain('service_area_id');
+    expect(def).toContain('status');
+  });
+});
+
 describe('return requests', () => {
   beforeEach(async () => {
     await db.execute(unitProgram());
@@ -776,7 +1025,7 @@ describe('ledger — idempotency lives in partial uniques, not in code', () => {
     );
   });
 
-  it('applies all three ledger uniques PARTIALLY, scoped to their kind', async () => {
+  it('applies all four ledger uniques PARTIALLY, scoped to their kind', async () => {
     // Without the predicate, `UNIQUE (order_id)` would make a redemption and its
     // release collide, and `UNIQUE (return_request_id)` would forbid a manual
     // adjustment ever mentioning a return.
@@ -784,10 +1033,70 @@ describe('ledger — idempotency lives in partial uniques, not in code', () => {
       ['marketing_ledger_award_uq', "kind = 'return_award'"],
       ['marketing_ledger_redemption_uq', "kind = 'redemption'"],
       ['marketing_ledger_release_uq', "kind = 'redemption_release'"],
+      ['marketing_ledger_bonus_uq', "kind = 'manual'"],
     ] as const) {
       const def = await indexDef(name);
       expect(def, name).toContain('UNIQUE');
       expect(def, name).toContain(predicate);
+    }
+  });
+
+  it('lets a MANUAL row name the return it came from — the inspection bonus', async () => {
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * THE HALF OF `marketing_ledger_award_link_ck` MIGRATION 0012 DROPPED.
+     *
+     * It was an EQUALITY, so `manual` and `return_request_id` were mutually
+     * exclusive: any row naming a return had to be an award. The bonus needs
+     * exactly the forbidden combination — a discretionary credit that says which
+     * return earned it, sitting beside an award that is still exactly quantity
+     * times rate. Two honest sentences rather than one unforgeable number
+     * quietly inflated.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    await db.execute(award('pts_award'));
+    await db.execute(sql`
+      INSERT INTO marketing_ledger
+        (id, customer_email, kind, delta, balance_after, reason, return_request_id,
+         actor_type, created_at)
+      VALUES ('pts_bonus', ${EMAIL}, 'manual', 25, 60, 'Kept the caps dry all winter',
+              ${REQUEST}, 'admin', ${T0})`);
+
+    const rows = await db.execute(sql`
+      SELECT kind, delta FROM marketing_ledger
+       WHERE return_request_id = ${REQUEST} ORDER BY kind`);
+    expect(rows.rows.map((r) => [String(r.kind), Number(r.delta)])).toEqual([
+      ['manual', 25],
+      ['return_award', 35],
+    ]);
+  });
+
+  it('REFUSES a second bonus for one return — money minted by hand, paid once', async () => {
+    /*
+     * A bonus is if anything a more attractive thing to replay than an award: it
+     * is typed by a person, on a screen, over a flaky connection. So it gets the
+     * same STRUCTURAL refusal the award has — `marketing_ledger_bonus_uq` — and
+     * not a check in a statement somebody can edit.
+     */
+    const bonus = (id: string): SQL => sql`
+      INSERT INTO marketing_ledger
+        (id, customer_email, kind, delta, balance_after, reason, return_request_id,
+         actor_type, created_at)
+      VALUES (${id}, ${EMAIL}, 'manual', 25, 25, 'Goodwill', ${REQUEST}, 'admin', ${T0})`;
+
+    await db.execute(bonus('pts_one'));
+    const err = await refused(bonus('pts_two'));
+    expect(err.code).toBe('23505');
+    expect(err.constraint).toBe('marketing_ledger_bonus_uq');
+
+    /* …and an ordinary manual adjustment, which names no return, is untouched by
+     * the index no matter how many a customer accumulates. That is what the
+     * `return_request_id IS NOT NULL` half of the predicate is for. */
+    for (const id of ['pts_three', 'pts_four']) {
+      await db.execute(sql`
+        INSERT INTO marketing_ledger
+          (id, customer_email, kind, delta, balance_after, reason, actor_type, created_at)
+        VALUES (${id}, ${EMAIL}, 'manual', 5, 30, 'Walk-in', 'admin', ${T0})`);
     }
   });
 
@@ -1148,5 +1457,107 @@ describe('the seeds migration 0011 installs', () => {
 
     await db.execute(sql`UPDATE marketing_programs SET name = ${String(before.rows[0].preset_name)}
                           WHERE seeded = true`);
+  });
+});
+
+const AREAS_MIGRATION = 'server/db/migrations/0012_service_areas.sql';
+
+describe('the service areas migration 0012 installs', () => {
+  it('seeds every region, with exactly one region switched on', async () => {
+    /*
+     * COUNTED AND GROUPED, NEVER NAMED. The served city's name may not appear in
+     * a source file (the plan's §10 and both grep guards), and it does not need
+     * to: what matters is the SHAPE of the seed — every region present, one of
+     * them served, the rest waiting for a driver.
+     */
+    const res = await db.execute(sql`
+      SELECT count(*)::int AS rows,
+             count(DISTINCT region)::int AS regions,
+             count(*) FILTER (WHERE active)::int AS active,
+             count(DISTINCT region) FILTER (WHERE active)::int AS active_regions,
+             count(*) FILTER (WHERE NOT seeded)::int AS typed
+        FROM marketing_service_areas WHERE seeded = true`);
+    const row = res.rows[0];
+    expect(Number(row.regions)).toBe(37);
+    expect(Number(row.rows)).toBe(796);
+    expect(Number(row.active)).toBe(28);
+    /* ONE region served, which is the honest state on the day this ships and the
+     * thing an owner changes from the Areas screen rather than from a migration. */
+    expect(Number(row.active_regions)).toBe(1);
+    expect(Number(row.typed)).toBe(0);
+  });
+
+  it('ships a named far-away LGA present and switched OFF', async () => {
+    /*
+     * The concrete half of "the model is national and only the data is one city":
+     * the day a driver is hired somewhere else, the row is already there and an
+     * owner flips one Switch. Nothing is deployed and no migration runs.
+     *
+     * A real state and a real LGA, because the point is that the SHIPPED DATA
+     * reaches that far — a fixture would prove nothing about the seed.
+     */
+    const res = await db.execute(sql`
+      SELECT active, seeded, key FROM marketing_service_areas
+       WHERE region = 'Rivers' AND lower(name) = 'port harcourt'`);
+    expect(res.rows).toHaveLength(1);
+    expect(res.rows[0].active).toBe(false);
+    expect(res.rows[0].seeded).toBe(true);
+    expect(String(res.rows[0].key)).toBe('rivers-port-harcourt');
+  });
+
+  it('gives the served areas aliases, and the rest none', async () => {
+    // An alias is a guess about what a customer types, and nobody has typed one
+    // for a place with no driver yet. The owner adds them the week one is hired.
+    const res = await db.execute(sql`
+      SELECT count(*) FILTER (WHERE active AND cardinality(aliases) > 0)::int AS served_with,
+             count(*) FILTER (WHERE NOT active AND cardinality(aliases) > 0)::int AS unserved_with
+        FROM marketing_service_areas WHERE seeded = true`);
+    expect(Number(res.rows[0].served_with)).toBeGreaterThan(20);
+    expect(Number(res.rows[0].unserved_with)).toBe(0);
+  });
+
+  it('re-running 0012’s seed changes nothing, and keeps a rename', async () => {
+    /*
+     * The same replay argument 0011's seeds make, with one extra edge: this table
+     * has TWO unique indexes, so the statement uses a bare `ON CONFLICT DO
+     * NOTHING` with no inference target. A conflict clause naming only the key
+     * would raise 23505 on the OTHER index and abort the migration — which is the
+     * exact failure a replayable seed exists to avoid, and it would only ever
+     * appear on the second run.
+     *
+     * The rename matters more here than for the programs: the shipped dataset has
+     * real errors in it, an owner is EXPECTED to correct them on the Areas
+     * screen, and a `DO UPDATE` would undo that work every time somebody healed a
+     * migration ledger.
+     */
+    const count = async () =>
+      Number(
+        (await db.execute(sql`SELECT count(*)::int AS n FROM marketing_service_areas`)).rows[0].n,
+      );
+    const before = await count();
+    await db.execute(sql`
+      UPDATE marketing_service_areas SET name = 'Corrected By The Owner', active = true
+       WHERE region = 'Rivers' AND lower(name) = 'port harcourt'`);
+
+    const seeds = readFileSync(AREAS_MIGRATION, 'utf8')
+      .split('--> statement-breakpoint')
+      .filter((statement) => /\bINSERT\s+INTO\b/i.test(statement));
+    expect(seeds, 'no seed statement found in 0012').toHaveLength(1);
+    for (const statement of seeds) await db.execute(sql.raw(statement));
+
+    expect(await count()).toBe(before);
+    const row = await db.execute(sql`
+      SELECT name, active, seeded FROM marketing_service_areas
+       WHERE id = 'area_rivers_port_harcourt'`);
+    expect(String(row.rows[0].name)).toBe('Corrected By The Owner');
+    /* AND `seeded` STAYS TRUE THROUGH A RENAME. It only ever meant "this row was
+     * not typed by a person"; letting a correction clear it would make the Areas
+     * screen call a shipped row hand-made the moment somebody fixed its spelling. */
+    expect(row.rows[0].seeded).toBe(true);
+    expect(row.rows[0].active).toBe(true);
+
+    await db.execute(sql`
+      UPDATE marketing_service_areas SET name = 'Port Harcourt', active = false
+       WHERE id = 'area_rivers_port_harcourt'`);
   });
 });

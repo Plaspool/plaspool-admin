@@ -256,27 +256,65 @@
   }
 }
 
+/*
+ * A CARD IS A PHYSICAL OBJECT YOU PRESS.
+ *
+ * The old card said "clickable" the way most web cards do — a hairline border
+ * and a soft blurred shadow on hover — which is a claim you can only test by
+ * clicking. This one carries a drawn edge and a hard offset shadow at rest, so
+ * it reads as a thing sitting slightly above the page BEFORE the pointer
+ * arrives, and pressing it moves it down into its own shadow. The travel and
+ * the shadow are the same `--card-lift`, which is what makes the press look
+ * like the card landing rather than like it shrinking.
+ *
+ * NO BLUR ANYWHERE IN IT. A blurred shadow is a light source; an offset solid
+ * one is a shape. Mixing them gives a card that is lit from two directions.
+ *
+ * The press is scoped to `.card__hit` — the full-card target — rather than to
+ * `.card:active`. Otherwise pressing Edit, or the overflow menu, or a tag,
+ * dropped the whole card 3px for a click that was never about the card.
+ */
 .card {
   position: relative;
   display: flex;
   flex-direction: column;
-  background: var(--paper-raised);
-  border: 1px solid var(--rule);
+  background: var(--card-paper);
+  /* 2px, NOT 1.5. Chrome snaps a border's used width down to whole device
+     pixels: on a 1.25× display — the Windows default — 1.5px was drawn as one
+     device pixel, which is a hairline, which is the thing this edge exists not
+     to be. Measured at 0.8 computed px before this. */
+  border: 2px solid var(--card-line);
   border-radius: var(--radius-l);
+  box-shadow: var(--card-lift) var(--card-lift) 0 var(--card-line);
   overflow: hidden;
   transition:
-    border-color var(--dur-2) var(--ease),
-    box-shadow var(--dur-2) var(--ease),
-    transform var(--dur-2) var(--ease);
+    box-shadow var(--dur-1) var(--ease),
+    transform var(--dur-1) var(--ease);
 }
-/* One hover signal, not three. The card lifts; the image sits still. */
 .card:hover {
-  border-color: var(--rule-strong);
-  box-shadow: var(--shadow-2);
+  transform: translate(-2px, -2px);
+  box-shadow: 5px 5px 0 var(--card-line);
 }
 .card:focus-within {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  box-shadow:
+    var(--card-lift) var(--card-lift) 0 var(--card-line),
+    0 0 0 3px var(--accent-soft);
+}
+/* Down into its own shadow, and the shadow goes with it. */
+.card:has(.card__hit:active) {
+  transform: translate(var(--card-lift), var(--card-lift));
+  box-shadow: 0 0 0 0 var(--card-line);
+}
+/* A hard shadow that snaps between two positions is the one motion here that a
+   reduced-motion reader would feel as a jolt rather than as feedback. */
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .card:hover,
+  .card:has(.card__hit:active) {
+    transform: none;
+    transition: none;
+  }
 }
 /* The accent marks what is live. Published posts carry a spine of it. */
 .card::before {
@@ -325,8 +363,18 @@
   outline-offset: -3px;
 }
 
+/*
+ * THE PICTURE IS INSET, NOT BLED — it sits inside the card's padding with a
+ * radius of its own, which is what stops the card reading as a photo with a
+ * caption stuck under it. It is also below the words now (see `PostCard.tsx`),
+ * so bleeding it to the edges would put a hard rectangle across the bottom of
+ * every row and give the grid a false baseline.
+ */
 .card__media {
-  aspect-ratio: 16 / 8;
+  position: relative;
+  margin: 0 var(--s4) var(--s4);
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius-m);
   background: var(--paper-sunken);
   overflow: hidden;
 }
@@ -336,11 +384,34 @@
   object-fit: cover;
   display: block;
 }
+/* The reference design's cue, in the corner it draws it in. Not a control: the
+   card is the control, so this takes no clicks and no focus. */
+.card__more {
+  position: absolute;
+  left: var(--s3);
+  bottom: var(--s3);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  border-radius: var(--radius-full);
+  background: var(--paper-raised);
+  color: var(--ink);
+  font-size: var(--step--2);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.18);
+  pointer-events: none;
+}
+.card__more .ui-ic {
+  width: 0.85rem;
+  height: 0.85rem;
+  transition: transform var(--dur-2) var(--ease);
+}
+.card:hover .card__more .ui-ic {
+  transform: translateX(3px);
+}
 
 /* Text-only posts get room for words instead of a placeholder rectangle. */
-.card--textonly .card__body {
-  padding-top: var(--s5);
-}
 .card--textonly .card__title {
   font-size: var(--step-3);
   -webkit-line-clamp: 3;
@@ -354,7 +425,8 @@
 .card__body {
   padding: var(--s4);
   display: grid;
-  gap: var(--s2);
+  gap: var(--s3);
+  align-content: start;
   flex: 1;
 }
 
@@ -364,12 +436,23 @@
   gap: var(--s2);
   flex-wrap: wrap;
 }
+/* A FILLED PILL, not a line of small grey capitals. The category is the first
+   thing the reference design puts on a card and the first thing a person sorts
+   a grid by; set in the ink the card is edged in, it reads as a label attached
+   to the object rather than as a caption above it. Sentence case, because that
+   is how the categories are written — the old rule shouted them. */
 .card__cat {
+  padding: 3px var(--s3);
+  border-radius: var(--radius-full);
+  background: var(--ink);
+  color: var(--paper);
   font-size: var(--step--2);
-  color: var(--ink-4);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
   font-weight: 600;
+  letter-spacing: 0.01em;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card__title {
@@ -439,19 +522,53 @@
   opacity: 0.7;
 }
 
-.card__foot {
+/*
+ * WHO WROTE IT, AND WHEN — one line where there used to be a row of grey stats.
+ *
+ * `margin-top: auto` is what keeps it on the card's floor no matter how short
+ * the excerpt is, so a grid of mixed-length posts has its bylines on one line
+ * instead of scattered up the row.
+ */
+.card__by {
   display: flex;
   align-items: center;
-  gap: var(--s2);
+  gap: var(--s3);
   margin-top: auto;
   padding-top: var(--s2);
+  min-width: 0;
+}
+/* Initials, not a remote avatar: this list must paint from cache with no
+   network, which is the same reason the rail draws its identity this way. */
+.card__avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: var(--radius-full);
+  background: var(--paper-sunken);
+  border: 1px solid var(--rule);
+  color: var(--ink-3);
+  font-size: var(--step--2);
+  font-weight: 600;
+}
+.card__byline {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.card__author {
+  font-size: var(--step--1);
+  font-weight: 600;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card__when {
   font-size: var(--step--2);
   color: var(--ink-4);
   font-variant-numeric: tabular-nums;
-  flex-wrap: wrap;
-}
-.card__dot {
-  opacity: 0.5;
 }
 
 .card__actions {
@@ -461,8 +578,11 @@
   align-items: center;
   gap: var(--s1);
   padding: var(--s2) var(--s3);
-  border-top: 1px solid var(--rule);
-  background: var(--paper);
+  /* The card's own edge colour rather than `--rule`: on a card that is drawn
+     with a hard 1.5px line, a hairline divider inside it reads as a mistake in
+     the same drawing. Softened so it is a fold, not a second border. */
+  border-top: 1px solid color-mix(in srgb, var(--card-line) 28%, transparent);
+  background: color-mix(in srgb, var(--card-line) 5%, transparent);
 }
 .card__act {
   border: 0;

@@ -46,6 +46,10 @@ export function newId(prefix: string): string {
  * know which table a row came from.
  */
 export const ID = {
+  /** A place a van goes. The seed's rows carry DETERMINISTIC ids derived from
+   *  region and name (`scripts/gen-service-areas.ts` says why); this prefix is
+   *  for the ones an owner adds by hand afterwards. */
+  serviceArea: 'area_',
   program: 'prg_',
   /** A return REQUEST. The lifecycle row, not an event about it. */
   return: 'ret_',

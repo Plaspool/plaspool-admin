@@ -104,6 +104,13 @@ function mount(initial = '/edit/p_1') {
           { path: '/settings', element: <p>THE SETTINGS</p> },
         ],
       },
+      /*
+       * OUTSIDE the shell, exactly as in `main.tsx`. Sign-in is a route of its
+       * own now rather than something the guard rendered in place, and putting
+       * it inside `AppShell` here would send a refused boot straight back
+       * through the guard that bounced it.
+       */
+      { path: '/login', element: <p>THE LOGIN PAGE</p> },
     ],
     { initialEntries: [initial] },
   );
@@ -161,12 +168,29 @@ describe('what each session state renders', () => {
     expect(screen.queryByText('THE EDITOR')).toBeNull();
   });
 
-  it('a boot that was refused shows the full login screen', async () => {
+  it('a boot that was refused sends them to the sign-in route', async () => {
     fixture.box.session = { status: 'anonymous', reason: 'boot', user: null };
-    mount();
+    const router = mount();
 
-    expect(await screen.findByLabelText(/password/i)).toBeTruthy();
+    expect(await screen.findByText('THE LOGIN PAGE')).toBeTruthy();
     expect(screen.queryByText('THE EDITOR')).toBeNull();
+    expect(router.state.location.pathname).toBe('/login');
+  });
+
+  /**
+   * The redirect must not cost the writer their destination.
+   *
+   * Sign-in used to render in place, so someone who opened `/settings` signed
+   * out was already on `/settings` once they got through. A bare redirect
+   * throws that away, so the route is carried in router state and `Login`
+   * sends them on — this pins the half the guard is responsible for.
+   */
+  it('carries the route it bounced them off, so sign-in can send them back', async () => {
+    fixture.box.session = { status: 'anonymous', reason: 'boot', user: null };
+    const router = mount('/settings');
+
+    await screen.findByText('THE LOGIN PAGE');
+    expect((router.state.location.state as { from?: string } | null)?.from).toBe('/settings');
   });
 });
 

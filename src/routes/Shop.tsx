@@ -268,10 +268,16 @@ function Figures({ stats }: { stats: ShopStats }) {
                           {ORDER_STATUS_LABEL[row.status] ?? row.status}
                         </span>
                       </td>
-                      <td className="dtable__num">{row.count.toLocaleString()}</td>
+                      <td className="dtable__num" data-label="Orders">
+                        {row.count.toLocaleString()}
+                      </td>
                       {/* Gross, and the header says so — `revenue` above is the
-                          figure that is net of refunds. */}
-                      <td className="dtable__num">{formatMinor(row.total, row.currency)}</td>
+                          figure that is net of refunds. The stacked phone row
+                          has no header to say it, so `data-label` carries the
+                          word rather than repeating the bare number. */}
+                      <td className="dtable__num" data-label="Value, gross">
+                        {formatMinor(row.total, row.currency)}
+                      </td>
                     </tr>
                   ))
                 )}
@@ -284,7 +290,31 @@ function Figures({ stats }: { stats: ShopStats }) {
       {lowStock.length > 0 && (
         <section className="panel">
           <div className="panel__head">
-            <h2 className="panel__title">Running out</h2>
+            {/*
+              "Running out" was a mood, not a fact: it named no threshold, no
+              unit and no action, so the number beside each row — Available 3 —
+              had nothing to be low AGAINST. The threshold is the whole content
+              of this panel, and it is a setting, so it has to be on screen
+              rather than in the reader's head. "Low stock" is also what the
+              rest of the shop calls this: `stats.lowStockThreshold`, the tile
+              above, the products screen's own filter.
+            */}
+            <div className="panel__heading">
+              <h2 className="panel__title">Low stock</h2>
+              {/*
+                NOT THE TILE'S SENTENCE AGAIN. The tile says "at or below 5
+                available" and this said it a second time nine pixels lower —
+                a duplicate the test above caught before a reader had to. This
+                line has a different job: it explains the AVAILABLE COLUMN,
+                which is the one number in the list with no meaning until you
+                know what it is being measured against.
+              */}
+              <p className="panel__sub">
+                {lowStock.length === 1 ? 'One variant has' : `${lowStock.length} variants have`}{' '}
+                {stats.lowStockThreshold} or fewer available
+                {stats.lowStockMore ? ', and there are more than these' : ''}.
+              </p>
+            </div>
             <Link className="btn btn--ghost btn--sm" to="/shop/products">
               Open the catalogue
             </Link>
@@ -312,8 +342,12 @@ function Figures({ stats }: { stats: ShopStats }) {
                           {row.productTitle || 'Untitled product'}
                         </Link>
                       </td>
-                      <td className="num">{row.sku}</td>
-                      <td className="dtable__num">{row.available.toLocaleString()}</td>
+                      <td className="num" data-label="SKU">
+                        {row.sku}
+                      </td>
+                      <td className="dtable__num" data-label="Available">
+                        {row.available.toLocaleString()}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -362,8 +396,10 @@ function Figures({ stats }: { stats: ShopStats }) {
                         </Link>
                         <span className="dtable__sub">{order.email}</span>
                       </td>
-                      <td className="num">{WHEN.format(new Date(order.placedAt))}</td>
-                      <td>
+                      <td className="num" data-label="Placed">
+                        {WHEN.format(new Date(order.placedAt))}
+                      </td>
+                      <td data-label="Status">
                         <span className={`chip chip--${order.status}`}>
                           {ORDER_STATUS_LABEL[order.status] ?? order.status}
                         </span>
@@ -374,7 +410,7 @@ function Figures({ stats }: { stats: ShopStats }) {
                         borrow instead — the route groups every total by code
                         precisely so nothing downstream assumes there is one.
                       */}
-                      <td className="dtable__num">
+                      <td className="dtable__num" data-label="Total">
                         {formatMinor(order.grandTotal, order.currency)}
                       </td>
                     </tr>

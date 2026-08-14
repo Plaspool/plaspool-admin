@@ -82,9 +82,9 @@ export interface Brand {
 
 export const brand: Brand = {
   name: 'PlaSpool',
-  tagline: 'Writing studio',
+  tagline: 'Ecommerce platform',
   description:
-    'A local-first publishing studio. Write, organise and read your posts — all of it stored in your browser. No account, no server, no waiting.',
+    'Everything the shop needs in one place: products and orders, rewards, returns and campaigns, and the blog that brings people to them.',
   url: 'https://blog-admin-app-gold.vercel.app',
   social: {},
 

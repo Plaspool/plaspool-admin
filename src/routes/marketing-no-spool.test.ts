@@ -92,6 +92,33 @@ const repoPath = (key: string): string =>
 const NOUN = 'sp' + 'ool';
 const HAS_NOUN = new RegExp(NOUN, 'i');
 
+/**
+ * THE SECOND NEEDLE, AND IT IS A PLACE RATHER THAN A PRODUCT.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * A PLACE NAME IS NOT A LABEL, AND THE RULE IS THE SAME ANYWAY.
+ *
+ * The programme collects where there are drivers — one city today, wherever the
+ * owner switches a district on tomorrow. The served set is a column on
+ * `marketing_service_areas` that a person who is not a developer edits from the
+ * Areas screen, so a component that names the city is wrong for a second,
+ * different reason from the label rule: not "a rename would produce a lie" but
+ * "a switch-off would produce a lie".
+ *
+ * The concrete case this catches: the refusal panel a customer meets when their
+ * address is outside the served set. It is tempting to write "We only collect in
+ * <city> right now" because that is true this morning — and it stays on screen,
+ * unchanged, the week the owner starts collecting somewhere else. The 409
+ * carries `served`, the LIVE list of places, and every sentence about where we
+ * collect must be rendered from it.
+ *
+ * Assembled from halves for the same reason the noun is: this file lives inside
+ * the tree it reads.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+const PLACE = 'ab' + 'uja';
+const HAS_PLACE = new RegExp(PLACE, 'i');
+
 const ROUTES = 'src/routes';
 
 /**
@@ -157,6 +184,32 @@ describe('the marketing section’s sources', () => {
      */
     const guilty = sources().filter((file) => HAS_NOUN.test(read(file)));
     expect(guilty).toEqual([]);
+  });
+
+  it('never write the served city down either — the list is editable', () => {
+    /*
+     * Same grep, different lie. A screen that names the city is correct until
+     * somebody switches a district off, and nothing about the failure announces
+     * itself: the copy still reads plausibly, it is just no longer true.
+     *
+     * Every sentence about where we collect is rendered from data — the `served`
+     * array a `409 outside_service_area` carries, or the areas endpoint's rows.
+     */
+    const guilty = sources().filter((file) => HAS_PLACE.test(read(file)));
+    expect(guilty).toEqual([]);
+  });
+
+  it('is looking for two things that exist — neither needle is broken', () => {
+    /*
+     * The positive control both assertions above need. A grep whose pattern
+     * stopped matching passes hardest of all, so each needle is shown finding
+     * the string it was built from.
+     */
+    expect(HAS_NOUN.test(`a ${NOUN.toUpperCase()} of filament`)).toBe(true);
+    expect(HAS_PLACE.test(`somewhere in ${PLACE}`)).toBe(true);
+    /* …and the full legal name of the region is NOT the needle, which is why the
+     * database may store it and this tree may not name the city. */
+    expect(HAS_PLACE.test('Federal Capital Territory')).toBe(false);
   });
 
   it('spell no colour out in the section’s stylesheet', () => {

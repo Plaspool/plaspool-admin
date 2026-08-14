@@ -113,6 +113,27 @@
       "when": 1786600000800,
       "tag": "0009_variant_images_and_reasons",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1786600000900,
+      "tag": "0010_catalogue_case_fold",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1786600001000,
+      "tag": "0011_marketing",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1786600001100,
+      "tag": "0012_service_areas",
+      "breakpoints": true
     }
   ]
 }

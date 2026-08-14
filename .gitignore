@@ -37,3 +37,10 @@ dist-ssr
 
 # Server bundle for the Vercel function. Build output, like dist/.
 api-build
+
+# Playwright MCP session artifacts. Tooling output, not project source.
+.playwright-mcp/
+
+# Markdown is not published to the remote. Project documentation lives in
+# README.rst; design notes, plans and specs stay local to the working copy.
+*.md

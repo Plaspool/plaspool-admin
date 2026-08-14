@@ -144,6 +144,18 @@ async function wallet(email = EMAIL) {
 
 // ------------------------------------------------------------- the executors
 
+/**
+ * ANY SERVED AREA. Migration 0012 refuses an AWARDED return with no service
+ * area, and every fixture in this file is about the ledger rather than about
+ * geography — so they ask the seed for a board rather than naming one, which
+ * would put a real place name in a test file.
+ *
+ * MODULE SCOPE, because two describes need it and a `const` inside one of them
+ * is not in scope in the other.
+ */
+const anyServedArea = sql`(SELECT id FROM marketing_service_areas
+                            WHERE active ORDER BY id LIMIT 1)`;
+
 describe('credit and debit — the counter is maintained, the ledger explains it', () => {
   it('writes a balance_after chain the customer can read: 100 → 40 → 90', async () => {
     await credit(db, manual({ amount: 100, reason: 'Goodwill', now: NOW }));
@@ -479,9 +491,10 @@ describe('listLedger — contract #17', () => {
     await db.execute(sql`
       INSERT INTO marketing_return_requests
         (id, program_id, customer_email, qty_declared, qty_accepted, qty_rejected,
-         points_per_unit_snapshot, points_awarded, source, status, created_at, updated_at)
+         points_per_unit_snapshot, points_awarded, source, status, service_area_id,
+         created_at, updated_at)
       VALUES (${id}, ${programId}, ${EMAIL}, 7, 7, 0, 10, 70, 'admin', 'awarded',
-              ${T0}, ${T0})`);
+              ${anyServedArea}, ${T0}, ${T0})`);
     return id;
   }
 
@@ -604,9 +617,10 @@ describe('getCustomerSummary — contract #16', () => {
     await db.execute(sql`
       INSERT INTO marketing_return_requests
         (id, program_id, customer_email, qty_declared, qty_accepted, qty_rejected,
-         points_per_unit_snapshot, points_awarded, source, status, created_at, updated_at)
+         points_per_unit_snapshot, points_awarded, source, status, service_area_id,
+         created_at, updated_at)
       VALUES ('ret_done_1', ${programId}, ${EMAIL}, 6, 6, 0, 10, 60, 'admin', 'awarded',
-              ${T0}, ${T0})`);
+              ${anyServedArea}, ${T0}, ${T0})`);
     expect((await getCustomerSummary(db, EMAIL)).openReturn).toBeNull();
   });
 });

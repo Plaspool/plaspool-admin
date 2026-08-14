@@ -158,7 +158,7 @@ export default function Reset() {
             Your password has been changed, and every session that was open
             elsewhere has been signed out. Sign in with the new one.
           </p>
-          <Link className="btn btn--primary" to="/">
+          <Link className="btn btn--primary" to="/dashboard">
             Go to sign in
           </Link>
         </div>

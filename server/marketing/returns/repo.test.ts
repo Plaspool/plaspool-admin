@@ -85,6 +85,31 @@ beforeEach(async () => {
 /** The rejection itself, typed — `.catch(e => e)` widens to `T | error`. A copy
  *  of the helper in `server/shop/orders/test/mutate.ts`, which spec D9 puts out
  *  of reach: marketing never imports `server/shop/**`. */
+
+/**
+ * A place a van goes, named after nothing real.
+ *
+ * ABSURD ON PURPOSE, exactly as the labels are: a fixture named after a district
+ * this business actually serves could not tell code that reads the area off the
+ * row from code that hardcoded the place. It also keeps a real place name out of
+ * a source file, which is the second half of the naming discipline.
+ *
+ * Migration 0012 refuses an AWARDED return with no service area
+ * (`marketing_return_requests_area_award_ck`), so every fixture that walks the
+ * lifecycle to its end needs one.
+ */
+const AREA = 'area_cabbage_quarter';
+
+async function makeArea(): Promise<string> {
+  await db.execute(sql`
+    INSERT INTO marketing_service_areas
+      (id, key, region, name, active, created_at, updated_at)
+    VALUES (${AREA}, 'cabbage-quarter', 'Farflung Province', 'Cabbage Quarter',
+            true, ${T0}, ${T0})
+    ON CONFLICT DO NOTHING`);
+  return AREA;
+}
+
 async function rejection<T>(promise: Promise<unknown>): Promise<T> {
   let caught: unknown;
   let resolved = false;
@@ -138,6 +163,7 @@ async function makeReturn(
     email: overrides.email ?? EMAIL,
     qtyDeclared: overrides.qtyDeclared ?? 6,
     programId,
+    serviceAreaId: await makeArea(),
     customerName: 'Dara',
     pickupAddress: '12 Yaba Road',
     source: 'admin',
@@ -337,6 +363,11 @@ describe('the happy path', () => {
       qtyRejected: 1,
       pointsAwarded: 50,
       outcome: 'awarded',
+      /* Null rather than absent, and null rather than zero: "no top-up was
+       * given" is a fact about this inspection that the modal reads a year later
+       * to render "120" instead of "120 + 0 bonus". */
+      bonusPoints: null,
+      bonusReason: null,
       pointsPerUnit: 10,
       pointsLabelSingular: 'Bottle Cap',
       pointsLabelPlural: 'Bottle Caps',
@@ -821,6 +852,163 @@ describe('the transition guards', () => {
 });
 
 // -------------------------------------------------------------- the inspection
+
+describe('the inspection bonus — two honest sentences, one counter', () => {
+  it('writes the award at EXACTLY quantity × rate, and the top-up beside it', async () => {
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * WHY TWO ROWS RATHER THAN ONE BIGGER AWARD.
+     *
+     * `marketing_return_requests_award_ck` pins `points_awarded = qty_accepted *
+     * points_per_unit_snapshot`, and that equality is what makes the arithmetic
+     * unforgeable — a number anybody can recompute from the row. Folding a bonus
+     * into it would force the check to be relaxed, and the one operation in this
+     * subsystem that costs money and cannot be undone would stop being
+     * checkable. So the award stays exactly the rate and the bonus is its own
+     * sentence: the customer sees one balance, the ledger keeps two lines that
+     * add up to it.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    const row = await returnAt('received');
+    const outcome = await inspect(db, row.id, {
+      expectedRevision: row.revision,
+      qtyAccepted: 5,
+      qtyRejected: 1,
+      rejectedReason: 'Damaged',
+      bonusPoints: 25,
+      bonusReason: 'Kept the caps dry all winter',
+      actorId: ACTOR,
+      now: NOW,
+    });
+
+    /* The ROW's own number is the award alone — the database checks it. */
+    expect(outcome.row.pointsAwarded).toBe(50);
+    expect(outcome.award).toEqual({ points: 50, balance: 75 });
+    expect(outcome.bonus).toEqual({ points: 25, reason: 'Kept the caps dry all winter' });
+
+    const ledger = await ledgerRows(EMAIL);
+    expect(ledger).toHaveLength(2);
+    const award = ledger.find((e) => e.kind === 'return_award');
+    const bonus = ledger.find((e) => e.kind === 'manual');
+
+    expect(Number(award?.delta)).toBe(50);
+    expect(Number(bonus?.delta)).toBe(25);
+    /* VERBATIM AND FOREVER. A discretionary credit nobody explained is an
+     * argument with no record, so the owner's own words are what is stored —
+     * never a template resolved later. */
+    expect(String(bonus?.reason)).toBe('Kept the caps dry all winter');
+
+    /*
+     * THE RUNNING BALANCE READS IN ORDER: 0 → 50 → 75. The counter moved ONCE,
+     * by 75, because a second `ON CONFLICT … DO UPDATE` against the same row in
+     * one statement is refused outright (SQLSTATE 21000, measured against this
+     * schema) — so the two rows split that single movement between them, and
+     * each still says what the customer held after it.
+     */
+    expect(Number(award?.balance_after)).toBe(50);
+    expect(Number(bonus?.balance_after)).toBe(75);
+
+    const balance = await balanceRow(EMAIL);
+    expect(Number(balance?.balance)).toBe(75);
+    /* A bonus is EARNED, so it counts towards loyalty like the award does — and
+     * this is the assertion that catches a second balance CTE being skipped,
+     * since a dropped credit would leave 50 here. */
+    expect(Number(balance?.lifetime_earned)).toBe(75);
+  });
+
+  it('leaves one award row and one bonus row for a replayed inspection', async () => {
+    /*
+     * A replay is a SUCCESS, not a mistake (spec D5) — and it must not pay the
+     * top-up twice. Two structures refuse it: the CAS matches nothing the second
+     * time, and `marketing_ledger_bonus_uq` refuses a second `manual` row for one
+     * return with every application guard deleted.
+     */
+    const row = await returnAt('received');
+    const body = {
+      expectedRevision: row.revision,
+      qtyAccepted: 5,
+      qtyRejected: 1,
+      rejectedReason: 'Damaged',
+      bonusPoints: 25,
+      bonusReason: 'Goodwill',
+      actorId: ACTOR,
+      now: NOW,
+    };
+    await inspect(db, row.id, body);
+    await expect(inspect(db, row.id, body)).rejects.toBeInstanceOf(AlreadyAwardedError);
+
+    expect(await ledgerRows(EMAIL)).toHaveLength(2);
+    expect(Number((await balanceRow(EMAIL))?.balance)).toBe(75);
+  });
+
+  it('refuses a top-up with no reason, and a reason with no top-up', async () => {
+    // Both ways, exactly as the rejection reason is: a credit nobody explained
+    // is an argument with no record; a reason stored where nothing was granted
+    // describes a payment that never happened.
+    const row = await returnAt('received');
+    const base = {
+      expectedRevision: row.revision,
+      qtyAccepted: 5,
+      qtyRejected: 1,
+      rejectedReason: 'Damaged',
+      actorId: ACTOR,
+      now: NOW,
+    };
+    await expect(inspect(db, row.id, { ...base, bonusPoints: 25 })).rejects.toMatchObject({
+      detail: 'bonusReason',
+    });
+    await expect(inspect(db, row.id, { ...base, bonusReason: 'why' })).rejects.toMatchObject({
+      detail: 'bonusReason',
+    });
+    await expect(
+      inspect(db, row.id, { ...base, bonusPoints: 0, bonusReason: 'why' }),
+    ).rejects.toMatchObject({ detail: 'bonusPoints' });
+
+    // Nothing was written by any of the three.
+    expect(await ledgerRows(EMAIL)).toHaveLength(0);
+  });
+
+  it('refuses a top-up on an inspection that accepted nothing', async () => {
+    /*
+     * With nothing accepted there is no award, no ledger row and no balance
+     * change — a "bonus" there would be a manual credit wearing an inspection's
+     * clothes, which is the one shape that would let money be minted on a screen
+     * built for counting goods. The owner has a manual adjustment for that,
+     * under its own name, on its own route.
+     */
+    const row = await returnAt('received');
+    await expect(
+      inspect(db, row.id, {
+        expectedRevision: row.revision,
+        qtyAccepted: 0,
+        qtyRejected: 6,
+        rejectedReason: 'Contaminated',
+        bonusPoints: 25,
+        bonusReason: 'Sorry about that',
+        actorId: ACTOR,
+        now: NOW,
+      }),
+    ).rejects.toMatchObject({ detail: 'bonusPoints' });
+    expect(await ledgerRows(EMAIL)).toHaveLength(0);
+  });
+
+  it('is absent from an ordinary inspection — no row, no null delta, nothing', async () => {
+    const row = await returnAt('received');
+    const outcome = await inspect(db, row.id, {
+      expectedRevision: row.revision,
+      qtyAccepted: 5,
+      qtyRejected: 1,
+      rejectedReason: 'Damaged',
+      actorId: ACTOR,
+      now: NOW,
+    });
+    expect(outcome.bonus).toBeNull();
+    const ledger = await ledgerRows(EMAIL);
+    expect(ledger).toHaveLength(1);
+    expect(String(ledger[0].kind)).toBe('return_award');
+    expect(Number((await balanceRow(EMAIL))?.balance)).toBe(50);
+  });
+});
 
 describe('inspecting', () => {
   it('lands an inspection that accepts nothing in rejected, writing no ledger row and no balance', async () => {

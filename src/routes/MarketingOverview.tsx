@@ -1025,13 +1025,15 @@ function Banners({ banners }: { banners: Banner[] }) {
                         </Link>
                         <span className="mkttable__sub">{PLACEMENT_WHAT[banner.placement]}</span>
                       </td>
-                      <td>
+                      <td data-label="Showing">
                         <span className={`chip ${BANNER_CHIP[state]}`}>{BANNER_WHAT[state]}</span>
                       </td>
                       {/* Only meaningful against the others in its placement,
                           which is why it sits beside the placement rather than
                           alone in a column of its own. */}
-                      <td className="mkttable__num">{banner.priority}</td>
+                      <td className="mkttable__num" data-label="Priority">
+                        {banner.priority}
+                      </td>
                     </tr>
                   );
                 })}

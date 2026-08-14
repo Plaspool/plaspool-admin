@@ -85,7 +85,13 @@ export type ReturnAction =
  * A union rather than a free string so a route cannot invent `banners` where the
  * client reads `banner` and leave a conflict banner rendering nothing.
  */
-export type MarketingEntity = 'program' | 'settings' | 'request' | 'banner' | 'discount';
+export type MarketingEntity =
+  | 'program'
+  | 'settings'
+  | 'request'
+  | 'banner'
+  | 'discount'
+  | 'area';
 
 /**
  * The CAS lost, and the caller gets the row that beat it — under its own name.
@@ -340,6 +346,85 @@ export class DuplicateProgramKeyError extends BadRequestError {
     super('key');
     this.name = 'DuplicateProgramKeyError';
     this.key = key;
+  }
+}
+
+/**
+ * The address is not in a place we collect from — absent, unknown, or a real
+ * area that is switched off.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ONE CODE FOR ALL THREE, AND IT CARRIES THE PLACES WE *DO* SERVE.
+ *
+ * A customer told only "no" has been given a dead end; told "not there, but here
+ * are the places that work" they have something to do — which is the whole of
+ * the wireframe's refusal panel. The list travels because the client cannot know
+ * it: an owner switching a district off at nine in the morning must change that
+ * sentence at nine in the morning, and a served set baked into a bundle would
+ * keep promising a van for as long as the bundle was cached.
+ *
+ * THE THREE CONDITIONS ARE NOT DISTINGUISHED ON PURPOSE. "That district exists
+ * in our database but is switched off" is an internal detail dressed up as help;
+ * to the person reading it, all three mean "pick another address".
+ *
+ * A 409 AND NOT A 400, because nothing about the FIELD is malformed: the value
+ * may name a real place, and what refuses it is the state of the business. The
+ * admin's own intake dialog gets the same answer, so nobody schedules a van they
+ * cannot send.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+export class OutsideServiceAreaError extends MarketingConflictError {
+  readonly served: string[];
+
+  constructor(served: string[]) {
+    super('create');
+    this.name = 'OutsideServiceAreaError';
+    this.served = served;
+  }
+}
+
+/**
+ * Switching off an area that still holds open returns.
+ *
+ * IT CARRIES THE COUNT so the UI can offer the move rather than a bare refusal.
+ * Deactivating would strand those returns: they would fall off every board into
+ * the out-of-area footer, unrewardable, with nothing on screen to say why. A van
+ * that stops running does not make its pickups disappear.
+ *
+ * Only DEACTIVATION is ever refused. Switching an area on strands nothing.
+ */
+export class AreaInUseError extends MarketingConflictError {
+  readonly open: number;
+
+  constructor(open: number) {
+    super('deactivate');
+    this.name = 'AreaInUseError';
+    this.open = open;
+  }
+}
+
+/**
+ * That region already holds an area by that name.
+ *
+ * SCOPED TO THE REGION, like the index behind it: place names genuinely repeat
+ * across states, and a global uniqueness would refuse the second state a real
+ * place. It carries both halves so the form can say which pair collided rather
+ * than echoing whatever is currently in the input.
+ *
+ * `BadRequestError` underneath with `detail: 'name'` — the `DuplicateSkuError`
+ * arrangement — so a mount without marketing's `onError` still answers a
+ * retry-stopping 4xx aimed at the field a person would fix, and the catalogue
+ * upgrades it to the 409 that "already exists" actually is.
+ */
+export class DuplicateAreaError extends BadRequestError {
+  readonly region: string;
+  readonly areaName: string;
+
+  constructor(region: string, areaName: string) {
+    super('name');
+    this.name = 'DuplicateAreaError';
+    this.region = region;
+    this.areaName = areaName;
   }
 }
 

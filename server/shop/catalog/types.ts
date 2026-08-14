@@ -100,6 +100,13 @@ export interface Variant {
    * between eight PLA colours was choosing between eight words.
    */
   imageId: string | null;
+  /**
+   * The colour code of this option (migration 0010) — `#8b5a2b`, lowercase,
+   * NULL for anything that is not a colour or has not been given one. A column
+   * rather than a key in `optionValues` because the tuple is the variant's
+   * identity and feeds SKU derivation; a swatch is presentation.
+   */
+  colorHex: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -168,4 +175,6 @@ export interface VariantPatch {
   status?: VariantStatus;
   /** `null` clears it. Validated as a committed image, like a product's cover. */
   imageId?: string | null;
+  /** `null` clears it. Lowercased and shape-checked on the way in. */
+  colorHex?: string | null;
 }

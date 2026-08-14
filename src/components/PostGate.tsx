@@ -228,7 +228,7 @@ function LocalOnly({ post }: { post: LocalPost }) {
         <Link className="btn btn--primary" to="/migrate">
           Review and upload
         </Link>
-        <Link className="btn btn--ghost" to="/">
+        <Link className="btn btn--ghost" to="/dashboard">
           Back to your posts
         </Link>
       </div>
@@ -251,7 +251,7 @@ function ReadOnly({ post }: { post: CachedPost }) {
         <Link className="btn btn--primary" to={`/read/${post.id}`}>
           Read it
         </Link>
-        <Link className="btn btn--ghost" to="/">
+        <Link className="btn btn--ghost" to="/dashboard">
           Back to your posts
         </Link>
       </div>
@@ -274,7 +274,7 @@ function OfflinePost({ onRetry }: { onRetry: () => void }) {
         <button className="btn btn--primary" onClick={onRetry}>
           Try again
         </button>
-        <Link className="btn btn--ghost" to="/">
+        <Link className="btn btn--ghost" to="/dashboard">
           Back to your posts
         </Link>
       </div>
@@ -292,7 +292,7 @@ function Forbidden() {
           The server refused to hand it over. If you think that is wrong, ask an
           owner of this publication.
         </p>
-        <Link className="btn btn--primary" to="/">
+        <Link className="btn btn--primary" to="/dashboard">
           Back to your posts
         </Link>
       </div>

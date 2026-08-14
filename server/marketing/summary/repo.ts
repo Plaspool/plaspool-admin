@@ -133,13 +133,19 @@ async function readTiles(db: Db, now: number): Promise<SummaryTiles> {
 async function readOldestOpen(db: Db, limit: number): Promise<ReturnListItem[]> {
   const res = await db.execute(sql`
     SELECT r.id, r.status, r.revision, r.customer_email, r.customer_name, r.qty_declared,
-           r.qty_accepted, r.qty_rejected, r.points_awarded, r.pickup_scheduled_at,
-           r.pickup_address, r.created_at, r.updated_at,
+           r.qty_accepted, r.qty_rejected, r.points_per_unit_snapshot, r.points_awarded,
+           r.pickup_scheduled_at, r.pickup_address, r.service_area_id,
+           r.created_at, r.updated_at,
            p.id AS prog_id, p.name AS prog_name,
            p.points_label_singular AS prog_points_one, p.points_label_plural AS prog_points_other,
-           p.unit_label_singular AS prog_unit_one, p.unit_label_plural AS prog_unit_other
+           p.unit_label_singular AS prog_unit_one, p.unit_label_plural AS prog_unit_other,
+           a.name AS area_name
       FROM marketing_return_requests r
       JOIN marketing_programs p ON p.id = r.program_id
+      /* LEFT, because a return from outside the served set is a legal row and
+       * the Overview's "oldest open" panel is exactly where an operator should
+       * meet one — an inner join would hide the returns nobody can award. */
+      LEFT JOIN marketing_service_areas a ON a.id = r.service_area_id
      WHERE r.status IN (${openList})
      ORDER BY r.created_at ASC, r.id ASC
      LIMIT ${limit}`);
@@ -155,10 +161,19 @@ async function readOldestOpen(db: Db, limit: number): Promise<ReturnListItem[]> 
       qtyDeclared: Number(row.qty_declared),
       qtyAccepted: row.qty_accepted == null ? null : Number(row.qty_accepted),
       qtyRejected: row.qty_rejected == null ? null : Number(row.qty_rejected),
+      /* The rate the customer was PROMISED, so the Overview's oldest-open panel
+       * and a board card price the same return identically. */
+      pointsPerUnitSnapshot: Number(row.points_per_unit_snapshot),
       pointsAwarded: row.points_awarded == null ? null : Number(row.points_awarded),
       pickupScheduledAt: toEpochMsOrNull(row.pickup_scheduled_at),
       pickupAddress: row.pickup_address == null ? null : String(row.pickup_address),
       allowedActions: allowedActionsFor(status),
+      /* The same shape the queue ships, so one row renderer draws a card on the
+       * Overview and on a board. Null is the out-of-area footer. */
+      serviceArea:
+        row.service_area_id == null
+          ? null
+          : { id: String(row.service_area_id), name: String(row.area_name) },
       createdAt: toEpochMs(row.created_at),
       updatedAt: toEpochMs(row.updated_at),
       program: {

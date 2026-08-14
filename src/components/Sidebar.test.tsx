@@ -90,7 +90,7 @@ function setViewport(width: number): void {
 }
 
 /** The sidebar on its own, which is how it is written: props in, markup out. */
-function mount(initial = '/') {
+function mount(initial = '/dashboard') {
   render(
     <TooltipProvider>
       <MemoryRouter initialEntries={[initial]}>
@@ -108,7 +108,7 @@ function mountShell(initial: string) {
       {
         element: <AppShell />,
         children: [
-          { path: '/', element: <p>THE DASHBOARD</p> },
+          { path: '/dashboard', element: <p>THE DASHBOARD</p> },
           { path: '/edit/:id', element: <p>THE EDITOR</p> },
           { path: '/read/:id', element: <p>THE READER</p> },
           { path: '/settings', element: <p>THE SETTINGS</p> },
@@ -194,11 +194,38 @@ describe('the resting state', () => {
     expect(screen.getByRole('link', { name: 'Shop' }).getAttribute('aria-current')).toBe('page');
   });
 
+  it('goes back into the section you are standing in, and keeps the filter', async () => {
+    mount('/dashboard?status=draft');
+    await userEvent.click(screen.getByRole('button', { name: /show all sections/i }));
+
+    await userEvent.click(screen.getByRole('button', { name: 'Show Posts pages' }));
+
+    expect(screen.getByRole('link', { name: /^Published/ })).toBeTruthy();
+    // Still on Drafts. The chevron only lifts the rail back down a level — the
+    // Posts LINK beside it would have navigated to the unfiltered dashboard,
+    // which is why re-entering is not that link's job.
+    expect(screen.getByRole('link', { name: /^Drafts/ }).getAttribute('aria-current')).toBe('page');
+  });
+
+  it('re-enters on the section link too, which navigates nowhere new', async () => {
+    mount('/dashboard');
+    await userEvent.click(screen.getByRole('button', { name: /show all sections/i }));
+
+    // Posts from `/dashboard` changes neither the path nor the query, so the
+    // effect that normally drops the rail back into a section never runs. Left
+    // to it, the five filters were unreachable until the page was reloaded —
+    // the section you are standing in was the one section you could not open.
+    await userEvent.click(screen.getByRole('link', { name: 'Posts' }));
+
+    expect(screen.getByRole('link', { name: /^Drafts/ })).toBeTruthy();
+    expect(screen.getByRole('link', { name: /^Published/ })).toBeTruthy();
+  });
+
   it('carries the rest of the query across a Posts filter', () => {
     // The tab row it replaces did this through `writeFilters`. Switching from
     // Drafts to Published with a search and a category set has to keep both, or
     // the rail becomes a way to silently clear filters set two clicks ago.
-    mount('/?status=draft&q=neon&category=Tech');
+    mount('/dashboard?status=draft&q=neon&category=Tech');
 
     const href = screen.getByRole('link', { name: /^Published/ }).getAttribute('href') || '';
     expect(href).toContain('status=published');
@@ -264,7 +291,7 @@ describe('pinning', () => {
 
 describe('which routes get chrome', () => {
   it('shows the sidebar on the dashboard', async () => {
-    mountShell('/');
+    mountShell('/dashboard');
 
     expect(await screen.findByText('THE DASHBOARD')).toBeTruthy();
     expect(screen.getByRole('complementary', { name: 'Sections' })).toBeTruthy();
@@ -342,6 +369,18 @@ describe('the drawer, under 720px', () => {
     expect(document.activeElement).toBe(handle);
   });
 
+  it('closes on a Posts filter, which changes only the query', async () => {
+    const rail = mount('/dashboard');
+    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+
+    await userEvent.click(screen.getByRole('link', { name: /^Drafts/ }));
+
+    // The five Posts filters are one route with a `?status=`, so a close keyed
+    // on the path alone left the drawer sitting over the list it had just
+    // filtered — on the section the rail is used most for, and only on a phone.
+    expect(rail.getAttribute('data-open')).toBe('false');
+  });
+
   it('offers no handle once the window is wide again', () => {
     setViewport(1280);
     const rail = mount();
@@ -357,7 +396,7 @@ describe('aria-current follows the route', () => {
     userEvent.click(screen.getByRole('button', { name: /show all sections/i }));
 
   it('marks Posts at the root', async () => {
-    mount('/');
+    mount('/dashboard');
     await drillUp();
 
     expect(screen.getByRole('link', { name: 'Posts' }).getAttribute('aria-current')).toBe('page');
@@ -372,7 +411,7 @@ describe('aria-current follows the route', () => {
   });
 
   it('marks the Posts filter the URL is showing', () => {
-    mount('/?status=draft');
+    mount('/dashboard?status=draft');
 
     expect(screen.getByRole('link', { name: /^Drafts/ }).getAttribute('aria-current')).toBe('page');
     // `All` is the empty status, so it must not also light up.

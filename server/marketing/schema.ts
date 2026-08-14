@@ -189,6 +189,87 @@ export const marketingSettings = pgTable(
   ],
 );
 
+// -------------------------------------------------------------- service areas
+
+/**
+ * A place a van goes — and the reason the rewards programme is honest about
+ * where it works.
+ *
+ * A return comes back only because a driver fetches it, so the programme
+ * operates where there are drivers. THE MODEL IS NATIONAL AND ONLY THE DATA IS
+ * ONE CITY: an area is a name in a region with an active flag, every area
+ * outside the served region ships INACTIVE, and expanding is an owner switching
+ * rows on rather than a migration. Nothing in this file, the routes or the
+ * screens may name the city that is served today — both grep guards fail on it,
+ * because the served set is editable and anything that matched on the place
+ * would be wrong the first time a district was switched off.
+ *
+ * `key` IS THE STABLE HANDLE AND `name` IS WHAT PEOPLE READ. The shipped dataset
+ * has real errors in it, and the fix is a rename on the Areas screen rather than
+ * an edit to a migration that has already run — so the name moves, the key does
+ * not, and `seeded` keeps meaning "this row was not typed by a person" across
+ * any number of renames.
+ */
+export const marketingServiceAreas = pgTable(
+  'marketing_service_areas',
+  {
+    id: text('id').primaryKey(),
+    key: text('key').notNull(),
+    /** The state. Areas are grouped by it on the Areas screen, and the switcher
+     *  groups by it only when more than one region has a served area. */
+    region: text('region').notNull(),
+    name: text('name').notNull(),
+    /**
+     * Lowercase spellings a person might type — `wuse 2`, `cbd`. The resolver
+     * folds case and punctuation out of `name` too, so this holds only the OTHER
+     * spellings and never a second copy of the name.
+     */
+    aliases: text('aliases').array().notNull().default([]),
+    /** OFF BY DEFAULT. The failure mode of a forgotten flag is then "we do not
+     *  serve there" rather than "we promised a van we cannot send". */
+    active: boolean('active').notNull().default(false),
+    /** True only for rows migration 0012 installed. Renaming one keeps it true —
+     *  it only ever meant "this row did not come from a person". */
+    seeded: boolean('seeded').notNull().default(false),
+    sortOrder: integer('sort_order').notNull().default(0),
+    revision: integer('revision').notNull().default(1),
+    createdAt: epochMs('created_at').notNull(),
+    updatedAt: epochMs('updated_at').notNull(),
+  },
+  (t) => [
+    uniqueIndex('marketing_service_areas_key_uq').on(t.key),
+    index('marketing_service_areas_region_idx').on(t.region, t.active, t.sortOrder),
+    check(
+      'marketing_service_areas_key_ck',
+      sql`${t.key} <> '' AND ${t.key} = lower(${t.key}) AND ${t.key} ~ '^[a-z0-9][a-z0-9_-]*$'`,
+    ),
+    check(
+      'marketing_service_areas_region_ck',
+      sql`${t.region} <> '' AND ${t.region} = btrim(${t.region})`,
+    ),
+    check('marketing_service_areas_name_ck', sql`${t.name} <> '' AND ${t.name} = btrim(${t.name})`),
+    /* The array's own text form, because a CHECK may not contain a subquery and
+     * `unnest` in one is a subquery. An element with a capital in it is the only
+     * way the rendered literal can differ from its own `lower()`. */
+    check(
+      'marketing_service_areas_aliases_ck',
+      sql`${t.aliases}::text = lower(${t.aliases}::text)
+          AND array_position(${t.aliases}, '') IS NULL
+          AND array_position(${t.aliases}, NULL) IS NULL`,
+    ),
+    check('marketing_service_areas_sort_order_ck', sql`${t.sortOrder} >= 0`),
+    check('marketing_service_areas_revision_ck', sql`${t.revision} > 0`),
+    /*
+     * NOTE: `marketing_service_areas_region_name_uq` — UNIQUE over
+     * `(region, lower(name))` — is an EXPRESSION index, which drizzle-kit cannot
+     * model any more than it can a partial one. It lives only in migration 0012,
+     * and `schema.test.ts` asserts the REFUSAL rather than the name: an index
+     * that exists without the `lower()` would let one region hold "Utako" and
+     * "utako" as two boards.
+     */
+  ],
+);
+
 // ------------------------------------------------------------ return requests
 
 /**
@@ -217,6 +298,17 @@ export const marketingReturnRequests = pgTable(
     customerName: text('customer_name'),
     customerPhone: text('customer_phone'),
     pickupAddress: text('pickup_address'),
+    /**
+     * WHICH BOARD THIS RETURN IS ON. NULL means out of area — a legal state (a
+     * phone-in from out of town) and an unrewardable one.
+     *
+     * A REAL FOREIGN KEY, unlike `customerId` two lines up: that is the shop's
+     * id and this is marketing's own row in marketing's own table, which the
+     * switcher's counts join against on every read. Declared in migration 0012
+     * with no `ON DELETE`, so an area that has ever held a return cannot be
+     * deleted — switching it off is the retirement.
+     */
+    serviceAreaId: text('service_area_id'),
     qtyDeclared: integer('qty_declared').notNull(),
     qtyAccepted: integer('qty_accepted'),
     qtyRejected: integer('qty_rejected'),
@@ -277,7 +369,21 @@ export const marketingReturnRequests = pgTable(
           OR (${t.qtyAccepted} >= 1 AND ${t.qtyRejected} IS NOT NULL
               AND ${t.pointsAwarded} = ${t.qtyAccepted} * ${t.pointsPerUnitSnapshot})`,
     ),
+    /*
+     * THE SERVICE-AREA GATE'S TEETH (migration 0012). Every other layer that
+     * keeps an unserved address from earning is code — the picker, the intake
+     * route's 409, a board with nowhere to put it — and code is edited. This is
+     * what makes "outside the served set cannot earn" true with all of them
+     * deleted. It does not block `rejected` or `cancelled`: an out-of-area
+     * return must still be closable, with a reason.
+     */
+    check(
+      'marketing_return_requests_area_award_ck',
+      sql`${t.status} <> 'awarded' OR ${t.serviceAreaId} IS NOT NULL`,
+    ),
     check('marketing_return_requests_revision_ck', sql`${t.revision} > 0`),
+    /* NOTE: `marketing_return_requests_area_idx` — `(service_area_id, status,
+     * created_at DESC, id DESC)`, the board's read — is in migration 0012. */
     /*
      * NOTE: `marketing_return_requests_open_uq` — UNIQUE `(customer_email)`
      * WHERE the status is one of the four live ones — is PARTIAL, and drizzle-kit
@@ -390,9 +496,18 @@ export const marketingLedger = pgTable(
     check('marketing_ledger_reason_ck', sql`${t.reason} <> ''`),
     check('marketing_ledger_actor_ck', sql`${t.actorType} IN ('admin','customer','system')`),
     /* Each kind, coupled to the columns that make it auditable. */
+    /*
+     * AN IMPLICATION, NOT AN EQUALITY — relaxed by migration 0012 so the
+     * inspection's optional bonus can be a `manual` row that says WHICH return
+     * earned it. The half that mattered is kept: an award still cannot exist
+     * without a return. The bonus is a second row rather than a bigger award
+     * because `marketing_return_requests_award_ck` pins the award to exactly
+     * quantity times rate, and that equality is what makes the arithmetic
+     * unforgeable.
+     */
     check(
       'marketing_ledger_award_link_ck',
-      sql`(${t.kind} = 'return_award') = (${t.returnRequestId} IS NOT NULL)`,
+      sql`${t.kind} <> 'return_award' OR ${t.returnRequestId} IS NOT NULL`,
     ),
     check(
       'marketing_ledger_order_link_ck',
@@ -414,6 +529,11 @@ export const marketingLedger = pgTable(
      * PARTIAL and live only in migration 0011. They are the reason awarding one
      * return twice is a 23505 with every application guard deleted, so
      * `schema.test.ts` asserts the refusal itself and not merely the names.
+     *
+     * `marketing_ledger_bonus_uq` — `(return_request_id) WHERE kind = 'manual'
+     * AND return_request_id IS NOT NULL` — is the fourth, added by 0012. A bonus
+     * is money minted by hand, which is if anything the more attractive thing to
+     * replay, so it gets the same structural refusal an award has.
      */
   ],
 );
@@ -637,6 +757,7 @@ export const marketingDiscountCodes = pgTable(
   ],
 );
 
+export type DbMarketingServiceArea = typeof marketingServiceAreas.$inferSelect;
 export type DbMarketingProgram = typeof marketingPrograms.$inferSelect;
 export type DbMarketingSettings = typeof marketingSettings.$inferSelect;
 export type DbMarketingReturnRequest = typeof marketingReturnRequests.$inferSelect;

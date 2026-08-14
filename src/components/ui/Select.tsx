@@ -20,18 +20,26 @@ export function Select<T extends string>({
   options,
   label,
   size = 'md',
+  placeholder,
 }: {
   value: T;
   onChange: (v: T) => void;
   options: SelectOption<T>[];
   label: string;
   size?: 'sm' | 'md';
+  /**
+   * Shown while `value` is `''`. Radix treats an empty string as "nothing
+   * selected" and renders the `placeholder` INSTEAD of the option's own label
+   * — so an `{ value: '', label: 'Choose…' }` option's label never appears on
+   * the trigger and the control sits visibly blank without this.
+   */
+  placeholder?: string;
 }) {
   const current = options.find((o) => o.value === value);
   return (
     <RS.Root value={value} onValueChange={(v) => onChange(v as T)}>
       <RS.Trigger className={`ui-select ui-select--${size}`} aria-label={label}>
-        <RS.Value>{current?.label}</RS.Value>
+        <RS.Value placeholder={placeholder}>{current?.label}</RS.Value>
         <RS.Icon asChild>
           <ChevronDown className="ui-ic" aria-hidden="true" />
         </RS.Icon>

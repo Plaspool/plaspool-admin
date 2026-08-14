@@ -15,6 +15,7 @@ import {
   Award,
   BadgePercent,
   ChevronLeft,
+  ChevronRight,
   Globe,
   History,
   LayoutDashboard,
@@ -27,6 +28,7 @@ import {
   PanelLeft,
   PanelLeftClose,
   PanelTop,
+  MapPin,
   PencilLine,
   Receipt,
   RotateCcw,
@@ -87,8 +89,19 @@ interface Section {
   icon: typeof Newspaper;
 }
 
+/**
+ * The dashboard's path, in one place because three things here derive from it:
+ * the Posts section, its five filter items, and the `isPageActive` comparison.
+ *
+ * It is `/dashboard` and not `/` because the index route is the opening
+ * sequence's gateway — it renders nothing and immediately redirects — so a rail
+ * link pointing at `/` would replay the animation and then arrive at an
+ * unfiltered dashboard, dropping the query `pageHref` exists to carry.
+ */
+const DASHBOARD = '/dashboard';
+
 const SECTIONS: Section[] = [
-  { id: 'posts', label: 'Posts', to: '/', icon: Newspaper },
+  { id: 'posts', label: 'Posts', to: DASHBOARD, icon: Newspaper },
   { id: 'shop', label: 'Shop', to: '/shop', icon: ShoppingBag },
   /*
    * Rewards, returns, banners and discount codes — the things that bring people
@@ -146,14 +159,14 @@ interface SectionPage {
 
 const SECTION_PAGES: Partial<Record<SectionId, SectionPage[]>> = {
   posts: [
-    { key: 'all', label: 'All', to: '/', status: '', icon: Layers },
+    { key: 'all', label: 'All', to: DASHBOARD, status: '', icon: Layers },
     // A globe for published, because that is the one state that means "anyone
     // on the internet can read this" — the distinction the others are all
     // shades of.
-    { key: 'published', label: 'Published', to: '/?status=published', status: 'published', icon: Globe },
-    { key: 'draft', label: 'Drafts', to: '/?status=draft', status: 'draft', icon: PencilLine },
-    { key: 'archived', label: 'Archived', to: '/?status=archived', status: 'archived', icon: Archive },
-    { key: 'trash', label: 'Trash', to: '/?status=trash', status: 'trash', icon: Trash2 },
+    { key: 'published', label: 'Published', to: `${DASHBOARD}?status=published`, status: 'published', icon: Globe },
+    { key: 'draft', label: 'Drafts', to: `${DASHBOARD}?status=draft`, status: 'draft', icon: PencilLine },
+    { key: 'archived', label: 'Archived', to: `${DASHBOARD}?status=archived`, status: 'archived', icon: Archive },
+    { key: 'trash', label: 'Trash', to: `${DASHBOARD}?status=trash`, status: 'trash', icon: Trash2 },
   ],
   shop: [
     { key: 'overview', label: 'Overview', to: '/shop', icon: LayoutDashboard },
@@ -179,6 +192,16 @@ const SECTION_PAGES: Partial<Record<SectionId, SectionPage[]>> = {
     // already spends `Users` on the shop's customers and the email subscribers.
     { key: 'customers', label: 'Customers', to: '/marketing/customers', icon: Wallet },
     { key: 'banners', label: 'Banners', to: '/marketing/banners', icon: PanelTop },
+    /*
+     * A SEVENTH ENTRY, AND IT SUPERSEDES THE "RAIL STOPS AT SIX" NOTE.
+     *
+     * That argument was about hiding a SETTINGS surface, and this is not one: it
+     * is the list of places the business goes, changed the week a driver is
+     * hired, and a return can only earn points if its address is in an area
+     * switched on here. Something that decides whether a customer gets paid has
+     * to be findable without knowing it lives inside Rewards.
+     */
+    { key: 'areas', label: 'Areas', to: '/marketing/areas', icon: MapPin },
     { key: 'discounts', label: 'Discounts', to: '/marketing/discounts', icon: TicketPercent },
   ],
   emails: [
@@ -281,9 +304,15 @@ export function Sidebar({
    * a second, worse meaning for the same arrow. It only lifts the rail one level
    * so Posts and Emails are reachable again.
    *
-   * Cleared on any path change, which is what makes the next click re-enter:
+   * Cleared on any navigation, which is what makes the next click re-enter:
    * lift to the top list, choose Emails, and the rail is showing Emails' pages
    * by the time that screen paints. Only an explicit Back can set it.
+   *
+   * "Navigation" has to include the section you are ALREADY in, which is why
+   * `SectionLink` also clears this on click: Posts from `/dashboard` and
+   * Settings from `/settings` change neither the path nor the query, so an
+   * effect keyed on the location never runs and the rail would stay lifted —
+   * a section you cannot re-enter without reloading the page.
    */
   const [drilledUp, setDrilledUp] = useState(false);
 
@@ -337,13 +366,23 @@ export function Sidebar({
     pullRef.current?.focus();
   }, []);
 
-  // Following a link closes the drawer. Deliberately keyed on the path rather
-  // than wired into every link's onClick, so a redirect or a programmatic
-  // navigate closes it too.
-  useEffect(() => setDrawerOpen(false), [pathname]);
+  /*
+   * Following a link closes the drawer. Deliberately keyed on the location
+   * rather than wired into every link's onClick, so a redirect or a
+   * programmatic navigate closes it too.
+   *
+   * THE QUERY COUNTS AS A LOCATION, and leaving it out was a bug you could
+   * only see on a phone: the five Posts filters are one route with a
+   * `?status=`, so tapping Drafts in the drawer changed nothing this effect
+   * was watching. The drawer stayed open over the list it had just filtered,
+   * and had to be dismissed by hand — on the one section where the rail is
+   * used most. Nothing else can move the query while the drawer is open, since
+   * every filter control on the page is behind the scrim.
+   */
+  useEffect(() => setDrawerOpen(false), [pathname, search]);
 
   // ...and re-enters the section. See `drilledUp`.
-  useEffect(() => setDrilledUp(false), [pathname]);
+  useEffect(() => setDrilledUp(false), [pathname, search]);
 
   useEffect(() => {
     if (!drawerOpen) return;
@@ -478,11 +517,43 @@ export function Sidebar({
             </>
           ) : (
             <ul className="sidebar__list">
-              {SECTIONS.map((s) => (
-                <li key={s.id}>
-                  <SectionLink section={s} active={active === s.id} expanded={expanded} />
-                </li>
-              ))}
+              {SECTIONS.map((s) => {
+                const isHere = active === s.id;
+                const hasPages = SECTION_PAGES[s.id] !== undefined;
+                return (
+                  <li key={s.id} className="sidebar__row">
+                    <SectionLink
+                      section={s}
+                      active={isHere}
+                      expanded={expanded}
+                      /* The chevron is drawn by the button below on the row you
+                         are standing on, and inside the link everywhere else. */
+                      hasPages={hasPages && !isHere}
+                      onEnter={() => setDrilledUp(false)}
+                    />
+                    {/*
+                      THE WAY BACK IN, and the reason it is a button beside the
+                      link rather than the link itself: the section you are
+                      already in is the one whose link goes nowhere useful.
+                      Tapping Posts from `/dashboard?status=draft` would drop
+                      the filter, and on a phone it would also close the drawer
+                      — so the one gesture that means "show me the other
+                      filters" would navigate away and dismiss the navigation
+                      before you could pick one. This only lifts the rail back
+                      down a level, which is all that was ever wanted.
+                    */}
+                    {hasPages && isHere && (
+                      <button
+                        className="sidebar__enter"
+                        onClick={() => setDrilledUp(false)}
+                        aria-label={`Show ${s.label} pages`}
+                      >
+                        <ChevronRight className="ui-ic" aria-hidden="true" />
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
 
@@ -549,7 +620,10 @@ const sectionLabel = (id: SectionId): string =>
  */
 function isPageActive(page: SectionPage, pathname: string, search: string): boolean {
   if (page.status !== undefined) {
-    if (pathname !== '/') return false;
+    // `/dashboard`, not `/` — the index is the opening-sequence gateway now and
+    // never stays on screen, so a status tab lighting up there would only ever
+    // be a stale match on a route the user is being redirected off.
+    if (pathname !== DASHBOARD) return false;
     return (new URLSearchParams(search).get('status') ?? '') === page.status;
   }
   return pathname === page.to;
@@ -577,7 +651,13 @@ function pageHref(page: SectionPage, search: string): string {
   // different tab is page two of a list nobody asked for.
   next.delete('cursor');
   const qs = next.toString();
-  return qs === '' ? '/' : `/?${qs}`;
+  /*
+   * `/dashboard`, not `/`. The index is the opening-sequence gateway now and
+   * only ever redirects, so a filter link pointing there would replay the
+   * animation and then land on an unfiltered dashboard — losing the very query
+   * this function exists to carry.
+   */
+  return qs === '' ? DASHBOARD : `${DASHBOARD}?${qs}`;
 }
 
 function PageLink({
@@ -617,10 +697,16 @@ function SectionLink({
   section,
   active,
   expanded,
+  hasPages = false,
+  onEnter,
 }: {
   section: Section;
   active: boolean;
   expanded: boolean;
+  /** Whether there is a level below this — decides the chevron. */
+  hasPages?: boolean;
+  /** Drop back into the section's pages. See `drilledUp`. */
+  onEnter?: () => void;
 }) {
   const Icon = section.icon;
   const link = (
@@ -628,12 +714,25 @@ function SectionLink({
       className={`sidebar__item${active ? ' is-active' : ''}`}
       to={section.to}
       aria-current={active ? 'page' : undefined}
+      onClick={onEnter}
     >
       <Icon className="ui-ic sidebar__icon" aria-hidden="true" />
       {/* The label is never removed from the DOM, only clipped — `display:
           none` would take it out of the accessibility tree and leave every
           item in the collapsed rail with no name at all. */}
       <span className="sidebar__label">{section.label}</span>
+      {/*
+        THE MIRROR OF THE BACK ARROW, and the only thing on this list that says
+        the list has a floor. Back lifts you out of a section; without a mark
+        pointing the other way, the section you are standing in looks like a
+        destination rather than a door, and the five Posts filters you came up
+        from look like they are gone. Decorative — `sidebar__label` so it fades
+        with every other word in the rail, `aria-hidden` because the link's
+        name is the section, not the shape at the end of it.
+      */}
+      {hasPages && (
+        <ChevronRight className="ui-ic sidebar__chevron sidebar__label" aria-hidden="true" />
+      )}
     </Link>
   );
   // A tooltip is the collapsed rail's only way to say what an icon means. Once

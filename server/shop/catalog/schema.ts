@@ -152,6 +152,9 @@ export const shopProducts = pgTable(
     index('shop_products_status_updated_idx').on(t.status, t.updatedAt.desc()),
     index('shop_products_deleted_idx').on(t.deletedAt),
     index('shop_products_category_idx').on(t.category),
+    /** The folded category filter (migration 0010) — `listProducts` compares
+     *  `lower(category)` now, which the 0100 index above cannot serve. */
+    index('shop_products_category_fold_idx').on(sql`lower(${t.category})`),
     index('shop_products_author_idx').on(t.authorId),
   ],
 );
@@ -232,10 +235,25 @@ export const shopVariants = pgTable(
      * this column so an image referenced ONLY from here survives collection.
      */
     imageId: text('image_id'),
+    /**
+     * The colour code of the option this variant is (migration 0010).
+     *
+     * A COLUMN, NOT A KEY INSIDE `option_values`: the option tuple is the
+     * variant's identity — it feeds SKU derivation and the option summary — and
+     * a hex code inside it would leak into both. Nullable (most variants of a
+     * non-colour axis never have one), lowercase-only by CHECK, and the
+     * repository lowercases before INSERT so the check is a backstop rather
+     * than a user-facing refusal.
+     */
+    colorHex: text('color_hex'),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
     updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
   },
   (t) => [
+    check(
+      'shop_variants_color_hex_ck',
+      sql`${t.colorHex} IS NULL OR ${t.colorHex} ~ '^#[0-9a-f]{6}$'`,
+    ),
     check('shop_variants_status_ck', sql`${t.status} IN (${sqlLiterals(VARIANT_STATUSES)})`),
     check('shop_variants_position_ck', sql`${t.position} >= 0`),
     check('shop_variants_weight_ck', sql`${t.weightGrams} IS NULL OR ${t.weightGrams} >= 0`),

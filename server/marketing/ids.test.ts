@@ -76,10 +76,11 @@ describe('newId', () => {
 });
 
 describe('the prefixes', () => {
-  it('are the seven literals migration 0011 stamps into primary keys', () => {
+  it('are the eight literals migrations 0011 and 0012 stamp into primary keys', () => {
     // Spec §Database names each one against its table. A change here is a data
     // migration over every existing row, not a rename.
     expect(ID).toEqual({
+      serviceArea: 'area_',
       program: 'prg_',
       return: 'ret_',
       timeline: 'mev_',
@@ -129,9 +130,21 @@ describe('the prefixes', () => {
     }
   });
 
-  it('is three letters and an underscore throughout, so an id reads as one word', () => {
+  it('is lowercase letters and an underscore throughout, so an id reads as one word', () => {
+    /*
+     * WAS `^[a-z]{3}_$` UNTIL 0012, AND THE THREE WAS NEVER THE PROPERTY. What
+     * this guards is that an id is one unbroken lowercase token — no digits, no
+     * hyphens, no capitals — so it survives a URL, a log line and a double-click
+     * intact, and so no two subsystems reach for the same letters (the test above
+     * this one).
+     *
+     * `area_` is four because plan §5 froze it, and it is the better name: `ara_`
+     * would be three characters nobody can expand at a glance, on rows an owner
+     * genuinely reads — the Areas screen shows them and a hand-typed intake body
+     * may carry one. The bound below is what keeps "prefix" from becoming a word.
+     */
     for (const prefix of Object.values(ID)) {
-      expect(prefix).toMatch(/^[a-z]{3}_$/);
+      expect(prefix).toMatch(/^[a-z]{3,5}_$/);
     }
   });
 });

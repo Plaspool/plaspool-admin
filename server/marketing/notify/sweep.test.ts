@@ -107,6 +107,31 @@ let setupPending: HttpClient;
 /** No session at all — a fresh browser, not a logged-out one. */
 let anon: HttpClient;
 
+
+/**
+ * A place a van goes, named after nothing real.
+ *
+ * ABSURD ON PURPOSE, exactly as the labels are: a fixture named after a district
+ * this business actually serves could not tell code that reads the area off the
+ * row from code that hardcoded the place. It also keeps a real place name out of
+ * a source file, which is the second half of the naming discipline.
+ *
+ * Migration 0012 refuses an AWARDED return with no service area
+ * (`marketing_return_requests_area_award_ck`), so every fixture that walks the
+ * lifecycle to its end needs one.
+ */
+const AREA = 'area_cabbage_quarter';
+
+async function makeArea(): Promise<string> {
+  await db.execute(sql`
+    INSERT INTO marketing_service_areas
+      (id, key, region, name, active, created_at, updated_at)
+    VALUES (${AREA}, 'cabbage-quarter', 'Farflung Province', 'Cabbage Quarter',
+            true, ${T0}, ${T0})
+    ON CONFLICT DO NOTHING`);
+  return AREA;
+}
+
 async function login(user: AuthUser, deps: { mailer?: Mailer } = {}): Promise<HttpClient> {
   const client = httpClient(ctx.db, deps);
   const res = await client.post('/api/auth/login', {
@@ -169,6 +194,7 @@ async function queuedAward(
     email,
     qtyDeclared: 6,
     programId,
+    serviceAreaId: await makeArea(),
     customerName: 'Dara',
     pickupAddress: '12 Yaba Road',
     source: 'admin',

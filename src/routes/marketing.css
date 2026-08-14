@@ -434,12 +434,28 @@ a.mktstat:focus-visible {
   border-bottom: 1px solid var(--rule);
   flex-wrap: wrap;
 }
+/* A HEADING, NOT A FIELD LABEL — `shop.css`'s `.panel__title`, and the same
+   argument: this was 11px uppercase two steps down the ink ramp, which is the
+   treatment a tile's caption wants and not the treatment the only name of a
+   fifty-row panel wants. On a phone, where the panel fills the screen, that
+   title is all the context there is. */
 .mktpanel__title {
-  font-size: var(--step--1);
+  font-size: var(--step-0);
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-3);
+  letter-spacing: -0.005em;
+  color: var(--ink);
+}
+/* Title over a line of explanation, for panels whose contents need a
+   qualifier — a threshold, a window, a unit — to be read correctly. */
+.mktpanel__heading {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.mktpanel__sub {
+  font-size: var(--step--1);
+  color: var(--ink-4);
+  line-height: 1.4;
 }
 .mktpanel__body {
   padding: var(--s4);
@@ -523,6 +539,87 @@ a.mktstat:focus-visible {
   padding: var(--s6) var(--s4);
   text-align: center;
   color: var(--ink-4);
+}
+
+/* ------------------------------------------------- the table, on a phone */
+
+/* `.dtable`'s phone treatment from `shop.css`, renamed with it — same reason
+   the scroller was copied rather than borrowed, and the same doctrine:
+   UNDER 640px THE TABLE STOPS BEING A TABLE AND BECOMES A LIST. Four columns
+   in 375px do not overflow, they CRUSH — a program name broken two words to a
+   line beside a number stranded at the top right of it. So the first cell is
+   the row's name at full width, and every cell after it is a labelled fact
+   underneath, with the header row's words moved into the cells themselves via
+   `data-label`.
+
+   The cost, said plainly: `display: block` drops the table role, so on a phone
+   this is a list of groups rather than a grid navigable by column. That is the
+   honest trade against four columns nobody can read at this width either. */
+@media (max-width: 640px) {
+  .mkttable__scroll {
+    overflow-x: visible;
+  }
+
+  .mkttable,
+  .mkttable tbody,
+  .mkttable tr,
+  .mkttable td {
+    display: block;
+    width: auto;
+  }
+
+  .mkttable thead {
+    display: none;
+  }
+
+  .mkttable tr {
+    padding: var(--s4);
+    border-bottom: 1px solid var(--rule);
+  }
+  .mkttable tr:last-child {
+    border-bottom: 0;
+  }
+
+  .mkttable td {
+    padding: 0;
+    border: 0;
+  }
+
+  .mkttable td:first-child {
+    font-size: var(--step-0);
+    line-height: 1.35;
+    color: var(--ink);
+    margin-bottom: var(--s2);
+  }
+
+  .mkttable td + td {
+    padding-top: var(--s1);
+    /* Beats `.mkttable__num`, whose right edge means nothing in a stack. */
+    text-align: left;
+  }
+  /* `[data-label]`, so a cell that was never given one gets no label rather
+     than an empty 9ch indent in front of its value. */
+  .mkttable td + td[data-label]::before {
+    content: attr(data-label);
+    display: inline-block;
+    min-width: 9ch;
+    padding-right: var(--s2);
+    font-size: var(--step--2);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-4);
+  }
+  .mkttable td + td[data-label] .mkttable__sub {
+    margin-left: calc(9ch + var(--s2));
+  }
+
+  .mkttable td.mkttable__empty {
+    font-size: var(--step--1);
+    color: var(--ink-4);
+    margin-bottom: 0;
+    padding: var(--s5) 0;
+  }
 }
 
 /* ------------------------------------------------------------ key/value */
@@ -1800,4 +1897,830 @@ a.mktstat:focus-visible {
   .mkttabs__tab {
     position: relative;
   }
+}
+
+/* ============================================================================
+ * THE BOARD SWITCHER — where there is work, and how to get to it
+ * ==========================================================================*/
+
+/*
+ * The board picker is `Picker` from `components/ui` — a searchable dropdown,
+ * because this list is every district the business serves and grew past the
+ * length anybody can scan. What is left here is the two things the shared
+ * control has no opinion about: the badge, and the out-of-area footer row.
+ */
+
+/*
+ * THE BADGE, AND WHY IT CARRIES NO COLOUR OF ITS OWN.
+ *
+ * `--ink` on `--paper`: those two tokens SWAP between the themes, so this one
+ * rule gives a near-black disc with light type in the light theme and a white
+ * disc with black type in the dark one. A third colour would be a third thing to
+ * maintain and would say nothing the number does not already say.
+ */
+.mktbadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.35rem;
+  height: 1.35rem;
+  padding: 0 0.35rem;
+  border-radius: var(--radius-full);
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The footer is not a district — it is the absence of one, so it sits below a
+   rule rather than among the places a van goes, and it is the one row the
+   search field cannot filter away. */
+.mktswitch__out {
+  color: var(--danger);
+}
+.mktswitch__out.is-chosen {
+  background: var(--danger-soft);
+}
+.mktswitch__warn {
+  flex: none;
+  color: var(--danger);
+}
+
+/* ============================================================================
+ * THE DESK — what needs a person, across every board
+ * ==========================================================================*/
+
+.mktdesk {
+  margin-bottom: var(--s5);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+}
+
+.mktdesk--clear {
+  padding: var(--s4);
+}
+
+.mktdesk__clear {
+  margin: 0;
+  color: var(--ink-4);
+}
+
+.mktdesk__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2) var(--s4);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--rule);
+}
+
+.mktdesk__title {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.mktdesk__flag {
+  width: 0.9rem;
+  height: 0.9rem;
+  color: var(--danger);
+}
+
+.mktdesk__total {
+  color: var(--ink-4);
+}
+
+.mktdesk__tally {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1) var(--s4);
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 0.85rem;
+}
+
+.mktdesk__tally b {
+  font-variant-numeric: tabular-nums;
+}
+
+.mktdesk__overdue {
+  color: var(--danger);
+}
+
+/*
+ * Genuinely tabular, so it scrolls inside its own box and the PAGE never scrolls
+ * sideways — the `.dtable__scroll` doctrine.
+ *
+ * `position: relative` IS LOAD-BEARING AND WAS ADDED AFTER A MEASUREMENT. The
+ * action column's heading is a visually-hidden `position: absolute` span, and
+ * with no positioned ancestor its containing block is the INITIAL one — so its
+ * static position, out at the right-hand end of an 831px table, was contributing
+ * to the document's scrollable width and making the whole page scroll sideways
+ * at 375px. Measured: `documentElement.scrollWidth` 694 against a 375 viewport.
+ * The `overflow-x` here clips the table; this is what makes it clip the span too.
+ */
+.mktdesk__scroll {
+  position: relative;
+  overflow-x: auto;
+}
+
+.mktdesk__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.mktdesk__table th,
+.mktdesk__table td {
+  padding: var(--s2) var(--s4);
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.mktdesk__table thead th {
+  color: var(--ink-4);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.mktdesk__table tbody tr + tr th,
+.mktdesk__table tbody tr + tr td {
+  border-top: 1px solid var(--rule);
+}
+
+.mktdesk__who {
+  font-weight: 400;
+}
+
+.mktdesk__name {
+  display: block;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.mktdesk__id {
+  display: block;
+  color: var(--ink-5);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+.mktdesk__nowhere {
+  color: var(--danger);
+}
+
+.mktdesk__do {
+  text-align: right;
+}
+
+.mktdesk__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.mktdesk__foot {
+  margin: 0;
+  padding: var(--s2) var(--s4) var(--s3);
+  color: var(--ink-4);
+  font-size: 0.8rem;
+}
+
+@media (max-width: 640px) {
+  .mktdesk__table th,
+  .mktdesk__table td {
+    padding: var(--s2) var(--s3);
+  }
+}
+
+/* ============================================================================
+ * THE BOARD — one district, four lists on a canvas
+ * ==========================================================================*/
+
+.mktboard__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s2) var(--s4);
+  margin-bottom: var(--s3);
+}
+
+.mktboard__title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.mktboard__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1) var(--s4);
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 0.85rem;
+}
+
+.mktboard__stats b {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * THE LISTS FLOAT ON A CANVAS rather than sitting on the page, and the
+ * separation is what makes a column read as a container you can drop INTO. A
+ * flat list on the page background is a heading with rows under it.
+ */
+.mktboard__canvas {
+  display: flex;
+  gap: var(--s3);
+  overflow-x: auto;
+  padding-bottom: var(--s3);
+  background: var(--paper-sunken);
+  border-radius: var(--radius-m);
+  padding: var(--s3);
+}
+
+/*
+ * FIXED WIDTH, AND THAT IS THE WHOLE VALUE OF A BOARD. A column that grew as
+ * cards arrived would move every other column under the pointer mid-drag —
+ * things staying where you put them is the property being bought.
+ */
+.mktlist {
+  display: flex;
+  flex: 0 0 17rem;
+  flex-direction: column;
+  gap: var(--s2);
+  max-height: 68vh;
+  padding: var(--s2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+}
+
+.mktlist__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding: var(--s1) var(--s2);
+}
+
+/* NO COLOURED DOT HERE, and none is coming: urgency belongs on the card,
+   because every card in a column has a different age. */
+.mktlist__name {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.mktlist__count {
+  color: var(--ink-4);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.mktlist__picked {
+  color: var(--accent);
+}
+
+.mktlist__cards {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--s2);
+  overflow-y: auto;
+}
+
+.mktlist__empty {
+  margin: 0;
+  padding: var(--s4) var(--s2);
+  color: var(--ink-5);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+/* Under Requested ONLY — the one list a return can be born into. */
+.mktlist__add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s1);
+  min-height: var(--ctl-h-lg);
+  border: 1px dashed var(--rule-strong);
+  border-radius: var(--radius-s);
+  background: none;
+  color: var(--ink-3);
+  font: inherit;
+  cursor: pointer;
+}
+
+.mktlist__add:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.mktlist__plus {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+/* --------------------------------------------------------------- the card */
+
+.mktcard {
+  position: relative;
+  display: flex;
+  gap: var(--s2);
+  padding: var(--s2) var(--s2) var(--s2) var(--s3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-s);
+  background: var(--paper-raised);
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+}
+
+.mktcard:hover,
+.mktcard:focus-visible {
+  border-color: var(--rule-strong);
+}
+
+/*
+ * THE LABEL BAR — Trello's coloured strip doing real work. It is the WAITING
+ * band, and it is absent when nothing is wrong: an always-present bar would be
+ * decoration, and this one is a claim. It is what makes a late card findable
+ * from the far side of the board.
+ */
+.mktcard__band {
+  position: absolute;
+  inset: var(--s2) auto var(--s2) 0;
+  width: 3px;
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
+}
+
+.mktcard--warn .mktcard__band {
+  background: var(--warn);
+}
+
+.mktcard--danger .mktcard__band {
+  background: var(--danger);
+}
+
+.mktcard--lifted {
+  rotate: 2deg;
+  box-shadow: var(--shadow-2);
+}
+
+.mktcard--picked {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.mktcard__pick {
+  display: flex;
+  align-items: flex-start;
+  cursor: pointer;
+}
+
+.mktcard__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.mktcard__who {
+  margin: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mktcard__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1) var(--s3);
+  margin: var(--s1) 0 0;
+  font-size: 0.85rem;
+}
+
+/* The number that decides van capacity, so it is the boldest thing after the
+   name. */
+.mktcard__load {
+  font-variant-numeric: tabular-nums;
+}
+
+.mktcard__worth {
+  margin: var(--s1) 0 0;
+  color: var(--ink-4);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Where Trello puts a member's avatar, this puts the CUSTOMER's initials — this
+   application has no member photos, and two letters are enough to tell two rows
+   apart while scanning. */
+.mktcard__mono {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-full);
+  background: var(--paper-inset);
+  color: var(--ink-3);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+@media (max-width: 640px) {
+  .mktboard__canvas {
+    padding: var(--s2);
+  }
+  .mktlist {
+    flex-basis: 15rem;
+    max-height: none;
+  }
+}
+
+/* ============================================================================
+ * SELECTION — many cards at once
+ * ==========================================================================*/
+
+.mktsel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2) var(--s3);
+  margin-bottom: var(--s3);
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-m);
+  background: var(--accent-soft);
+}
+
+.mktsel__count {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.mktsel__acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+/*
+ * GREYED WITH THE REASON, NEVER HIDDEN. A control that silently disappears reads
+ * as a bug — the operator concludes the board lost a feature and goes looking
+ * for it. `aria-disabled` rather than `disabled` keeps it in the tab order, so
+ * the reason is reachable by exactly the person who needs it read aloud.
+ */
+.mktsel .is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* The reason IN THE BAR, not only in a `title`: nothing on these screens may
+   convey information by hover alone. */
+.mktsel__why {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 0.8rem;
+}
+
+/* ============================================================================
+ * THE CARD MODAL — one card, lifted off the board
+ * ==========================================================================*/
+
+/*
+ * THE BOARD STAYS VISIBLY THERE BEHIND IT. That is what makes the panel read as
+ * a card lifted OFF the board rather than as a page somewhere else — and it is
+ * why the scrim blurs rather than blacks out.
+ */
+.mktmodal__scrim {
+  position: fixed;
+  z-index: 60;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--s4);
+  backdrop-filter: blur(3px);
+  background: color-mix(in srgb, var(--ink) 28%, transparent);
+}
+
+.mktmodal {
+  display: flex;
+  width: min(60rem, 100%);
+  max-height: 88vh;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: var(--s4);
+  border-radius: var(--radius-l);
+  background: var(--paper-raised);
+  box-shadow: var(--shadow-3);
+}
+
+.mktmodal__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s3);
+  margin-bottom: var(--s3);
+}
+
+.mktmodal__stage {
+  margin: 0;
+  color: var(--ink-4);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.mktmodal__nowhere {
+  color: var(--danger);
+}
+
+.mktmodal__who {
+  margin: var(--s1) 0 0;
+  font-size: 1.2rem;
+}
+
+.mktmodal__id {
+  margin: 0;
+  color: var(--ink-5);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.mktmodal__cols {
+  display: grid;
+  gap: var(--s5);
+  grid-template-columns: 3fr 2fr;
+}
+
+.mktmodal__section {
+  margin: var(--s4) 0 var(--s2);
+  color: var(--ink-4);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.mktmodal__left .mktmodal__section:first-child {
+  margin-top: 0;
+}
+
+.mktmodal__money {
+  margin: 0;
+  font-size: 1.6rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.mktmodal__sum {
+  margin: 0;
+  color: var(--ink-4);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The bonus sits INSIDE "what it is worth", because that is the only place the
+   arithmetic is visible: 120 becomes 145 in front of the person committing it. */
+.mktmodal__bonus {
+  margin-top: var(--s3);
+  padding: var(--s3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-s);
+  background: var(--paper-sunken);
+}
+
+.mktmodal__total {
+  margin: var(--s2) 0 0;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.mktmodal__compose {
+  display: flex;
+  gap: var(--s2);
+  margin-bottom: var(--s3);
+}
+
+.mktmodal__compose .mktform__input {
+  flex: 1;
+}
+
+.mktmodal__waiting {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.mktmodal__ledger {
+  margin: var(--s3) 0 0;
+  font-size: 0.85rem;
+}
+
+/* ============================================================================
+ * PHONE — the top half never moves
+ * ==========================================================================*/
+
+/*
+ * THE STAGE TABS ARE THE DROP TARGETS, SO THEY ARE PINNED. A card picked up can
+ * be carried to any tab without the target moving away under the thumb — a
+ * target that scrolls away is not a target.
+ */
+@media (max-width: 640px) {
+  .mktscr__headacts {
+    position: sticky;
+    z-index: 20;
+    top: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s2);
+    padding: var(--s2) 0;
+    background: var(--paper);
+    /* A flex item in `.mktscr__headrow`, so without this it is as wide as the
+       one control inside it and the `100%` below resolves to about 106px. */
+    width: 100%;
+  }
+
+  .mktscr__headacts .btn {
+    flex: 1;
+  }
+
+  /* The picker spans the header row on a phone rather than sitting as a chip in
+     the corner of it: it is this screen's navigation, and a full-width control
+     is both easier to hit and a wider anchor for the popup it opens. */
+  .mktscr__headacts .ui-picker,
+  .mktscr__headacts .ui-picker__trigger {
+    width: 100%;
+    max-width: none;
+  }
+
+  /* The lists stack rather than scrolling sideways in a viewport this narrow:
+     a four-column canvas on a phone is three columns nobody finds. */
+  .mktboard__canvas {
+    flex-direction: column;
+  }
+
+  .mktlist {
+    flex-basis: auto;
+  }
+
+  .mktmodal__scrim {
+    padding: 0;
+    align-items: flex-end;
+  }
+
+  /* A bottom sheet, the `.dialog--sheet` variant's shape: a centred modal on a
+     phone is a panel with dead space above and below it. */
+  .mktmodal {
+    max-height: 92vh;
+    border-radius: var(--radius-l) var(--radius-l) 0 0;
+  }
+
+  .mktmodal__cols {
+    grid-template-columns: 1fr;
+    gap: var(--s3);
+  }
+}
+
+/* -------------------------------------------------------- drag affordances */
+
+/*
+ * LEGAL TARGETS OUTLINED, ILLEGAL ONES FLATTENED — while the card is in hand,
+ * so a refusal is visible BEFORE the release rather than explained after it.
+ */
+.mktlist--legal {
+  border-color: var(--accent-line);
+}
+
+.mktlist--over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.mktlist--illegal {
+  opacity: 0.45;
+}
+
+.mktcard__grip {
+  touch-action: manipulation;
+}
+
+.mktboard__more {
+  margin: var(--s3) 0 0;
+  color: var(--ink-4);
+  font-size: 0.8rem;
+}
+
+@media (pointer: coarse) {
+  .mktcard {
+    min-height: var(--tap-min);
+  }
+}
+
+/* ============================================================================
+ * AREAS — where we collect
+ * ==========================================================================*/
+
+.mktarea {
+  margin-bottom: var(--s4);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+}
+
+.mktarea__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--rule);
+}
+
+.mktarea__region {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+/* The number an owner is actually managing: how much of this region we have
+   promised to reach. */
+.mktarea__tally {
+  margin: 0;
+  color: var(--ink-4);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.mktarea__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mktarea__row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: var(--tap-min);
+  padding: var(--s2) var(--s4);
+}
+
+.mktarea__row + .mktarea__row {
+  border-top: 1px solid var(--rule);
+}
+
+.mktarea__name {
+  flex: 1;
+}
+
+.mktarea__open {
+  color: var(--ink-4);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.mktarea__state {
+  color: var(--ink-4);
+  font-size: 0.8rem;
+}
+
+.mktarea__rename {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.mktarea__rename .mktform__input {
+  flex: 1;
+  min-width: 10rem;
+}
+
+.mktarea__add {
+  padding: var(--s2) var(--s4) var(--s3);
 }

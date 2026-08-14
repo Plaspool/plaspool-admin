@@ -5,6 +5,7 @@ import { BadRequestError, NotFoundError } from '../../repo/errors';
 import { rejectNul } from '../../repo/cursor';
 import { committedImageIds } from '../../repo/images';
 import { generateSku } from './sku';
+import { canonicalizeOptions, foldedTupleKey } from './fold';
 import { normalizeBlobId } from '../../repo/public-projection';
 import type { AuthUser } from '../../../shared/types';
 import type { VariantStatus } from '../../../shared/commerce/catalog-port';
@@ -59,6 +60,27 @@ export class DuplicateSkuError extends BadRequestError {
   }
 }
 
+/**
+ * The combination already exists on this product, up to case (migration 0010's
+ * create-time half).
+ *
+ * THE SAME SHAPE AS `DuplicateSkuError`, FOR THE SAME REASON: "already exists"
+ * is a conflict with state, not a malformed field, and a caller cannot act on
+ * the two the same way. `BadRequestError` underneath so any mount without the
+ * shop app's `onError` still answers a retry-stopping 4xx; `shop/app.ts`
+ * upgrades it to the 409 it is. Carries the stored summary so the screen can
+ * name the variant it collided with rather than echo what was typed.
+ */
+export class DuplicateOptionsError extends BadRequestError {
+  readonly summary: string;
+
+  constructor(summary: string) {
+    super('optionValues');
+    this.name = 'DuplicateOptionsError';
+    this.summary = summary;
+  }
+}
+
 export interface CreateVariantInput {
   /**
    * OPTIONAL. Omitted means "derive one" — see `sku.ts` for why the human is no
@@ -73,6 +95,87 @@ export interface CreateVariantInput {
   backorderable?: boolean;
   /** The photograph of this colour. Validated as a committed image. */
   imageId?: string | null;
+  /** The colour code of this option (migration 0010). Stored lowercase. */
+  colorHex?: string | null;
+}
+
+/**
+ * `#a1b2c3` or null, or a 400 that names the field.
+ *
+ * Lowercased HERE, because the column's CHECK accepts lowercase only — the
+ * check is a backstop against hand-run SQL, not a user-facing refusal, and two
+ * spellings of one colour code would be the same case-twin defect this whole
+ * change exists to end, one column over. `''` clears, like `imageId`.
+ */
+function normalizeColorHex(value: string | null | undefined): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === '') return null;
+  const hex = value.trim().toLowerCase();
+  if (!/^#[0-9a-f]{6}$/.test(hex)) throw new BadRequestError('colorHex');
+  return hex;
+}
+
+/**
+ * The tuples this product already has, with the summary each renders as —
+ * the evidence for both halves of the duplicate check.
+ */
+async function existingOptionTuples(
+  db: Db,
+  productId: string,
+  excludeId?: string,
+): Promise<Record<string, string>[]> {
+  const res = await db.execute(sql`
+    SELECT id, option_values FROM shop_variants WHERE product_id = ${productId}`);
+  return res.rows
+    .filter((row) => String(row.id) !== excludeId)
+    .map((row) => {
+      const raw = row.option_values;
+      if (typeof raw === 'string') {
+        try {
+          return JSON.parse(raw) as Record<string, string>;
+        } catch {
+          return {};
+        }
+      }
+      return (raw ?? {}) as Record<string, string>;
+    });
+}
+
+/**
+ * Canonicalise an incoming tuple against the product's vocabulary and refuse a
+ * case-fold duplicate.
+ *
+ * `'{}'` IS EXEMPT FROM THE DUPLICATE CHECK, deliberately: several option-less
+ * variants per product is a supported shape (the suites create them; a shop can
+ * run SKU-only families), not a case collision. It still returns the tuple so
+ * every caller stores the canonicalised form.
+ *
+ * ADVISORY, NOT AN INDEX, AND SAYING SO IS THE POINT. Two concurrent creates of
+ * the same combination can both pass this read — the cost is one duplicate an
+ * admin deletes, the same as before this check existed. The mechanical answer,
+ * a unique index over the folded tuple, is deliberately NOT taken: legacy
+ * conflicts where BOTH twins carry orders or stock survive migration 0010 on
+ * purpose (deleting either would orphan history), and an index they violate
+ * would wedge `db:migrate` on every database that has one.
+ */
+function checkedOptions(
+  existing: Record<string, string>[],
+  incoming: Record<string, string>,
+): Record<string, string> {
+  const canonical = canonicalizeOptions(existing, incoming);
+  if (canonical === null) throw new BadRequestError('optionValues');
+  if (Object.keys(canonical).length === 0) return canonical;
+
+  const key = foldedTupleKey(canonical);
+  const taken = existing.find((tuple) => foldedTupleKey(tuple) === key);
+  if (taken) {
+    const summary = Object.entries(taken)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k} ${v}`)
+      .join(' · ');
+    throw new DuplicateOptionsError(summary);
+  }
+  return canonical;
 }
 
 /**
@@ -137,6 +240,17 @@ export async function createVariant(
   const id = newCatalogId('var_');
 
   /*
+   * The tuple is canonicalised into the product's existing vocabulary and
+   * refused when it case-collides with a sibling — BEFORE the SKU derivation,
+   * so a derived SKU is built from the spelling that will actually be stored.
+   */
+  const options = checkedOptions(
+    await existingOptionTuples(db, productId),
+    input.optionValues ?? {},
+  );
+  const colorHex = normalizeColorHex(input.colorHex) ?? null;
+
+  /*
    * A SUPPLIED SKU WINS, ALWAYS. A shop with an existing catalogue has codes
    * that mean something to a supplier, and silently replacing one would be
    * worse than never generating at all. Only a genuinely absent value is
@@ -148,7 +262,7 @@ export async function createVariant(
     const titleRow = await db.execute(sql`
       SELECT title FROM shop_products WHERE id = ${productId}`);
     if (!titleRow.rows[0]) throw new NotFoundError(productId);
-    sku = await generateSku(db, String(titleRow.rows[0].title), input.optionValues ?? {});
+    sku = await generateSku(db, String(titleRow.rows[0].title), options);
   } else {
     sku = rejectNul(input.sku.trim(), 'sku');
     if (!sku) throw new BadRequestError('sku');
@@ -175,10 +289,12 @@ export async function createVariant(
         SELECT id FROM shop_products WHERE id = ${productId}
       ), ins AS (
         INSERT INTO shop_variants (id, product_id, sku, option_values, position,
-                                   weight_grams, status, image_id, created_at, updated_at)
+                                   weight_grams, status, image_id, color_hex,
+                                   created_at, updated_at)
         SELECT ${id}, prod.id, ${sku},
-               ${JSON.stringify(input.optionValues ?? {})}::jsonb, ${position},
-               ${input.weightGrams ?? null}, 'active', ${input.imageId || null}, ${now}, ${now}
+               ${JSON.stringify(options)}::jsonb, ${position},
+               ${input.weightGrams ?? null}, 'active', ${input.imageId || null},
+               ${colorHex}, ${now}, ${now}
           FROM prod
         RETURNING ${sql.raw(VARIANT_COLUMNS.join(', '))}
       ), inv AS (
@@ -228,7 +344,20 @@ export async function updateVariant(
     assignments.push(sql`sku = ${newSku}`);
   }
   if (patch.optionValues !== undefined) {
-    assignments.push(sql`option_values = ${JSON.stringify(patch.optionValues)}::jsonb`);
+    /*
+     * The same canonicalise-and-refuse as creation, excluding this variant
+     * itself — renaming `Black` to `black` must be a no-op spelling-wise, not a
+     * collision with the row being edited. The read costs one extra statement
+     * on exactly the patches that change identity, which is the rare path.
+     */
+    const owner = await db.execute(sql`
+      SELECT product_id FROM shop_variants WHERE id = ${id}`);
+    if (!owner.rows[0]) throw new NotFoundError(id);
+    const options = checkedOptions(
+      await existingOptionTuples(db, String(owner.rows[0].product_id), id),
+      patch.optionValues,
+    );
+    assignments.push(sql`option_values = ${JSON.stringify(options)}::jsonb`);
   }
   if (patch.position !== undefined) {
     if (!Number.isInteger(patch.position) || patch.position < 0) {
@@ -248,6 +377,9 @@ export async function updateVariant(
   if (patch.imageId !== undefined) {
     await checkVariantImage(db, patch.imageId);
     assignments.push(sql`image_id = ${patch.imageId || null}`);
+  }
+  if (patch.colorHex !== undefined) {
+    assignments.push(sql`color_hex = ${normalizeColorHex(patch.colorHex)}`);
   }
 
   // An empty patch is a 400, not a no-op that reports success. A caller sending

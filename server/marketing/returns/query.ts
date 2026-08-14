@@ -73,6 +73,25 @@ export interface ReturnListItem {
   qtyDeclared: number;
   qtyAccepted: number | null;
   qtyRejected: number | null;
+  /**
+   * THE RATE THIS CUSTOMER WAS PROMISED, copied onto the row at creation.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   * ADDED FOR THE BOARD, AND IT HAD TO BE THE SNAPSHOT RATHER THAN THE
+   * PROGRAM'S CURRENT RATE.
+   *
+   * A card shows what a return is WORTH — quantity times rate — so an operator
+   * can see that a twelve-unit return is worth ten times a small one before
+   * deciding whose van to fill. The client already holds the programs, so it
+   * could multiply by `program.pointsPerUnit` and skip this field entirely.
+   *
+   * That would be wrong in exactly the way `points_per_unit_snapshot` exists to
+   * prevent: a shop that repriced on Wednesday would see every Monday card
+   * silently restated at the new rate, on the screen where somebody decides what
+   * to collect. The promise is the snapshot, so the board renders the snapshot.
+   * ═══════════════════════════════════════════════════════════════════════
+   */
+  pointsPerUnitSnapshot: number;
   pointsAwarded: number | null;
   pickupScheduledAt: number | null;
   /** Also on the list, and for the same reason as `revision`: contract #8 needs
@@ -82,6 +101,19 @@ export interface ReturnListItem {
   /** ORDERED — the pipeline-advancing action first (spec D4). The queue renders
    *  exactly one button and renders `allowedActions[0]`. */
   allowedActions: ReturnAction[];
+  /**
+   * WHICH BOARD THIS CARD IS ON, with the name it should be drawn under.
+   *
+   * `null` IS THE OUT-OF-AREA FOOTER, not a missing field: a return from
+   * somewhere we do not collect is a real row that no board can hold.
+   *
+   * THE NAME TRAVELS BESIDE THE ID because the desk is whole-of-city and its
+   * Area column has to say which board each row lives on — and a client that
+   * had to look every id up in the switcher's response would render blanks for
+   * the one minute after an owner renamed a district. It is a SNAPSHOT of the
+   * name at read time, like every other display field in this subsystem.
+   */
+  serviceArea: { id: string; name: string } | null;
   createdAt: number;
   updatedAt: number;
   program: EmbeddedProgram;
@@ -122,11 +154,22 @@ export type ReturnView =
   | 'done'
   | 'all';
 
+/**
+ * The board the list is scoped to.
+ *
+ * `'none'` IS A REAL VALUE AND NOT AN ABSENT ONE — it is the out-of-area
+ * footer's list, `service_area_id IS NULL`. Absent means every board at once,
+ * which is what the desk above the boards asks for.
+ */
+export const OUT_OF_AREA = 'none';
+
 export interface ReturnListQuery {
   view: ReturnView;
   /** An email prefix, or an exact `ret_` id. */
   q?: string;
   programId?: string;
+  /** An area id, or `'none'` for the returns that belong to no board. */
+  district?: string;
   cursor?: string;
   limit?: number;
 }
@@ -198,11 +241,12 @@ export const MAX_SEARCH_LENGTH = 320;
 
 const LIST_COLUMNS = sql.raw(
   `r.id, r.status, r.revision, r.customer_email, r.customer_name, r.qty_declared,
-   r.qty_accepted, r.qty_rejected, r.points_awarded, r.pickup_scheduled_at,
-   r.pickup_address, r.created_at, r.updated_at,
+   r.qty_accepted, r.qty_rejected, r.points_per_unit_snapshot, r.points_awarded,
+   r.pickup_scheduled_at, r.pickup_address, r.service_area_id, r.created_at, r.updated_at,
    p.id AS prog_id, p.name AS prog_name,
    p.points_label_singular AS prog_points_one, p.points_label_plural AS prog_points_other,
-   p.unit_label_singular AS prog_unit_one, p.unit_label_plural AS prog_unit_other`,
+   p.unit_label_singular AS prog_unit_one, p.unit_label_plural AS prog_unit_other,
+   a.name AS area_name`,
 );
 
 /**
@@ -224,6 +268,7 @@ function rowToListItem(row: Record<string, unknown>): ReturnListItem {
     qtyDeclared: Number(row.qty_declared),
     qtyAccepted: row.qty_accepted == null ? null : Number(row.qty_accepted),
     qtyRejected: row.qty_rejected == null ? null : Number(row.qty_rejected),
+    pointsPerUnitSnapshot: Number(row.points_per_unit_snapshot),
     pointsAwarded: row.points_awarded == null ? null : Number(row.points_awarded),
     // `toEpochMsOrNull` and not `Number`: these are `bigint` columns, which the
     // Neon driver hands back as STRINGS and which the test harness configures
@@ -236,6 +281,13 @@ function rowToListItem(row: Record<string, unknown>): ReturnListItem {
      * transition the server will accept cannot drift apart.
      */
     allowedActions: allowedActionsFor(status),
+    /* Both halves or neither. The join is LEFT — an out-of-area return has no
+     * area row — so a name with no id would mean the join matched something the
+     * column does not point at, which is a bug rather than a card. */
+    serviceArea:
+      row.service_area_id == null
+        ? null
+        : { id: String(row.service_area_id), name: String(row.area_name) },
     createdAt: toEpochMs(row.created_at),
     updatedAt: toEpochMs(row.updated_at),
     program: {
@@ -268,6 +320,28 @@ function rowFilters(q: ReturnListQuery): SQL[] {
   const where: SQL[] = [sql`true`];
 
   if (q.programId !== undefined) where.push(sql`r.program_id = ${q.programId}`);
+
+  /*
+   * THE BOARD, AND IT IS A ROW FILTER RATHER THAN A VIEW ONE — which is the
+   * whole reason it lives here.
+   *
+   * `rowFilters` is what `counts` reuses, so a board's tab strip reads "3
+   * requested" and lists exactly those three when clicked. Put anywhere else,
+   * the switcher would badge Maitama with the city's numbers.
+   *
+   * `'none'` IS `IS NULL` AND NOT AN EQUALITY. `service_area_id = 'none'`
+   * matches nothing and silently answers "the out-of-area list is empty", which
+   * is the most dangerous possible lie here: those are exactly the returns
+   * nobody can award, and they would vanish from the one surface built to find
+   * them.
+   */
+  if (q.district !== undefined) {
+    where.push(
+      q.district === OUT_OF_AREA
+        ? sql`r.service_area_id IS NULL`
+        : sql`r.service_area_id = ${q.district}`,
+    );
+  }
 
   const term = q.q?.trim() ?? '';
   if (term !== '') {
@@ -376,6 +450,9 @@ export async function listReturns(db: Db, q: ReturnListQuery): Promise<ReturnPag
     SELECT ${LIST_COLUMNS}
       FROM marketing_return_requests r
       JOIN marketing_programs p ON p.id = r.program_id
+      /* LEFT, because out-of-area is a legal state and an inner join would
+       * silently drop exactly the rows the footer exists to surface. */
+      LEFT JOIN marketing_service_areas a ON a.id = r.service_area_id
      WHERE ${sql.join(where, sql` AND `)}
      ORDER BY r.created_at ASC, r.id ASC
      LIMIT ${size + 1}`);
@@ -393,6 +470,30 @@ export async function listReturns(db: Db, q: ReturnListQuery): Promise<ReturnPag
       more && last ? encodeCursor(SORT_KEY, [last.createdAt], last.id) : null,
     counts: await readCounts(db, q),
   };
+}
+
+/**
+ * One row, in exactly the shape the list ships it in.
+ *
+ * THE SAME COLUMNS AND THE SAME MAPPER AS THE PAGE, so a card a bulk action just
+ * moved is byte-identical to the card the next refresh draws. `POST
+ * /returns/bulk` reports a per-item `request` and the board re-renders that card
+ * from it without refetching; a second projection here — even a correct one —
+ * would be a second place the card's shape has to be kept in step, and the drift
+ * would show up as one card in fifty rendering differently from its neighbours.
+ *
+ * `null` for an id that is not there, which is what a bulk item whose return was
+ * deleted mid-flight looks like.
+ */
+export async function readListItem(db: Db, id: string): Promise<ReturnListItem | null> {
+  const res = await db.execute(sql`
+    SELECT ${LIST_COLUMNS}
+      FROM marketing_return_requests r
+      JOIN marketing_programs p ON p.id = r.program_id
+      LEFT JOIN marketing_service_areas a ON a.id = r.service_area_id
+     WHERE r.id = ${id}`);
+  const row = res.rows[0];
+  return row ? rowToListItem(row) : null;
 }
 
 /**

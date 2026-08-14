@@ -1,7 +1,8 @@
-import { useId, useState, type FormEvent } from 'react';
+import { useId, useState, useSyncExternalStore, type FormEvent } from 'react';
+import { Navigate, useLocation } from 'react-router-dom';
 import { api } from '../data/api';
 import { ApiError, OfflineError } from '../data/errors';
-import { adoptUser } from '../data/session';
+import { adoptUser, getSession, subscribe } from '../data/session';
 import { BrandLogo } from '../components/BrandLogo';
 import './auth.css';
 
@@ -140,6 +141,31 @@ export function SignInForm({
 }
 
 export default function Login() {
+  /*
+   * `useSyncExternalStore` directly rather than `RequireAuth`'s `useSession`.
+   * `RequireAuth` already imports `SignInForm` from this file, so reaching back
+   * for its hook would make the two modules mutually dependent — which happens
+   * to work for hoisted function declarations and is a trap for whoever next
+   * adds a const to either file.
+   */
+  const session = useSyncExternalStore(subscribe, getSession, getSession);
+  const location = useLocation();
+
+  /*
+   * SIGNING IN IS WHAT NAVIGATES, and it lives here rather than in
+   * `SignInForm` because the form is also the mid-session re-auth prompt —
+   * where the writer is already exactly where they want to be, with an editor
+   * buffer under the panel, and a navigation would be the bug.
+   *
+   * `from` is the route the guard bounced them off. It restores the property
+   * that rendering sign-in in place used to give for free: open `/settings`
+   * signed out, sign in, land on `/settings`.
+   */
+  if (session.status !== 'unknown' && session.status !== 'anonymous') {
+    const from = (location.state as { from?: string } | null)?.from;
+    return <Navigate to={from && from !== '/' ? from : '/dashboard'} replace />;
+  }
+
   return (
     <div className="authpage">
       <div className="authpage__card">
@@ -157,14 +183,20 @@ export default function Login() {
         </p>
         <SignInForm />
         {/*
-          A PLAIN `<a href="#/forgot">` RATHER THAN A ROUTER `<Link>`, AND THAT
-          IS DELIBERATE. This component is rendered in two places that are not
-          both inside a router: the `/`-and-everything-else route, and
-          `RequireAuth`, which renders it as the signed-out screen and as the
-          mid-session prompt. A `<Link>` throws outside a router context, which
-          would turn "you are signed out" into a blank error page — the worst
-          possible moment for this screen to be the thing that breaks. Under
-          `createHashRouter` the hash href navigates identically.
+          A plain `<a href="#/forgot">` rather than a router `<Link>`.
+
+          This used to be load-bearing: `RequireAuth` rendered this component
+          in place as the signed-out screen, so it could appear outside a
+          router context and a `<Link>` would have thrown — turning "you are
+          signed out" into a blank error page at the worst possible moment.
+          That is no longer true. Sign-in is its own route now, and the
+          `useLocation` above means this component CANNOT render outside a
+          router any more.
+
+          Left as an `<a>` because under `createHashRouter` the hash href
+          navigates identically and there is nothing to gain from churning it.
+          The old reason is written down because it is the kind of constraint
+          someone re-derives painfully after deleting it.
         */}
         <a className="btn btn--ghost btn--sm" href="#/forgot">
           Forgot your password?

@@ -13,7 +13,10 @@ import { TooltipProvider } from './components/ui/Switch';
 import { ShortcutsDialog } from './components/ShortcutsDialog';
 import { AppShell } from './components/RequireAuth';
 import { PostGate } from './components/PostGate';
-import { initSession, startSessionWatch } from './data/session';
+import { getSession, initSession, startSessionWatch, subscribe } from './data/session';
+import { startSplash } from './components/splash';
+import Boot from './routes/Boot';
+import Login from './routes/Login';
 import Dashboard from './routes/Dashboard';
 import EditorRoute from './routes/Editor';
 import Reader from './routes/Reader';
@@ -37,6 +40,7 @@ import MarketingRewards from './routes/MarketingRewards';
 import MarketingCustomers from './routes/MarketingCustomers';
 import MarketingBanners from './routes/MarketingBanners';
 import MarketingDiscounts from './routes/MarketingDiscounts';
+import MarketingAreas from './routes/MarketingAreas';
 
 // Hash routing: this app is pure static and must work from file:// or any
 // host without server rewrite rules.
@@ -84,6 +88,36 @@ rescueLegacyInviteLink();
 void initSession();
 startSessionWatch();
 
+/**
+ * The opening sequence, and the moment it is allowed to end.
+ *
+ * It goes up here — after the theme and the accent are in the cascade, so it
+ * cannot paint in the wrong palette, and before `createRoot` so it is on screen
+ * ahead of React's first frame.
+ *
+ * It ends when the session stops being `unknown`, which is exactly the window
+ * `RequireAuth` spends returning `null`. That is the whole justification for
+ * having a splash at all: it decorates a blank the app was already showing
+ * rather than adding time to the boot. On a warm start `/auth/me` answers in a
+ * few milliseconds, so `finish()` is usually called almost immediately and only
+ * shortens what is left; on a cold serverless start it is the tips that cover
+ * the wait.
+ *
+ * `subscribe` rather than awaiting `initSession()`: the answer can also arrive
+ * via `startSessionWatch`, and a promise here would miss that and leave the
+ * splash up until its own ceiling.
+ */
+const endSplash = startSplash();
+if (getSession().status !== 'unknown') {
+  endSplash();
+} else {
+  const stopWatching = subscribe(() => {
+    if (getSession().status === 'unknown') return;
+    stopWatching();
+    endSplash();
+  });
+}
+
 // Offline shell. Production only — a service worker in dev fights HMR.
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
@@ -116,11 +150,35 @@ const router = createHashRouter([
    */
   { path: '/forgot', element: <Forgot />, errorElement: <RouteError /> },
   { path: '/reset', element: <Reset />, errorElement: <RouteError /> },
+  /*
+   * THE INDEX IS A GATEWAY, NOT THE DASHBOARD. It renders nothing, the opening
+   * sequence plays over it, and it then sends the visitor to `/dashboard` or
+   * `/login` depending on who `/auth/me` says they are.
+   *
+   * Outside the guard, and that is the point: the guard's job is to bounce an
+   * unauthenticated visitor to sign-in, which is exactly what must NOT happen
+   * before the sequence has played. `Boot` makes that decision itself, once it
+   * has both answers.
+   */
+  { path: '/', element: <Boot />, errorElement: <RouteError /> },
+  /*
+   * Sign-in is a route of its own now rather than something `RequireAuth`
+   * rendered in place. Outside the guard for the same reason `/accept-invite`
+   * is: whoever lands here cannot satisfy it.
+   */
+  { path: '/login', element: <Login />, errorElement: <RouteError /> },
   {
     element: <AppShell />,
     errorElement: <RouteError />,
     children: [
-      { path: '/', element: <Dashboard />, errorElement: <RouteError /> },
+      /*
+       * The dashboard moved off `/` so the index could become the gateway.
+       * It keeps its five filters in its own query string, so every "back to
+       * the dashboard" link in the app points here rather than at `/` — going
+       * via the gateway would replay the opening sequence every time someone
+       * closed a post.
+       */
+      { path: '/dashboard', element: <Dashboard />, errorElement: <RouteError /> },
       {
         path: '/edit/:id',
         // The gate decides what may be rendered for this id BEFORE the frozen
@@ -184,7 +242,15 @@ const router = createHashRouter([
       { path: '/marketing/rewards', element: <MarketingRewards />, errorElement: <RouteError /> },
       { path: '/marketing/customers', element: <MarketingCustomers />, errorElement: <RouteError /> },
       { path: '/marketing/banners', element: <MarketingBanners />, errorElement: <RouteError /> },
+      /*
+       * THE SIXTH SCREEN, and it was written and then never wired — the rail has
+       * linked to `/marketing/discounts` since the section shipped, no route
+       * matched it, and the catch-all below swallowed the click. A "Planned"
+       * screen that says out loud what is not built yet is the entire point of
+       * that file; unreachable, it read as a navigation bug instead.
+       */
       { path: '/marketing/discounts', element: <MarketingDiscounts />, errorElement: <RouteError /> },
+      { path: '/marketing/areas', element: <MarketingAreas />, errorElement: <RouteError /> },
       { path: '/emails', element: <Navigate to="/emails/templates" replace />, errorElement: <RouteError /> },
       { path: '/emails/templates', element: <EmailTemplates />, errorElement: <RouteError /> },
       { path: '/emails/broadcasts', element: <EmailBroadcasts />, errorElement: <RouteError /> },
@@ -195,7 +261,14 @@ const router = createHashRouter([
        * meaning without one.
        */
       { path: '/migrate', element: <MigrateRoute />, errorElement: <RouteError /> },
-      { path: '*', element: <Dashboard />, errorElement: <RouteError /> },
+      /*
+       * A redirect rather than the dashboard itself. Rendering `<Dashboard/>`
+       * under an arbitrary path left the bad URL in the address bar, and now
+       * that the dashboard has a real path there is somewhere honest to send
+       * a typo. `replace`, so Back does not return to the URL that matched
+       * nothing.
+       */
+      { path: '*', element: <Navigate to="/dashboard" replace />, errorElement: <RouteError /> },
     ],
   },
 ]);

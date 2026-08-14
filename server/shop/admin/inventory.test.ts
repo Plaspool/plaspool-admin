@@ -40,8 +40,9 @@ beforeAll(async () => {
     expiresAt: Date.now() + 60_000,
   });
 
-  // A DRAFT, and spelled 'mugs' rather than 'Mugs' — two categories as far as
-  // every query in the shop is concerned.
+  // A DRAFT, TYPED 'mugs' — which the write path re-spells to the stored
+  // 'Mugs' (catalog/fold.ts): since migration 0010 a case-twin is adopted at
+  // the door, not stored as a second category.
   const draft = await seedProduct(ctx.db, actor(), { title: 'Mug Draft', category: 'mugs' });
   await seedVariant(ctx.db, draft.id, actor(), { sku: 'INV-B', onHand: 3 });
 
@@ -165,30 +166,33 @@ describe('the admin category list', () => {
   it('includes drafts, archived AND trashed products — the public rule inverted', async () => {
     const items = await listShopCategories(ctx.db);
     /*
-     * 'Binned' comes from a TRASHED product and 'mugs' from a DRAFT. Both are
-     * here because `?status=trash&category=Binned` is a real query somebody makes
-     * when they are looking for the thing they deleted last week, and a picker
-     * that cannot offer the value cannot express it.
+     * 'Binned' comes from a TRASHED product, and the DRAFT that typed 'mugs'
+     * counts under 'Mugs' — adopted at write time, folded at read time. Both
+     * are here because `?status=trash&category=Binned` is a real query somebody
+     * makes when they are looking for the thing they deleted last week, and a
+     * picker that cannot offer the value cannot express it.
      */
     expect(Object.fromEntries(items.map((row) => [row.name, row.count]))).toEqual({
       Binned: 1,
-      Mugs: 1,
-      mugs: 1,
+      Mugs: 2,
       Tees: 1,
     });
   });
 
-  it('does not fold case, because the product list filter does not either', async () => {
+  it('folds case, because the product list filter folds too (migration 0010)', async () => {
     /*
-     * `listProducts` filters with `p.category = $1`, an exact comparison. A folded
-     * list would offer 'Mugs' while one product is spelled 'mugs', and selecting
-     * it would return a subset with nothing to explain the missing row. Two
-     * spellings are two rows here, which is also the only way an operator ever
-     * finds out they have a typo to fix.
+     * THE INVERSE OF WHAT THIS TEST ASSERTED BEFORE 0010, and the old reasoning
+     * is worth keeping because it was correct: while `listProducts` compared
+     * `p.category = $1` exactly, a folded list would have offered 'Mugs' with a
+     * product spelled 'mugs' hiding behind it. The two sides fold TOGETHER now
+     * — `lower(p.category) = lower($1)` in the filter, one grouped row here,
+     * spelling-adoption at the write door, and 0010 merging what was already
+     * stored. Either spelling typed into the filter reaches every product in
+     * the group, so one row is the honest answer at last.
      */
     const names = (await listShopCategories(ctx.db)).map((row) => row.name);
     expect(names).toContain('Mugs');
-    expect(names).toContain('mugs');
+    expect(names).not.toContain('mugs');
   });
 
   it('omits the empty category, which is not a name', async () => {

@@ -5,7 +5,7 @@ import {
   ProductPreconditionFailedError,
   StaleProductWriteError,
 } from './catalog/errors';
-import { DuplicateSkuError } from './catalog/variants';
+import { DuplicateOptionsError, DuplicateSkuError } from './catalog/variants';
 import { routes as catalog } from './catalog/routes';
 import { catalogPort } from './catalog/port';
 import { orders } from './orders/routes';
@@ -84,7 +84,16 @@ export function shopApp(): Hono<AppEnv> {
              */
             err instanceof DuplicateSkuError
             ? { error: 'duplicate_sku', detail: 'sku', sku: err.sku }
-            : null;
+            : /*
+               * The same upgrade for a duplicate option COMBINATION (0010's
+               * create-time half): "Colour Black already exists" is a conflict
+               * with state, not a malformed field. `summary` is the STORED
+               * variant's rendering, so the message can name what was collided
+               * with rather than echo what was typed.
+               */
+              err instanceof DuplicateOptionsError
+              ? { error: 'duplicate_options', detail: 'optionValues', summary: err.summary }
+              : null;
 
     if (!body) return toResponse(err, requestId);
 

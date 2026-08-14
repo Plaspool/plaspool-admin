@@ -65,7 +65,7 @@ export default function Reader() {
       <div className="empty">
         <h1 className="empty__title">Post not found</h1>
         <p className="empty__body">It may have been permanently deleted.</p>
-        <Link className="btn btn--primary" to="/">
+        <Link className="btn btn--primary" to="/dashboard">
           Back to your posts
         </Link>
       </div>

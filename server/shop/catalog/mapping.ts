@@ -103,6 +103,7 @@ export const VARIANT_COLUMNS: string[] = [
   'weight_grams',
   'status',
   'image_id',
+  'color_hex',
   'created_at',
   'updated_at',
 ];
@@ -206,6 +207,8 @@ export function rowToVariant(row: Record<string, unknown>): Variant {
     status: row.status as VariantStatus,
     /** Migration 0009. NULL until somebody uploads a photograph of this colour. */
     imageId: row.image_id == null ? null : String(row.image_id),
+    /** Migration 0010. NULL until a colour option carries a code. */
+    colorHex: row.color_hex == null ? null : String(row.color_hex),
     createdAt: toEpochMs(row.created_at),
     updatedAt: toEpochMs(row.updated_at),
   };

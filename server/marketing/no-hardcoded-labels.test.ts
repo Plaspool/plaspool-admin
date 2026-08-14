@@ -52,6 +52,39 @@ import { describe, expect, it } from 'vitest';
  *  the same mistake. */
 const NEEDLE = /spool/i;
 
+/**
+ * THE SECOND NEEDLE, AND IT IS A PLACE RATHER THAN A PRODUCT.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * A PLACE NAME IS NOT A LABEL, AND THE RULE IS THE SAME ANYWAY.
+ *
+ * The rewards programme operates where there are drivers. Today that is one
+ * city; tomorrow it is wherever the owner switches a district on, and the whole
+ * point of `marketing_service_areas` is that expanding is a Switch rather than a
+ * deploy (plan §4). So the served set is DATA — editable, per-row, by a person
+ * who is not a developer.
+ *
+ * Which means source that names the city is wrong for a second, different reason
+ * from the label rule: not "a rename would produce a lie" but "a switch-off
+ * would produce a lie". A route that special-cased the city, a component that
+ * said "we only collect in <city>", a test asserting a district is served — each
+ * is correct on the day it is written and false the first time somebody edits
+ * the list it claims to describe.
+ *
+ * WHERE IT IS ALLOWED TO LIVE, and nowhere else:
+ *
+ *   1. `scripts/gen-service-areas.ts` and the SQL it generates — that is the
+ *      data, and data is where a place belongs. (Neither is under this file's
+ *      walk, so no exemption is needed for either: the region is stored under
+ *      its full legal name, which is not this needle.)
+ *   2. This file, which has to spell the needle to search for it.
+ *
+ * The frontend has its own copy over `src/routes/Marketing*.tsx`,
+ * `src/routes/marketing/**` and `api-marketing.ts`.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+const PLACE_NEEDLE = /abuja/i;
+
 const ROOT = 'server/marketing';
 
 /** Excluded by name, because a file that greps for a word contains it. */
@@ -81,12 +114,12 @@ const sources = walk(ROOT).filter((path) => path !== SELF);
 const production = sources.filter((path) => !path.endsWith('.test.ts'));
 const suites = sources.filter((path) => path.endsWith('.test.ts'));
 
-/** Every line carrying the needle, with enough context to name the offender. */
-function hits(path: string): { path: string; line: number; text: string }[] {
+/** Every line carrying a needle, with enough context to name the offender. */
+function hits(path: string, needle = NEEDLE): { path: string; line: number; text: string }[] {
   return readFileSync(path, 'utf8')
     .split(/\r?\n/)
     .map((text, index) => ({ path, line: index + 1, text: text.trim() }))
-    .filter((row) => NEEDLE.test(row.text));
+    .filter((row) => needle.test(row.text));
 }
 
 describe('the walk itself', () => {
@@ -121,7 +154,11 @@ describe('the seeded preset’s nouns', () => {
      * in a test-only branch — because a comment naming the preset is how the next
      * reader learns that matching on it is normal here.
      */
-    const offenders = production.flatMap(hits);
+    /* `(path) => hits(path)` AND NEVER `flatMap(hits)`: `flatMap` calls its
+     * callback with three arguments, so passing a function that grew a second
+     * parameter hands it the INDEX as a needle — and the guard starts throwing
+     * or, worse, matching nothing. It cost one red bar here to find. */
+    const offenders = production.flatMap((path) => hits(path));
     expect(offenders.map((h) => `${h.path}:${h.line} ${h.text}`)).toEqual([]);
   });
 
@@ -145,7 +182,38 @@ describe('the seeded preset’s nouns', () => {
      * the subsystem to satisfy a rule written to protect them.
      * ═══════════════════════════════════════════════════════════════════════
      */
-    const offenders = suites.flatMap(hits).filter((hit) => !/\.not\./.test(hit.text));
+    const offenders = suites
+      .flatMap((path) => hits(path))
+      .filter((hit) => !/\.not\./.test(hit.text));
     expect(offenders.map((h) => `${h.path}:${h.line} ${h.text}`)).toEqual([]);
+  });
+});
+
+describe('the served city', () => {
+  it('appears in no marketing source at all — the served set is DATA', () => {
+    /*
+     * THE SAME RULE AS THE PRESET'S NOUNS, FOR A DIFFERENT REASON. A programme's
+     * words change when somebody renames them; a city's status changes when
+     * somebody switches a district off. Both make source that names them a lie,
+     * and neither failure announces itself.
+     *
+     * TIGHTER THAN THE LABEL RULE, because there is no seed to exempt: this
+     * subsystem stores the region under its full legal name, so not one file
+     * under `server/marketing/**` — production or suite — has any business
+     * spelling the city.
+     */
+    const offenders = sources.flatMap((path) => hits(path, PLACE_NEEDLE));
+    expect(offenders.map((h) => `${h.path}:${h.line} ${h.text}`)).toEqual([]);
+  });
+
+  it('is a needle that can find something — the walk is not lying', () => {
+    /*
+     * The positive control the assertion above needs. A grep that matches
+     * nothing passes, and a grep whose needle is broken passes hardest of all,
+     * so this proves the pattern still finds the string it is looking for.
+     */
+    expect(PLACE_NEEDLE.test('somewhere in Abuja')).toBe(true);
+    expect(PLACE_NEEDLE.test('ABUJA')).toBe(true);
+    expect(PLACE_NEEDLE.test('Federal Capital Territory')).toBe(false);
   });
 });

@@ -6,6 +6,7 @@ import { currentDb } from '../../app-env';
 import type { AppEnv } from '../../app-env';
 import { listAudit } from './audit';
 import { listShopCategories } from './categories';
+import { listShopTags } from './tags';
 import { listBuyers } from './customers';
 import { listInventory } from './inventory';
 import { shopStats } from './stats';
@@ -147,4 +148,10 @@ shopAdminRoutes.get('/admin/audit', auth, async (c) => {
 shopAdminRoutes.get('/admin/categories', auth, async (c) => {
   readQuery(c, NoQueryParams);
   return c.json({ items: await listShopCategories(currentDb(c)) });
+});
+
+/** The tag box's vocabulary — same shape, same no-params rule, same reason. */
+shopAdminRoutes.get('/admin/tags', auth, async (c) => {
+  readQuery(c, NoQueryParams);
+  return c.json({ items: await listShopTags(currentDb(c)) });
 });

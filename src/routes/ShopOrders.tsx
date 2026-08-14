@@ -361,13 +361,15 @@ function OrderList() {
                         </Link>
                         <span className="dtable__sub">{order.email}</span>
                       </td>
-                      <td className="num">{WHEN.format(new Date(order.placedAt))}</td>
-                      <td>
+                      <td className="num" data-label="Placed">
+                        {WHEN.format(new Date(order.placedAt))}
+                      </td>
+                      <td data-label="Status">
                         <span className={`chip chip--${order.status}`}>
                           {STATUS_LABEL[order.status] ?? order.status}
                         </span>
                       </td>
-                      <td className="dtable__num">
+                      <td className="dtable__num" data-label="Total">
                         {formatMinor(order.grandTotal, order.currency)}
                         {order.refundedTotal > 0 && (
                           <span className="dtable__sub">
@@ -585,14 +587,18 @@ function OrderDetail({ id }: { id: string }) {
                             {optionText(line) && ` · ${optionText(line)}`}
                           </span>
                         </td>
-                        <td className="dtable__num">
+                        <td className="dtable__num" data-label="Qty">
                           {line.qty}
                           {line.fulfilledQty > 0 && line.fulfilledQty < line.qty && (
                             <span className="dtable__sub">{line.fulfilledQty} sent</span>
                           )}
                         </td>
-                        <td className="dtable__num">{formatMinor(line.unitAmount, currency)}</td>
-                        <td className="dtable__num">{formatMinor(line.lineTotal, currency)}</td>
+                        <td className="dtable__num" data-label="Each">
+                          {formatMinor(line.unitAmount, currency)}
+                        </td>
+                        <td className="dtable__num" data-label="Line">
+                          {formatMinor(line.lineTotal, currency)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1004,7 +1010,15 @@ function Fulfilments({
                           {line.sku} · {line.qty - line.fulfilledQty} outstanding
                         </span>
                       </td>
-                      <td className="dtable__num" style={{ width: '7rem' }}>
+                      {/* This table has no header row to borrow from, so the
+                          phone label is the one place the column is named at
+                          all — the input's `aria-label` says it for a screen
+                          reader and said it to nobody else. */}
+                      {/* `.dtable__fit` rather than an inline width, so the
+                          phone stack can hand the cell its full width back —
+                          an inline style is unbeatable from a media query
+                          without `!important`. */}
+                      <td className="dtable__num dtable__fit" data-label="Ship">
                         <input
                           className="input"
                           inputMode="numeric"

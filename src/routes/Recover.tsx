@@ -43,7 +43,7 @@ export default function Recover() {
   return (
     <div className="recover">
       <header className="recover__bar">
-        <Link className="btn btn--ghost btn--sm" to="/">
+        <Link className="btn btn--ghost btn--sm" to="/dashboard">
           <ChevronLeft className="ui-ic" aria-hidden="true" />
           Posts
         </Link>
@@ -60,7 +60,7 @@ export default function Recover() {
               fails later shows up here, and stays until you decide what happens
               to it.
             </p>
-            <Link className="btn btn--primary" to="/">
+            <Link className="btn btn--primary" to="/dashboard">
               Back to your posts
             </Link>
           </div>

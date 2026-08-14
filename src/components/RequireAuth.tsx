@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { Outlet, useBlocker, useLocation } from 'react-router-dom';
+import { Navigate, Outlet, useBlocker, useLocation } from 'react-router-dom';
 import { LogOut, WifiOff } from 'lucide-react';
 import {
   getSession,
@@ -11,7 +11,7 @@ import {
 import { revalidate } from '../data/sync';
 import { ConfirmDialog } from './Dialog';
 import { Sidebar, SidebarCounts } from './Sidebar';
-import Login, { SignInForm } from '../routes/Login';
+import { SignInForm } from '../routes/Login';
 import '../routes/auth.css';
 
 /**
@@ -44,6 +44,7 @@ export function useSession(): Session {
 
 export function RequireAuth({ children }: { children: ReactNode }) {
   const session = useSession();
+  const location = useLocation();
 
   /**
    * NAVIGATION IS BLOCKED WHILE A SESSION IS EXPIRED, and that is a security
@@ -80,9 +81,18 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   }
 
   if (session.status === 'anonymous' && session.reason === 'boot') {
-    // The cache was cleared before anything painted, so there is no route
-    // underneath worth preserving and the full screen is correct.
-    return <Login />;
+    /*
+     * The cache was cleared before anything painted, so there is no route
+     * underneath worth preserving — which is what makes a REDIRECT safe here
+     * and unsafe two arms down, where `expired` renders over a live editor.
+     *
+     * Sign-in used to render in place, and that had one property worth keeping:
+     * a writer who opened `/settings` signed out landed back on `/settings`
+     * afterwards. A bare redirect loses the destination, so it is carried in
+     * router state and `Login` sends them on. `replace`, so the back button
+     * does not walk into the guard again and bounce straight back out.
+     */
+    return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
 
   if (session.status === 'offline' && !session.user) {

@@ -172,7 +172,7 @@ export default function ShopCustomers() {
                             {buyer.customerId ? 'has an account' : 'guest checkout'}
                           </span>
                         </td>
-                        <td className="dtable__num">
+                        <td className="dtable__num" data-label="Orders">
                           {buyer.orderCount.toLocaleString()}
                           {buyer.paidCount !== buyer.orderCount && (
                             // Orders placed and orders PAID FOR are different
@@ -182,11 +182,11 @@ export default function ShopCustomers() {
                             <span className="dtable__sub">{buyer.paidCount} paid</span>
                           )}
                         </td>
-                        <td className="dtable__num">
+                        <td className="dtable__num" data-label="Kept">
                           {formatMinor(buyer.totalSpent, buyer.currency)}
                           <span className="dtable__sub">after refunds</span>
                         </td>
-                        <td>
+                        <td data-label="Last order">
                           {/* Straight to the order, not to a search for it: the
                               row carries the id as well as the number, and a
                               search would be a second lookup for something this

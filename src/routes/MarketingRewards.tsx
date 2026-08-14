@@ -231,8 +231,37 @@ function useIsOwner(): boolean {
 // LIST
 // ============================================================================
 
+/**
+ * THE TWO HALVES OF THIS SCREEN, AND WHY THEY ARE NOW TABS.
+ *
+ * They were stacked: a long settings panel — the word for a reward, its plural,
+ * the spend rate, the currency, four minimums — and then the programs table
+ * underneath it. So the table, which is what somebody opens Rewards to look at,
+ * started below the fold and the screen opened on a form nobody came for.
+ *
+ * They are also different KINDS of thing. Settings are section-wide and are
+ * touched once; programs are the rows you work with. Stacking those reads as one
+ * long form where the bottom half happens to be a table.
+ *
+ * TABS RATHER THAN TWO ROUTES, and the tab lives in `?tab=`: the screen is one
+ * fetch of one list either way, the rail already spends an entry on Rewards, and
+ * a URL that names the half you were reading is what Back and a pasted link both
+ * need. Programs is the default because it is the answer to the more common
+ * question.
+ */
+type RewardsTab = 'programs' | 'settings';
+
+const REWARDS_TABS: { key: RewardsTab; label: string }[] = [
+  { key: 'programs', label: 'Programs' },
+  { key: 'settings', label: 'Settings' },
+];
+
 function RewardsList() {
   const isOwner = useIsOwner();
+  const [params] = useSearchParams();
+  /* Anything else in `?tab=` is Programs rather than an error screen — a
+     mistyped query is not a broken route. */
+  const tab: RewardsTab = params.get('tab') === 'settings' ? 'settings' : 'programs';
   const [programs, setPrograms] = useState<Program[] | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -286,12 +315,38 @@ function RewardsList() {
         </div>
       </header>
 
+      {/* The strip is absent for a writer, who has one half to look at and needs
+          no control for choosing it. Settings are `requireOwner` on the server;
+          a tab that led to a panel that is not rendered would be a door to a
+          room this person is not in. */}
+      {isOwner && (
+        <nav className="mkttabs" aria-label="Which half of Rewards">
+          {REWARDS_TABS.map((entry) => (
+            <Link
+              key={entry.key}
+              className={`mkttabs__tab${tab === entry.key ? ' is-active' : ''}`}
+              aria-current={tab === entry.key ? 'page' : undefined}
+              /* Programs is the default, so it writes no param rather than
+                 `?tab=programs` — the same rule the dashboard applies to every
+                 default filter. */
+              to={{
+                pathname: '/marketing/rewards',
+                search: entry.key === 'programs' ? '' : `?tab=${entry.key}`,
+              }}
+            >
+              {entry.label}
+            </Link>
+          ))}
+        </nav>
+      )}
+
       <div className="mktscr__body">
         {/* The settings are their own request and their own failure: a 500 on
             them must not take the programs table with it, and the table is what
             somebody opened this screen for. */}
-        {isOwner && <SettingsPanel programs={programs} />}
+        {isOwner && tab === 'settings' && <SettingsPanel programs={programs} />}
 
+        {tab === 'programs' && (
         <section className="mktpanel">
           <div className="mktpanel__head">
             <h2 className="mktpanel__title">Programs</h2>
@@ -334,6 +389,7 @@ function RewardsList() {
             <ProgramsTable programs={programs} />
           )}
         </section>
+        )}
       </div>
     </>
   );
@@ -386,7 +442,7 @@ function ProgramsTable({ programs }: { programs: Program[] }) {
                       {program.unitLabelSingular !== null && ` · ${program.unitLabelSingular}`}
                     </span>
                   </td>
-                  <td>
+                  <td data-label="Rules">
                     {/* The rule in the program's own words, so two programs with
                         different units never read as the same rule. */}
                     {program.kind === 'unit_return' &&
@@ -400,7 +456,7 @@ function ProgramsTable({ programs }: { programs: Program[] }) {
                       <span className="mkttable__sub">Given by hand</span>
                     )}
                   </td>
-                  <td>
+                  <td data-label="Status">
                     <span className={`chip mktchip--${program.status}`}>
                       {program.status === 'active' ? 'Active' : 'Paused'}
                     </span>
@@ -408,7 +464,7 @@ function ProgramsTable({ programs }: { programs: Program[] }) {
                       Changed {WHEN.format(new Date(program.updatedAt))}
                     </span>
                   </td>
-                  <td className="mkttable__num">
+                  <td className="mkttable__num" data-label="Lifetime awarded">
                     {fmtPoints(program.awardedTotal, labels)}
                     {program.openReturns > 0 && (
                       <span className="mkttable__sub">{program.openReturns} open</span>

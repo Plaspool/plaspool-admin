@@ -165,6 +165,89 @@ export interface EmbeddedProgram {
   unitLabelPlural: string | null;
 }
 
+/**
+ * A place a van goes — contract #6.1.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE MODEL IS NATIONAL AND ONLY THE DATA IS ONE CITY.
+ *
+ * An area is a name in a region with an active flag. Every area outside the
+ * region served today ships INACTIVE, and expanding is an owner switching rows
+ * on rather than a deploy. NOTHING in this application may name the city that is
+ * served — the grep guard over this section's sources fails on it — because the
+ * served set is editable, so code that matched on a place would be wrong the
+ * first time a district was switched off.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+export interface ServiceArea {
+  id: string;
+  /** The stable handle. A rename moves `name` and never this. */
+  key: string;
+  /** The state. The switcher groups by it only when more than one region has a
+   *  served area — a single heading over every row is chrome that says nothing. */
+  region: string;
+  name: string;
+  active: boolean;
+  /** Came from the shipped dataset rather than from a person. A rename keeps it
+   *  true, so it is the ONLY thing a "shipped" marker may derive from. */
+  seeded: boolean;
+  revision: number;
+  /** `requested + received` here — the badge. The two stages where the admin is
+   *  the blocker; scheduled and collected are waiting on a driver. */
+  needsAction: number;
+  /** All four open stages. */
+  open: number;
+  /** Σ declared units across the open ones — the van-capacity number. */
+  loadUnits: number;
+  /** How long the oldest OPEN return here has waited, or null when nothing is. */
+  oldestAgeMs: number | null;
+}
+
+export interface AreasView {
+  areas: ServiceArea[];
+  /** The switcher's red footer: returns that belong to no board. Not an area
+   *  with a null id — it is the ABSENCE of a place, and giving it a row would
+   *  make it somewhere the picker could send you. */
+  outOfArea: { needsAction: number; open: number };
+}
+
+/** NOTE WHAT IS ABSENT: `key` and `seeded`. The key is the stable handle and
+ *  `seeded` says where a row came from; neither is a thing an edit may rewrite,
+ *  and the server's schema has no field for either. */
+export interface AreaPatch {
+  expectedRevision: number;
+  name?: string;
+  aliases?: string[];
+  active?: boolean;
+  sortOrder?: number;
+}
+
+/** The `?district=` value for the returns that belong to no board. A literal
+ *  rather than an empty string, because absent means "every board". */
+export const OUT_OF_AREA = 'none';
+
+/**
+ * Contract #6.4 — one action, many cards, one body.
+ *
+ * NO `inspect`. Counting what arrived is a form per return — the quantities
+ * differ by definition — so "inspect fifty returns with one body" is a sentence
+ * with no meaning. The selection bar greys it, and the server's schema refuses
+ * it, so the greying is a contract rather than a UI convention.
+ */
+export type BulkAction = 'schedule' | 'collect' | 'receive' | 'cancel' | 'reject' | 'note';
+
+export interface BulkRequest {
+  action: BulkAction;
+  /** Max 50 — a selection a person made by clicking. Each carries its OWN
+   *  `expectedRevision`, because each card was read at its own moment. */
+  items: { id: string; expectedRevision: number }[];
+  body?: Record<string, unknown>;
+}
+
+export type BulkResult =
+  | { id: string; ok: true; request: ReturnListItem }
+  | { id: string; ok: false; error: string };
+
 export interface ReturnListItem {
   id: string;
   status: ReturnStatus;
@@ -175,6 +258,17 @@ export interface ReturnListItem {
   qtyDeclared: number;
   qtyAccepted: number | null;
   qtyRejected: number | null;
+  /**
+   * THE RATE THIS CUSTOMER WAS PROMISED, snapshotted at creation.
+   *
+   * A card shows what a return is WORTH — quantity × rate — so an operator can
+   * see that a twelve-unit return is worth ten times a small one before deciding
+   * whose van to fill. This screen also holds the PROGRAMS, so it could multiply
+   * by `program.pointsPerUnit` instead and skip the field. That would be wrong in
+   * exactly the way the snapshot exists to prevent: a shop that repriced on
+   * Wednesday would see every Monday card silently restated at the new rate.
+   */
+  pointsPerUnitSnapshot: number;
   pointsAwarded: number | null;
   pickupScheduledAt: number | null;
   pickupAddress: string | null;
@@ -185,6 +279,18 @@ export interface ReturnListItem {
    * every row's primary control. Pinned by a test on both sides.
    */
   allowedActions: ReturnAction[];
+  /**
+   * WHICH BOARD THIS CARD IS ON, with the name to draw it under.
+   *
+   * `null` IS THE OUT-OF-AREA FOOTER, not a missing field: a return from
+   * somewhere we do not collect is a real row that no board can hold, and it can
+   * be cancelled or rejected but never awarded.
+   *
+   * The NAME travels beside the id because the desk sits above the boards and is
+   * whole-of-city: its Area column has to say where each row lives without
+   * looking every id up in the switcher's response.
+   */
+  serviceArea: { id: string; name: string } | null;
   createdAt: number;
   updatedAt: number;
   program: EmbeddedProgram;
@@ -297,6 +403,21 @@ export interface ReturnIntake {
   customerName?: string;
   customerPhone?: string;
   pickupAddress?: string;
+  /**
+   * WHICH BOARD THIS LANDS ON — an area id from the picker, or any spelling its
+   * aliases forgive. CHOSEN, NEVER PARSED: there is no geocoding, because being
+   * told you are outside the served set by a parser that did not recognise your
+   * street is the worst failure this feature has.
+   *
+   * OPTIONAL HERE AND REQUIRED ON THE PUBLIC FORM. A phone-in from out of town
+   * is a real request staff must be able to write down; it lands in the
+   * switcher's out-of-area footer, can be closed with a reason, and can never be
+   * awarded — a database CHECK sees to that, not this field.
+   *
+   * An unserved area answers `409 outside_service_area` carrying `served`, the
+   * live list of places we do collect from.
+   */
+  serviceAreaId?: string;
   note?: string;
 }
 
@@ -497,14 +618,33 @@ export interface InspectDraft {
   qtyRejected: number;
   /** Required by the server iff `qtyRejected > 0`; a 400 names this field. */
   rejectedReason?: string;
+  /**
+   * A discretionary top-up on this inspection — OWNER-ONLY. A writer sending one
+   * gets `403 forbidden`; a writer inspecting without one is the ordinary path.
+   * The stepper is not RENDERED for a writer, so the 403 is a backstop.
+   *
+   * It becomes a SECOND ledger row and never a bigger award: the award is pinned
+   * to exactly quantity × rate by a database CHECK, and that equality is what
+   * makes the arithmetic unforgeable.
+   */
+  bonusPoints?: number;
+  /** Required by the server iff `bonusPoints` is present; a 400 names this
+   *  field. Stored verbatim and forever. */
+  bonusReason?: string;
   note?: string;
 }
 
 export interface InspectResult {
   request: ReturnRequest;
   /** Null when nothing was accepted — the request went to `rejected` and no
-   *  ledger row exists to point at. */
+   *  ledger row exists to point at.
+   *
+   *  `points` is the AWARD ALONE (quantity × the promised rate); `balance` is
+   *  what the customer now holds, which INCLUDES any bonus. Two questions, two
+   *  numbers — which is what lets the success copy say "120 + 25". */
   award: { points: number; balance: number } | null;
+  /** The top-up, when there was one. */
+  bonus: { points: number; reason: string } | null;
 }
 
 export interface AdjustmentResult {
@@ -659,10 +799,74 @@ export const marketingApi = {
    */
   async listReturns(
     view: ReturnsView,
-    query: { q?: string; programId?: string; cursor?: string; limit?: number } = {},
+    query: {
+      q?: string;
+      programId?: string;
+      /** An area id, or `OUT_OF_AREA` for the returns that belong to no board.
+       *  Absent means every board at once — which is what the DESK asks for. */
+      district?: string;
+      cursor?: string;
+      limit?: number;
+    } = {},
     signal?: AbortSignal,
   ): Promise<ReturnsPage> {
     return apiFetch<ReturnsPage>(`${BASE}/returns`, { query: { view, ...query }, signal });
+  },
+
+  /**
+   * #6.1. The board switcher's rows and its out-of-area footer.
+   *
+   * `activeOnly` IS WHAT THE SWITCHER ASKS FOR; the Areas screen asks for
+   * everything and groups by region itself. There is no pager: an area is a
+   * place a van goes, the served set is a couple of dozen rows, and the Areas
+   * screen wants every region in one scroll.
+   */
+  async listAreas(activeOnly = false, signal?: AbortSignal): Promise<AreasView> {
+    return apiFetch<AreasView>(`${BASE}/areas`, {
+      query: activeOnly ? { active: 'true' } : {},
+      signal,
+    });
+  },
+
+  /** #6.1b. Owner-only. Created INACTIVE — switching one on is the separate,
+   *  deliberate act, not something that happens as somebody finishes typing. */
+  async createArea(draft: { region: string; name: string; aliases?: string[] }): Promise<ServiceArea> {
+    const body = await apiFetch<{ area: ServiceArea }>(`${BASE}/areas`, {
+      method: 'POST',
+      body: filled(draft),
+      subject: 'Area',
+    });
+    return body.area;
+  },
+
+  /** #6.1b. Owner-only, CAS. Renaming a SEEDED area keeps it seeded — the flag
+   *  only ever meant "this row was not typed by a person". */
+  async patchArea(id: string, patch: AreaPatch): Promise<ServiceArea> {
+    const body = await apiFetch<{ area: ServiceArea }>(`${BASE}/areas/${seg(id)}`, {
+      method: 'PATCH',
+      body: filled(patch),
+      id,
+      subject: 'Area',
+    });
+    return body.area;
+  },
+
+  /**
+   * #6.4. The board's multi-select.
+   *
+   * 200 EVEN WHEN SOME OF IT FAILED, and the caller must read `results` rather
+   * than trusting the status. There are no transactions on the server, so a bulk
+   * call IS a loop of single statements and partial success is the truth — "4 of
+   * 5 scheduled, Tolu Bassey moved on while you were choosing" is the honest
+   * report, and the one card that failed carries the code to heal it with.
+   */
+  async bulk(request: BulkRequest): Promise<BulkResult[]> {
+    const body = await apiFetch<{ results: BulkResult[] }>(`${BASE}/returns/bulk`, {
+      method: 'POST',
+      body: request,
+      subject: 'Returns',
+    });
+    return body.results;
   },
 
   /** #5. The ADMIN intake, 201 with the full detail. Program defaults to

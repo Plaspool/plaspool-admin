@@ -81,11 +81,16 @@ async function seedReturn(input: {
   await ctx.db.execute(sql`
     INSERT INTO marketing_return_requests
       (id, program_id, customer_email, qty_declared, qty_accepted, qty_rejected,
-       points_per_unit_snapshot, points_awarded, source, status,
+       points_per_unit_snapshot, points_awarded, source, status, service_area_id,
        pickup_scheduled_at, received_at, closed_at, revision, created_at, updated_at)
     VALUES (${input.id}, ${input.programId}, ${input.email}, 6,
             ${input.qtyAccepted ?? null}, ${input.qtyAccepted === undefined ? null : 0},
             7, ${input.pointsAwarded ?? null}, 'admin', ${input.status},
+            /* ANY SERVED AREA. Migration 0012 refuses an awarded return with
+             * none, and these fixtures are about the Overview's tiles rather
+             * than about geography — so they ask the seed for a board rather
+             * than naming one, which would put a real place in a test file. */
+            (SELECT id FROM marketing_service_areas WHERE active ORDER BY id LIMIT 1),
             ${input.pickupAt ?? null}, ${input.receivedAt ?? null}, ${input.closedAt ?? null},
             1, ${input.createdAt}, ${input.createdAt})`);
 }

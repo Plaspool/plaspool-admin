@@ -9,6 +9,7 @@ import { docToText, slugify } from '../../../shared/doc';
 import { checkPostMeta, validateDoc } from '../../../shared/validate';
 import type { AuthUser, DocNode } from '../../../shared/types';
 import { SLUG_ATTEMPTS, uniqueProductSlug } from './slug';
+import { canonicalCategory, canonicalTags } from './fold';
 import { emitEvent, jsonbObject } from './events';
 import {
   PRODUCT_COLUMNS,
@@ -120,6 +121,15 @@ export async function createProduct(
   checkMeta({ title: input.title, category: input.category, tags: input.tags });
   await checkImageRefs(db, input);
 
+  /*
+   * AFTER `checkMeta`, so validation always judges what the caller typed — and
+   * then the spelling is the catalogue's, not the keyboard's (`fold.ts`): a
+   * category or tag that case-matches something stored adopts the stored form,
+   * which is what keeps `pla` from becoming the fifth spelling of `PLA`.
+   */
+  const category = input.category ? await canonicalCategory(db, input.category) : '';
+  const tags = input.tags ? await canonicalTags(db, input.tags) : [];
+
   const title = input.title ?? '';
   const supplied = input.slug ? input.slug : null;
   // A titled product gets an address on creation; an untitled one holds NULL
@@ -136,7 +146,7 @@ export async function createProduct(
                                    author_id, revision)
         VALUES (${id}, ${slug}, ${title}, ${JSON.stringify(description)}::jsonb,
                 ${docToText(description)}, 'draft',
-                ${input.category ?? ''}, ${sql.param(input.tags ?? [])},
+                ${category}, ${sql.param(tags)},
                 ${input.coverImageId ?? null}, ${sql.param(input.imageIds ?? [])},
                 ${now}, ${now}, NULL, NULL, ${author.id}, 1)
         RETURNING ${sql.raw(PRODUCT_COLUMNS.join(', '))}
@@ -219,8 +229,17 @@ export async function saveProduct(
 
   const next = {
     title: patch.title ?? current.title,
-    category: patch.category ?? current.category,
-    tags: patch.tags ?? current.tags,
+    /*
+     * Canonicalised ONLY when the patch carries the field — an untouched
+     * category or tag list is stored back byte-identical, because "I did not
+     * touch it" must not be an edit. The patch's spelling is then the
+     * catalogue's (`fold.ts`): case-matches adopt the stored form.
+     */
+    category:
+      patch.category !== undefined
+        ? await canonicalCategory(db, patch.category)
+        : current.category,
+    tags: patch.tags !== undefined ? await canonicalTags(db, patch.tags) : current.tags,
     coverImageId:
       patch.coverImageId !== undefined ? patch.coverImageId : current.coverImageId,
     imageIds: patch.imageIds ?? current.imageIds,

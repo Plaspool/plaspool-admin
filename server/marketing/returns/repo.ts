@@ -6,11 +6,13 @@ import {
   AlreadyAwardedError,
   BelowMinimumError,
   InvalidTransitionError,
+  OutsideServiceAreaError,
   ProgramPausedError,
   ProgramTypeMismatchError,
   ReturnAlreadyOpenError,
   StaleMarketingWriteError,
 } from '../errors';
+import { requireServedArea, servedNames } from '../areas/repo';
 import { ID, newId } from '../ids';
 import { resolveLabels } from '../labels';
 import { balanceUpsertFragment, ledgerInsertFragment } from '../ledger/fragments';
@@ -76,6 +78,9 @@ export interface ReturnRow {
   customerName: string | null;
   customerPhone: string | null;
   pickupAddress: string | null;
+  /** Which board this is on. NULL is the out-of-area footer — a legal state, and
+   *  an unrewardable one. */
+  serviceAreaId: string | null;
   qtyDeclared: number;
   qtyAccepted: number | null;
   qtyRejected: number | null;
@@ -188,6 +193,7 @@ const REQUEST_COLUMN_NAMES = [
   'customer_name',
   'customer_phone',
   'pickup_address',
+  'service_area_id',
   'qty_declared',
   'qty_accepted',
   'qty_rejected',
@@ -243,6 +249,7 @@ function rowToRequest(row: Record<string, unknown>): ReturnRow {
     customerName: row.customer_name == null ? null : String(row.customer_name),
     customerPhone: row.customer_phone == null ? null : String(row.customer_phone),
     pickupAddress: row.pickup_address == null ? null : String(row.pickup_address),
+    serviceAreaId: row.service_area_id == null ? null : String(row.service_area_id),
     qtyDeclared: Number(row.qty_declared),
     qtyAccepted: row.qty_accepted == null ? null : Number(row.qty_accepted),
     qtyRejected: row.qty_rejected == null ? null : Number(row.qty_rejected),
@@ -505,6 +512,17 @@ export interface CreateReturnInput extends Clocked {
   qtyDeclared: number;
   /** Absent means "whatever the shop's default is" — contract #5. */
   programId?: string;
+  /**
+   * WHICH BOARD THIS LANDS ON — an area id, its key, or any spelling of its name
+   * the alias list forgives. CHOSEN, NEVER PARSED (there is no geocoding here).
+   *
+   * Absent is legal for the admin path and means "out of area": a phone-in from
+   * out of town is a real request, and it lands in the switcher's footer where
+   * it can be closed with a reason. It can never be AWARDED —
+   * `marketing_return_requests_area_award_ck` sees to that — which is why the
+   * public intake requires one and the route, not this function, enforces that.
+   */
+  serviceAreaId?: string;
   customerName?: string;
   customerPhone?: string;
   pickupAddress?: string;
@@ -602,6 +620,21 @@ export async function createRequest(db: Db, input: CreateReturnInput): Promise<R
   }
   if (input.qtyDeclared < minUnitsPerReturn) throw new BelowMinimumError(minUnitsPerReturn);
 
+  /*
+   * THE GATE, RESOLVED BEFORE THE INSERT AND ENFORCED INSIDE IT.
+   *
+   * `requireServedArea` turns whatever spelling arrived into a served row or
+   * throws the refusal that names the places we do collect from. That read is
+   * for the ERROR MESSAGE, not for permission — by the time the INSERT runs the
+   * flag could have been switched off — so the statement below selects the area
+   * again `WHERE active`, and an area retired in between makes the whole insert
+   * write nothing rather than book a van nobody will send.
+   */
+  const area =
+    input.serviceAreaId === undefined
+      ? null
+      : await requireServedArea(db, input.serviceAreaId);
+
   const id = newId(ID.return);
   /* The public intake's first entry is the CUSTOMER's, the dialog's is staff's.
    * A history that attributes every request to whoever happened to be signed in
@@ -619,11 +652,29 @@ export async function createRequest(db: Db, input: CreateReturnInput): Promise<R
       WITH ins AS (
         INSERT INTO marketing_return_requests
           (id, program_id, customer_email, customer_name, customer_phone, pickup_address,
-           qty_declared, points_per_unit_snapshot, source, created_at, updated_at)
-        VALUES (${id}, ${program.id}, ${email}, ${input.customerName ?? null},
-                ${input.customerPhone ?? null}, ${address(input.pickupAddress) ?? null},
-                ${input.qtyDeclared}, ${pointsPerUnit}, ${input.source},
-                ${input.now}, ${input.now})
+           qty_declared, points_per_unit_snapshot, source, service_area_id,
+           created_at, updated_at)
+        ${
+          /*
+           * TWO SHAPES, ASSEMBLED — never one statement with a disabled arm. An
+           * out-of-area return has no area to select FROM and inserts NULL
+           * unconditionally; an in-area one selects the row `WHERE active`, so a
+           * district switched off between the read above and this write produces
+           * zero rows and writes nothing at all. The `inspect` statement takes
+           * the same approach to its optional CTEs and for the same reason.
+           */
+          area === null
+            ? sql`VALUES (${id}, ${program.id}, ${email}, ${input.customerName ?? null},
+                    ${input.customerPhone ?? null}, ${address(input.pickupAddress) ?? null},
+                    ${input.qtyDeclared}, ${pointsPerUnit}, ${input.source}, NULL,
+                    ${input.now}, ${input.now})`
+            : sql`SELECT ${id}, ${program.id}, ${email}, ${input.customerName ?? null},
+                    ${input.customerPhone ?? null}, ${address(input.pickupAddress) ?? null},
+                    ${input.qtyDeclared}, ${pointsPerUnit}, ${input.source}, a.id,
+                    ${input.now}, ${input.now}
+                    FROM marketing_service_areas a
+                   WHERE a.id = ${area.id} AND a.active`
+        }
         RETURNING ${REQUEST_COLUMNS}
       ), evt AS (
         ${timelineEntryFragment({
@@ -639,7 +690,13 @@ export async function createRequest(db: Db, input: CreateReturnInput): Promise<R
         })}
       )
       SELECT ${REQUEST_COLUMNS} FROM ins`);
-    return rowToRequest(res.rows[0]);
+    const row = res.rows[0];
+    /* Zero rows can mean exactly one thing here: the `WHERE a.active` above
+     * matched nothing, i.e. the district was retired between the resolve and the
+     * write. The honest answer is the one the customer would have got a
+     * millisecond earlier, with the served list as it now stands. */
+    if (!row) throw new OutsideServiceAreaError(await servedNames(db));
+    return rowToRequest(row);
   } catch (err) {
     if (uniqueViolation(err) === OPEN_RETURN_UQ) {
       const open = await readOpenReturn(db, email);
@@ -855,13 +912,36 @@ export interface InspectInput extends Cas {
   qtyRejected: number;
   rejectedReason?: string;
   note?: string;
+  /**
+   * A discretionary top-up on this inspection — OWNER-ONLY, enforced at the
+   * route (`routes.ts`), because minting points outside the programme's rate is
+   * money rather than warehouse work.
+   *
+   * IT IS A SECOND LEDGER ROW AND NEVER A BIGGER AWARD.
+   * `marketing_return_requests_award_ck` pins `points_awarded = qty_accepted *
+   * points_per_unit_snapshot`, and that equality is what makes the arithmetic
+   * unforgeable — a number anybody can recompute from the row. Folding a bonus
+   * into it would force that check to be relaxed, and the one thing in this
+   * subsystem that cannot be taken back would stop being checkable.
+   */
+  bonusPoints?: number;
+  /** Required iff `bonusPoints` is present. Stored verbatim and forever: a
+   *  discretionary credit nobody explained is an argument with no record. */
+  bonusReason?: string;
 }
 
 export interface InspectOutcome {
   row: ReturnRow;
   /** `null` when nothing was accepted — a rejection writes no ledger row and no
-   *  balance, so there is no award to report. */
+   *  balance, so there is no award to report.
+   *
+   *  `points` IS THE AWARD ALONE (quantity × the promised rate), matching the
+   *  row's own `points_awarded`; `balance` is what the customer now holds, which
+   *  INCLUDES any bonus. Two different questions, two different numbers. */
   award: { points: number; balance: number } | null;
+  /** The top-up, when there was one. Reported separately so the success copy can
+   *  say "120 + 25" rather than a 145 nobody can decompose. */
+  bonus: { points: number; reason: string } | null;
 }
 
 const INSPECT_FROM: readonly ReturnStatus[] = ['received'];
@@ -907,6 +987,30 @@ export async function inspect(
   const reason = input.rejectedReason?.trim() ?? '';
   if (input.qtyRejected > 0 && reason === '') throw new BadRequestError('rejectedReason');
   if (input.qtyRejected === 0 && reason !== '') throw new BadRequestError('rejectedReason');
+
+  /*
+   * THE BONUS, AND ITS THREE RULES.
+   *
+   * A REASON IS REQUIRED BOTH WAYS, exactly as the rejection reason above is: a
+   * discretionary credit nobody explained is an argument with no record, and a
+   * reason stored where nothing was granted is a history that describes a
+   * payment that never happened.
+   *
+   * AND IT NEEDS SOMETHING TO SIT BESIDE. With nothing accepted there is no
+   * award, no ledger row and no balance change — a "bonus" there would be a
+   * manual credit wearing an inspection's clothes, which is the one shape that
+   * would let money be minted on a screen built for counting goods. The owner
+   * has a manual adjustment for that, under its own name, on its own route.
+   */
+  const bonus = input.bonusPoints;
+  const bonusReason = input.bonusReason?.trim() ?? '';
+  if (bonus !== undefined) {
+    if (!Number.isInteger(bonus) || bonus < 1) throw new BadRequestError('bonusPoints');
+    if (bonusReason === '') throw new BadRequestError('bonusReason');
+    if (input.qtyAccepted < 1) throw new BadRequestError('bonusPoints');
+  } else if (bonusReason !== '') {
+    throw new BadRequestError('bonusReason');
+  }
 
   const read = await readReturn(db, id);
   if (!read) throw new NotFoundError(id);
@@ -965,13 +1069,36 @@ export async function inspect(
     )`,
   ];
 
+  const topUp = awarded ? (bonus ?? 0) : 0;
+
   if (awarded) {
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * ONE BALANCE UPDATE FOR BOTH LEDGER ROWS, AND IT HAS TO BE ONE.
+     *
+     * The obvious shape — a second `bal` CTE crediting the bonus — CANNOT WORK,
+     * and it fails in the loudest possible way: `balanceUpsertFragment`'s credit
+     * is an `ON CONFLICT … DO UPDATE`, and Postgres refuses to let one command
+     * touch a row twice through that path. Measured against this schema: SQLSTATE
+     * 21000, "cannot affect row a second time". Every inspection carrying a bonus
+     * would 500.
+     *
+     * The general rule underneath is worse than the error: a data-modifying CTE
+     * sees the snapshot from BEFORE the statement, so even where two writes are
+     * permitted the second cannot read what the first did. There is no
+     * arrangement of two counter updates in one statement that adds up.
+     *
+     * So the counter moves ONCE, by the award plus the top-up, and the two ledger
+     * rows split that movement between them. The arithmetic stays reconstructible
+     * from the rows because each carries its own `balance_after`.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
     ctes.push(sql`bal AS (${balanceUpsertFragment({
       direction: 'credit',
       from: sql`upd`,
       email: sql`upd.customer_email`,
       customerId: sql`upd.customer_id`,
-      amount: sql`upd.points_awarded`,
+      amount: sql`upd.points_awarded + ${topUp}::integer`,
       now: input.now,
     })})`);
     ctes.push(sql`led AS (${ledgerInsertFragment({
@@ -985,7 +1112,13 @@ export async function inspect(
       programId: sql`upd.program_id`,
       kind: 'return_award',
       delta: sql`upd.points_awarded`,
-      balanceAfter: sql`bal.balance`,
+      /*
+       * THE BALANCE BEFORE THE BONUS. The counter has already moved by both, so
+       * the award's own "before → after" is the final figure minus the top-up —
+       * which is exactly the order the two rows are read in, and exactly what
+       * the ledger would show if they had been written a second apart.
+       */
+      balanceAfter: sql`bal.balance - ${topUp}::integer`,
       /* Render-final: the ledger's own words, in this program's nouns, frozen
        * at this instant. A rename in June must not rewrite what March said. */
       reason: `${labels.name}: ${fmtUnits(input.qtyAccepted, labels)} accepted`,
@@ -995,6 +1128,34 @@ export async function inspect(
       actorId: input.actorId ?? null,
       now: input.now,
     })})`);
+
+    if (topUp > 0) {
+      ctes.push(sql`bon AS (${ledgerInsertFragment({
+        from: sql`upd JOIN bal ON bal.customer_email = upd.customer_email`,
+        id: newId(ID.ledger),
+        email: sql`upd.customer_email`,
+        customerId: sql`upd.customer_id`,
+        /*
+         * NO PROGRAM. A bonus is discretionary money, not points earned at the
+         * programme's rate — and `awardedTotal` on the programs screen sums the
+         * ledger by program, so tagging it here would quietly inflate "lifetime
+         * awarded" with credits the rate never produced. The return it belongs
+         * to is recorded in `return_request_id`, which is the honest link and
+         * the one `marketing_ledger_bonus_uq` makes unrepeatable.
+         */
+        programId: sql`NULL`,
+        kind: 'manual',
+        delta: sql`${topUp}::integer`,
+        balanceAfter: sql`bal.balance`,
+        /* The owner's own words, verbatim and forever. */
+        reason: bonusReason,
+        returnRequestId: sql`upd.id`,
+        orderId: sql`NULL`,
+        actorType: 'admin',
+        actorId: input.actorId ?? null,
+        now: input.now,
+      })})`);
+    }
   }
 
   ctes.push(sql`evt AS (${timelineEntryFragment({
@@ -1019,6 +1180,12 @@ export async function inspect(
       qtyRejected: input.qtyRejected,
       pointsAwarded: points,
       outcome: awarded ? 'awarded' : 'rejected',
+      /* The top-up and the words that justified it, snapshotted like the labels
+       * beside them — so the modal can render "120 + 25 bonus" from the history
+       * a year later without re-reading a ledger row that may have been filtered
+       * out of view. */
+      bonusPoints: topUp > 0 ? topUp : null,
+      bonusReason: topUp > 0 ? bonusReason : null,
       pointsPerUnit: perUnit,
       pointsLabelSingular: read.program.pointsLabelSingular,
       pointsLabelPlural: read.program.pointsLabelPlural,
@@ -1059,7 +1226,7 @@ export async function inspect(
   }
 
   const request = rowToRequest(row);
-  if (!awarded) return { row: request, award: null };
+  if (!awarded) return { row: request, award: null, bonus: null };
 
   if (row.new_balance == null || row.entry_id == null || request.pointsAwarded === null) {
     /*
@@ -1076,6 +1243,7 @@ export async function inspect(
   return {
     row: request,
     award: { points: request.pointsAwarded, balance: Number(row.new_balance) },
+    bonus: topUp > 0 ? { points: topUp, reason: bonusReason } : null,
   };
 }
 

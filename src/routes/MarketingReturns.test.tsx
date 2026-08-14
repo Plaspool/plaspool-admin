@@ -1,37 +1,36 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 
 /**
- * The returns queue, asserted on the five things a screenshot cannot show.
+ * The returns board, asserted on the six things a screenshot cannot show.
  *
- *  - **Which view it opened on, and what it asked the server for.** The queue's
- *    whole claim is that it opens on the work waiting for a person; a screen
- *    that renders the "Needs action" tab as active while requesting the
- *    unfiltered list looks correct and is not.
- *  - **Whose words are on the row.** Every fixture here is deliberately absurd —
- *    the points are "Bottle Caps" and the things being returned are "canisters"
- *    — because the programme this section ships with counts something else
- *    entirely and can be renamed on day one. A row that hardcoded the shipped
- *    noun passes any hand-written check and fails the first rename, so these
- *    suites assert the fixture's words are on screen and the preset's are not.
- *  - **That the button on a row is the server's answer.** `allowedActions[0]`
- *    is ordered by contract; a UI computing its own next action drifts the
- *    moment the state machine gains a branch, and drifts silently.
- *  - **What happens when somebody else got there first.** Every 409 in this
- *    section carries the re-read entity, and the treatment is to show the true
- *    stage rather than to ask for a reload — the row regroups under the heading
- *    it now belongs to and says so out loud.
- *  - **That it is workable from a keyboard.** ↑/↓ walk the rows, Enter opens,
- *    'a' fires the row's action. A roving tabindex that stops roving is a queue
- *    of a hundred and fifty tab stops.
+ *  - **Which board it opened on, and what it asked the server for.** The screen
+ *    claims to land an operator on the district with the most work waiting; a
+ *    board that renders the right name while requesting the whole city looks
+ *    correct and is not.
+ *  - **That the desk and the board answer DIFFERENT questions.** The desk is
+ *    whole-of-city and the board is one district. Two reads, two scopes — and a
+ *    desk that quietly inherited `?district=` would stop being the thing that
+ *    tells you another district is on fire.
+ *  - **That a badge comes from the API and not from the cards on screen.**
+ *    Counting the rendered rows would badge every other district with zero,
+ *    which is the switcher lying about the one thing it exists to answer.
+ *  - **That a drop opens a FORM.** Nothing on this board performs a transition
+ *    from a gesture. The resolver is unit-tested next door; what is provable
+ *    here is that the form-and-request path works by ordinary clicks.
+ *  - **That multi-select offers only the intersection**, and shows the rest
+ *    greyed WITH the reason rather than hidden.
+ *  - **Whose words are on the card.** Every fixture is deliberately absurd — the
+ *    points are "Bottle Caps" and the things returned are "canisters" — because
+ *    the programme ships renameable and the served districts are editable. A
+ *    card that hardcoded either passes a hand-written check and fails the first
+ *    edit.
  *
  * `fetch` IS STUBBED, NOT `../data/api-marketing`. The path, the method and the
- * query are three of the things most likely to be silently wrong against a
- * backend built in another session, and a mocked module asserts none of them.
- * An unregistered path answers 404 in the real envelope's shape, which is how
- * the "this deployment has no returns route yet" arm gets exercised too.
+ * query are three of the things most likely to be silently wrong, and a mocked
+ * module asserts none of them.
  */
 
 const fixture = vi.hoisted(() => ({
@@ -46,12 +45,6 @@ const fixture = vi.hoisted(() => ({
   },
 }));
 
-/*
- * Nothing on this screen reads the session, and this mock is here to keep it
- * that way: every lifecycle transition is `requireAuth`, so a writer processes
- * returns exactly as an owner does. The role-flipping case near the bottom goes
- * red the day somebody gates this queue on ownership.
- */
 vi.mock('../data/session', () => ({
   getSession: () => fixture.session,
   subscribe: () => () => {},
@@ -63,41 +56,31 @@ vi.mock('../data/sync', () => ({ revalidate: vi.fn() }));
 import { ToastProvider } from '../components/Toast';
 import {
   NOW,
-  capsProgram,
-  collectedRow,
+  areasView,
+  boardPage,
+  cabbageArea,
   needsActionPage,
   programs,
   requestedNew,
   requestedOld,
-  returnCounts,
   returnDetails,
-  returnsPage,
   scheduledRow,
+  turnipArea,
 } from '../data/marketing-fixtures';
 import MarketingReturns from './MarketingReturns';
 
-const HOUR = 3_600_000;
-
 /**
- * The seeded preset's unit noun, assembled from two halves rather than typed.
+ * The seeded preset's unit noun and the served city, each assembled from halves.
  *
- * This file sits under `src/routes/Marketing*.tsx`, which is one of the paths
- * the section's hardcoded-noun guard greps. Spelling the word out to assert its
- * absence would put it in a source the guard reads and fail it on the test that
- * exists to enforce it. Joined at runtime it is the same word to `RegExp` and
- * not a match for a grep over the text.
+ * This file sits under `src/routes/Marketing*.tsx`, which the section's grep
+ * guard reads. Spelling either word out to assert its absence would put it in a
+ * source the guard scans and fail the test that exists to enforce it.
  */
 const PRESET_NOUN = 'sp' + 'ool';
+const SERVED_CITY = 'ab' + 'uja';
 
 // --------------------------------------------------------------- what jsdom lacks
 
-/**
- * Radix's Select needs these the moment its trigger renders, and `Dialog` calls
- * `showModal()` from an effect — without the shim React tears the tree down
- * during commit and every assertion fails against an empty document for a
- * reason that has nothing to do with the screen. Both blocks are copied from
- * `Shop.test.tsx` and `Settings.test.tsx`, which measured the same gaps.
- */
 if (!Element.prototype.hasPointerCapture) {
   Element.prototype.hasPointerCapture = () => false;
   Element.prototype.setPointerCapture = () => {};
@@ -128,14 +111,6 @@ type Responder = (url: URL, init: RequestInit) => { status?: number; body: unkno
 const handlers = new Map<string, Responder>();
 let calls: { path: string; init: RequestInit }[] = [];
 
-/**
- * Register a route. Anything unregistered answers 404 `gone`, like the app.
- *
- * TWO OVERLOADS RATHER THAN ONE UNION, because `unknown | Responder` collapses
- * to `unknown` — and a parameter of type `unknown` contributes no contextual
- * type, so every responder written inline would take `(url, init)` as implicit
- * `any` and the suite would be asserting against a URL nothing had typed.
- */
 function when(pathname: string, respond: Responder): void;
 function when(pathname: string, body: unknown, status?: number): void;
 function when(pathname: string, body: unknown, status = 200): void {
@@ -146,13 +121,9 @@ function when(pathname: string, body: unknown, status = 200): void {
 }
 
 /** Every path+query asked for, in order. The query is the assertion target. */
-const asked = (fragment: string): string | undefined =>
-  calls.find((c) => c.path.includes(fragment))?.path;
+const askedAll = (fragment: string): string[] =>
+  calls.filter((c) => c.path.includes(fragment)).map((c) => c.path);
 
-const askedTimes = (fragment: string): number =>
-  calls.filter((c) => c.path.includes(fragment)).length;
-
-/** The body of the last request to a path with this method. */
 function sent(pathname: string, method: string): Record<string, unknown> {
   const call = [...calls]
     .reverse()
@@ -164,13 +135,9 @@ function sent(pathname: string, method: string): Record<string, unknown> {
 beforeEach(() => {
   handlers.clear();
   calls = [];
-  /*
-   * The clock is pinned rather than faked wholesale: the ages this screen
-   * renders ("waiting 4d") and the pickup date it refuses ("can't be in the
-   * past") are both read off `Date.now()`, and a suite whose answers depend on
-   * the minute it ran is a suite that fails at midnight. Fake timers would also
-   * have to be handed to `userEvent`, which needs real ones to type.
-   */
+  /* Pinned rather than faked wholesale: the ages this screen renders ("4d") are
+   * read off `Date.now()`, and a suite whose answers depend on the minute it ran
+   * fails at midnight. `userEvent` also needs real timers to type. */
   vi.spyOn(Date, 'now').mockReturnValue(NOW);
   vi.stubGlobal(
     'fetch',
@@ -197,7 +164,6 @@ afterEach(() => {
 
 // ------------------------------------------------------------------- the harness
 
-/** Shows the router's current URL, so a test can assert what a click wrote. */
 function Address() {
   const location = useLocation();
   return <output data-testid="address">{location.pathname + location.search}</output>;
@@ -216,633 +182,399 @@ function mount(at = '/marketing/returns') {
 
 const address = (): string => screen.getByTestId('address').textContent ?? '';
 
-/** The whole programs list, which the filter and the intake dialog both read. */
-const withPrograms = (): void => when('/api/marketing/programs', { programs });
-
-/** `1786600000000` → `2026-08-13T06:46` in whatever zone the suite is running in. */
-function localInput(ms: number): string {
-  const d = new Date(ms);
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+/** The ordinary server: areas, one board, the desk, the programs. */
+function aWorkingShop(): void {
+  when('/api/marketing/areas', { areas: areasView.areas, outOfArea: areasView.outOfArea });
+  when('/api/marketing/programs', { programs });
+  when('/api/marketing/returns', (url) =>
+    url.searchParams.get('view') === 'needs_action'
+      ? { body: needsActionPage }
+      : { body: boardPage },
+  );
 }
 
-const row = (id: string): HTMLElement => {
-  const found = screen.getByText(id).closest('li');
-  if (found === null) throw new Error(`no row for ${id}`);
-  return found as HTMLElement;
-};
+/** The column with this heading, as a container to query inside. */
+function column(heading: string): HTMLElement {
+  const title = screen.getByRole('heading', { name: heading, level: 3 });
+  const box = title.closest('[data-column]');
+  if (box === null) throw new Error(`no column for ${heading}`);
+  return box as HTMLElement;
+}
 
 /**
- * The open `<dialog>`, and every in-dialog query goes through it.
+ * THE BOARD HAS LANDED — both fetches, not just the one that draws the heading.
  *
- * Both dialogs on this screen stay mounted while closed — the intake so its
- * exit animation has something to animate, the quick action so a re-open comes
- * up empty rather than holding the last pickup date — and a closed `<dialog>`
- * is still in jsdom's document. Unscoped, `getByLabelText('Note')` would find
- * two, and worse, a query for a button inside a dialog that never opened would
- * pass. Scoping proves the dialog opened as well as what is in it.
+ * The area name comes from `GET /areas` and the cards from a second
+ * `GET /returns`, so waiting on the heading and then querying a card is a race
+ * the suite loses whenever the machine is busy enough to reorder two promises.
+ * Waiting for a CARD waits for the read that actually put it there.
  */
-function sheet(): HTMLElement {
-  const open = [...document.querySelectorAll('dialog')].find(
-    (d) => (d as HTMLDialogElement).open,
-  );
-  if (open === undefined) throw new Error('no dialog is open');
-  return open as HTMLElement;
+async function settled(): Promise<void> {
+  await screen.findByRole('heading', { name: cabbageArea.name, level: 2 });
+  await screen.findByText('Dara A.', { selector: '.mktcard__who' });
 }
+
+/**
+ * A card, found by the name printed on it.
+ *
+ * BY ITS OWN CLASS AND NOT BY `getByRole('button')`. The drag layer wraps every
+ * card in a node that dnd-kit gives `role="button"` of its own, so a role query
+ * finds the WRAPPER first — and a click on the wrapper is a drag handle rather
+ * than an open. Anchoring on the line that prints the person's name reaches the
+ * card itself, which is the thing a person actually clicks.
+ */
+const card = (name: string): HTMLElement => {
+  const who = screen
+    .getAllByText(name, { selector: '.mktcard__who' })
+    .map((node) => node.closest('.mktcard'))
+    .find((node): node is HTMLElement => node !== null);
+  if (who === undefined) throw new Error(`no card for ${name}`);
+  return who;
+};
 
 // ============================================================================
 
-describe('the returns queue', () => {
-  it('opens on the work waiting for a person, and asks the server for exactly that', async () => {
-    withPrograms();
-    when('/api/marketing/returns', needsActionPage);
+describe('which board it opens on', () => {
+  it('lands on the BUSIEST served district and writes it into the URL', async () => {
+    aWorkingShop();
     mount();
 
-    await screen.findByText(requestedOld.id);
-    // The tab being lit is not the assertion — what was fetched is. A screen
-    // that renders the right tab and requests the unfiltered list looks right.
-    expect(asked('/api/marketing/returns?view=needs_action')).toBeTruthy();
-    const tabs = screen.getByRole('navigation', { name: 'Return stages' });
+    /*
+     * The default that is never wrong. Landing alphabetically on an empty board
+     * is a click an operator always has to undo; `replace` keeps the fallback
+     * out of the history stack so Back does not walk through it.
+     */
+    await waitFor(() => expect(address()).toContain(`district=${cabbageArea.id}`));
+    await settled();
+  });
+
+  it('asks for ONE district on the board and for the WHOLE city on the desk', async () => {
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * TWO READS, TWO SCOPES — the structural claim of the whole screen.
+     *
+     * A desk that inherited `?district=` would stop being the thing that tells
+     * an operator another district is on fire, which is the only reason it sits
+     * above the board instead of inside it.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    aWorkingShop();
+    mount();
+
+    await waitFor(() => {
+      const asked = askedAll('/api/marketing/returns');
+      const board = asked.find((p) => p.includes('view=all'));
+      const desk = asked.find((p) => p.includes('view=needs_action'));
+      expect(board).toContain(`district=${cabbageArea.id}`);
+      expect(desk).toBeDefined();
+      expect(desk).not.toContain('district=');
+    });
+  });
+
+  it('honours a district already in the URL rather than overriding it', async () => {
+    aWorkingShop();
+    mount(`/marketing/returns?district=${turnipArea.id}`);
+
+    await screen.findByRole('heading', { name: turnipArea.name, level: 2 });
+    expect(address()).toContain(turnipArea.id);
+  });
+});
+
+describe('the switcher', () => {
+  it('badges a district from the API, not from the cards on screen', async () => {
+    /*
+     * The board holds five cards and the fixture's `needsAction` is three. A
+     * switcher counting what it can see would say five here — and would say ZERO
+     * for every district it is not currently showing, which is the one question
+     * it exists to answer.
+     */
+    aWorkingShop();
+    mount();
+
+    const trigger = await screen.findByRole('button', { name: new RegExp(cabbageArea.name) });
+    expect(within(trigger).getByText(String(cabbageArea.needsAction))).toBeTruthy();
+  });
+
+  it('lists an idle district quietly, and lets you go there anyway', async () => {
+    /*
+     * Removing it would read as "we do not serve there", which is a different
+     * and much worse claim than "nothing is waiting there today". So it is
+     * listed, without a badge, and says why it is quiet.
+     *
+     * IT USED TO BE INERT, on the reasoning that there would be nothing to do on
+     * arrival. That was wrong twice: the screen can already be sitting on an idle
+     * board — open it on a quiet morning and every column reads "Nothing here" —
+     * and now that the list has a search field, a row you typed the name of and
+     * cannot click is the most frustrating control on the screen.
+     */
+    aWorkingShop();
+    mount();
+
+    const trigger = await screen.findByRole('button', { name: new RegExp(cabbageArea.name) });
+    await userEvent.click(trigger);
+
+    const menu = await screen.findByRole('listbox');
+    const idle = within(menu).getByRole('option', { name: new RegExp(turnipArea.name) });
+    expect(within(idle).getByText('nothing waiting')).toBeTruthy();
+    /* No badge: there is no number, and a zero would be one. */
+    expect(within(idle).queryByText('0')).toBeNull();
+  });
+
+  it('filters the districts as you type, which is why the field is there', async () => {
+    /*
+     * The list is every served district in the country. Scrolling it was the
+     * whole complaint — three letters is the only interaction that scales.
+     */
+    aWorkingShop();
+    mount();
+
+    await userEvent.click(
+      await screen.findByRole('button', { name: new RegExp(cabbageArea.name) }),
+    );
+    await userEvent.type(screen.getByRole('textbox'), turnipArea.name.slice(1, 5));
+
+    const menu = screen.getByRole('listbox');
+    expect(within(menu).getByRole('option', { name: new RegExp(turnipArea.name) })).toBeTruthy();
+    /* Matched anywhere in the name, not only at the front — the search skipped
+       the first letter above and still found it. */
+    expect(within(menu).queryByRole('option', { name: new RegExp(cabbageArea.name) })).toBeNull();
+  });
+
+  it('never names the served city — every sentence is rendered from data', async () => {
+    aWorkingShop();
+    mount();
+    await settled();
+    expect(document.body.textContent ?? '').not.toMatch(new RegExp(SERVED_CITY, 'i'));
+  });
+});
+
+describe('the desk above the boards', () => {
+  it('says WHY each row is there, not just its stage', async () => {
+    aWorkingShop();
+    mount();
+
+    const desk = await screen.findByRole('region', { name: 'Waiting on you' });
+    // The database's words for the same two facts are worse at prompting an
+    // action, so the desk says what a person can do about it.
+    expect(within(desk).getAllByText('No pickup booked').length).toBeGreaterThan(0);
+    expect(within(desk).getByText('Arrived — not counted')).toBeTruthy();
+  });
+
+  it('names the board each row lives on', async () => {
+    // The desk is whole-of-city, so the Area column is how a row says which
+    // board to go to. A row with no area says so in the danger colour.
+    aWorkingShop();
+    mount();
+    const desk = await screen.findByRole('region', { name: 'Waiting on you' });
+    expect(within(desk).getAllByText(cabbageArea.name).length).toBeGreaterThan(0);
+  });
+});
+
+describe('the board', () => {
+  it('lands each card in the column matching its status', async () => {
+    aWorkingShop();
+    mount();
+
+    await settled();
+    expect(within(column('Requested')).getByText('Dara A.')).toBeTruthy();
     expect(
-      within(tabs).getByRole('link', { name: 'Needs action 3' }).getAttribute('aria-current'),
-    ).toBe('page');
+      within(column('Scheduled')).getByText(scheduledRow.customerName ?? scheduledRow.customerEmail),
+    ).toBeTruthy();
+    /* "Picked up" is a DISPLAY label for the wire value `collected` — the wire
+     * word never reaches a screen. */
+    expect(column('Picked up')).toBeTruthy();
   });
 
-  it('counts its tabs from the sidecar the list arrived with', async () => {
-    withPrograms();
-    when('/api/marketing/returns', returnsPage);
-    mount('/marketing/returns?view=all');
+  it('offers "Log a return" under Requested ONLY', async () => {
+    /*
+     * That is the one list a return can be BORN into. A create control under the
+     * others would be offering to fabricate a history that never happened.
+     */
+    aWorkingShop();
+    mount();
 
-    await screen.findByText(requestedOld.id);
-    const tabs = screen.getByRole('navigation', { name: 'Return stages' });
-
-    // Real aggregates, not the rows this page happens to hold: the objection to
-    // counted tabs is about invented numbers, and `counts` rides on every page.
-    expect(within(tabs).getByRole('link', { name: 'Needs action 3' })).toBeTruthy();
-    expect(within(tabs).getByRole('link', { name: 'To inspect 1' })).toBeTruthy();
-    expect(within(tabs).getByRole('link', { name: 'Done 3' })).toBeTruthy();
-    expect(within(tabs).getByRole('link', { name: 'All 8' })).toBeTruthy();
-    expect(screen.getByText('8 of 8 — oldest first')).toBeTruthy();
+    await settled();
+    expect(within(column('Requested')).getByRole('button', { name: /log a return/i })).toBeTruthy();
+    for (const heading of ['Scheduled', 'Picked up', 'Received']) {
+      expect(
+        within(column(heading)).queryByRole('button', { name: /log a return/i }),
+      ).toBeNull();
+    }
   });
 
-  it('says how many are coming back in the program’s own words, and never the preset’s', async () => {
-    withPrograms();
-    when('/api/marketing/returns', returnsPage);
-    mount('/marketing/returns?view=all');
+  it('bands a card by its age, in words as well as in colour', async () => {
+    /*
+     * Colour is never the only carrier. The 100-hour card is past the danger
+     * band and the 3-hour one is in no band at all — and both say their wait in
+     * text, for anybody who cannot separate the red bar from the amber.
+     */
+    aWorkingShop();
+    mount();
 
-    await screen.findByText(requestedOld.id);
-    expect(screen.getAllByText('6 canisters').length).toBeGreaterThan(0);
-    // A closed return says what was kept as well as what was sent.
-    expect(screen.getByText('6 canisters · 5 accepted')).toBeTruthy();
-    // Waiting time is text as well as colour — `.mktage--danger` says nothing
-    // on its own to somebody who cannot tell the two tokens apart.
-    expect(within(row(requestedOld.id)).getByText('waiting 4d')).toBeTruthy();
+    await settled();
+    const old = card('Dara A.');
+    expect(old.className).toContain('mktcard--danger');
+    expect(within(old).getByText('4d')).toBeTruthy();
 
+    const fresh = card(requestedNew.customerName ?? requestedNew.customerEmail);
+    expect(fresh.className).not.toContain('mktcard--danger');
+    expect(fresh.className).not.toContain('mktcard--warn');
+  });
+
+  it('renders the programme’s own words and never the shipped preset’s', async () => {
+    aWorkingShop();
+    mount();
+
+    await settled();
+    expect(screen.getAllByText(/canisters/).length).toBeGreaterThan(0);
     expect(document.body.textContent ?? '').not.toMatch(new RegExp(PRESET_NOUN, 'i'));
   });
+});
 
-  it('renders the one action the server allows, and a closed return gets no write at all', async () => {
-    withPrograms();
-    when('/api/marketing/returns', returnsPage);
-    mount('/marketing/returns?view=all');
-
-    await screen.findByText(requestedOld.id);
-    expect(
-      within(row(requestedOld.id)).getByRole('button', {
-        name: 'Schedule pickup — dara@example.com',
-      }),
-    ).toBeTruthy();
-    expect(
-      within(row(scheduledRow.id)).getByRole('button', {
-        name: 'Mark picked up — ngozi@example.com',
-      }),
-    ).toBeTruthy();
-    // `allowedActions` on an awarded row is `['note']`, and a note is not
-    // something a queue button should write on somebody's behalf.
-    expect(
-      within(row('ret_dara_0')).getByRole('button', { name: 'View — dara@example.com' }),
-    ).toBeTruthy();
-  });
-
-  it('logs a return from the queue’s one create control, and shows the row it made', async () => {
-    const user = userEvent.setup();
-    withPrograms();
-    let list: unknown = needsActionPage;
-    when('/api/marketing/returns', (_url, init) => {
-      if (init.method === 'POST') {
-        list = {
-          ...needsActionPage,
-          items: [
-            { ...requestedNew, id: 'ret_zara_1', customerEmail: 'zara@example.com' },
-            ...needsActionPage.items,
-          ],
-        };
-        return { status: 201, body: returnDetails.requested };
-      }
-      return { body: list };
-    });
-    mount();
-    await screen.findByText(requestedOld.id);
-
-    await user.click(screen.getByRole('button', { name: 'Log a return…' }));
-    await user.type(within(sheet()).getByLabelText('Customer email'), 'zara@example.com');
-    await user.click(within(sheet()).getByRole('button', { name: 'Log the return' }));
-
-    await screen.findByText('ret_zara_1');
-    expect(sent('/api/marketing/returns', 'POST')).toEqual({
-      email: 'zara@example.com',
-      // The program's own minimum, so the commonest return needs no typing.
-      qtyDeclared: 4,
-      programId: capsProgram.id,
-    });
-  });
-
-  it('puts a below-minimum refusal under the quantity box, in the program’s units', async () => {
-    const user = userEvent.setup();
-    withPrograms();
-    when('/api/marketing/returns', (_url, init) =>
-      init.method === 'POST'
-        ? {
-            status: 400,
-            body: {
-              error: 'below_minimum',
-              detail: 'qtyDeclared',
-              /*
-               * NINE, WHICH IS NOT THE FOUR THIS SCREEN ALREADY KNOWS. The
-               * program list is a snapshot taken when the queue loaded, and an
-               * owner raising the minimum in the next tab is exactly why the
-               * catalogue puts `min` on the payload at all. Stubbed as the
-               * program's own 4, this test would pass identically against a
-               * dialog that ignored the payload and quoted its stale copy —
-               * the refusal would read plausibly and be a lie.
-               */
-              min: 9,
-              requestId: 'req_1',
-            },
-          }
-        : { body: needsActionPage },
-    );
-    mount();
-    await screen.findByText(requestedOld.id);
-
-    await user.click(screen.getByRole('button', { name: 'Log a return…' }));
-    await user.type(within(sheet()).getByLabelText('Customer email'), 'zara@example.com');
-    // Typed, not stepped: the box deliberately lets a number below the minimum
-    // stand, because the operator is recording what the customer actually sent.
-    await user.clear(within(sheet()).getByLabelText('Quantity'));
-    await user.type(within(sheet()).getByLabelText('Quantity'), '2');
-    await user.click(within(sheet()).getByRole('button', { name: 'Log the return' }));
-
-    // The server's number, in the program's units, under the box it belongs to.
-    expect(await within(sheet()).findByText('At least 9 canisters per request.')).toBeTruthy();
-    expect(within(sheet()).queryByText('At least 4 canisters per request.')).toBeNull();
-    expect(sent('/api/marketing/returns', 'POST').qtyDeclared).toBe(2);
-  });
-
-  it('answers a second open return with a link to the first, not a dead end', async () => {
-    const user = userEvent.setup();
-    withPrograms();
-    when('/api/marketing/returns', (_url, init) =>
-      init.method === 'POST'
-        ? {
-            status: 409,
-            body: {
-              error: 'return_already_open',
-              existingId: requestedOld.id,
-              status: 'requested',
-              requestId: 'req_2',
-            },
-          }
-        : { body: needsActionPage },
-    );
-    mount();
-    await screen.findByText(requestedOld.id);
-
-    await user.click(screen.getByRole('button', { name: 'Log a return…' }));
-    await user.type(within(sheet()).getByLabelText('Customer email'), 'dara@example.com');
-    await user.click(within(sheet()).getByRole('button', { name: 'Log the return' }));
-
-    const open = await within(sheet()).findByRole('link', { name: 'Open it' });
-    await user.click(open);
-    expect(address()).toBe(`/marketing/returns?id=${requestedOld.id}`);
-  });
-
-  it('sends a paused program to the screen that can unpause it', async () => {
-    const user = userEvent.setup();
-    withPrograms();
-    when('/api/marketing/returns', (_url, init) =>
-      init.method === 'POST'
-        ? { status: 409, body: { error: 'program_paused', requestId: 'req_3' } }
-        : { body: needsActionPage },
-    );
-    mount();
-    await screen.findByText(requestedOld.id);
-
-    await user.click(screen.getByRole('button', { name: 'Log a return…' }));
-    await user.type(within(sheet()).getByLabelText('Customer email'), 'zara@example.com');
-    await user.click(within(sheet()).getByRole('button', { name: 'Log the return' }));
-
-    expect(
-      await within(sheet()).findByText('That program is paused, so it isn’t taking new returns.'),
-    ).toBeTruthy();
-    expect(
-      within(sheet()).getByRole('link', { name: 'Open Rewards' }).getAttribute('href'),
-    ).toBe('/marketing/rewards');
-  });
-
-  it('schedules a pickup from the row without leaving the queue', async () => {
-    const user = userEvent.setup();
-    withPrograms();
-    when('/api/marketing/returns', returnsPage);
-    when(`/api/marketing/returns/${requestedOld.id}/schedule`, {
-      request: { ...returnDetails.scheduled.request, id: requestedOld.id },
-    });
-    mount('/marketing/returns?view=all');
-    await screen.findByText(requestedOld.id);
-    const before = askedTimes('/api/marketing/returns?view=all');
-
-    await user.click(
-      within(row(requestedOld.id)).getByRole('button', {
-        name: 'Schedule pickup — dara@example.com',
-      }),
-    );
-    const at = localInput(NOW + 20 * HOUR);
-    fireEvent.change(within(sheet()).getByLabelText('Pickup date and time'), {
-      target: { value: at },
-    });
-    await user.click(within(sheet()).getByRole('button', { name: 'Schedule pickup' }));
-
-    expect(sent(`/api/marketing/returns/${requestedOld.id}/schedule`, 'POST')).toEqual({
-      expectedRevision: requestedOld.revision,
-      pickupAt: new Date(at).getTime(),
-      // The row already carries an address, so the form offered it back rather
-      // than making somebody retype it — and it travels with the booking.
-      pickupAddress: requestedOld.pickupAddress,
-    });
-    // The list is re-read rather than patched from the response: the transition
-    // may have moved the row out of the view it was sitting in.
-    expect(askedTimes('/api/marketing/returns?view=all')).toBeGreaterThan(before);
-  });
-
-  it('leaves the next row’s form usable once one has been saved', async () => {
-    const user = userEvent.setup();
-    withPrograms();
-    when('/api/marketing/returns', returnsPage);
-    when(`/api/marketing/returns/${requestedOld.id}/schedule`, {
-      request: { ...returnDetails.scheduled.request, id: requestedOld.id },
-    });
-    mount('/marketing/returns?view=all');
-    await screen.findByText(requestedOld.id);
-
-    await user.click(
-      within(row(requestedOld.id)).getByRole('button', {
-        name: 'Schedule pickup — dara@example.com',
-      }),
-    );
-    fireEvent.change(within(sheet()).getByLabelText('Pickup date and time'), {
-      target: { value: localInput(NOW + 20 * HOUR) },
-    });
-    await user.click(within(sheet()).getByRole('button', { name: 'Schedule pickup' }));
-    await screen.findByText('Pickup scheduled');
-
-    // The in-flight flag has to be cleared on the way out of a SUCCESS as well
-    // as a failure. Left set, the next dialog opens with its submit already
-    // disabled — a form that refuses to be used, saying nothing about why.
-    await user.click(
-      within(row(scheduledRow.id)).getByRole('button', {
-        name: 'Mark picked up — ngozi@example.com',
-      }),
-    );
-    const submit = within(sheet()).getByRole('button', {
-      name: 'Mark picked up',
-    }) as HTMLButtonElement;
-    expect(submit.disabled).toBe(false);
-  });
-
-  it('stops the quantity buttons at the program’s minimum, and still takes less typed', async () => {
-    const user = userEvent.setup();
-    withPrograms();
-    when('/api/marketing/returns', needsActionPage);
-    mount();
-    await screen.findByText(requestedOld.id);
-
-    await user.click(screen.getByRole('button', { name: 'Log a return…' }));
-    const box = within(sheet());
-    expect((box.getByLabelText('Quantity') as HTMLInputElement).value).toBe('4');
-    // The floor is where the buttons stop — the minimum is a rule the form
-    // states, and the hint beside it says so in the program's own units.
-    expect(
-      (box.getByRole('button', { name: 'Decrease Quantity' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
-    expect(box.getByText('At least 4 canisters per request.')).toBeTruthy();
-
-    await user.clear(box.getByLabelText('Quantity'));
-    await user.type(box.getByLabelText('Quantity'), '2');
-    expect((box.getByLabelText('Quantity') as HTMLInputElement).value).toBe('2');
-  });
-
-  it('refuses a pickup booked in the past before it reaches the server', async () => {
-    const user = userEvent.setup();
-    withPrograms();
-    when('/api/marketing/returns', returnsPage);
-    mount('/marketing/returns?view=all');
-    await screen.findByText(requestedOld.id);
-
-    await user.click(
-      within(row(requestedOld.id)).getByRole('button', {
-        name: 'Schedule pickup — dara@example.com',
-      }),
-    );
-    fireEvent.change(within(sheet()).getByLabelText('Pickup date and time'), {
-      target: { value: localInput(NOW - 3 * HOUR) },
-    });
-    await user.click(within(sheet()).getByRole('button', { name: 'Schedule pickup' }));
-
-    expect(within(sheet()).getByText('The pickup can’t be booked in the past.')).toBeTruthy();
-    expect(calls.some((c) => c.path.includes('/schedule'))).toBe(false);
-  });
-
-  it('regroups a row the server says has already moved on', async () => {
-    const user = userEvent.setup();
-    withPrograms();
-    when('/api/marketing/returns', returnsPage);
-    when(`/api/marketing/returns/${scheduledRow.id}/collect`, () => ({
-      status: 409,
-      body: {
-        error: 'invalid_transition',
-        status: 'received',
-        action: 'collect',
-        // Every 409 in this section carries the re-read entity, which is what
-        // makes healing possible without a second fetch.
-        request: { ...returnDetails.received.request, id: scheduledRow.id },
-        requestId: 'req_4',
-      },
-    }));
-    mount('/marketing/returns?view=all');
-    await screen.findByText(scheduledRow.id);
-
-    await user.click(
-      within(row(scheduledRow.id)).getByRole('button', {
-        name: 'Mark picked up — ngozi@example.com',
-      }),
-    );
-    await user.click(within(sheet()).getByRole('button', { name: 'Mark picked up' }));
-
-    expect(await screen.findByText('That return is now Received.')).toBeTruthy();
-    const moved = row(scheduledRow.id);
-    expect(within(moved).getByText('Received')).toBeTruthy();
-    // And the row's one button is now the one the fresh `allowedActions` allows.
-    expect(
-      within(moved).getByRole('button', { name: 'Inspect — ngozi@example.com' }),
-    ).toBeTruthy();
-  });
-
-  it('offers the revision it lost to, and keeps the form that lost', async () => {
-    const user = userEvent.setup();
-    withPrograms();
-    when('/api/marketing/returns', returnsPage);
-    when(`/api/marketing/returns/${scheduledRow.id}/collect`, () => ({
-      status: 409,
-      body: {
-        error: 'stale_write',
-        expected: scheduledRow.revision,
-        actual: scheduledRow.revision + 1,
-        request: { ...returnDetails.scheduled.request, id: scheduledRow.id, revision: 9 },
-        requestId: 'req_5',
-      },
-    }));
-    mount('/marketing/returns?view=all');
-    await screen.findByText(scheduledRow.id);
-
-    await user.click(
-      within(row(scheduledRow.id)).getByRole('button', {
-        name: 'Mark picked up — ngozi@example.com',
-      }),
-    );
-    await user.type(within(sheet()).getByLabelText('Note'), 'Driver called ahead');
-    await user.click(within(sheet()).getByRole('button', { name: 'Mark picked up' }));
-
-    // A lost CAS is not an illegal move: the dialog stays, the note stays, and
-    // the band offers the revision the write lost to — from the payload, with
-    // no second request.
-    await within(sheet()).findByRole('button', { name: 'Load theirs' });
-    expect((within(sheet()).getByLabelText('Note') as HTMLTextAreaElement).value).toBe(
-      'Driver called ahead',
-    );
-    await user.click(within(sheet()).getByRole('button', { name: 'Load theirs' }));
-    await user.click(within(sheet()).getByRole('button', { name: 'Mark picked up' }));
-
-    expect(sent(`/api/marketing/returns/${scheduledRow.id}/collect`, 'POST')).toEqual({
-      expectedRevision: 9,
-      note: 'Driver called ahead',
-    });
-  });
-
-  it('lists the queue with plain tabs when the server sends no counts', async () => {
-    withPrograms();
-    when('/api/marketing/returns', { items: needsActionPage.items, nextCursor: null });
-    mount();
-
-    await screen.findByText(requestedOld.id);
-    const tabs = screen.getByRole('navigation', { name: 'Return stages' });
-    // Degrade, don't block: a missing sidecar costs the numbers, not the queue.
-    expect(within(tabs).getByRole('link', { name: 'Needs action' })).toBeTruthy();
-    expect(screen.getByText('3 loaded — oldest first')).toBeTruthy();
-  });
-
-  it('walks the rows with the arrow keys and fires the row’s action with ‘a’', async () => {
-    const user = userEvent.setup();
-    withPrograms();
-    when('/api/marketing/returns', returnsPage);
-    mount('/marketing/returns?view=all');
-    await screen.findByText(requestedOld.id);
-
-    row(requestedOld.id).focus();
-    await user.keyboard('{ArrowDown}');
-    expect(document.activeElement).toBe(row(requestedNew.id));
-
-    await user.keyboard('a');
-    // The second row is `requested`, so 'a' is "schedule a pickup" — and the
-    // dialog names the row it is about, because a queue is a list of look-alikes.
-    expect(within(sheet()).getByText('Schedule a pickup')).toBeTruthy();
-    expect(within(sheet()).getByText(`bode@example.com · ${requestedNew.id}`)).toBeTruthy();
-  });
-
-  it('is three stops on the way through the page, not three per row', async () => {
-    const user = userEvent.setup();
-    withPrograms();
-    when('/api/marketing/returns', returnsPage);
-    mount('/marketing/returns?view=all');
-    await screen.findByText(requestedOld.id);
-
+describe('acting on a card', () => {
+  it('opens the card as a modal over the board, and gives focus back on close', async () => {
     /*
-     * THE OTHER HALF OF THE ROVING TABINDEX, and the half the arrow-key test
-     * above cannot see. ↑/↓ keep working perfectly if every row is left in the
-     * tab order — the regression is invisible from the keyboard spine and shows
-     * up only as Tab, Tab, Tab, twenty-four times, between the search box and
-     * the pager. Eight rows carry three focusable things each; exactly one row's
-     * worth may be reachable with Tab.
+     * The board stays behind it — which is what makes the panel read as a card
+     * LIFTED OFF the board rather than a page you navigated to. Focus returns to
+     * the card, because that is where the operator was looking; without the
+     * restore, the next keystroke goes to `document.body`.
      */
-    const list = screen.getByRole('list', { name: 'Return requests' });
-    const stops = [...list.querySelectorAll('li.mktqrow, a, button')].filter(
-      (el) => el.getAttribute('tabindex') !== '-1',
-    );
-    expect(stops).toHaveLength(3);
-    const first = row(requestedOld.id);
-    expect(stops.every((el) => el === first || first.contains(el))).toBe(true);
+    aWorkingShop();
+    when('/api/marketing/returns/ret_dara_1', returnDetails.requested);
+    mount();
 
-    // And the walk agrees with the attributes: into the row, across its two
-    // controls, then out of the list entirely rather than into row two.
-    first.focus();
-    await user.tab();
-    expect(first.contains(document.activeElement)).toBe(true);
-    await user.tab();
-    expect(first.contains(document.activeElement)).toBe(true);
-    await user.tab();
-    expect(list.contains(document.activeElement)).toBe(false);
+    await settled();
+    const opened = card('Dara A.');
+    opened.focus();
+    await userEvent.click(opened);
+
+    const modal = await screen.findByRole('dialog', { name: 'Return' });
+    expect(address()).toContain('id=ret_dara_1');
+    /* The board is still mounted underneath. */
+    expect(screen.getByRole('heading', { name: cabbageArea.name, level: 2 })).toBeTruthy();
+
+    await userEvent.click(within(modal).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Return' })).toBeNull());
+    expect(document.activeElement).toBe(opened);
   });
 
-  it('names the dialog after the action the server offered, whatever it offered', async () => {
-    const user = userEvent.setup();
-    withPrograms();
+  it('hides the bonus stepper from a WRITER — absent, not disabled', async () => {
     /*
-     * A row whose served actions begin with `cancel`. The queue renders
-     * `allowedActions[0]` and is deliberately not allowed to reason about which
-     * action that will be — so the dialog it opens has to be named from the
-     * action too. Written as a ternary over the three stages somebody had in
-     * mind, the leftover arm titles a cancellation "Mark as received", which is
-     * a confirmation dialog describing the opposite of what pressing it does.
+     * Minting points above the programme's rate is money, and the role matrix
+     * reserves money for the owner. A disabled control would advertise a
+     * capability and then refuse it; the server's 403 is the backstop.
      */
-    when('/api/marketing/returns', {
-      items: [{ ...collectedRow, allowedActions: ['cancel', 'note'] }],
-      nextCursor: null,
-      counts: returnCounts,
-    });
-    mount('/marketing/returns?view=all');
-    await screen.findByText(collectedRow.id);
-
-    await user.click(
-      within(row(collectedRow.id)).getByRole('button', {
-        name: 'Cancel return — kemi@example.com',
-      }),
-    );
-    expect(within(sheet()).getByText('Cancel this return')).toBeTruthy();
-    expect(within(sheet()).queryByText('Mark as received')).toBeNull();
-  });
-
-  it('opens the return itself on Enter, keeping the view behind it', async () => {
-    const user = userEvent.setup();
-    withPrograms();
-    when('/api/marketing/returns', returnsPage);
-    mount('/marketing/returns?view=all');
-    await screen.findByText(requestedOld.id);
-
-    row(requestedOld.id).focus();
-    await user.keyboard('{Enter}');
-    expect(address()).toBe(`/marketing/returns?view=all&id=${requestedOld.id}`);
-  });
-
-  it('sends an inspection to its own screen rather than a dialog over the queue', async () => {
-    const user = userEvent.setup();
-    withPrograms();
-    when('/api/marketing/returns', returnsPage);
-    mount('/marketing/returns?view=all');
-    await screen.findByText('ret_tunde_1');
-
-    await user.click(
-      within(row('ret_tunde_1')).getByRole('button', { name: 'Inspect — tunde@example.com' }),
-    );
-    expect(address()).toBe('/marketing/returns?view=all&id=ret_tunde_1&act=inspect');
-  });
-
-  it('shows a writer the same queue — processing returns is staff work', async () => {
     fixture.session.user.role = 'writer';
-    withPrograms();
-    when('/api/marketing/returns', returnsPage);
-    mount('/marketing/returns?view=all');
-
-    await screen.findByText(requestedOld.id);
-    expect(screen.getByRole('button', { name: 'Log a return…' })).toBeTruthy();
-    expect(
-      within(row(requestedOld.id)).getByRole('button', {
-        name: 'Schedule pickup — dara@example.com',
-      }),
-    ).toBeTruthy();
-  });
-
-  it('says something different for each empty view', async () => {
-    withPrograms();
-    when('/api/marketing/returns', { items: [], nextCursor: null, counts: returnCounts });
-    mount('/marketing/returns?view=received');
-    expect(await screen.findByText('Nothing is waiting to be inspected')).toBeTruthy();
-
-    cleanup();
-    mount('/marketing/returns?view=all');
-    // The all-view is the only one that may promise a storefront form later —
-    // v1's intake is admin-driven, and the empty state says so.
-    expect(await screen.findByText('No return requests yet')).toBeTruthy();
-    expect(
-      screen.getByText('Log one when a customer asks — the storefront form comes later.'),
-    ).toBeTruthy();
-  });
-
-  it('tells a fruitless search what it actually matches', async () => {
-    withPrograms();
-    when('/api/marketing/returns', { items: [], nextCursor: null, counts: returnCounts });
-    mount('/marketing/returns?view=all&q=zzz');
-
-    expect(await screen.findByText('Nothing matches')).toBeTruthy();
-    expect(
-      screen.getByText('The queue matches the start of an email address, or a whole return id.'),
-    ).toBeTruthy();
-    expect(asked('q=zzz')).toBeTruthy();
-  });
-
-  it('appends the next page instead of replacing the list', async () => {
-    const user = userEvent.setup();
-    withPrograms();
-    when('/api/marketing/returns', (url) =>
-      url.searchParams.get('cursor') === null
-        ? { body: { items: [requestedOld], nextCursor: requestedOld.id, counts: returnCounts } }
-        : { body: { items: [requestedNew], nextCursor: null, counts: returnCounts } },
-    );
-    mount('/marketing/returns?view=all');
-    await screen.findByText(requestedOld.id);
-
-    await user.click(screen.getByRole('button', { name: 'Show more' }));
-
-    await screen.findByText(requestedNew.id);
-    // The first page is still there — a keyset walk that replaced the list
-    // would be a pager that loses everything above it.
-    expect(screen.getByText(requestedOld.id)).toBeTruthy();
-    expect(asked(`cursor=${requestedOld.id}`)).toBeTruthy();
-    expect(screen.getByText('2 of 8 — oldest first')).toBeTruthy();
-  });
-
-  it('says the queue didn’t load rather than showing an empty one', async () => {
-    withPrograms();
-    // Nothing registered for the list: 404 in the real envelope's shape.
+    aWorkingShop();
+    when('/api/marketing/returns/ret_tunde_1', returnDetails.received);
     mount();
 
-    expect(await screen.findByText('This deployment has no returns route yet.')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+    await settled();
+    await userEvent.click(card('Tunde B.'));
+
+    const modal = await screen.findByRole('dialog', { name: 'Return' });
+    expect(within(modal).queryByLabelText('Bonus points')).toBeNull();
+    /* …and the same writer can still count what arrived, which is the half a
+     * `requireOwner` on the route would have broken. */
+    expect(within(modal).getByRole('button', { name: /count what arrived/i })).toBeTruthy();
   });
 
-  it('keeps a return’s own URL out of the queue', async () => {
-    withPrograms();
-    when('/api/marketing/returns', returnsPage);
-    when(`/api/marketing/returns/${requestedOld.id}`, returnDetails.requested);
-    mount(`/marketing/returns?view=all&id=${requestedOld.id}`);
+  it('shows the owner the arithmetic a bonus changes, before committing it', async () => {
+    fixture.session.user.role = 'owner';
+    aWorkingShop();
+    when('/api/marketing/returns/ret_tunde_1', returnDetails.received);
+    mount();
 
-    // `?id=` is a DESTINATION, not the queue with something on top of it: the
-    // tab strip and the filters are gone rather than hidden behind it, and the
-    // way back carries the view somebody was actually looking at.
-    // (What the detail then does with the return is `MarketingReturnDetail`'s
-    // own suite; this one only asserts the switch.)
-    expect(await screen.findByText('Details')).toBeTruthy();
-    expect(screen.queryByRole('navigation', { name: 'Return stages' })).toBeNull();
-    expect(screen.getByRole('link', { name: 'Back to the queue' }).getAttribute('href')).toBe(
-      '/marketing/returns?view=all',
+    await settled();
+    await userEvent.click(card('Tunde B.'));
+
+    const modal = await screen.findByRole('dialog', { name: 'Return' });
+    const stepper = within(modal).getByLabelText('Bonus points');
+    await userEvent.clear(stepper);
+    await userEvent.type(stepper, '25');
+
+    /* 6 declared × 7 promised = 42, plus 25 = 67 — in front of the person
+     * committing it, which is the only reason the control lives beside the sum
+     * rather than in a settings panel. */
+    await waitFor(() => expect(within(modal).getByText(/67 Bottle Caps total/)).toBeTruthy());
+    expect(within(modal).getByText(/42 \+ 25 bonus/)).toBeTruthy();
+  });
+});
+
+describe('many cards at once', () => {
+  async function pick(names: string[]): Promise<void> {
+    for (const name of names) {
+      await userEvent.click(screen.getByRole('checkbox', { name: new RegExp(`Select ${name}`) }));
+    }
+  }
+
+  it('offers only what is legal for EVERY card, and greys the rest WITH the reason', async () => {
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * THE INTERSECTION RULE. Two Requested cards and one Scheduled card share
+     * only "note" — so "Mark picked up" is greyed rather than hidden, because a
+     * control that silently disappears reads as a bug and sends somebody
+     * looking for a feature the board still has.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    aWorkingShop();
+    mount();
+    await settled();
+
+    await pick(['Dara A.']);
+    const bar = await screen.findByRole('region', { name: 'Selected returns' });
+    expect(within(bar).getByRole('button', { name: /schedule/i }).getAttribute('aria-disabled')).toBe(
+      'false',
     );
+
+    await pick([scheduledRow.customerEmail]);
+    /* Schedule survives — it is legal from both `requested` and `scheduled`
+     * (a reschedule) — and collect does not, because the requested card cannot
+     * be collected. */
+    expect(
+      within(bar).getByRole('button', { name: /mark picked up/i }).getAttribute('aria-disabled'),
+    ).toBe('true');
+    /* The reason NAMES A CARD. "Not legal for every card" is true and useless. */
+    expect(within(bar).getByText(new RegExp(`Not legal for ${requestedOld.customerName}`))).toBeTruthy();
+  });
+
+  it('reports a PARTIAL failure per card rather than pretending it rolled back', async () => {
+    /*
+     * There are no transactions on the server, so a bulk call IS a loop of
+     * single statements. "4 of 5" is what happened; an all-or-nothing message
+     * would be a claim the backend never made.
+     */
+    aWorkingShop();
+    when('/api/marketing/returns/bulk', {
+      results: [
+        { id: requestedOld.id, ok: true, request: requestedOld },
+        { id: requestedNew.id, ok: false, error: 'stale_write' },
+      ],
+    });
+    mount();
+    await settled();
+
+    await pick(['Dara A.', requestedNew.customerEmail]);
+    const bar = await screen.findByRole('region', { name: 'Selected returns' });
+    await userEvent.click(within(bar).getByRole('button', { name: /schedule/i }));
+
+    const dialog = await screen.findByRole('dialog');
+    /* One body, applied to all — said out loud so nobody mistakes the first
+     * card's details for all of them. */
+    expect(within(dialog).getByText(/applied to all 2 selected/i)).toBeTruthy();
+
+    await userEvent.type(
+      within(dialog).getByLabelText('Pickup date and time'),
+      '2026-08-20T10:00',
+    );
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Schedule pickup' }));
+
+    await waitFor(() => {
+      const body = sent('/api/marketing/returns/bulk', 'POST');
+      expect(body.action).toBe('schedule');
+      expect((body.items as unknown[]).length).toBe(2);
+    });
+    /* The failure NAMES the card, so somebody knows which one to look at. */
+    await screen.findByText(new RegExp(`1 of 2 updated.*${requestedNew.customerEmail}`, 'i'));
   });
 });

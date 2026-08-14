@@ -10,7 +10,7 @@ import { sql } from 'drizzle-orm';
 import { freshDb } from '../../test/harness';
 import type { TestCtx } from '../../test/harness';
 import { generateSku, skuCandidate } from './sku';
-import { createVariant } from './variants';
+import { createVariant, DuplicateOptionsError } from './variants';
 import { createProduct } from './products';
 
 let ctx: TestCtx;
@@ -138,18 +138,37 @@ describe('creating a variant', () => {
     await expect(createVariant(ctx.db, product.id, { sku: '   ' }, actor)).rejects.toThrow();
   });
 
-  it('derives distinct SKUs for a family of colours', async () => {
+  it('derives distinct SKUs for a family of colours, and climbs across products', async () => {
     const seeded = await ctx.db.execute(sql`SELECT id FROM users LIMIT 1`);
     const actor = { ...owner, id: String(seeded.rows[0].id) };
     const product = await createProduct(ctx.db, actor, { title: 'Enamel Mug' });
 
     const made = [];
-    for (const colour of ['Blue', 'Red', 'Blue']) {
+    for (const colour of ['Blue', 'Red']) {
       made.push(await createVariant(ctx.db, product.id, { optionValues: { Colour: colour } }, actor));
     }
-    // Two "Blue" variants is a real thing somebody can do by accident, and the
-    // second must not collide — it gets the next rung.
-    expect(new Set(made.map((v) => v.sku)).size).toBe(3);
-    expect(made[2].sku).toBe('ENAMEL-BLUE-1');
+    expect(new Set(made.map((v) => v.sku)).size).toBe(2);
+
+    /*
+     * A second "Blue" ON THE SAME PRODUCT used to be accepted here and handed
+     * the next rung — this test's own comment called it "a real thing somebody
+     * can do by accident". Migration 0010's create-time half decided the
+     * opposite: the accident is refused at the door, because a catalogue full
+     * of laddered twins is exactly the mess the merge had to clean up.
+     */
+    await expect(
+      createVariant(ctx.db, product.id, { optionValues: { Colour: 'blue' } }, actor),
+    ).rejects.toThrow(DuplicateOptionsError);
+
+    /*
+     * The ladder itself is still load-bearing — ACROSS products. Two products
+     * with one title both derive ENAMEL-BLUE for their blue variant, the tuple
+     * guard is per product, and `shop_variants_sku_unique` is shop-wide, so the
+     * second climbs to the next rung instead of colliding.
+     */
+    const sibling = await createProduct(ctx.db, actor, { title: 'Enamel Mug' });
+    const climbed = await createVariant(
+      ctx.db, sibling.id, { optionValues: { Colour: 'Blue' } }, actor);
+    expect(climbed.sku).toBe('ENAMEL-BLUE-1');
   });
 });

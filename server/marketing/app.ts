@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { toResponse } from '../middleware/errors';
-import { MailNotConfiguredError } from '../mail/port';
+import { renderMarketingError } from './wire';
+import { routes as areaRoutes } from './areas/routes';
 import { routes as bannerRoutes } from './banners/routes';
 import { routes as discountRoutes } from './discounts/routes';
 import { routes as ledgerRoutes } from './ledger/routes';
@@ -9,19 +10,6 @@ import { routes as programRoutes } from './programs/routes';
 import { routes as returnRoutes } from './returns/routes';
 import { routes as settingsRoutes } from './settings/routes';
 import { routes as summaryRoutes } from './summary/routes';
-import {
-  AlreadyAwardedError,
-  BelowMinimumError,
-  DuplicateCodeError,
-  DuplicateProgramKeyError,
-  InsufficientBalanceError,
-  InvalidTransitionError,
-  ProgramPausedError,
-  ProgramTypeMismatchError,
-  RedemptionDisabledError,
-  ReturnAlreadyOpenError,
-  StaleMarketingWriteError,
-} from './errors';
 import type { AppEnv } from '../app-env';
 import type { Mailer } from '../mail/port';
 
@@ -67,172 +55,6 @@ export interface MarketingAppDeps {
   mailer?: Mailer;
 }
 
-/** What a marketing error becomes on the wire, before the requestId is added. */
-interface Rendered {
-  status: number;
-  body: Record<string, unknown>;
-}
-
-/**
- * Spec §Error catalogue, as a function — the eleven marketing rows plus the one
- * shared error whose global rendering is wrong for this subsystem.
- *
- * THE CODES AND THE PAYLOAD KEYS ARE A FROZEN CONTRACT, not a convention. Every
- * row here has a UI treatment written against it in the spec: `invalid_transition`
- * re-renders the true stage out of `request` and keeps a half-typed form alive
- * behind a notice; `return_already_open` links to `existingId` instead of
- * dead-ending; `below_minimum` interpolates `min` into copy built from the
- * program's own labels. A key dropped here is a screen that silently degrades to
- * "something went wrong", so `app.test.ts` asserts each body by EQUALITY rather
- * than by containment — an added key fails just as loudly as a missing one.
- *
- * NOTHING ELSE IS RENDERED HERE. `unauthenticated`, `forbidden`, `gone`,
- * `bad_request`, `stale_write` (the shared shape), `rate_limited` and `internal`
- * fall through to `toResponse`, which is the one implementation the whole
- * application shares — so a marketing route cannot grow its own dialect of the
- * rows every other route already answers. `rate_limited` in particular MUST fall
- * through: `toResponse` is where the `Retry-After` HEADER is set, and the public
- * intake's countdown reads it.
- */
-function render(err: unknown): Rendered | null {
-  /*
-   * 400, not 409. Nothing about the stored state refused this — the number in
-   * the box is too small and a bigger one would be accepted. `min` travels
-   * because the copy is interpolated from the PROGRAM's labels ("at least 4
-   * canisters") and the client cannot know the minimum of a program it has not
-   * fetched.
-   */
-  if (err instanceof BelowMinimumError) {
-    return { status: 400, body: { error: 'below_minimum', detail: err.detail, min: err.min } };
-  }
-
-  /*
-   * THE SIGNATURE 409. `request` is the re-read row, which is what lets the UI
-   * auto-heal: it re-renders the true stage from the payload, says so in a
-   * toast, and preserves mid-edit inputs behind a `.notice` rather than wiping
-   * them to refetch (spec D7). Without the payload every conflict costs a second
-   * round trip AND shows a third state — the one true at the time of that second
-   * read — as though it were what the write lost to.
-   */
-  if (err instanceof InvalidTransitionError) {
-    return {
-      status: 409,
-      body: {
-        error: 'invalid_transition',
-        status: err.status,
-        action: err.action,
-        request: err.request,
-      },
-    };
-  }
-
-  /*
-   * The shared `stale_write` shape with the entity under its own name —
-   * `program`, `settings`, `request`, `banner` or `discount` — because marketing
-   * has five revisioned entities and none of them is a `post`. Same arrangement
-   * as `StaleProductWriteError` in `server/shop/app.ts`, one entity wider.
-   */
-  if (err instanceof StaleMarketingWriteError) {
-    return {
-      status: 409,
-      body: {
-        error: 'stale_write',
-        expected: err.expected,
-        actual: err.actual,
-        [err.entity]: err.current,
-      },
-    };
-  }
-
-  /*
-   * A SUCCESS THE CLIENT MUST NOT MISREAD AS A FAILURE (spec D5). An inspection
-   * replayed after a flaky connection answers this, and the screen refetches and
-   * toasts "already recorded" — which is what makes retrying an inspection safe
-   * to offer at all. `entryId` gives the success path the ledger row to link to.
-   */
-  if (err instanceof AlreadyAwardedError) {
-    return { status: 409, body: { error: 'already_awarded', entryId: err.entryId } };
-  }
-
-  if (err instanceof ReturnAlreadyOpenError) {
-    return {
-      status: 409,
-      body: { error: 'return_already_open', existingId: err.existingId, status: err.status },
-    };
-  }
-
-  /* No payload, deliberately: the public storefront learns nothing about which
-   * programs exist or why one is closed, and the admin's treatment is one link
-   * to the status toggle regardless of which program refused. */
-  if (err instanceof ProgramPausedError) {
-    return { status: 409, body: { error: 'program_paused' } };
-  }
-
-  /* Reachable only by a race, and the wire carries no message BY DESIGN — spec
-   * §Error catalogue makes the copy the client's, keyed on the code. */
-  if (err instanceof ProgramTypeMismatchError) {
-    return { status: 409, body: { error: 'program_type_mismatch' } };
-  }
-
-  if (err instanceof InsufficientBalanceError) {
-    return { status: 409, body: { error: 'insufficient_balance', balance: err.balance } };
-  }
-
-  if (err instanceof RedemptionDisabledError) {
-    return { status: 409, body: { error: 'redemption_disabled' } };
-  }
-
-  /*
-   * 409 AND NOT THE 400 THE BASE CLASS WOULD GIVE. "That key is taken" is a
-   * conflict with state; "that key has a capital letter in it" is a malformed
-   * field. Collapsed into one answer the form can only say "the key was
-   * refused", which sends somebody to inspect characters in a key whose sole
-   * problem is that it exists — the defect `DuplicateSkuError` was raised for.
-   *
-   * NO `detail` KEY, unlike the shop's rendering of the same shape: the
-   * catalogue freezes the extras as `key` alone and the client keys its inline
-   * error off the CODE. An extra field here is a contract drift that no test on
-   * the frontend would notice.
-   */
-  if (err instanceof DuplicateProgramKeyError) {
-    return { status: 409, body: { error: 'duplicate_program_key', key: err.key } };
-  }
-
-  if (err instanceof DuplicateCodeError) {
-    return { status: 409, body: { error: 'duplicate_code', code: err.code } };
-  }
-
-  /*
-   * ═════════════════════════════════════════════════════════════════════════
-   * THE ONE SHARED ERROR THIS SUBSYSTEM RE-RENDERS, and it is re-rendered
-   * because the global answer is wrong HERE specifically.
-   *
-   * `server/middleware/errors.ts` maps `MailNotConfiguredError` to
-   * `501 {error:'not_implemented', feature:'mail-delivery'}`. That is right for
-   * the password-reset route, where an unconfigured mailer means the FEATURE is
-   * unavailable and the caller can do nothing. It is wrong for the sweep, where
-   * an unconfigured mailer means the deployment has queued mail it cannot
-   * deliver yet and the admin has a setup step to perform — spec D6 makes that a
-   * persistent ops banner ("email transport not configured — N notifications
-   * queued"), never a retry loop, and Stream B keys that banner on
-   * `mail_not_configured`.
-   *
-   * The `feature` key is dropped with it: A7's test pins the body as exactly
-   * `{error:'mail_not_configured', requestId}`, because a second field naming
-   * the same condition is a second thing to keep in step.
-   *
-   * The status stays 501. It is a configuration problem rather than a caller
-   * problem, and it is permanent for this request — so the client's retry policy
-   * stops, which is the whole point of not being a 500.
-   * ═════════════════════════════════════════════════════════════════════════
-   */
-  if (err instanceof MailNotConfiguredError) {
-    return { status: 501, body: { error: 'mail_not_configured' } };
-  }
-
-  return null;
-}
-
 export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
   const marketing = new Hono<AppEnv>();
 
@@ -246,8 +68,14 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
    * be an edit to a shared file in a window where two other sessions are
    * building against it.
    *
-   * IT IS SAFE TO ESCAPE. Every class `render` recognises subclasses a shared
-   * one (`server/marketing/errors.ts` sets out which and why), so a marketing
+   * THE TABLE ITSELF LIVES IN `./wire.ts`, because `POST /returns/bulk` needs
+   * the same codes PER ITEM — fifty transitions in one request, each with its
+   * own outcome, none of which reaches an error handler because the response is
+   * a 200 carrying a list of results. A bulk route importing this file would
+   * close a cycle, and one spelling the codes itself would be a second catalogue.
+   *
+   * IT IS SAFE TO ESCAPE. Every class it recognises subclasses a shared one
+   * (`server/marketing/errors.ts` sets out which and why), so a marketing
    * error that reaches the global handler instead — a repo function called
    * outside this app, a route mounted somewhere else later — is still a
    * retry-stopping 4xx with the right status, just a blunter code. Nothing here
@@ -260,7 +88,7 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
    */
   marketing.onError((err, c) => {
     const requestId = c.get('requestId') ?? '';
-    const rendered = render(err);
+    const rendered = renderMarketingError(err);
 
     if (!rendered) return toResponse(err, requestId);
 
@@ -313,6 +141,18 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
    * swallowed by it (spec §Risks; A5 pins the order with its own test).
    */
   marketing.route('/', settingsRoutes);
+
+  /*
+   * SERVICE AREAS — contract #6.1. Where the vans go: the board switcher's rows,
+   * and the list the intake gate refuses an address against.
+   *
+   * MOUNTED BEFORE RETURNS because it is what returns now depends on — the
+   * intake resolves an area before it writes a row — though the ORDER STILL DOES
+   * NOT MATTER to Hono: `/areas*` is disjoint from every path here. Reading is
+   * `requireAuth`; both writes are `requireOwner`, because this list decides
+   * where the business sends a driver.
+   */
+  marketing.route('/', areaRoutes);
 
   /*
    * RETURNS — contract #4-14. The lifecycle, the queue that drives it, and the

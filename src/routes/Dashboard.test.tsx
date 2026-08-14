@@ -254,7 +254,7 @@ function drawRouted(entries: string[]) {
           <Chrome />
           <Sidebar user={null} signOut={null} />
           <Routes>
-            <Route path="/" element={<Dashboard />} />
+            <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/edit/:id" element={<StubEditor />} />
             <Route path="/elsewhere" element={<p>Somewhere else entirely</p>} />
           </Routes>
@@ -548,7 +548,7 @@ describe('controls that would 403', () => {
     // renders the dashboard alone. `?status=trash` is the same interface the
     // rail link uses — these tests are about who may empty the bin, not about
     // how the bin is reached.
-    drawRouted(['/?status=trash']);
+    drawRouted(['/dashboard?status=trash']);
   }
 
   it('are hidden from a writer, and their absence is explained', async () => {
@@ -737,7 +737,7 @@ describe('the filters live in the URL', () => {
       nextCursor: null,
     }));
 
-    drawRouted(['/?status=published&q=foo']);
+    drawRouted(['/dashboard?status=published&q=foo']);
 
     await waitFor(() => expect(screen.getByText('Live one')).toBeTruthy());
     expect(box().value).toBe('foo');
@@ -757,39 +757,39 @@ describe('the filters live in the URL', () => {
     expect(screen.getByRole('link', { name: /^Published/ }).getAttribute('aria-current')).toBe(
       'page',
     );
-    expect(url()).toBe('/?status=published&q=foo');
+    expect(url()).toBe('/dashboard?status=published&q=foo');
   });
 
   it('keeps `/` clean, writing only the filters that are not at their default', async () => {
     await db.postList.put(listRow({ title: 'Alpha' }));
-    drawRouted(['/']);
+    drawRouted(['/dashboard']);
     await waitFor(() => expect(screen.getByText('Alpha')).toBeTruthy());
-    expect(url()).toBe('/');
+    expect(url()).toBe('/dashboard');
 
     await userEvent.click(screen.getByRole('link', { name: /^Drafts/ }));
-    await waitFor(() => expect(url()).toBe('/?status=draft'));
+    await waitFor(() => expect(url()).toBe('/dashboard?status=draft'));
 
     // And back off again: a default is DELETED rather than written, or one
     // click on a tab would leave `?status=all&sort=updated` in the address bar
     // and in every link the writer copied out of it thereafter.
     await userEvent.click(screen.getByRole('link', { name: /^All/ }));
-    await waitFor(() => expect(url()).toBe('/'));
+    await waitFor(() => expect(url()).toBe('/dashboard'));
   });
 
   it('pushes a tab change and replaces a search', async () => {
     await db.postList.put(listRow({ title: 'Alpha' }));
-    drawRouted(['/elsewhere', '/']);
+    drawRouted(['/elsewhere', '/dashboard']);
     await waitFor(() => expect(screen.getByText('Alpha')).toBeTruthy());
 
     await userEvent.click(screen.getByRole('link', { name: /^Drafts/ }));
-    await waitFor(() => expect(url()).toBe('/?status=draft'));
+    await waitFor(() => expect(url()).toBe('/dashboard?status=draft'));
 
     // Pushed: Back walks the tab history, which is what a tab strip implies.
     await userEvent.click(screen.getByTestId('go-back'));
-    await waitFor(() => expect(url()).toBe('/'));
+    await waitFor(() => expect(url()).toBe('/dashboard'));
 
     await userEvent.type(box(), 'alpha');
-    await waitFor(() => expect(url()).toBe('/?q=alpha'));
+    await waitFor(() => expect(url()).toBe('/dashboard?q=alpha'));
 
     /*
      * Replaced: Back leaves the dashboard entirely rather than unwinding the
@@ -802,7 +802,7 @@ describe('the filters live in the URL', () => {
 
   it('falls back silently when the URL was typed by hand', async () => {
     await db.postList.put(listRow({ title: 'Alpha', status: 'draft' }));
-    drawRouted(['/?status=publised&sort=chronological']);
+    drawRouted(['/dashboard?status=publised&sort=chronological']);
 
     // Neither an error screen nor an empty grid: two typos in somebody's
     // address bar are not something the app should make a fuss about.
@@ -817,7 +817,7 @@ describe('the filters live in the URL', () => {
     expect(screen.getByRole('link', { name: /^All/ }).getAttribute('aria-current')).toBeNull();
     // Left as typed rather than rewritten underneath them — a URL that edits
     // itself the instant it loads is its own small horror.
-    expect(url()).toBe('/?status=publised&sort=chronological');
+    expect(url()).toBe('/dashboard?status=publised&sort=chronological');
   });
 
   it('reads the tag chip out of the URL, and clearing it drops the param', async () => {
@@ -825,21 +825,21 @@ describe('the filters live in the URL', () => {
       listRow({ id: 'p_tagged', title: 'Alpha', tags: ['ideas'] }),
       listRow({ id: 'p_plain', title: 'Beta', tags: [] }),
     ]);
-    drawRouted(['/?tag=ideas']);
+    drawRouted(['/dashboard?tag=ideas']);
 
     await waitFor(() => expect(screen.getByText('Alpha')).toBeTruthy());
     expect(screen.queryByText('Beta')).toBeNull();
 
     await userEvent.click(screen.getByLabelText('Clear tag filter'));
 
-    await waitFor(() => expect(url()).toBe('/'));
+    await waitFor(() => expect(url()).toBe('/dashboard'));
     expect(screen.getByText('Beta')).toBeTruthy();
   });
 
   it('puts the tab in the window title and hands it back on the way out', async () => {
     const before = document.title;
     await db.postList.put(listRow({ title: 'Alpha', status: 'draft' }));
-    drawRouted(['/?status=draft']);
+    drawRouted(['/dashboard?status=draft']);
 
     // Two dashboards open in two browser tabs are two different URLs now, so
     // they can stop being two identical entries in the window switcher.

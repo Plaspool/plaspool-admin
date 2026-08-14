@@ -125,7 +125,7 @@ export function Migrate({ user }: { user: AuthUser }) {
   return (
     <div className="settings">
       <header className="settings__bar">
-        <Link className="btn btn--ghost btn--sm" to="/">
+        <Link className="btn btn--ghost btn--sm" to="/dashboard">
           <ChevronLeft className="ui-ic" aria-hidden="true" />
           Posts
         </Link>

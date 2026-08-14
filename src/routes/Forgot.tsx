@@ -87,7 +87,7 @@ export default function Forgot() {
           <p className="authpage__lede" role="status">
             {SENT_MESSAGE}
           </p>
-          <Link className="btn btn--ghost btn--sm" to="/">
+          <Link className="btn btn--ghost btn--sm" to="/dashboard">
             Back to sign in
           </Link>
         </div>
@@ -138,7 +138,7 @@ export default function Forgot() {
           </button>
         </form>
 
-        <Link className="btn btn--ghost btn--sm" to="/">
+        <Link className="btn btn--ghost btn--sm" to="/dashboard">
           Back to sign in
         </Link>
       </div>

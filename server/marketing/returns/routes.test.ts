@@ -71,6 +71,26 @@ async function makeProgram(over: Record<string, unknown> = {}): Promise<string> 
   return (await json<{ program: { id: string } }>(res)).program.id;
 }
 
+/**
+ * A place a van goes, named after nothing real.
+ *
+ * ABSURD ON PURPOSE, like the labels: a fixture named after a district this
+ * business actually serves could not tell code that reads the area off the row
+ * from code that hardcoded the place, and it would put a real place name in a
+ * source file. Every intake below carries it, because the public route REQUIRES
+ * a served area and no return can reach `awarded` without one.
+ */
+const AREA = 'area_cabbage_quarter';
+
+async function makeArea(): Promise<void> {
+  await ctx.db.execute(sql`
+    INSERT INTO marketing_service_areas
+      (id, key, region, name, aliases, active, created_at, updated_at)
+    VALUES (${AREA}, 'cabbage-quarter', 'Farflung Province', 'Cabbage Quarter',
+            ARRAY['the cabbage']::text[], true, 1786600001000, 1786600001000)
+    ON CONFLICT DO NOTHING`);
+}
+
 /** A DISTINCT address per return: one open return per email is a partial unique
  *  index, so a shared fixture address would make every second create a 409. */
 let emailSeq = 0;
@@ -95,10 +115,12 @@ interface Detail {
 }
 
 async function logReturn(over: Record<string, unknown> = {}): Promise<Detail> {
+  await makeArea();
   const res = await owner.post(`${API}/returns`, {
     email: nextEmail(),
     qtyDeclared: 4,
     pickupAddress: '12 Allen Avenue',
+    serviceAreaId: AREA,
     ...over,
   });
   expect(res.status).toBe(201);
@@ -151,6 +173,11 @@ beforeAll(async () => {
   owner = await login(ctx.users.owner);
   writer = await login(ctx.users.writer);
   anon = httpClient(ctx.db);
+
+  /* The board every intake in this file lands on. Installed once, because the
+   * public route REQUIRES a served area and its tests post directly rather than
+   * through `logReturn`. */
+  await makeArea();
 
   capsProgramId = await makeProgram();
   countsProgramId = await makeProgram();
@@ -222,6 +249,11 @@ describe('mounting, the guards, and the one route that has none', () => {
         email: nextEmail(),
         qtyDeclared: 4,
         pickupAddress: '9 Marina',
+        /* A WRITER MAY CHOOSE THE BOARD, and must: the inspection at the end of
+         * this walk is an award, and an award with no service area is refused by
+         * the database. Choosing WHERE is staff work; deciding which places are
+         * served at all is the owner's, and that is a different route. */
+        serviceAreaId: AREA,
       }),
     );
     let row = detail.request;
@@ -288,7 +320,7 @@ describe('the public intake — contract #6', () => {
     const email = nextEmail();
     const res = await anon.post(
       `${API}/returns/request`,
-      { email, qtyDeclared: 6, name: 'Dara', phone: '0801', pickupAddress: '4 Awolowo Road' },
+      { email, qtyDeclared: 6, name: 'Dara', phone: '0801', pickupAddress: '4 Awolowo Road', serviceAreaId: AREA },
       fromIp('198.51.100.1'),
     );
     expect(res.status).toBe(201);
@@ -337,7 +369,7 @@ describe('the public intake — contract #6', () => {
     const email = nextEmail();
     const ip = '198.51.100.2';
     const send = () =>
-      anon.post(`${API}/returns/request`, { email, qtyDeclared: 5 }, fromIp(ip));
+      anon.post(`${API}/returns/request`, { email, qtyDeclared: 5, serviceAreaId: AREA }, fromIp(ip));
 
     expect((await send()).status).toBe(201);
     // The second and third are refused by the OPEN-RETURN index, and they still
@@ -376,7 +408,7 @@ describe('the public intake — contract #6', () => {
 
     const limited = await anon.post(
       `${API}/returns/request`,
-      { email: nextEmail(), qtyDeclared: 4 },
+      { email: nextEmail(), qtyDeclared: 4, serviceAreaId: AREA },
       fromIp(ip),
     );
     expect(limited.status).toBe(429);
@@ -386,7 +418,7 @@ describe('the public intake — contract #6', () => {
     // untouched, which is the difference between a rate limit and an outage.
     const elsewhere = await anon.post(
       `${API}/returns/request`,
-      { email: nextEmail(), qtyDeclared: 4 },
+      { email: nextEmail(), qtyDeclared: 4, serviceAreaId: AREA },
       fromIp('203.0.113.8'),
     );
     expect(elsewhere.status).toBe(201);
@@ -405,7 +437,7 @@ describe('the public intake — contract #6', () => {
      */
     const res = await anon.post(
       `${API}/returns/request`,
-      { email: nextEmail(), qtyDeclared: 4 },
+      { email: nextEmail(), qtyDeclared: 4, serviceAreaId: AREA },
       { headers: { origin: 'https://not-the-storefront.test', 'x-real-ip': '203.0.113.9' } },
     );
     expect(res.status).toBe(403);
@@ -415,7 +447,7 @@ describe('the public intake — contract #6', () => {
   it('carries the minimum in below_minimum, in the program\'s own words', async () => {
     const res = await anon.post(
       `${API}/returns/request`,
-      { email: nextEmail(), qtyDeclared: 2 },
+      { email: nextEmail(), qtyDeclared: 2, serviceAreaId: AREA },
       fromIp('198.51.100.3'),
     );
     expect(res.status).toBe(400);
@@ -436,7 +468,7 @@ describe('the public intake — contract #6', () => {
      */
     const res = await anon.post(
       `${API}/returns/request`,
-      { email: nextEmail(), qtyDeclared: 4, name: '', phone: '   ', pickupAddress: '' },
+      { email: nextEmail(), qtyDeclared: 4, name: '', phone: '   ', pickupAddress: '', serviceAreaId: AREA },
       fromIp('198.51.100.5'),
     );
     expect(res.status).toBe(201);
@@ -452,7 +484,7 @@ describe('the public intake — contract #6', () => {
     for (const extra of [{ programId: capsProgramId }, { note: 'please hurry' }]) {
       const res = await anon.post(
         `${API}/returns/request`,
-        { email: nextEmail(), qtyDeclared: 4, ...extra },
+        { email: nextEmail(), qtyDeclared: 4, serviceAreaId: AREA, ...extra },
         fromIp('198.51.100.4'),
       );
       expect(res.status).toBe(400);
@@ -769,6 +801,294 @@ describe('the catalogue, on the wire', () => {
 
 // ------------------------------------------------------------- the queue
 
+describe('the inspection bonus is the OWNER’s — contract #6.5', () => {
+  it('REFUSES A WRITER’S TOP-UP, while the same writer inspects without one', async () => {
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * THE GUARD IS ON THE FIELD, NOT ON THE ROUTE, AND BOTH HALVES MATTER.
+     *
+     * `requireOwner()` here would make a writer fetch the owner to record what
+     * arrived in a box, and a count that needs a second person is a count that
+     * stops being recorded (spec D12). But minting points ABOVE the programme's
+     * rate is money, and money is owner-only everywhere else in this subsystem.
+     *
+     * So this test asserts the pair: the writer is refused with a bonus and
+     * succeeds without one. Asserting only the 403 would stay green if somebody
+     * "fixed" it by putting `requireOwner()` on the route — which would break
+     * the warehouse to protect the wallet.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    const withBonus = await returnAt('received', capsProgramId);
+    const refused = await move(
+      withBonus.id,
+      'inspect',
+      {
+        expectedRevision: withBonus.revision,
+        qtyAccepted: 4,
+        qtyRejected: 0,
+        bonusPoints: 25,
+        bonusReason: 'Goodwill',
+      },
+      writer,
+    );
+    expect(refused.status).toBe(403);
+    expect(await json(refused)).toMatchObject({ error: 'forbidden' });
+
+    /* REFUSED BEFORE ANYTHING WAS WRITTEN. The worst outcome available here is
+     * an award recorded with the top-up silently dropped: the screen would say
+     * 145 and the customer would hold 120. */
+    const untouched = await json<Detail>(await owner.get(`${API}/returns/${withBonus.id}`));
+    expect(untouched.request.status).toBe('received');
+
+    const plain = await move(
+      withBonus.id,
+      'inspect',
+      { expectedRevision: withBonus.revision, qtyAccepted: 4, qtyRejected: 0 },
+      writer,
+    );
+    expect(plain.status).toBe(200);
+    const body = await json<{ award: { points: number }; bonus: unknown }>(plain);
+    expect(body.award.points).toBe(28);
+    expect(body.bonus).toBeNull();
+  });
+
+  it('lets the OWNER add one, and reports the two numbers separately', async () => {
+    const row = await returnAt('received', capsProgramId);
+    const res = await move(row.id, 'inspect', {
+      expectedRevision: row.revision,
+      qtyAccepted: 4,
+      qtyRejected: 0,
+      bonusPoints: 25,
+      bonusReason: 'Carried them down three flights',
+    });
+    expect(res.status).toBe(200);
+
+    const body = await json<{
+      award: { points: number; balance: number };
+      bonus: { points: number; reason: string };
+    }>(res);
+    /* The award alone, the balance including the top-up, and the top-up under
+     * its own name — so the success copy can say "28 + 25" rather than a 53
+     * nobody can decompose. */
+    expect(body.award.points).toBe(28);
+    expect(body.award.balance).toBe(53);
+    expect(body.bonus).toEqual({ points: 25, reason: 'Carried them down three flights' });
+  });
+
+  it('refuses a top-up with no reason as a field error', async () => {
+    const row = await returnAt('received', capsProgramId);
+    const res = await move(row.id, 'inspect', {
+      expectedRevision: row.revision,
+      qtyAccepted: 4,
+      qtyRejected: 0,
+      bonusPoints: 25,
+    });
+    expect(res.status).toBe(400);
+    expect(await json(res)).toMatchObject({ error: 'bad_request', detail: 'bonusReason' });
+  });
+});
+
+describe('POST /returns/bulk — contract #6.4', () => {
+  interface BulkResult {
+    id: string;
+    ok: boolean;
+    error?: string;
+    request?: Wire & { serviceArea: { id: string; name: string } | null };
+  }
+
+  const bulk = (body: unknown, client: HttpClient = owner) =>
+    client.post(`${API}/returns/bulk`, body);
+
+  const item = (row: Wire) => ({ id: row.id, expectedRevision: row.revision });
+
+  it('registers above the parameterised routes — `bulk` is a legal id', async () => {
+    /*
+     * Hono resolves two patterns claiming one path by registration order, and
+     * nothing collides TODAY (there is no `POST /returns/:id`). The ordering
+     * therefore costs nothing and buys the guarantee that adding one later
+     * cannot swallow the board's multi-select into a route that would answer
+     * `gone` for every selection.
+     */
+    const posts = owner.app.routes
+      .filter((r) => r.method === 'POST' && r.path.startsWith(`${API}/returns`))
+      .map((r) => r.path);
+    expect(posts.indexOf(`${API}/returns/bulk`)).toBeGreaterThanOrEqual(0);
+    expect(posts.indexOf(`${API}/returns/bulk`)).toBeLessThan(
+      posts.findIndex((p) => p.includes(':id')),
+    );
+  });
+
+  it('schedules a whole selection in one call, and hands each card back', async () => {
+    const rows = [await returnAt('requested', capsProgramId), await returnAt('requested', capsProgramId)];
+    const res = await bulk({
+      action: 'schedule',
+      items: rows.map(item),
+      body: { pickupAt: Date.now() + 86_400_000, driverName: 'Sade' },
+    });
+    expect(res.status).toBe(200);
+
+    const { results } = await json<{ results: BulkResult[] }>(res);
+    expect(results.map((r) => r.ok)).toEqual([true, true]);
+    /*
+     * THE CARD COMES BACK IN THE LIST'S OWN SHAPE, so the board swaps the card
+     * it just moved without a refetch — including the labels and the district
+     * name, neither of which the transition's own return value carries.
+     */
+    for (const result of results) {
+      expect(result.request?.status).toBe('scheduled');
+      expect(result.request?.revision).toBe(2);
+      expect(result.request?.program).toMatchObject({ pointsLabelPlural: 'Bottle Caps' });
+      expect(result.request?.serviceArea).toMatchObject({ name: 'Cabbage Quarter' });
+    }
+  });
+
+  it('REPORTS PER ITEM AND NEVER ROLLS BACK — 200 with the failures inside it', async () => {
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * PARTIAL SUCCESS IS THE TRUTH. There are no transactions in this
+     * application, so a bulk call IS a loop of single statements and there is no
+     * honest way to undo the ones that worked. A route answering 409 because one
+     * of three cards had moved would leave two transitions applied behind an
+     * error, and the screen would have to guess which.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    const good = await returnAt('requested', capsProgramId);
+    const moved = await returnAt('requested', capsProgramId);
+    const wrongStage = await returnAt('collected', capsProgramId);
+
+    /* This one is advanced behind the selection's back — the "Tolu Bassey moved
+     * on while you were choosing" case, which is what `expectedRevision` per
+     * item exists for. */
+    const stale = item(moved);
+    expect(
+      (await move(moved.id, 'schedule', { expectedRevision: moved.revision, pickupAt: Date.now() }))
+        .status,
+    ).toBe(200);
+
+    const res = await bulk({
+      action: 'schedule',
+      items: [item(good), stale, item(wrongStage), { id: 'ret_nope', expectedRevision: 1 }],
+      body: { pickupAt: Date.now() + 86_400_000 },
+    });
+    expect(res.status).toBe(200);
+
+    const { results } = await json<{ results: BulkResult[] }>(res);
+    expect(results.map((r) => [r.ok, r.error])).toEqual([
+      [true, undefined],
+      /* Its own CAS lost, and ONLY its own: the card beside it still moved. */
+      [false, 'stale_write'],
+      /* The state machine refused it — a collected return cannot be scheduled,
+       * and the bulk path runs the SAME guard the single route does. */
+      [false, 'invalid_transition'],
+      [false, 'gone'],
+    ]);
+
+    /* …and the successful one really moved, rather than being reported and
+     * rolled back with its neighbours. */
+    const after = await json<Detail>(await owner.get(`${API}/returns/${good.id}`));
+    expect(after.request.status).toBe('scheduled');
+  });
+
+  it('RUNS EVERY ITEM’S GUARD — a bulk reject cannot reach a received return', async () => {
+    /*
+     * THE MUTATION THIS EXISTS FOR: replace the loop with one
+     * `UPDATE … WHERE id IN (…)`. It would be faster, it would look correct, and
+     * it would skip the CAS, the timeline entry and the rule that reject is
+     * illegal once the goods are in hand — closing a return over a pile nobody
+     * counted. The state machine has one implementation, and the board is a
+     * second way to press its buttons.
+     */
+    const early = await returnAt('requested', capsProgramId);
+    const received = await returnAt('received', capsProgramId);
+
+    const res = await bulk({
+      action: 'reject',
+      items: [item(early), item(received)],
+      body: { reason: 'Not ours' },
+    });
+    const { results } = await json<{ results: BulkResult[] }>(res);
+    expect(results[0].ok).toBe(true);
+    expect(results[1]).toMatchObject({ ok: false, error: 'invalid_transition' });
+
+    const untouched = await json<Detail>(await owner.get(`${API}/returns/${received.id}`));
+    expect(untouched.request.status).toBe('received');
+  });
+
+  it('notes every card in a selection without moving any of them', async () => {
+    const rows = [await returnAt('requested', capsProgramId), await returnAt('collected', capsProgramId)];
+    const res = await bulk({
+      action: 'note',
+      items: rows.map(item),
+      body: { note: 'Driver says the gate is locked after six' },
+    });
+    const { results } = await json<{ results: BulkResult[] }>(res);
+    expect(results.every((r) => r.ok)).toBe(true);
+
+    for (const row of rows) {
+      const detail = await json<Detail>(await owner.get(`${API}/returns/${row.id}`));
+      /* A note bumps NOTHING — not the revision, not the stage. It is legal in
+       * every state, which is why a mixed selection can all take one. */
+      expect(detail.request.revision).toBe(row.revision);
+      expect(detail.request.status).toBe(row.status);
+      expect(detail.events.at(-1)).toMatchObject({ type: 'note' });
+    }
+  });
+
+  it('refuses more than fifty in one call', async () => {
+    const items = Array.from({ length: 51 }, (_, i) => ({
+      id: `ret_${i}`,
+      expectedRevision: 1,
+    }));
+    const res = await bulk({ action: 'collect', items, body: {} });
+    expect(res.status).toBe(400);
+    expect(await json(res)).toMatchObject({ error: 'bad_request', detail: 'items' });
+
+    // …and an empty selection is a request nobody meant to send.
+    expect((await bulk({ action: 'collect', items: [], body: {} })).status).toBe(400);
+  });
+
+  it('validates the shared body ONCE, before anything is written', async () => {
+    /*
+     * A malformed body is a 400 about the request rather than fifty identical
+     * per-item failures — and parsing it inside the loop would apply the first N
+     * before discovering it.
+     */
+    const row = await returnAt('requested', capsProgramId);
+    const res = await bulk({ action: 'reject', items: [item(row)], body: {} });
+    expect(res.status).toBe(400);
+    expect(await json(res)).toMatchObject({ error: 'bad_request', detail: 'reason' });
+
+    const detail = await json<Detail>(await owner.get(`${API}/returns/${row.id}`));
+    expect(detail.request.status).toBe('requested');
+  });
+
+  it('has no `inspect` — counting what arrived is a form per return', async () => {
+    /* The quantities differ by definition, so "inspect fifty returns with one
+     * body" is a sentence with no meaning. The board greys it; this is why that
+     * is a contract rather than a UI convention. */
+    const row = await returnAt('received', capsProgramId);
+    const res = await bulk({
+      action: 'inspect',
+      items: [item(row)],
+      body: { qtyAccepted: 4, qtyRejected: 0 },
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('needs a session, and a writer is session enough', async () => {
+    const row = await returnAt('requested', capsProgramId);
+    expect((await bulk({ action: 'collect', items: [item(row)], body: {} }, anon)).status).toBe(401);
+    /* Processing returns is any staff member's work (spec D12) — the board is
+     * just a faster way to press the same buttons. */
+    const res = await bulk(
+      { action: 'schedule', items: [item(row)], body: { pickupAt: Date.now() + 3_600_000 } },
+      writer,
+    );
+    expect(res.status).toBe(200);
+    expect((await json<{ results: BulkResult[] }>(res)).results[0].ok).toBe(true);
+  });
+});
+
 describe('the queue — contract #4', () => {
   /** Every return in this block belongs to `countsProgramId`, so the counts are
    *  a closed set no other test can move. */
@@ -845,6 +1165,75 @@ describe('the queue — contract #4', () => {
       page.counts.cancelled).toBe(1);
   });
 
+  it('scopes a board to its own district, counts and all', async () => {
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * THE FILTER IS A ROW FILTER, WHICH IS WHY THE COUNTS MOVE WITH IT.
+     *
+     * A board is one district's dispatch list, so its tab strip must say what
+     * that district holds — not what the city holds. Put anywhere but
+     * `rowFilters`, the badge over Requested would read the city's number and
+     * list the district's, which is the dishonest-counted-tab failure this
+     * subsystem already refused once.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    const elsewhere = 'area_turnip_hill';
+    await ctx.db.execute(sql`
+      INSERT INTO marketing_service_areas
+        (id, key, region, name, active, created_at, updated_at)
+      VALUES (${elsewhere}, 'turnip-hill', 'Farflung Province', 'Turnip Hill',
+              true, 1786600001000, 1786600001000)
+      ON CONFLICT DO NOTHING`);
+
+    const moved = Object.values(counted).find((row) => row.status === 'requested');
+    await ctx.db.execute(sql`
+      UPDATE marketing_return_requests SET service_area_id = ${elsewhere}
+       WHERE id = ${moved?.id}`);
+
+    const here = await load(`view=all&programId=${countsProgramId}&district=${elsewhere}`);
+    expect(here.items.map((r) => r.id)).toEqual([moved?.id]);
+    expect(here.counts.requested).toBe(1);
+    expect(here.counts.needsAction).toBe(1);
+
+    const there = await load(`view=all&programId=${countsProgramId}&district=${AREA}`);
+    expect(there.items.map((r) => r.id)).not.toContain(moved?.id);
+    expect(there.counts.requested).toBe(1);
+
+    /* Every card says which board it is on, by name — the desk above the boards
+     * is whole-of-city and its Area column reads this rather than looking each
+     * id up in the switcher's response. */
+    expect(here.items[0].serviceArea).toEqual({ id: elsewhere, name: 'Turnip Hill' });
+
+    // Put it back, so the counts assertions above stay a closed set.
+    await ctx.db.execute(sql`
+      UPDATE marketing_return_requests SET service_area_id = ${AREA} WHERE id = ${moved?.id}`);
+  });
+
+  it('lists the returns on NO board under district=none', async () => {
+    /*
+     * `none` IS `IS NULL`, NOT AN EQUALITY AGAINST THE STRING. Written as an
+     * equality it matches nothing and answers "the out-of-area list is empty" —
+     * the most dangerous lie available here, because those are precisely the
+     * returns nobody can award and this is the only surface built to find them.
+     */
+    const stray = await logReturn({ serviceAreaId: undefined });
+    expect(stray.request.serviceAreaId).toBeNull();
+
+    const page = await load(`view=all&district=none`);
+    expect(page.items.map((r) => r.id)).toContain(stray.request.id);
+    expect(page.items.every((r) => r.serviceArea === null)).toBe(true);
+  });
+
+  it('answers an EMPTY board for a district id that resolves to nothing', async () => {
+    /* Unlike the intake's forgiving `serviceAreaId`, this one comes from the
+     * switcher the client just rendered — so an id it cannot match is a district
+     * with nothing in it, which is a real and unremarkable state, not an error
+     * to put in front of an operator. */
+    const page = await load(`view=all&district=area_atlantis`);
+    expect(page.items).toEqual([]);
+    expect(page.counts.needsAction).toBe(0);
+  });
+
   it('serves each row with the labels, the revision, the address and one ordered action list', async () => {
     const page = await load(`view=requested&programId=${countsProgramId}&limit=1`);
     const row = page.items[0];
@@ -880,11 +1269,20 @@ describe('the queue — contract #4', () => {
       'pickupAddress',
       'pickupScheduledAt',
       'pointsAwarded',
+      /* The rate the customer was PROMISED. A board card prices a return from
+       * this rather than from the programme's CURRENT rate, so a repricing
+       * cannot silently restate what an old card is worth. */
+      'pointsPerUnitSnapshot',
       'program',
       'qtyAccepted',
       'qtyDeclared',
       'qtyRejected',
       'revision',
+      /* Which board the card belongs on, `{id, name}` or null. The NAME travels
+       * beside the id because the desk is whole-of-city: its Area column has to
+       * say where each row lives without looking every id up in a second
+       * response. */
+      'serviceArea',
       'status',
       'updatedAt',
     ]);

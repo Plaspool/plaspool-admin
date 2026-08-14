@@ -84,7 +84,7 @@ export default function EditorRoute() {
    * BACK TO WHERE THEY CAME FROM, NOT TO `/`.
    *
    * The dashboard keeps its five filters in its own URL now
-   * (`/?status=published&q=…`), so `navigate('/')` threw the tab, the search,
+   * (`/?status=published&q=…`), so `navigate('/dashboard')` threw the tab, the search,
    * the sort and the scroll position away every time a writer closed a post —
    * the exact complaint this replaces. Going back one entry lands on the
    * dashboard the writer actually left, filters and all, and `Reader.tsx:90`
@@ -104,7 +104,7 @@ export default function EditorRoute() {
   const cameFromInside = useRef(location.key !== 'default');
   const leaveEditor = useCallback(() => {
     if (cameFromInside.current) navigate(-1);
-    else navigate('/');
+    else navigate('/dashboard');
   }, [navigate]);
 
   // Wrapped so we can tell "still loading" (undefined) from "no such post"
@@ -423,7 +423,7 @@ export default function EditorRoute() {
         <p className="empty__body">
           It may have been permanently deleted from this browser.
         </p>
-        <Link className="btn btn--primary" to="/">
+        <Link className="btn btn--primary" to="/dashboard">
           Back to your posts
         </Link>
       </div>

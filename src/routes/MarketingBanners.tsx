@@ -536,10 +536,10 @@ function BannerTable({ rows, all, now }: { rows: Banner[]; all: Banner[]; now: n
                       </span>
                     )}
                   </td>
-                  <td>
+                  <td data-label="Where">
                     <span className="chip">{PLACEMENT_WHAT[banner.placement]}</span>
                   </td>
-                  <td>
+                  <td data-label="Showing">
                     <span className={`chip ${CHIP[derived]}`}>{WHAT[derived]}</span>
                     <span className="mkttable__sub">{windowText(banner)}</span>
                     {/* The evaluator, one sentence long. It walks the same
@@ -547,7 +547,7 @@ function BannerTable({ rows, all, now }: { rows: Banner[]; all: Banner[]; now: n
                         never disagree with the site about whose fault it is. */}
                     {why !== null && <span className="mkttable__sub">Why not showing? {why}</span>}
                   </td>
-                  <td className="mkttable__num">
+                  <td className="mkttable__num" data-label="Priority">
                     {banner.priority.toLocaleString()}
                     <span className="mkttable__sub">
                       Changed {WHEN_DAY.format(new Date(banner.updatedAt))}

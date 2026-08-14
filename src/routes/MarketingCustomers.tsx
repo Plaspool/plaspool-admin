@@ -583,8 +583,10 @@ function Directory({ points }: { points: ProgramLabels | null }) {
                               <span className="mkttable__sub">{row.displayName}</span>
                             )}
                           </td>
-                          <td className="mkttable__num">{amountText(row.balance, points)}</td>
-                          <td>
+                          <td className="mkttable__num" data-label="Balance">
+                            {amountText(row.balance, points)}
+                          </td>
+                          <td data-label="Last change">
                             {row.lastEntry === null ? (
                               <span className="mkttable__sub">Nothing yet</span>
                             ) : (
@@ -606,7 +608,7 @@ function Directory({ points }: { points: ProgramLabels | null }) {
                               </>
                             )}
                           </td>
-                          <td className="mkttable__num">
+                          <td className="mkttable__num" data-label="When">
                             {row.lastEntryAt === null
                               ? '—'
                               : WHEN_DAY.format(new Date(row.lastEntryAt))}

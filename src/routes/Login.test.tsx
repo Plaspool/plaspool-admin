@@ -1,4 +1,5 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -17,7 +18,30 @@ vi.mock('../data/api', () => ({
   api: { login: vi.fn() },
 }));
 
-vi.mock('../data/session', () => ({ adoptUser: vi.fn() }));
+/*
+ * `getSession`/`subscribe` as well as `adoptUser`: the page reads the session
+ * itself now, because signing in is what navigates away and only the page —
+ * never `SignInForm`, which is also the mid-session re-auth prompt — is allowed
+ * to do that. Pinned to a refused boot so these cases render the form; the
+ * redirect on success is `Login`'s own concern and is covered in
+ * `RequireAuth.test.tsx` from the guard's side.
+ */
+vi.mock('../data/session', () => {
+  /*
+   * ONE frozen object, returned by identity. `useSyncExternalStore` compares
+   * snapshots by reference and re-renders when they differ, so a `getSession`
+   * that builds a fresh literal per call is an infinite loop — React bails out
+   * with "Maximum update depth exceeded" and every case in this file fails at
+   * once, pointing at `Login` rather than at the mock. The real `session.ts`
+   * holds one module-level value for exactly the same reason.
+   */
+  const REFUSED_BOOT = { status: 'anonymous', reason: 'boot', user: null };
+  return {
+    adoptUser: vi.fn(),
+    getSession: () => REFUSED_BOOT,
+    subscribe: () => () => {},
+  };
+});
 
 import { api } from '../data/api';
 import { ApiError, AuthExpiredError, OfflineError } from '../data/errors';
@@ -35,6 +59,22 @@ const WRITER = {
 const type = (el: HTMLElement, text: string) =>
   userEvent.setup({ delay: null }).type(el, text);
 
+/**
+ * The PAGE needs a router; the FORM deliberately does not.
+ *
+ * `Login` reads `useLocation` so it can send the writer back to whatever route
+ * the guard bounced them off, which means it can only ever be a route. The
+ * re-auth case below renders `SignInForm` bare on purpose — that one renders
+ * over a live editor inside `RequireAuth`, and keeping it router-free here is
+ * what stops a `<Link>` or a hook creeping into the shared half.
+ */
+const renderLogin = () =>
+  render(
+    <MemoryRouter>
+      <Login />
+    </MemoryRouter>,
+  );
+
 async function signIn(email = 'writer@test.local', password = 'a-long-password') {
   if (email) await type(screen.getByLabelText('Email'), email);
   await type(screen.getByLabelText('Password'), password);
@@ -49,7 +89,7 @@ beforeEach(() => {
 describe('signing in', () => {
   it('sends the credentials and adopts the session it gets back', async () => {
     vi.mocked(api.login).mockResolvedValue(WRITER);
-    render(<Login />);
+    renderLogin();
 
     await signIn('  writer@test.local  ');
 
@@ -63,7 +103,7 @@ describe('signing in', () => {
   });
 
   it('cannot be submitted with an empty field', async () => {
-    render(<Login />);
+    renderLogin();
 
     expect(screen.getByRole('button', { name: /sign in/i })).toHaveProperty('disabled', true);
     await userEvent.type(screen.getByLabelText('Email'), 'writer@test.local');
@@ -76,7 +116,7 @@ describe('signing in', () => {
 describe('what a refusal is allowed to say', () => {
   it('a 401 blames the pair, never one half of it', async () => {
     vi.mocked(api.login).mockRejectedValue(new AuthExpiredError());
-    render(<Login />);
+    renderLogin();
 
     await signIn();
 
@@ -90,7 +130,7 @@ describe('what a refusal is allowed to say', () => {
     vi.mocked(api.login).mockRejectedValue(
       new ApiError({ status: 429, code: 'rate_limited', retryAfter: 42 }),
     );
-    render(<Login />);
+    renderLogin();
 
     await signIn();
 
@@ -99,7 +139,7 @@ describe('what a refusal is allowed to say', () => {
 
   it('an unreachable server is not a rejected password', async () => {
     vi.mocked(api.login).mockRejectedValue(new OfflineError());
-    render(<Login />);
+    renderLogin();
 
     await signIn();
 
@@ -112,7 +152,7 @@ describe('what a refusal is allowed to say', () => {
     vi.mocked(api.login).mockRejectedValue(
       new ApiError({ status: 500, code: 'internal', requestId: 'req_9f3' }),
     );
-    render(<Login />);
+    renderLogin();
 
     await signIn();
 
@@ -124,7 +164,7 @@ describe('what a refusal is allowed to say', () => {
 
   it('lets the writer try again after a failure', async () => {
     vi.mocked(api.login).mockRejectedValueOnce(new AuthExpiredError());
-    render(<Login />);
+    renderLogin();
     await signIn();
     await screen.findByRole('alert');
 

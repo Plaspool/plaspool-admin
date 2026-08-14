@@ -2,6 +2,11 @@
    to no server; a Google Fonts request on every load would make both false. */
 @import '@fontsource-variable/inter';
 @import '@fontsource-variable/jetbrains-mono';
+/* The opening sequence's tagline, and only that — `--font-mono` stays JetBrains
+   for code, which is the face the syntax ramp in tokens.css was measured
+   against. Two mono faces is one more than a design system wants, so if this
+   ever earns a second use it should become a token rather than spreading. */
+@import '@fontsource-variable/roboto-mono';
 @import '@fontsource/spectral/400.css';
 @import '@fontsource/spectral/400-italic.css';
 @import '@fontsource/spectral/600.css';
@@ -11,6 +16,60 @@
 *::before,
 *::after {
   box-sizing: border-box;
+}
+
+/* ------------------------------------------------------------- scrollbars
+
+   THE ONE PIECE OF CHROME THE DESIGN SYSTEM DIDN'T REACH.
+
+   Windows Chrome draws a 17px light-grey trough with a hard-edged block in it
+   and square arrow buttons at both ends. Inside a dark dropdown or a rounded
+   dialog that is a strip of another operating system sitting on top of this
+   one — and it was the first thing anyone noticed about the area picker.
+
+   TWO IMPLEMENTATIONS, NEVER BOTH AT ONCE. Chrome ignores the `::-webkit-`
+   pseudo-elements entirely once `scrollbar-width`/`scrollbar-color` are set on
+   an element, and those two standard properties cannot round a thumb or inset
+   it from its track. So the pseudo-elements are the path here, and the
+   standard properties are declared only where the pseudo-elements do not
+   exist — Firefox — behind a feature query rather than a browser sniff.
+
+   The thumb is drawn with a transparent border and `background-clip:
+   content-box`: the bar keeps a 12px hit area for the pointer while the ink
+   inside it is 4px. That is the whole trick behind a scrollbar you can grab
+   and barely see. */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scroll-thumb) transparent;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+/* No trough and no arrow buttons. The track is the surface underneath. */
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+::-webkit-scrollbar-thumb {
+  background-color: var(--scroll-thumb);
+  border: 4px solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scroll-thumb-hover);
+}
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--scroll-thumb-active);
 }
 
 html,

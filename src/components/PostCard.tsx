@@ -1,6 +1,7 @@
 import {
   Archive,
   ArchiveRestore,
+  ArrowRight,
   Copy,
   EyeOff,
   MoreHorizontal,
@@ -87,19 +88,13 @@ export function PostCard({
         aria-label={inTrash ? `Restore ${title}` : `Edit ${title}`}
       />
 
-      {/* No cover, no media well. A 186px grey rectangle holding one faded
-          letter was half the card and said nothing. */}
-      {post.coverImage && (
-        <div className="card__media">
-          <StoredImg
-            blobId={post.coverImage.blobId}
-            alt={post.coverImage.alt}
-            focalPoint={post.coverImage.focalPoint}
-            className="card__img"
-          />
-        </div>
-      )}
-
+      {/*
+        TEXT FIRST, PICTURE UNDER IT — the order the reference design reads in,
+        and the order this list is actually scanned in. A cover on top makes the
+        image the row's headline; here the words are, and the picture is what
+        confirms them. It also means a post with no cover is not a card with a
+        hole at the top, which is why the media well is still conditional.
+      */}
       <div className="card__body">
         <div className="card__meta">
           <span className={`chip chip--${post.status}`}>{post.status}</span>
@@ -132,24 +127,56 @@ export function PostCard({
           </div>
         )}
 
-        <footer className="card__foot">
-          <span className="card__stat">
-            {post.wordCount === 0
-              ? 'Empty'
-              : `${post.readingTime} min · ${post.wordCount.toLocaleString()} words`}
+        {/*
+          THE BYLINE ROW, which is the one part of the reference design this app
+          had nothing standing in for. `authorName` is denormalised onto every
+          row precisely so a card can name its writer without a join, and on a
+          shared blog "who wrote this" is the first thing you look for in a grid
+          of ten drafts. The dates and the length ride with it rather than in a
+          footer of their own — one line about the post's provenance instead of
+          two rows of small grey text at opposite ends of the card.
+        */}
+        <footer className="card__by">
+          <span className="card__avatar" aria-hidden="true">
+            {initials(post.authorName)}
           </span>
-          <span className="card__dot" aria-hidden="true">
-            ·
+          <span className="card__byline">
+            <span className="card__author">{post.authorName || 'Unknown writer'}</span>
+            <span className="card__when">
+              <time dateTime={new Date(post.updatedAt).toISOString()}>
+                {inTrash
+                  ? `Trashed ${relative(post.deletedAt!)}`
+                  : post.status === 'published' && post.publishedAt
+                    ? `Published ${relative(post.publishedAt)}`
+                    : `Updated ${relative(post.updatedAt)}`}
+              </time>
+              {' · '}
+              {post.wordCount === 0
+                ? 'Empty'
+                : `${post.readingTime} min read`}
+            </span>
           </span>
-          <time className="card__stat" dateTime={new Date(post.updatedAt).toISOString()}>
-            {inTrash
-              ? `Trashed ${relative(post.deletedAt!)}`
-              : post.status === 'published' && post.publishedAt
-                ? `Published ${relative(post.publishedAt)}`
-                : `Updated ${relative(post.updatedAt)}`}
-          </time>
         </footer>
       </div>
+
+      {post.coverImage && (
+        <div className="card__media">
+          <StoredImg
+            blobId={post.coverImage.blobId}
+            alt={post.coverImage.alt}
+            focalPoint={post.coverImage.focalPoint}
+            className="card__img"
+          />
+          {/* Not a control — the whole card is the control, and a second button
+              inside the first one is a click target that eats its parent's. It
+              is the reference design's cue that the picture is pressable, drawn
+              where that design draws it. */}
+          <span className="card__more" aria-hidden="true">
+            Read More
+            <ArrowRight className="ui-ic" />
+          </span>
+        </div>
+      )}
 
       <div className="card__actions">
         {inTrash ? (
@@ -219,6 +246,23 @@ function Overflow({ post, actions }: { post: ListPost; actions: CardActions }) {
       </MenuContent>
     </Menu>
   );
+}
+
+/**
+ * Up to two initials for the byline disc.
+ *
+ * The same rule the rail's identity block uses, copied rather than imported:
+ * that one lives inside `Sidebar.tsx` next to the signed-in user, and a card
+ * names whoever wrote the post — often not the person reading it. Importing it
+ * would tie a list row to the navigation's module for four lines of string
+ * handling.
+ */
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '·';
+  const first = parts[0]![0]!;
+  const last = parts.length > 1 ? parts[parts.length - 1]![0]! : '';
+  return (first + last).toUpperCase();
 }
 
 export function relative(ts: number): string {

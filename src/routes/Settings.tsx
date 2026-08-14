@@ -1489,7 +1489,7 @@ export default function SettingsRoute() {
           type="button"
           className="btn btn--ghost btn--sm"
           onClick={() => {
-            if (location.key === 'default') navigate('/');
+            if (location.key === 'default') navigate('/dashboard');
             else navigate(-1);
           }}
         >

@@ -221,7 +221,17 @@ function filters(q: ProductListQuery): SQL[] {
   // no category". NUL-checked before binding — it arrives from a query string,
   // `.trim()` does not strip a U+0000, and one reaching the driver is SQLSTATE
   // 22021, a 500 the client retries five times for input never acceptable.
-  if (q.category) where.push(sql`p.category = ${rejectNul(q.category, 'category')}`);
+  //
+  // FOLDED ON BOTH SIDES (migration 0010): `Specialty` and `specialty` are one
+  // category to every screen now, so a filter that matched only one spelling
+  // would return a subset with no error anywhere to explain the missing rows —
+  // the exact failure the old exact-match version of this line was defending
+  // against from the other direction, back when the picker offered raw
+  // spellings. `admin/categories.ts` folds its grouping to match; the two move
+  // together or not at all. Served by `shop_products_category_fold_idx`.
+  if (q.category) {
+    where.push(sql`lower(p.category) = lower(${rejectNul(q.category, 'category')})`);
+  }
 
   return where;
 }

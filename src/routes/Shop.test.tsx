@@ -258,6 +258,7 @@ const VARIANT = {
   available: 2,
   backorderable: false,
   imageId: null as string | null,
+  colorHex: null as string | null,
 };
 
 const ORDER_DETAIL = {
@@ -432,74 +433,244 @@ describe('the catalogue', () => {
     expect(back.getAttribute('href')).not.toContain('id=');
   });
 
-  it('seeds a price box in major units, trailing zero and all', async () => {
+  it('reads first: the current price and stock are shown, not editable in place', async () => {
     when('/api/shop/admin/products/p_1', {
       product: { ...PRODUCT, variants: [VARIANT] },
     });
-    mount(<ShopProducts />, '/shop/products?id=p_1');
+    mount(<ShopProducts />, '/shop/products?id=p_1&tab=variants');
 
-    const price = (await screen.findByLabelText('Price')) as HTMLInputElement;
-    // 1990 minor units. `19.9` is the value a division produces and the one an
-    // operator would have to notice was missing a digit.
-    expect(price.value).toBe('19.90');
+    /*
+     * LOOKING IS NOT CHANGING. Selecting a variant shows its facts — the price
+     * with its trailing zero intact, what is available — and each change is
+     * behind its own deliberate button. No input holds a live number.
+     */
+    const card = (await screen.findByRole('button', { name: 'Adjust price' })).closest(
+      '.vdetail',
+    )!;
+    expect(card.textContent).toContain(formatMinor(1990, 'GBP'));
+    expect(card.textContent).toContain('2 available');
+    // The History link carries where it was opened from, which is the only way
+    // that page can offer a way back to this product.
+    const history = screen.getByRole('link', { name: /history/i });
+    expect(history.getAttribute('href')).toContain('variant=v_1');
+    expect(history.getAttribute('href')).toContain('from=p_1');
+    expect(screen.getByRole('button', { name: 'Adjust stock' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Add photo/ })).toBeTruthy();
   });
 
-  it('sends a typed price as integer minor units', async () => {
+  it('sends a typed price as integer minor units, with its reason', async () => {
+    const user = userEvent.setup();
     when('/api/shop/admin/products/p_1', {
       product: { ...PRODUCT, variants: [VARIANT] },
     });
     when('/api/shop/admin/variants/v_1/price', { price: { amount: 2500, currency: 'GBP' } });
-    mount(<ShopProducts />, '/shop/products?id=p_1');
+    mount(<ShopProducts />, '/shop/products?id=p_1&tab=variants');
 
-    const price = await screen.findByLabelText('Price');
-    await userEvent.clear(price);
-    await userEvent.type(price, '25.00');
-    await userEvent.click(screen.getByRole('button', { name: 'Set' }));
+    await user.click(await screen.findByRole('button', { name: 'Adjust price' }));
+    const price = await screen.findByLabelText('New price (GBP)');
+    await user.type(price, '25.00');
+
+    // The WHY is not optional in this UI even though the wire tolerates its
+    // absence for pre-0009 rows — an unexplained price move is the row nobody
+    // can act on in six months.
+    const set = screen.getByRole('button', { name: 'Set price' }) as HTMLButtonElement;
+    expect(set.disabled).toBe(true);
+    await user.click(screen.getByRole('combobox', { name: 'Why did the price change?' }));
+    await user.click(await screen.findByRole('option', { name: 'New supplier invoice' }));
+    await waitFor(() => expect(set.disabled).toBe(false));
+    await user.click(set);
 
     await waitFor(() => expect(asked('/api/shop/admin/variants/v_1/price')).toBeTruthy());
     const call = (globalThis.fetch as unknown as { mock: { calls: [unknown, RequestInit][] } })
       .mock.calls;
     const put = call.find((c) => c[1]?.method === 'PUT');
-    expect(JSON.parse(String(put![1].body))).toEqual({ amount: 2500, currency: 'GBP' });
+    expect(JSON.parse(String(put![1].body))).toEqual({
+      amount: 2500,
+      currency: 'GBP',
+      reason: 'New supplier invoice',
+    });
   });
 
   it('refuses to enable Set for more decimals than the currency has', async () => {
+    const user = userEvent.setup();
     when('/api/shop/admin/products/p_1', {
       product: { ...PRODUCT, variants: [VARIANT] },
     });
-    mount(<ShopProducts />, '/shop/products?id=p_1');
+    mount(<ShopProducts />, '/shop/products?id=p_1&tab=variants');
 
-    const price = await screen.findByLabelText('Price');
-    await userEvent.clear(price);
-    await userEvent.type(price, '19.999');
+    await user.click(await screen.findByRole('button', { name: 'Adjust price' }));
+    await user.type(await screen.findByLabelText('New price (GBP)'), '19.999');
+    await user.click(screen.getByRole('combobox', { name: 'Why did the price change?' }));
+    await user.click(await screen.findByRole('option', { name: 'New supplier invoice' }));
 
     await waitFor(() => expect(screen.getByText(/2 decimal places/)).toBeTruthy());
-    expect((screen.getByRole('button', { name: 'Set' }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+    expect(
+      (screen.getByRole('button', { name: 'Set price' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 
-  it('will not adjust stock without a reason, because the route will not either', async () => {
+  it('will not adjust stock without a reason, and the question is ABOVE its picker', async () => {
+    const user = userEvent.setup();
     when('/api/shop/admin/products/p_1', {
       product: { ...PRODUCT, variants: [VARIANT] },
     });
-    mount(<ShopProducts />, '/shop/products?id=p_1');
+    mount(<ShopProducts />, '/shop/products?id=p_1&tab=variants');
 
-    const delta = await screen.findByLabelText('Stock');
-    await userEvent.type(delta, '10');
-    const adjust = screen.getByRole('button', { name: 'Adjust' }) as HTMLButtonElement;
+    await user.click(await screen.findByRole('button', { name: 'Adjust stock' }));
+    await user.type(await screen.findByLabelText('Change by'), '10');
+    const adjust = screen.getByRole('button', { name: 'Adjust stock' }) as HTMLButtonElement;
     expect(adjust.disabled).toBe(true);
 
     /*
-     * THE REASON IS NOW A PICKER, and that is the point of it: a mandatory free
-     * text box collects "fix" and "x", which satisfies the server and tells the
-     * next reader nothing. Six presets plus "Something else" means the common
-     * answer is one click and the audit trail is still readable a year later.
+     * THE QUESTION IS A VISIBLE LABEL RENDERED BEFORE THE CONTROL — a bare
+     * dropdown reading "Why…" beside a number box was the one field on the
+     * old panel whose meaning you could only learn by opening it. DOM order is
+     * asserted, not just presence: a label after the dropdown fails this.
      */
-    const user = userEvent.setup();
-    await user.click(screen.getByRole('combobox', { name: 'Why the stock changed' }));
+    const picker = screen.getByRole('combobox', { name: 'Why did the stock change?' });
+    const label = screen.getByText('Why did the stock change?', { selector: 'span.label' });
+    expect(
+      label.compareDocumentPosition(picker) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    /*
+     * A PICKER, and that is the point of it: a mandatory free text box collects
+     * "fix" and "x", which satisfies the server and tells the next reader
+     * nothing. Six presets plus "Something else" means the common answer is one
+     * click and the audit trail is still readable a year later.
+     */
+    await user.click(picker);
     await user.click(await screen.findByRole('option', { name: 'Stocktake recount' }));
     await waitFor(() => expect(adjust.disabled).toBe(false));
+
+    /*
+     * THE ARITHMETIC IS PREVIEWED BEFORE IT HAPPENS, and the number it will
+     * BECOME is the emphasised one — "what will it be" is the question in
+     * front of somebody whose finger is over the button. Stock arriving is
+     * the good tone; the class is asserted because the colour is the emphasis
+     * and a preview that leads with the old value defeats the point.
+     */
+    const preview = document.querySelector('.vpreview')!;
+    expect(preview.textContent).toContain('2 available');
+    expect(preview.querySelector('.vpreview__now--good')?.textContent).toBe('12');
+  });
+
+  it('steps both numbers a unit at a time, and stops the minus at the floor', async () => {
+    const user = userEvent.setup();
+    when('/api/shop/admin/products/p_1', {
+      product: { ...PRODUCT, variants: [VARIANT] },
+    });
+    mount(<ShopProducts />, '/shop/products?id=p_1&tab=variants');
+
+    // Stock: two available, so minus stops after two presses.
+    await user.click(await screen.findByRole('button', { name: 'Adjust stock' }));
+    const delta = (await screen.findByLabelText('Change by')) as HTMLInputElement;
+    await user.click(screen.getByRole('button', { name: 'Increase stock change' }));
+    await user.click(screen.getByRole('button', { name: 'Increase stock change' }));
+    expect(delta.value).toBe('+2');
+    const down = screen.getByRole('button', { name: 'Decrease stock change' });
+    for (let i = 0; i < 4; i += 1) await user.click(down);
+    // −2 is the floor: it empties the shelf and cannot go past it.
+    expect(delta.value).toBe('-2');
+    await waitFor(() => expect((down as HTMLButtonElement).disabled).toBe(true));
+
+    // Price: one MAJOR unit a step, from the price it already has (£19.90),
+    // and the arithmetic is exact rather than a float's best effort.
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await user.click(screen.getByRole('button', { name: 'Adjust price' }));
+    const price = (await screen.findByLabelText('New price (GBP)')) as HTMLInputElement;
+    await user.click(screen.getByRole('button', { name: 'Increase price' }));
+    expect(price.value).toBe('20.90');
+    await user.click(screen.getByRole('button', { name: 'Decrease price' }));
+    await user.click(screen.getByRole('button', { name: 'Decrease price' }));
+    expect(price.value).toBe('18.90');
+
+    // …and the same before → after emphasis, coloured the way the history
+    // page colours a price fall.
+    const preview = document.querySelector('.vpreview')!;
+    expect(preview.textContent).toContain(formatMinor(1990, 'GBP'));
+    expect(preview.querySelector('.vpreview__now--good')?.textContent).toBe(
+      formatMinor(1890, 'GBP'),
+    );
+    expect(preview.textContent).toContain('Decrease');
+  });
+
+  it('refuses to promise a negative count the server is built to bounce', async () => {
+    const user = userEvent.setup();
+    when('/api/shop/admin/products/p_1', {
+      product: { ...PRODUCT, variants: [VARIANT] },
+    });
+    mount(<ShopProducts />, '/shop/products?id=p_1&tab=variants');
+
+    await user.click(await screen.findByRole('button', { name: 'Adjust stock' }));
+    const box = await screen.findByLabelText('Change by');
+    // Two available; writing off three would violate shop_inventory_on_hand_ck
+    // and come back as a 400 — so the form refuses BEFORE the promise, with
+    // the reason where the arithmetic line would be.
+    await user.type(box, '-3');
+    await user.click(screen.getByRole('combobox', { name: 'Why did the stock change?' }));
+    await user.click(await screen.findByRole('option', { name: 'Damaged or faulty — written off' }));
+
+    expect(screen.getByText(/can’t write off more than there is/)).toBeTruthy();
+    expect(
+      (screen.getByRole('button', { name: 'Adjust stock' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+
+    // Writing off exactly what is there is fine.
+    await user.clear(box);
+    await user.type(box, '-2');
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('button', { name: 'Adjust stock' }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+  });
+
+  it('keeps the section in the URL, so a reload lands where you were', async () => {
+    const user = userEvent.setup();
+    when('/api/shop/admin/products/p_1', {
+      product: { ...PRODUCT, variants: [VARIANT] },
+    });
+    mount(<ShopProducts />, '/shop/products?id=p_1');
+
+    // Details is the default and stays out of the query entirely.
+    expect(await screen.findByLabelText('Title')).toBeTruthy();
+    expect(address()).not.toContain('tab=');
+
+    await user.click(screen.getByRole('link', { name: /^Images/ }));
+    await waitFor(() => expect(address()).toContain('tab=images'));
+    expect(screen.getByText(/^Cover$/)).toBeTruthy();
+
+    await user.click(screen.getByRole('link', { name: /^Variants/ }));
+    await waitFor(() => expect(address()).toContain('tab=variants'));
+    expect(await screen.findByRole('button', { name: 'Adjust price' })).toBeTruthy();
+    // Save is reachable from every tab — the fields are one PATCH.
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeTruthy();
+
+    // The open section is THIS product's state: it must not ride the back
+    // link into the catalogue and silently decide the next product's tab.
+    const back = screen.getByRole('link', { name: /Catalogue/ });
+    expect(back.getAttribute('href')).not.toContain('tab=');
+  });
+
+  it('offers existing tags while typing, and adopts their spelling', async () => {
+    const user = userEvent.setup();
+    when('/api/shop/admin/products/p_1', { product: { ...PRODUCT, variants: [] } });
+    when('/api/shop/admin/tags', { items: [{ name: 'PLA', count: 7 }, { name: 'wood-fill', count: 2 }] });
+    mount(<ShopProducts />, '/shop/products?id=p_1');
+
+    const box = await screen.findByLabelText('Add a tag');
+    await user.type(box, 'pl');
+    // The vocabulary appears with its count — "7 products already spell it PLA".
+    const offer = await screen.findByRole('button', { name: /PLA\s*7/ });
+    await user.click(offer);
+    expect(screen.getByRole('button', { name: 'Remove tag PLA' })).toBeTruthy();
+
+    // Typing the fold-twin of an existing tag adopts the stored spelling too —
+    // `pla` typed, `PLA` kept, and no second chip for the same tag.
+    await user.type(screen.getByLabelText('Add a tag'), 'pla{Enter}');
+    expect(screen.queryByRole('button', { name: 'Remove tag pla' })).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Remove tag PLA' })).toHaveLength(1);
   });
 });
 
@@ -855,6 +1026,31 @@ describe('the history', () => {
     expect(screen.getByRole('button', { name: /show the whole shop/i })).toBeTruthy();
   });
 
+  it('offers the way back to the product it was opened from', async () => {
+    when('/api/shop/admin/audit', { items: [AUDIT_STOCK], nextCursor: null });
+    mount(<ShopAudit />, '/shop/audit?variant=v_1&from=p_1');
+
+    /*
+     * "Why is this number what it is" is asked in front of the number, so the
+     * answer has to lead back to it. Without this the only exit was the
+     * sidebar, which lands on the catalogue rather than the product — and the
+     * variants tab specifically, because that is the pane you left.
+     */
+    const back = await screen.findByRole('link', { name: /back to the product/i });
+    expect(back.getAttribute('href')).toContain('id=p_1');
+    expect(back.getAttribute('href')).toContain('tab=variants');
+  });
+
+  it('finds the way back from the entries when the URL does not carry it', async () => {
+    // A bookmarked or hand-trimmed URL has no `from`; the first entry knows
+    // which product it belongs to, so the exit survives either way.
+    when('/api/shop/admin/audit', { items: [AUDIT_STOCK], nextCursor: null });
+    mount(<ShopAudit />, '/shop/audit?variant=v_1');
+
+    const back = await screen.findByRole('link', { name: /back to the product/i });
+    expect(back.getAttribute('href')).toContain('id=p_1');
+  });
+
   it('appends earlier changes rather than replacing what you were reading', async () => {
     when('/api/shop/admin/audit', { items: [AUDIT_PRICE], nextCursor: 'cur_2' });
     mount(<ShopAudit />, '/shop/audit');
@@ -872,7 +1068,7 @@ describe('the history', () => {
 describe('setting up variants', () => {
   it('asks whether it varies, instead of demanding a SKU', async () => {
     when('/api/shop/admin/products/p_1', { product: { ...PRODUCT, variants: [] } });
-    mount(<ShopProducts />, '/shop/products?id=p_1');
+    mount(<ShopProducts />, '/shop/products?id=p_1&tab=variants');
 
     /*
      * THE WHOLE POINT. The old panel opened with a text box wanting
@@ -886,7 +1082,7 @@ describe('setting up variants', () => {
   it('creates one variant with no SKU and no options for a single item', async () => {
     when('/api/shop/admin/products/p_1', { product: { ...PRODUCT, variants: [] } });
     when('/api/shop/admin/products/p_1/variants', { variant: VARIANT });
-    mount(<ShopProducts />, '/shop/products?id=p_1');
+    mount(<ShopProducts />, '/shop/products?id=p_1&tab=variants');
 
     await userEvent.click(await screen.findByRole('button', { name: /single item/i }));
 
@@ -898,23 +1094,26 @@ describe('setting up variants', () => {
     expect(JSON.parse(String(post![1].body))).toEqual({});
   });
 
-  it('turns two axes into their combinations, one POST each', async () => {
+  it('turns checked colours and a typed size into combinations, code and all', async () => {
     const user = userEvent.setup();
     when('/api/shop/admin/products/p_1', { product: { ...PRODUCT, variants: [] } });
     when('/api/shop/admin/products/p_1/variants', { variant: VARIANT });
-    mount(<ShopProducts />, '/shop/products?id=p_1');
+    mount(<ShopProducts />, '/shop/products?id=p_1&tab=variants');
 
     await user.click(await screen.findByRole('button', { name: /set up options/i }));
 
-    // Colour: Black, Red
-    const colour = screen.getByLabelText('Add a Colour');
-    await user.type(colour, 'Black{Enter}');
-    await user.type(colour, 'Red{Enter}');
+    /*
+     * A COLOUR IS A CHECKBOX, NOT A SPELLING TEST: checking "Black" names the
+     * value and records its swatch in one click, which is where the colour
+     * code on the wire below comes from.
+     */
+    await user.click(screen.getByRole('checkbox', { name: 'Black' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Red' }));
 
-    // ...and a second axis.
+    // ...and a second axis, whose values are ALSO one click: every axis kind
+    // has a vocabulary, not just colour.
     await user.click(screen.getByRole('button', { name: 'Size' }));
-    const size = screen.getByLabelText('Add a Size');
-    await user.type(size, 'S{Enter}');
+    await user.click(screen.getByRole('checkbox', { name: 'S' }));
 
     // 2 colours x 1 size. The count is promised before the click.
     expect(screen.getByText(/This makes 2 variants/)).toBeTruthy();
@@ -926,9 +1125,9 @@ describe('setting up variants', () => {
         .mock.calls;
       const posts = calls.filter((c) => c[1]?.method === 'POST');
       expect(posts).toHaveLength(2);
-      expect(posts.map((c) => JSON.parse(String(c[1].body)).optionValues)).toEqual([
-        { Colour: 'Black', Size: 'S' },
-        { Colour: 'Red', Size: 'S' },
+      expect(posts.map((c) => JSON.parse(String(c[1].body)))).toEqual([
+        { optionValues: { Colour: 'Black', Size: 'S' }, colorHex: '#111111' },
+        { optionValues: { Colour: 'Red', Size: 'S' }, colorHex: '#c62828' },
       ]);
     });
   });
@@ -936,43 +1135,104 @@ describe('setting up variants', () => {
   it('refuses the same value twice, whatever the casing', async () => {
     const user = userEvent.setup();
     when('/api/shop/admin/products/p_1', { product: { ...PRODUCT, variants: [] } });
-    mount(<ShopProducts />, '/shop/products?id=p_1');
+    mount(<ShopProducts />, '/shop/products?id=p_1&tab=variants');
 
     await user.click(await screen.findByRole('button', { name: /set up options/i }));
-    const colour = screen.getByLabelText('Add a Colour');
-    await user.type(colour, 'Black{Enter}');
-    // "black" is the same colour, and a second variant for it is a SKU
-    // collision somebody would have to explain later.
-    await user.type(colour, 'black{Enter}');
+    // "Black" is checked as a preset; "black" typed into the custom row is the
+    // same colour, and a second variant for it is a SKU collision somebody
+    // would have to explain later.
+    await user.click(screen.getByRole('checkbox', { name: 'Black' }));
+    await user.type(screen.getByLabelText('Custom colour name'), 'black{Enter}');
 
     expect(screen.getByText(/This makes 1 variant/)).toBeTruthy();
+
+    // The same guard on a non-colour axis, preset against typed.
+    await user.click(screen.getByRole('button', { name: 'Size' }));
+    await user.click(screen.getByRole('checkbox', { name: 'M' }));
+    await user.type(screen.getByLabelText('Add a Size'), 'm{Enter}');
+    expect(screen.getByText(/This makes 1 variant/)).toBeTruthy();
+    // And it says where the swallowed entry went rather than just eating it.
+    expect(screen.getByText(/“m” is already picked/)).toBeTruthy();
+  });
+
+  it('offers a vocabulary for every axis kind, not just colour', async () => {
+    const user = userEvent.setup();
+    when('/api/shop/admin/products/p_1', { product: { ...PRODUCT, variants: [] } });
+    when('/api/shop/admin/products/p_1/variants', { variant: VARIANT });
+    mount(<ShopProducts />, '/shop/products?id=p_1&tab=variants');
+
+    await user.click(await screen.findByRole('button', { name: /set up options/i }));
+
+    /*
+     * THE HALF-FEATURE THIS CLOSES. Presets were colour-only, so setting up
+     * sizes or spool weights meant typing every value — which is where the
+     * near-miss spellings (`1kg` / `1 kg` / `1KG`) come from.
+     */
+    for (const [axis, value] of [
+      ['Weight', '750 g'],
+      ['Material', 'PETG'],
+      ['Finish', 'Matte'],
+      ['Diameter', '1.75 mm'],
+    ] as const) {
+      await user.click(screen.getByRole('button', { name: axis }));
+      expect(screen.getByRole('checkbox', { name: value })).toBeTruthy();
+    }
+
+    // An axis nobody has a list for still works — it just gets the box. The
+    // first axis is the Colour one, so renaming it must take the colour
+    // vocabulary AND the hex controls with it.
+    const name = screen.getAllByLabelText('What varies')[0];
+    await user.clear(name);
+    await user.type(name, 'Nozzle');
+    expect(screen.getByLabelText('Add a Nozzle')).toBeTruthy();
+    expect(screen.queryByRole('checkbox', { name: 'Natural' })).toBeNull();
+    expect(screen.queryByLabelText('Custom colour code')).toBeNull();
   });
 });
 
 describe('a variant carries its own picture', () => {
   it('offers to add one when the variant has none', async () => {
     when('/api/shop/admin/products/p_1', { product: { ...PRODUCT, variants: [VARIANT] } });
-    mount(<ShopProducts />, '/shop/products?id=p_1');
+    mount(<ShopProducts />, '/shop/products?id=p_1&tab=variants');
 
-    // The option's own name is in the label, so a rail of eight colours does
-    // not present eight controls called "Add an image".
-    expect(await screen.findByRole('button', { name: /Add an image/i })).toBeTruthy();
+    // Its own deliberate act, beside the two audited ones — not a field
+    // hiding between them, because a photo needs no reason.
+    expect(await screen.findByRole('button', { name: 'Add photo' })).toBeTruthy();
   });
 
   it('shows the picture, and offers to replace it, once one is set', async () => {
+    const user = userEvent.setup();
     when('/api/shop/admin/products/p_1', {
       product: { ...PRODUCT, variants: [{ ...VARIANT, imageId: 'img_blue' }] },
     });
-    mount(<ShopProducts />, '/shop/products?id=p_1');
+    mount(<ShopProducts />, '/shop/products?id=p_1&tab=variants');
 
-    const button = await screen.findByRole('button', { name: /Replace this image/i });
-    const img = button.querySelector('img');
+    await user.click(await screen.findByRole('button', { name: 'Change photo' }));
+    expect(await screen.findByRole('button', { name: 'Replace photo' })).toBeTruthy();
+    // Removing is offered too — and only once a photo exists to remove.
+    expect(screen.getByRole('button', { name: 'Remove photo' })).toBeTruthy();
+
+    const img = document.querySelector('.vthumb--lg img');
     /*
      * THE ADMIN URL, not the public one. This screen shows drafts, and
      * `/api/public/images/:id` serves only what an ACTIVE product references —
      * so a draft's swatches would all be 404s against the public route.
      */
     expect(img?.getAttribute('src')).toContain('/api/images/img_blue');
+  });
+
+  it('draws the colour code as the stand-in until a photo exists', async () => {
+    when('/api/shop/admin/products/p_1', {
+      product: { ...PRODUCT, variants: [{ ...VARIANT, colorHex: '#1565c0' }] },
+    });
+    mount(<ShopProducts />, '/shop/products?id=p_1&tab=variants');
+
+    await screen.findByRole('button', { name: 'Adjust price' });
+    // Both the rail thumb and the card thumb paint the swatch — a colour is
+    // exactly the thing a solid block can stand in for.
+    const fills = document.querySelectorAll('.vthumb__fill');
+    expect(fills.length).toBeGreaterThanOrEqual(2);
+    expect((fills[0] as HTMLElement).style.backgroundColor).toBe('rgb(21, 101, 192)');
   });
 });
 

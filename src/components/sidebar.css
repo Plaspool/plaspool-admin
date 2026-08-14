@@ -352,6 +352,66 @@
   text-transform: uppercase;
 }
 
+/*
+ * The chevron that says a section opens rather than ends.
+ *
+ * DIMMED WITH `color`, NOT `opacity`, which is the only fiddly part: it also
+ * carries `sidebar__label`, and that class owns opacity to fade the words in
+ * and out as the rail peeks. A second opacity here would be overwritten by the
+ * peek — or worse, would win and leave a chevron visible in a 56px rail with
+ * nothing beside it. Lucide strokes with `currentColor`, so colour is free.
+ */
+.sidebar__chevron {
+  margin-left: auto;
+  flex: none;
+  color: var(--ink-4);
+}
+.sidebar__item.is-active .sidebar__chevron {
+  color: inherit;
+}
+
+/*
+ * The same chevron as a control, on the one row where tapping the name is the
+ * wrong thing — see the comment on `sidebar__enter` in `Sidebar.tsx`. The row
+ * becomes a flex pair to hold it, and the link keeps every pixel the button
+ * does not take.
+ */
+.sidebar__row {
+  display: flex;
+  align-items: center;
+}
+.sidebar__row > * {
+  flex: 1;
+  min-width: 0;
+}
+.sidebar__row > .sidebar__enter {
+  flex: none;
+}
+.sidebar__enter {
+  /* NOT RENDERED IN A 56px RAIL. Two controls cannot share that width, and the
+     link already re-enters on click, so nothing is lost by leaving this to the
+     widths where there is room for it. */
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--ctl-h-lg);
+  height: var(--ctl-h-lg);
+  border: 0;
+  border-radius: var(--radius-m);
+  background: none;
+  color: var(--ink-4);
+  cursor: pointer;
+}
+.sidebar[data-expanded='true'] .sidebar__enter,
+.sidebar[data-mode='rail']:hover .sidebar__enter,
+.sidebar[data-mode='rail']:focus-within .sidebar__enter {
+  display: flex;
+}
+.sidebar__enter:hover {
+  background: var(--paper-sunken);
+  color: var(--ink);
+}
+
 /* A page inside a section is one level in, and says so by indent rather than
    by a smaller font — the rail is already at its smallest readable size. */
 .sidebar__item--page {

@@ -250,12 +250,35 @@
   border-bottom: 1px solid var(--rule);
   flex-wrap: wrap;
 }
+/*
+ * A HEADING, NOT A FIELD LABEL.
+ *
+ * This was 11px uppercase in `--ink-3` with 0.06em tracking — the treatment
+ * `.stat__label` uses, and correct there, where the word sits directly above a
+ * number three sizes larger and only has to caption it. A panel title has no
+ * such anchor: it is the first thing on a band of the page and the only thing
+ * that says what the fifty rows under it are. At 11px, spaced out, and two
+ * steps down the ink ramp, it read as decoration above the content rather than
+ * as the name of it — on a phone, where the panel fills the screen and the
+ * title is all the context there is, that is the whole navigation gone.
+ */
 .panel__title {
-  font-size: var(--step--1);
+  font-size: var(--step-0);
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-3);
+  letter-spacing: -0.005em;
+  color: var(--ink);
+}
+/* Title over a line of explanation, for panels whose contents need a
+   qualifier — a threshold, a window, a unit — to be read correctly. */
+.panel__heading {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.panel__sub {
+  font-size: var(--step--1);
+  color: var(--ink-4);
+  line-height: 1.4;
 }
 .panel__body {
   padding: var(--s4);
@@ -333,6 +356,124 @@
   padding: var(--s6) var(--s4);
   text-align: center;
   color: var(--ink-4);
+}
+/* A column sized to the control in it rather than to the text — the
+   ship-quantity input, which has no reason to be as wide as an item title. */
+.dtable__fit {
+  width: 7rem;
+}
+
+/* ------------------------------------------------- the table, on a phone */
+
+/*
+ * UNDER 640px THE TABLE STOPS BEING A TABLE AND BECOMES A LIST.
+ *
+ * A grid needs one column per field and a phone has room for about one. The
+ * old answer was the scroller above — three columns squeezed into 375px, which
+ * does not overflow so much as CRUSH: "Wood-Fill PLA Filament 1.75 mm — 0.75
+ * kg" broken one or two words to a line, six lines tall, with a SKU and a
+ * number stranded at the top right of it. Four such rows fill a screen, and
+ * the column that matters most is the one that got the least room.
+ *
+ * So each row becomes a card: the FIRST cell is the row's name and takes the
+ * full width, and every cell after it is a labelled fact underneath. Nothing
+ * scrolls sideways, the titles read as titles, and the eye goes down the list
+ * the way it wants to on a phone.
+ *
+ * WHAT THIS COSTS, said plainly: `display: block` on table parts drops the
+ * table role in every engine, so on a phone this is a list of groups rather
+ * than a grid a screen reader can navigate by column. That is the honest
+ * trade — a three-column grid nobody can read by column at this width either.
+ * The labels are kept as real cell text via `data-label`, so the pairing
+ * survives in the accessibility tree rather than living only in a header row
+ * that is now off screen.
+ */
+@media (max-width: 640px) {
+  /* Nothing left to scroll — and left as `auto` the container would still
+     claim the horizontal swipe on some engines. */
+  .dtable__scroll {
+    overflow-x: visible;
+  }
+
+  .dtable,
+  .dtable tbody,
+  .dtable tr,
+  .dtable td {
+    display: block;
+    width: auto;
+  }
+
+  /* The header row's words move into the cells themselves (`data-label`), so
+     the row itself has no job left. */
+  .dtable thead {
+    display: none;
+  }
+
+  .dtable tr {
+    padding: var(--s4);
+    border-bottom: 1px solid var(--rule);
+  }
+  .dtable tr:last-child {
+    border-bottom: 0;
+  }
+
+  .dtable td {
+    padding: 0;
+    border: 0;
+  }
+  /* A width that means "narrow column" means "cramped line" in a stack. */
+  .dtable td.dtable__fit {
+    width: auto;
+  }
+
+  /* The name of the row, at reading size and full width — the whole point of
+     the exercise. */
+  .dtable td:first-child {
+    font-size: var(--step-0);
+    line-height: 1.35;
+    color: var(--ink);
+    margin-bottom: var(--s2);
+  }
+
+  /*
+   * Every later cell is a label/value line. `min-width` on the label rather
+   * than a flex row with `space-between`: several of these cells carry a
+   * `__sub` under the value, and space-between would fling that second line
+   * out to the right margin as a third column of its own.
+   */
+  .dtable td + td {
+    padding-top: var(--s1);
+    /* Beats `.dtable__num`, whose right edge means nothing once the row is a
+       stack rather than a column. */
+    text-align: left;
+  }
+  /* `[data-label]`, so a cell that was never given one gets no label rather
+     than an empty 9ch indent in front of its value. */
+  .dtable td + td[data-label]::before {
+    content: attr(data-label);
+    display: inline-block;
+    min-width: 9ch;
+    padding-right: var(--s2);
+    font-size: var(--step--2);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-4);
+  }
+  /* Second lines line up under the value they belong to, not under its
+     label. */
+  .dtable td + td[data-label] .dtable__sub {
+    margin-left: calc(9ch + var(--s2));
+  }
+
+  /* An empty state is one cell spanning the row, so the first-child rule above
+     would style "No orders have been placed." as a row title. */
+  .dtable td.dtable__empty {
+    font-size: var(--step--1);
+    color: var(--ink-4);
+    margin-bottom: 0;
+    padding: var(--s5) 0;
+  }
 }
 
 /* -------------------------------------------------------------- status */
@@ -813,11 +954,24 @@
   min-width: 6rem;
   max-width: 14rem;
 }
+/*
+ * A chosen option value, shown EXACTLY as it will be stored.
+ *
+ * `.chip` uppercases, which is right for a status word the app owns and wrong
+ * for user data: `750 g` became `750 G` (which is gauss), `One size` shouted,
+ * and — the reason this matters beyond typography — a case-twin that the
+ * builder adopted into the product's existing spelling looked identical to the
+ * one somebody typed, so the adoption was invisible in the one place it should
+ * be visible. Same size and weight as the parent, none of the shouting.
+ */
 .chip--value {
   display: inline-flex;
   align-items: center;
   gap: var(--s1);
   padding-right: var(--s1);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: var(--step--1);
 }
 .chip__x {
   display: inline-grid;
@@ -981,20 +1135,23 @@
   width: 8rem;
   font-variant-numeric: tabular-nums;
 }
-/* The reason takes the rest of the row: it is the field most likely to hold a
-   sentence, and the one a cramped box makes people abbreviate into "fix". */
+/* The WHY, stacked: its question sits ABOVE the dropdown as a visible label,
+   because a bare Select beside a number box is the one control whose meaning
+   is not guessable from its shape — and the old layout explained it in a hint
+   below the confirm button, i.e. after the decision instead of before it. The
+   free-text arm appears underneath at full width: it is the field most likely
+   to hold a sentence, and a cramped box makes people abbreviate into "fix". */
 .vreason {
-  display: flex;
-  flex: 1 1 14rem;
+  display: grid;
   gap: var(--s2);
   min-width: 0;
 }
 .vreason .ui-select {
-  flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
 }
 .vreason .input {
-  flex: 2 1 10rem;
+  width: 100%;
   min-width: 0;
 }
 
@@ -1010,6 +1167,377 @@
 .input--sm {
   height: var(--ctl-h);
   font-size: var(--step--1);
+}
+
+/* ═══════════════════════════════════════════════ the product form, tabbed */
+
+/*
+ * The form view starts where the eye starts. The list keeps the masthead's
+ * breathing room; a detail page spends that height on the subject instead —
+ * "move the content upwards" was the literal request, and this is it.
+ */
+.shopscr--form {
+  padding-top: var(--s4);
+}
+.shopscr--form .shopscr__body {
+  margin-top: 0;
+}
+
+/* One bar: exit, state, product-wide acts. Wraps at phone widths — the Save
+   button is allowed onto its own line, never off the screen. */
+.prodbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  padding-bottom: var(--s3);
+  border-bottom: 1px solid var(--rule);
+}
+.prodbar__note {
+  font-size: var(--step--1);
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+.prodbar__grow {
+  flex: 1;
+}
+.prodbar__ops {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+/* Amber, not red: unsaved is a state to notice, not an error to fix. */
+.prodbar__dirty {
+  font-size: var(--step--2);
+  font-weight: 600;
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-radius: var(--radius-full);
+  padding: 0.2rem 0.6rem;
+  white-space: nowrap;
+}
+
+.prodtabs {
+  margin-top: var(--s3);
+}
+/* The tab strip's own classes style Links; the disabled arm (variants of a
+   product that does not exist yet) is a span that must read as present but
+   not yet openable — greyed, not hidden, so the section is discoverable. */
+.shoptabs__tab.is-disabled {
+  color: var(--ink-5, var(--ink-4));
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.prodbody {
+  margin-top: var(--s4);
+}
+
+/* Existing tags offered while typing — a suggestion is one click, and the
+   count says "this is the shop's spelling, 7 products already use it". */
+.shoptags__suggest {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+.shoptags__offer {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px dashed var(--rule-strong);
+  border-radius: var(--radius-full);
+  background: none;
+  color: var(--ink-2);
+  font-size: var(--step--2);
+  padding: 0.15rem 0.6rem;
+  cursor: pointer;
+  transition:
+    border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.shoptags__offer:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.shoptags__count {
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ══════════════════════════════════════════ colours: swatches and presets */
+
+.vswatch {
+  display: inline-block;
+  flex: none;
+  width: 0.85em;
+  height: 0.85em;
+  border-radius: var(--radius-full);
+  border: 1px solid color-mix(in srgb, var(--ink) 25%, transparent);
+  vertical-align: baseline;
+}
+.vswatch--md {
+  width: 1em;
+  height: 1em;
+  margin-right: var(--s1);
+}
+/* A solid colour standing in for a missing photograph, filling its thumb. */
+.vthumb__fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.cpick {
+  display: grid;
+  gap: var(--s3);
+}
+/* Colour presets: a grid, because every row carries a swatch and a word of
+   roughly the same width, and a ragged edge under fourteen of them reads as
+   a mistake. */
+.cpick__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
+  gap: var(--s1);
+}
+/* Everything else: chips that size to their own text. `XL` and
+   `Glow-in-the-dark` in equal columns would give the short ones a hectare of
+   empty box each and still clip the long one. */
+.cpick__grid--flow {
+  display: flex;
+  flex-wrap: wrap;
+}
+/* The tick a swatchless preset shows instead of one; it appears only when
+   checked, so the label reflows rather than reserving a gap for it. */
+.cpick__tick {
+  color: var(--accent);
+}
+/* A preset is a CHECKBOX wearing a swatch: one click names the value and
+   records its code together, which is the whole point of offering presets. */
+.cpick__item {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+  font-size: var(--step--1);
+  cursor: pointer;
+  user-select: none;
+  transition:
+    border-color var(--dur-1) var(--ease),
+    background var(--dur-1) var(--ease);
+}
+.cpick__item:hover {
+  border-color: var(--rule-strong);
+}
+.cpick__item.is-checked {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.cpick__item:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.cpick__swatch {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: var(--radius-full);
+  border: 1px solid color-mix(in srgb, var(--ink) 25%, transparent);
+  color: #fff;
+}
+.cpick__swatch .ui-ic {
+  filter: drop-shadow(0 0 1px rgb(0 0 0 / 0.8));
+}
+.cpick__custom {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+.cpick__name {
+  flex: 1 1 9rem;
+  min-width: 8rem;
+}
+/* The browser's own colour well, sized to sit in a control row. */
+.cpick__well {
+  width: var(--ctl-h);
+  height: var(--ctl-h);
+  padding: 2px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+  cursor: pointer;
+}
+.cpick__hex {
+  width: 6.5rem;
+  font-family: var(--font-mono);
+}
+
+/* ═══════════════════════════════ the variant card: view, then one change */
+
+.vdetail__id {
+  min-width: 0;
+}
+.vdetail__facts {
+  margin: var(--s1) 0 0;
+  font-size: var(--step--1);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.vdetail__facts strong {
+  color: var(--ink);
+  font-size: var(--step-0);
+}
+.vdetail__title {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  min-width: 0;
+}
+
+.vactions {
+  display: flex;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+/* One change per screenful: the number, the labelled why, the pair of
+   buttons. Sunken, so "you are now changing something" reads at a glance. */
+.vmode {
+  display: grid;
+  gap: var(--s3);
+  padding: var(--s3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-sunken);
+}
+.vmode__field {
+  display: grid;
+  gap: var(--s2);
+}
+.vmode__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.vcolour {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+/*
+ * A number with its two directions either side of it.
+ *
+ * The three controls are ONE object: a single border around the group, the
+ * field's own border removed, so it reads as a spinner rather than as a box
+ * that happens to have buttons near it. Heights come from `--ctl-h`, the small
+ * control height the rest of these rows use.
+ */
+.stepper {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+  overflow: hidden;
+  width: fit-content;
+  transition:
+    border-color var(--dur-1) var(--ease),
+    box-shadow var(--dur-1) var(--ease);
+}
+.stepper:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.stepper__btn {
+  display: grid;
+  place-items: center;
+  width: var(--ctl-h);
+  flex: none;
+  border: 0;
+  background: var(--paper-sunken);
+  color: var(--ink-3);
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.stepper__btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+.stepper__btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+/* The field keeps `.input`'s typography and loses its chrome to the group. */
+.stepper__field.input {
+  width: 7rem;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.stepper__field.input:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+/*
+ * Before → after, with the after emphasised.
+ *
+ * The old value is quiet and small; the new one is the largest thing in the
+ * form, because "what will it be" is the question in front of somebody whose
+ * finger is over the button. Colour is emphasis on top of a word that says
+ * the same thing — never the only signal.
+ */
+.vpreview {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  font-variant-numeric: tabular-nums;
+}
+.vpreview__was {
+  font-size: var(--step--1);
+  color: var(--ink-4);
+}
+.vpreview__arrow {
+  color: var(--ink-4);
+}
+.vpreview__now {
+  font-family: var(--font-display);
+  font-size: var(--step-2);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+/* The same two tokens the history page colours these events with, so a rise
+   means the same thing on both screens. */
+.vpreview__now--good {
+  color: var(--accent-hover);
+}
+.vpreview__now--bad {
+  color: var(--danger);
+}
+.vpreview__note {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+}
+
+/* The exit from a scoped history, above the title it scopes. */
+.shopscr__back {
+  margin-bottom: var(--s2);
 }
 
 /* ══════════════════════════════════════════════════════════════ the history */

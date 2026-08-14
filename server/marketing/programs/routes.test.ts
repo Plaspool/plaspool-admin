@@ -218,9 +218,16 @@ describe('GET /programs', () => {
     await ctx.db.execute(sql`
       INSERT INTO marketing_return_requests
         (id, program_id, customer_email, qty_declared, qty_accepted, qty_rejected,
-         points_per_unit_snapshot, points_awarded, source, status, created_at, updated_at)
+         points_per_unit_snapshot, points_awarded, source, status, service_area_id,
+         created_at, updated_at)
       VALUES ('ret_agg_done', ${program.id}, 'c@example.test', 6, 5, 1,
-              7, 35, 'admin', 'awarded', ${now}, ${now})`);
+              7, 35, 'admin', 'awarded',
+              /* ANY SERVED AREA. Migration 0012 refuses an awarded return with
+               * none, and this fixture is about a program's aggregates rather
+               * than about geography — so it asks the seed for a board rather
+               * than naming one, which would put a real place in a test file. */
+              (SELECT id FROM marketing_service_areas WHERE active ORDER BY id LIMIT 1),
+              ${now}, ${now})`);
     await ctx.db.execute(sql`
       INSERT INTO marketing_ledger
         (id, customer_email, program_id, kind, delta, balance_after, reason,

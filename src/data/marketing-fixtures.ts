@@ -26,6 +26,7 @@
  */
 import {
   labelsOf,
+  type AreasView,
   type Banner,
   type CustomerRow,
   type CustomerSummary,
@@ -43,6 +44,7 @@ import {
   type ReturnRequest,
   type ReturnStatus,
   type ReturnsPage,
+  type ServiceArea,
 } from './api-marketing';
 
 const MINUTE = 60_000;
@@ -192,10 +194,24 @@ function row(
     qtyDeclared: 6,
     qtyAccepted: null,
     qtyRejected: null,
+    /** The absurd programme's rate, so a card's "worth" line is arithmetic over
+     *  fixture numbers rather than over the seeded preset's. */
+    pointsPerUnitSnapshot: 7,
     pointsAwarded: null,
     pickupScheduledAt: null,
     pickupAddress: '12 Adeola Odeku Street, Lagos',
     allowedActions: ALLOWED_ACTIONS[status],
+    /**
+     * EVERY FIXTURE ROW IS ON A BOARD, because the ordinary case is: a return
+     * with no service area cannot be awarded, so an un-areaed row is the
+     * exception the out-of-area footer exists for and a test that wants one says
+     * so with `{ serviceArea: null }`.
+     *
+     * The name is invented, like the labels beside it — a fixture named after a
+     * district this business really serves could not tell code that reads the
+     * area off the row from code that hardcoded the place.
+     */
+    serviceArea: { id: 'area_cabbage_quarter', name: 'Cabbage Quarter' },
     createdAt: NOW - ageMs,
     updatedAt: NOW - ageMs,
     program: capsEmbedded,
@@ -282,6 +298,70 @@ export const returnsPage: ReturnsPage = {
 /** `?view=needs_action` — the queue's default. Requested + received only. */
 export const needsActionPage: ReturnsPage = {
   items: [requestedOld, requestedNew, receivedRow],
+  nextCursor: null,
+  counts: returnCounts,
+};
+
+/**
+ * The boards, and the returns that belong to none of them.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * EVERY PLACE NAME HERE IS INVENTED, exactly as the labels are absurd. The
+ * served set is a row-level flag an owner edits, so a fixture named after a
+ * district this business really serves would assert against data rather than
+ * behaviour — and would put a real place name in a source file, which the
+ * section's grep guard forbids.
+ *
+ * `cabbage` is the busiest board and `turnip` is idle, because the two
+ * interesting switcher states are "has work" and "listed but not switchable".
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+const area = (over: Partial<ServiceArea> & { id: string; name: string }): ServiceArea => ({
+  key: over.id.replace(/^area_/, '').replace(/_/g, '-'),
+  region: 'Farflung Province',
+  active: true,
+  seeded: true,
+  revision: 1,
+  needsAction: 0,
+  open: 0,
+  loadUnits: 0,
+  oldestAgeMs: null,
+  ...over,
+});
+
+export const cabbageArea = area({
+  id: 'area_cabbage_quarter',
+  name: 'Cabbage Quarter',
+  needsAction: 3,
+  open: 5,
+  loadUnits: 29,
+  oldestAgeMs: 100 * HOUR,
+});
+
+/** Listed, greyed and inert — hiding it would read as "we do not serve there". */
+export const turnipArea = area({ id: 'area_turnip_hill', name: 'Turnip Hill' });
+
+/** Switched off, so it is on the Areas screen and NOT in the switcher. */
+export const marshArea = area({ id: 'area_distant_marsh', name: 'Distant Marsh', active: false });
+
+export const areasView: AreasView = {
+  areas: [cabbageArea, turnipArea],
+  outOfArea: { needsAction: 0, open: 0 },
+};
+
+/** Every region loaded, one switched on — what the Areas screen draws. */
+export const allAreasView: AreasView = {
+  areas: [
+    cabbageArea,
+    turnipArea,
+    { ...marshArea, region: 'Nearby Province' },
+  ],
+  outOfArea: { needsAction: 1, open: 2 },
+};
+
+/** One district's board: the four open stages, no closed rows. */
+export const boardPage: ReturnsPage = {
+  items: [requestedOld, requestedNew, scheduledRow, collectedRow, receivedRow],
   nextCursor: null,
   counts: returnCounts,
 };

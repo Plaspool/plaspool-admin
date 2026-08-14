@@ -149,6 +149,13 @@ const CreateVariantBody = z
     backorderable: z.boolean().optional(),
     /** The photograph of this colour (migration 0009). */
     imageId: str().min(1).max(200).nullable().optional(),
+    /**
+     * The colour code of this option (migration 0010). Case-tolerant here —
+     * `#AB12CD` is a colour somebody copied from a design tool, not a mistake —
+     * and lowercased in the repository, because the column's CHECK is
+     * lowercase-only.
+     */
+    colorHex: str().regex(/^#[0-9a-fA-F]{6}$/, 'hex').nullable().optional(),
   })
   .strict();
 
@@ -161,6 +168,8 @@ const UpdateVariantBody = z
     status: z.enum(['active', 'discontinued']),
     /** `null` clears the colour photograph; a string sets it. */
     imageId: str().min(1).max(200).nullable(),
+    /** `null` clears the colour code; shape-checked as on create. */
+    colorHex: str().regex(/^#[0-9a-fA-F]{6}$/, 'hex').nullable(),
   })
   .partial()
   .strict();
