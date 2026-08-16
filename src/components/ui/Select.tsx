@@ -1,3 +1,4 @@
+import { useCallback, useState } from 'react';
 import * as RS from '@radix-ui/react-select';
 import { Check, ChevronDown } from 'lucide-react';
 import './ui.css';
@@ -36,15 +37,36 @@ export function Select<T extends string>({
   placeholder?: string;
 }) {
   const current = options.find((o) => o.value === value);
+
+  /*
+   * Where the popup is portalled to.
+   *
+   * `document.body` — Radix's default — is wrong inside a `<dialog>` opened
+   * with `showModal()`. That dialog sits in the browser's TOP LAYER, so a menu
+   * left in the body renders beneath its backdrop AND is inert: the Post
+   * details panel's Category and Reading layout pickers opened onto nothing
+   * clickable, and neither field could be changed at all. Portalling into the
+   * dialog itself puts the menu in the top layer with its trigger. Outside a
+   * dialog `container` stays null and Radix falls back to the body as before.
+   */
+  const [container, setContainer] = useState<HTMLElement | null>(null);
+  const anchor = useCallback((el: HTMLButtonElement | null) => {
+    setContainer(el?.closest('dialog') ?? null);
+  }, []);
+
   return (
     <RS.Root value={value} onValueChange={(v) => onChange(v as T)}>
-      <RS.Trigger className={`ui-select ui-select--${size}`} aria-label={label}>
+      <RS.Trigger
+        ref={anchor}
+        className={`ui-select ui-select--${size}`}
+        aria-label={label}
+      >
         <RS.Value placeholder={placeholder}>{current?.label}</RS.Value>
         <RS.Icon asChild>
           <ChevronDown className="ui-ic" aria-hidden="true" />
         </RS.Icon>
       </RS.Trigger>
-      <RS.Portal>
+      <RS.Portal container={container}>
         <RS.Content className="ui-menu" position="popper" sideOffset={6}>
           <RS.Viewport>
             {options.map((o) => (
