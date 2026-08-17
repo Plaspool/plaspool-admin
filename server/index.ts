@@ -24,6 +24,7 @@ import { portMailer } from './shop/orders/mailer';
 import { registerOrdersDefaults } from './shop/orders/ports';
 import { resendMailer } from './mail/resend';
 import { SHOP_PREFIX, shopApp } from './shop/app';
+import { createReviewPublicRoutes } from './shop/reviews/public';
 import {
   createPaymentRoutes,
   webhookRoutes as paymentsWebhook,
@@ -335,6 +336,17 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * above, which makes the same argument from the other direction).
    */
   app.route(API_PREFIX, createMarketingPublicRoutes());
+
+  /*
+   * THE PUBLIC REVIEW READS — the approved reviews and the rating aggregate a
+   * product page renders. Beside the two public routers above and ABOVE
+   * `sessionMiddleware` for their shared reason: every response here carries
+   * `Cache-Control: public`, and mounted here it is cookieless by
+   * construction, not by review. The one review mutation — the customer
+   * submission — is NOT in it; that lives in the shop app below, under
+   * `originGuard` and two rate budgets. See `server/shop/reviews/public.ts`.
+   */
+  app.route(API_PREFIX, createReviewPublicRoutes());
 
   app.use(`${API_PREFIX}/*`, originGuard(deps.origins));
 
