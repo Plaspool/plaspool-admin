@@ -23,7 +23,7 @@ import { CART_COOKIE } from './identity/cookies';
 import { seedSellable } from '../catalog/test/catalog-harness';
 import { shopApp } from '../app';
 import { cartShopRoutes } from './routes';
-import { DEFAULT_STORE_CURRENCY } from './checkout/shipping';
+import { SHOP_CURRENCY } from '../currency';
 import type { HttpClient } from '../../test/http';
 import type { TestCtx } from './test/harness';
 
@@ -108,7 +108,7 @@ describe('the storefront works through the real application', () => {
       title: 'Navy Tee',
       onHand: 5,
       amount: 1999,
-      currency: DEFAULT_STORE_CURRENCY,
+      currency: SHOP_CURRENCY,
     });
 
     const created = await client.post('/api/shop/cart');
@@ -128,7 +128,7 @@ describe('the storefront works through the real application', () => {
     // — a title and a price no fake supplied.
     expect(view.lines[0].available).toBe(true);
     expect(view.lines[0].title).toBe('Navy Tee');
-    expect(view.lines[0].unit).toEqual({ amount: 1999, currency: DEFAULT_STORE_CURRENCY });
+    expect(view.lines[0].unit).toEqual({ amount: 1999, currency: SHOP_CURRENCY });
     expect(view.preview?.grandTotal.amount).toBe(3998);
 
     expect((await client.post('/api/shop/checkout/start')).status).toBe(200);

@@ -12,6 +12,7 @@ import { routes as reviews } from './reviews/routes';
 import { catalogPort } from './catalog/port';
 import { orders } from './orders/routes';
 import { cartShopRoutes } from './cart/routes';
+import { SHOP_CURRENCY } from './currency';
 import { shopAdminRoutes } from './admin/routes';
 
 /**
@@ -142,7 +143,33 @@ export function shopApp(): Hono<AppEnv> {
    * Three lines rather than the marker's two, because the dependency is named
    * here on purpose.
    */
-  shop.route('/', cartShopRoutes({ catalog: catalogPort }));
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * `storeCurrency: 'NGN'`, AND WITHOUT IT THE CART HAS NO TOTALS AT ALL.
+   *
+   * `DEFAULT_STORE_CURRENCY` is `'GBP'` — scaffolding from the cart subsystem's
+   * own spec, which was written for a UK shop. This catalogue is priced in NGN
+   * (`shop_prices.currency`), so a cart taking the default held NGN lines in a
+   * GBP cart and the totals engine refused the mix: `preview` came back **null**
+   * on every read, meaning no subtotal, no shipping, no total. Measured in
+   * production before this line existed.
+   *
+   * `money()` refuses to add two currencies, which is the right behaviour and is
+   * exactly what surfaced this — the failure was a null preview rather than a
+   * silently converted number, which is the direction to be wrong in.
+   *
+   * ⚠️  THE SHIPPING ZONES ARE STILL THE UK DEFAULTS, and they are NOT fixed
+   *     here. `DEFAULT_SHIPPING_ZONES` carries United Kingdom / Europe / Rest of
+   *     world with amounts in pence (`399`, `799`) and a 20% VAT line. Under NGN
+   *     those read as ₦3.99 and ₦7.99, which is nonsense — but shipping is only
+   *     consulted at CHECKOUT, and the cart's subtotal computes without it. So
+   *     the cart works and checkout does not, which is the honest state: real
+   *     delivery rates and whether this shop collects Nigerian VAT are business
+   *     facts, not defaults to invent. Tracked for the checkout bundle
+   *     (Plaspool/plaspool-storefront#22).
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  shop.route('/', cartShopRoutes({ catalog: catalogPort, storeCurrency: SHOP_CURRENCY }));
 
   /*
    * THE DASHBOARD'S READ SURFACE — `/admin/stats`, `/admin/customers`,

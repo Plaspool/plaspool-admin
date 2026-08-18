@@ -6,6 +6,7 @@ import { createVariant } from '../variants';
 import { setPrice } from '../prices';
 import { money } from '../../../../shared/commerce/money';
 import type { Product, Variant } from '../types';
+import { SHOP_CURRENCY } from '../../currency';
 
 /**
  * Seeding and instrumentation shared by Catalog's suites.
@@ -65,7 +66,7 @@ export async function seedVariant(
     actor,
   );
   if (o.amount !== null) {
-    await setPrice(db, variant.id, money(o.amount ?? 1999, o.currency ?? 'GBP'));
+    await setPrice(db, variant.id, money(o.amount ?? 1999, o.currency ?? SHOP_CURRENCY));
   }
   return variant;
 }
