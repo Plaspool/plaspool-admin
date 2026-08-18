@@ -250,3 +250,93 @@ export async function productAggregate(db: Db, productSlug: string): Promise<Pro
     sentiment: { positive: a.positive, neutral: a.neutral, negative: a.negative },
   };
 }
+
+/** An aggregate with nothing in it. The shape a product with no approved
+ *  reviews answers with — never an omission, so no caller has to branch on
+ *  "missing" before it can read a count. */
+export function emptyAggregate(productSlug: string): ProductAggregate {
+  return {
+    productSlug,
+    count: 0,
+    averageRating: 0,
+    distribution: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
+    sentiment: { positive: 0, neutral: 0, negative: 0 },
+  };
+}
+
+/**
+ * The same aggregate, for MANY products in ONE statement.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * WHY THIS EXISTS: A LISTING NEEDS A RATING FOR EVERY CARD ON IT.
+ *
+ * `productAggregate` answers for one slug, so a sixteen-card grid needed
+ * sixteen requests. The consumer is Next.js on Cloudflare Workers, where a
+ * request has a 50-subrequest cap on the free plan and a CPU budget that
+ * plaspool-storefront#9 (Error 1102) was only just brought inside — so
+ * per-card aggregation was not slow, it was a grid-size ceiling.
+ *
+ * The cost of not having it was visible: `SHOW_FIXTURE_REVIEWS = false` in the
+ * storefront switches OFF the rating line on `ProductCard` and the "Best rated"
+ * sort, because the only alternative was putting invented numbers in front of
+ * customers. This is what turns them back on with real ones.
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * EVERY REQUESTED SLUG COMES BACK, including the ones with no approved reviews.
+ * A `GROUP BY` only produces rows for slugs that HAVE reviews, so the zero
+ * aggregates are filled in here rather than left to the caller — otherwise every
+ * consumer writes the same "missing means empty" branch, and the one that
+ * forgets renders a blank where a card should say "no reviews yet".
+ *
+ * APPROVED ONLY, matching `productAggregate` and the public list. The three must
+ * agree or a card says "12 reviews" over a page showing nine.
+ */
+export async function productAggregates(
+  db: Db,
+  productSlugs: readonly string[],
+): Promise<Map<string, ProductAggregate>> {
+  const out = new Map<string, ProductAggregate>();
+  /* Deduplicated before the query rather than after: a caller repeating a slug
+     should cost one row, not two identical ones to reconcile. */
+  const wanted = [...new Set(productSlugs)];
+  for (const slug of wanted) out.set(slug, emptyAggregate(slug));
+  // No slugs means no statement. `= ANY('{}')` is valid but a pointless round trip.
+  if (wanted.length === 0) return out;
+
+  const rows = await db
+    .select({
+      productSlug: shopReviews.productSlug,
+      count: sql<number>`count(*)::int`,
+      averageRating: sql<number>`coalesce(round(avg(${shopReviews.rating}) * 100)::int, 0)`,
+      r1: sql<number>`count(*) filter (where ${shopReviews.rating} = 1)::int`,
+      r2: sql<number>`count(*) filter (where ${shopReviews.rating} = 2)::int`,
+      r3: sql<number>`count(*) filter (where ${shopReviews.rating} = 3)::int`,
+      r4: sql<number>`count(*) filter (where ${shopReviews.rating} = 4)::int`,
+      r5: sql<number>`count(*) filter (where ${shopReviews.rating} = 5)::int`,
+      positive: sql<number>`count(*) filter (where ${shopReviews.sentimentLabel} = 'positive')::int`,
+      neutral: sql<number>`count(*) filter (where ${shopReviews.sentimentLabel} = 'neutral')::int`,
+      negative: sql<number>`count(*) filter (where ${shopReviews.sentimentLabel} = 'negative')::int`,
+    })
+    .from(shopReviews)
+    .where(
+      and(
+        /* `sql.param(...)::text[]` is the array-bind idiom this codebase uses
+           (`committedImageIds`, `server/repo/backup.ts`). Passing the array
+           bare reaches the driver as text and is a 22P02. */
+        sql`${shopReviews.productSlug} = ANY(${sql.param(wanted)}::text[])`,
+        eq(shopReviews.status, 'approved' as const),
+      ),
+    )
+    .groupBy(shopReviews.productSlug);
+
+  for (const a of rows) {
+    out.set(a.productSlug, {
+      productSlug: a.productSlug,
+      count: a.count,
+      averageRating: a.averageRating,
+      distribution: { 1: a.r1, 2: a.r2, 3: a.r3, 4: a.r4, 5: a.r5 },
+      sentiment: { positive: a.positive, neutral: a.neutral, negative: a.negative },
+    });
+  }
+  return out;
+}
