@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { readQuery, str } from '../../middleware/errors';
+import { BadRequestError } from '../../repo/errors';
 import { currentDb } from '../../app-env';
-import { listReviewsPublic, productAggregate } from './repo';
+import { listReviewsPublic, productAggregate, productAggregates } from './repo';
 import type { AppEnv } from '../../app-env';
 
 /**
@@ -44,6 +45,32 @@ const AggregateQuery = z.object({
   product: str().regex(/^[a-z0-9-]+$/, 'a product slug').max(120),
 });
 
+/**
+ * How many slugs one bulk request may name.
+ *
+ * BOUNDED, AND EXCEEDING IT IS A 400 RATHER THAN A SILENT TRUNCATION. The
+ * singular route caps `limit` at 50 for the same reason: a caller that asks for
+ * more than the contract allows should be told, not quietly given a prefix it
+ * will then render as though it were the whole answer — a grid showing ratings
+ * on the first sixty cards and blanks after is worse than a refusal.
+ *
+ * Sixty is comfortably above any listing this store will render on one page,
+ * and low enough that the `= ANY` stays a cheap index scan.
+ */
+const MAX_BULK_PRODUCTS = 60;
+
+const AggregatesQuery = z.object({
+  /**
+   * Comma-separated slugs. A repeated slug costs one row — the repo
+   * deduplicates before it queries.
+   *
+   * The shape is checked AFTER splitting rather than with one regex over the
+   * whole string, so a 400 can name the malformed slug instead of rejecting a
+   * list of sixty for one bad character in the middle of it.
+   */
+  products: str().max(MAX_BULK_PRODUCTS * 121),
+});
+
 export function createReviewPublicRoutes(): Hono<AppEnv> {
   const routes = new Hono<AppEnv>();
 
@@ -74,6 +101,49 @@ export function createReviewPublicRoutes(): Hono<AppEnv> {
     c.header('cache-control', CACHE);
     c.header(CORS_HEADER, CORS_VALUE);
     return c.json({ aggregate });
+  });
+
+  /**
+   * The same numbers for MANY products, in one request and one statement.
+   *
+   * WHAT IT UNBLOCKS. A listing needs a rating for every card on it, and asking
+   * per card is a subrequest per card — on Cloudflare Workers that is a
+   * grid-size ceiling rather than a slow path. Until this existed, the
+   * storefront kept its card rating line and its "Best rated" sort switched off
+   * rather than show invented numbers.
+   *
+   * EVERY REQUESTED SLUG IS IN THE ANSWER, including ones with no approved
+   * reviews, which come back as a zero aggregate. An omission would make every
+   * caller write the same "missing means empty" branch.
+   *
+   * Same cache headers and same CORS as its singular sibling, and mounted in
+   * the same router — so the argument at the top of this file about
+   * `Cache-Control: public` being safe BY CONSTRUCTION covers this too:
+   * `sessionMiddleware` has not run, so no response here can vary by cookie.
+   */
+  routes.get('/public/reviews/aggregates', async (c) => {
+    const q = readQuery(c, AggregatesQuery);
+    const slugs = q.products
+      .split(',')
+      .map((slug) => slug.trim())
+      .filter((slug) => slug.length > 0);
+
+    if (slugs.length === 0) throw new BadRequestError('products');
+    if (slugs.length > MAX_BULK_PRODUCTS) throw new BadRequestError('products');
+    /* Named individually so the refusal points at the offending slug rather
+       than at the whole list. */
+    for (const slug of slugs) {
+      if (!/^[a-z0-9-]+$/.test(slug) || slug.length > 120) {
+        throw new BadRequestError('products');
+      }
+    }
+
+    const aggregates = await productAggregates(currentDb(c), slugs);
+    c.header('cache-control', CACHE);
+    c.header(CORS_HEADER, CORS_VALUE);
+    /* An object keyed by slug rather than an array: every consumer looks these
+       up by product, and an array would make each one build this map itself. */
+    return c.json({ aggregates: Object.fromEntries(aggregates) });
   });
 
   return routes;
