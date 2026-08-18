@@ -5,6 +5,7 @@ import {
   ProductPreconditionFailedError,
   StaleProductWriteError,
 } from './catalog/errors';
+import { ShopCategoryPreconditionFailedError } from './catalog/categories';
 import { DuplicateOptionsError, DuplicateSkuError } from './catalog/variants';
 import { routes as catalog } from './catalog/routes';
 import { routes as reviews } from './reviews/routes';
@@ -72,6 +73,21 @@ export function shopApp(): Hono<AppEnv> {
               product: err.product,
             }
           : /*
+             * A CATEGORY CONFLICT CARRIES THE CATEGORY, for the reason the
+             * product branch above carries the product: "someone else got there
+             * first, here is theirs" is only actionable if the client is told
+             * WHICH row won. Both the duplicate-name refusal and the
+             * still-in-use delete refusal arrive here, and `operation`
+             * distinguishes them — a management screen needs different words for
+             * "that name is taken" and "twelve products still use this".
+             */
+            err instanceof ShopCategoryPreconditionFailedError
+            ? {
+                error: 'precondition_failed',
+                operation: err.operation,
+                category: err.category,
+              }
+            : /*
              * A TAKEN SKU IS A CONFLICT WITH EXISTING STATE, not a malformed
              * field, and the difference is the whole of what a caller can do
              * next. It used to arrive as a bare 400 `detail: 'sku'` — the same

@@ -603,10 +603,56 @@ export interface ShopBuyer {
   lastOrderStatus: OrderStatus;
 }
 
+/**
+ * One row of the categories surface — the UNION of the managed
+ * `shop_categories` table and the values still sitting in
+ * `shop_products.category` as free text (migration 0200).
+ *
+ * `id` IS NULLABLE AND THE NULL IS LOAD-BEARING: it means "in use, not
+ * managed". Such a row can be ADOPTED — post its name to create the managed row
+ * — but cannot be renamed, recoloured or deleted, because there is nothing to
+ * change. `managed` is the same fact as a boolean, and `slug` is null for
+ * exactly the same rows, which is why the storefront never sees them: an
+ * unmanaged category has no URL to route to.
+ *
+ * The product-list filter reads `name` and `count` and nothing else, which is
+ * what made widening this shape safe when the route moved.
+ */
 export interface ShopCategory {
+  id: string | null;
+  slug: string | null;
   name: string;
+  /** The line under the heading on the storefront's category page. */
+  blurb: string;
+  /** The tile's spool tint, lowercase six-digit hex, or null for none chosen. */
+  accentHex: string | null;
+  /** Tile order, ascending. Ties break on folded name. */
+  position: number;
   /** Products carrying it — drafts, archived and trash included. */
   count: number;
+  managed: boolean;
+}
+
+export interface ShopCategoryDraft {
+  name: string;
+  blurb?: string;
+  accentHex?: string | null;
+  position?: number;
+}
+
+export interface ShopCategoryPatch {
+  name?: string;
+  /** Moving the URL, which a rename deliberately does NOT do. */
+  slug?: string;
+  blurb?: string;
+  accentHex?: string | null;
+  position?: number;
+}
+
+export interface ShopCategoryRenameResult {
+  category: ShopCategory;
+  /** Products the rename actually moved off the old name. */
+  movedProducts: number;
 }
 
 /** One row of the tag vocabulary — canonical spelling per case-fold group. */
@@ -881,6 +927,59 @@ export const shopApi = {
   async listCategories(signal?: AbortSignal): Promise<ShopCategory[]> {
     const res = await shopFetch<{ items: ShopCategory[] }>(`${BASE}/categories`, { signal });
     return res.items ?? [];
+  },
+
+  /**
+   * Promote a name to a managed row, allocating its slug server-side.
+   *
+   * 201, not 200. A name already in use as free text comes back with its
+   * products already counted — "adopt the category I have been typing" and
+   * "create a new one" are the same request.
+   */
+  async createCategory(draft: ShopCategoryDraft): Promise<ShopCategory> {
+    const res = await shopFetch<{ category: ShopCategory }>(`${BASE}/categories`, {
+      method: 'POST',
+      body: draft,
+      subject: 'Category',
+    });
+    return res.category;
+  },
+
+  /**
+   * Rename, recolour, reword or reorder.
+   *
+   * A RENAME REWRITES EVERY PRODUCT carrying the old value and reports how many
+   * moved — which is why this returns a result rather than just the row. It does
+   * NOT move the slug: a published URL is a promise, so `patch.slug` is the only
+   * thing that changes it, deliberately and separately.
+   *
+   * `accentHex: null` CLEARS the tint and is not the same as omitting the key,
+   * which leaves it alone.
+   */
+  async saveCategory(id: string, patch: ShopCategoryPatch): Promise<ShopCategoryRenameResult> {
+    return shopFetch<ShopCategoryRenameResult>(`${BASE}/categories/${seg(id)}`, {
+      method: 'PATCH',
+      id,
+      subject: 'Category',
+      body: patch,
+    });
+  },
+
+  /**
+   * Delete a managed row.
+   *
+   * `reassign` UNDEFINED means "only if nothing uses it", and a category still
+   * in use is refused with a 409 carrying the count. Passing a name moves the
+   * products there first; passing `''` means make them uncategorised, which the
+   * wire spells `-` because a query parameter cannot carry the empty string.
+   */
+  async deleteCategory(id: string, reassign?: string): Promise<{ movedProducts: number }> {
+    return shopFetch<{ movedProducts: number }>(`${BASE}/categories/${seg(id)}`, {
+      method: 'DELETE',
+      id,
+      subject: 'Category',
+      query: reassign === undefined ? {} : { reassign: reassign === '' ? '-' : reassign },
+    });
   },
 
   /**
