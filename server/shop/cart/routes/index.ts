@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { shopSessionMiddleware } from '../identity/middleware';
+import { shopCors, shopPreflight } from '../cors';
 import { shopRoute } from './errors';
 import { customerRoutes } from './customer';
 import { cartRoutes } from './cart';
@@ -40,6 +41,30 @@ export const SHOP_PREFIX = '/api/shop';
 export function shopCartRoutes(partial: Partial<ShopCartDeps> = {}): Hono<ShopEnv> {
   const deps = resolveShopCartDeps(partial);
   const built = new Hono<ShopEnv>();
+
+  /*
+   * CORS BEFORE THE SESSION MIDDLEWARE, so the response headers are applied on
+   * the way OUT of every route regardless of what happened inside — including
+   * the refusals. A browser that cannot read a 403 sees an opaque network
+   * failure instead, which is the hardest possible version of a fixable
+   * configuration error to diagnose from the storefront side.
+   *
+   * `cors.ts` carries the argument for why this needs credentials and why the
+   * origin echo can never be `*`.
+   */
+  built.use('*', shopCors());
+
+  /*
+   * ONE PREFLIGHT HANDLER FOR EVERY PATH, rather than one per route. The answer
+   * is identical for all of them — same methods, same headers, same allow-list —
+   * so per-route registration would be a list to keep in step with the routes
+   * below, and the failure mode of forgetting one is a single cart operation
+   * that mysteriously does not work in a browser while working in every test.
+   *
+   * Registered BEFORE the routers so it cannot be shadowed by a wildcard one of
+   * them adds later.
+   */
+  built.options('/*', shopPreflight);
 
   built.use('*', shopSessionMiddleware());
   built.route('/', customerRoutes(deps));
