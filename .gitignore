@@ -42,3 +42,9 @@ api-build
 # Markdown is not published to the remote. Project documentation lives in
 # README.rst; design notes, plans and specs stay local to the working copy.
 *.md
+
+# ...and the same file named the other way round. `.env.*` anchors on the
+# leading dot, so a `<name>.env` file slips past it — `.prod.env` did, and was
+# one `git add -A` away from being committed.
+*.env
+!.env.example

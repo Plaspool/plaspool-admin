@@ -34,6 +34,7 @@ import {
   RotateCcw,
   Settings as SettingsIcon,
   ShoppingBag,
+  Star,
   TicketPercent,
   Trash2,
   Users,
@@ -176,6 +177,12 @@ const SECTION_PAGES: Partial<Record<SectionId, SectionPage[]>> = {
     { key: 'products', label: 'Products', to: '/shop/products', icon: Package },
     { key: 'orders', label: 'Orders', to: '/shop/orders', icon: Receipt },
     { key: 'customers', label: 'Customers', to: '/shop/customers', icon: Users },
+    /*
+     * Reviews sits with the shop rather than with marketing: it is about a
+     * product, it is read by whoever is already looking at the catalogue, and
+     * it is opened the way Orders is — every morning, to be cleared.
+     */
+    { key: 'reviews', label: 'Reviews', to: '/shop/reviews', icon: Star },
     { key: 'audit', label: 'History', to: '/shop/audit', icon: History },
   ],
   marketing: [
