@@ -24,6 +24,7 @@ import { toStorefrontProduct } from './mapping';
 import {
   createVariant,
   getVariant,
+  listVariantsForProducts,
   listVariantsWithPrices,
   updateVariant,
 } from './variants';
@@ -246,10 +247,39 @@ const AdjustBody = z
  * it in the mapper would put a guaranteed-broken link on the admin surface, so it
  * is done on the two routes where the resolution is actually true.
  */
+/**
+ * VARIANTS ARE INCLUDED, and that is what makes one request enough.
+ *
+ * Without them a storefront had to read this list and then fetch one detail
+ * response per product to learn any price, because `price` lives on a variant.
+ * The consumer is Next.js on Cloudflare Workers, where a request has a
+ * 50-subrequest cap on the free plan and a CPU budget that
+ * plaspool-storefront#9 was only just brought inside — so a fifty-product
+ * catalogue would have failed at the platform level rather than merely rendered
+ * slowly. `listVariantsForProducts` moves that fan-out into one SQL statement.
+ *
+ * ADDITIVE, so nothing that read this shape before has to change: `items` keeps
+ * every field it had and gains `variants`, exactly as the detail route already
+ * spells it.
+ */
 routes.get('/products', async (c) => {
+  const db = currentDb(c);
   const q = readQuery(c, ListQueryParams);
-  const page = await listProducts(currentDb(c), q);
-  return c.json({ ...page, items: page.items.map(toStorefrontProduct) });
+  const page = await listProducts(db, q);
+  const variants = await listVariantsForProducts(
+    db,
+    page.items.map((p) => p.id),
+  );
+  return c.json({
+    ...page,
+    items: page.items.map((p) => ({
+      ...toStorefrontProduct(p),
+      /* `?? []` and not the map's absence: a JSON response cannot have a
+         `Map#get` miss, and a product with no variants is a real state that
+         reads as an empty list on the wire. */
+      variants: variants.get(p.id) ?? [],
+    })),
+  });
 });
 
 /**

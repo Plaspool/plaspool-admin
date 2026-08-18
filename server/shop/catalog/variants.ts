@@ -223,6 +223,57 @@ export async function listVariantsWithPrices(
   return res.rows.map(rowToVariantWithPrice);
 }
 
+/**
+ * The same join, for MANY products at once, grouped by product id.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * WHY THIS EXISTS: A SUBREQUEST BUDGET IN ANOTHER REPOSITORY.
+ *
+ * `GET /api/shop/products` used to return products without variants, so the
+ * storefront had to fetch the list and then one detail response per product to
+ * learn any price. That storefront is Next.js on Cloudflare Workers, where a
+ * request has a **50-subrequest cap on the free plan** and a 10ms CPU budget
+ * that plaspool-storefront#9 (Error 1102) was only just brought inside. A
+ * fifty-product catalogue would therefore have made the listing page fail at the
+ * platform level, not merely render slowly.
+ *
+ * So the fan-out moves to where it is one SQL statement instead of N HTTP
+ * requests. The argument `listVariantsWithPrices` makes about N+1 within one
+ * product applies across products for exactly the same reason; this is that
+ * function with `= ANY(...)` and a `Map` on the way out.
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * A product with no variants is ABSENT from the map rather than present with an
+ * empty array — callers already have to handle "this product has none", and a
+ * `Map#get` returning `undefined` says that once instead of at every use site.
+ */
+export async function listVariantsForProducts(
+  db: Db,
+  productIds: string[],
+): Promise<Map<string, VariantWithPrice[]>> {
+  const grouped = new Map<string, VariantWithPrice[]>();
+  // No ids means no statement. `= ANY('{}')` is valid but a pointless round trip.
+  if (productIds.length === 0) return grouped;
+
+  const res = await db.execute(sql`
+    SELECT ${sql.raw(VARIANT_COLUMNS.map((c) => `v.${c}`).join(', '))},
+           pr.amount AS price_amount, pr.currency AS price_currency,
+           i.on_hand - i.reserved AS available, i.backorderable
+      FROM shop_variants v
+      LEFT JOIN shop_prices pr ON pr.variant_id = v.id AND pr.effective_to IS NULL
+      LEFT JOIN shop_inventory i ON i.variant_id = v.id
+     WHERE v.product_id = ANY(${sql.param(productIds)}::text[])
+     ORDER BY v.product_id ASC, v.position ASC, v.id ASC`);
+
+  for (const row of res.rows) {
+    const variant = rowToVariantWithPrice(row);
+    const list = grouped.get(variant.productId);
+    if (list) list.push(variant);
+    else grouped.set(variant.productId, [variant]);
+  }
+  return grouped;
+}
+
 export async function getVariant(db: Db, id: string): Promise<Variant | null> {
   const res = await db.execute(sql`
     SELECT ${sql.raw(VARIANT_COLUMNS.join(', '))} FROM shop_variants WHERE id = ${id}`);
