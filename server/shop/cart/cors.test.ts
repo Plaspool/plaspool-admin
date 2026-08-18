@@ -126,6 +126,17 @@ describe('the credentialed response headers', () => {
     expect(res.headers.get('vary')).toContain('Origin');
   });
 
+  /* ONE writer. The preflight handler used to set `vary` as well as the
+     middleware, which produced a literal `Vary: Origin, Origin` in production —
+     correct to a cache, which reads the field as a set, and wrong to anybody
+     reading a response header. */
+  it('names Origin exactly once in Vary, including on the preflight', async () => {
+    const pre = await preflight(TEST_ORIGIN);
+    expect(pre.headers.get('vary')).toBe('Origin');
+    const res = await http.get('/api/shop/cart', { headers: { Origin: TEST_ORIGIN } });
+    expect(res.headers.get('vary')).toBe('Origin');
+  });
+
   /* With credentials, `*` is refused outright by every browser — so this is a
    * functional requirement, not only a security one. */
   it('never answers with a wildcard', async () => {

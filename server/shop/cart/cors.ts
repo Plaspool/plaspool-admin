@@ -115,6 +115,10 @@ export function shopPreflight(c: Context<ShopEnv>): Response {
     'access-control-allow-methods': METHODS,
     'access-control-allow-headers': HEADERS,
     'access-control-max-age': MAX_AGE,
-    vary: 'Origin',
+    /* NO `vary` HERE. `shopCors` appends it on the way out of every response,
+       preflight included, and setting it in both places produced a literal
+       `Vary: Origin, Origin` in production. Harmless to a cache, which reads the
+       field as a set, but it reads as a bug to the next person to look at a
+       response header. One writer. */
   });
 }
