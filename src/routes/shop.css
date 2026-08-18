@@ -1676,3 +1676,172 @@
     grid-column: 2;
   }
 }
+
+/* ==========================================================================
+   CATEGORIES (migration 0200)
+
+   Two kinds of row, and they must not look alike. A managed category has an
+   address on the storefront; an unmanaged one is a string somebody typed into
+   a product and has no page at all. `--orphan` is the visual half of that
+   sentence — muted, no colour dot, and offering exactly one action.
+   ========================================================================== */
+
+.shopcat__section {
+  margin-bottom: 2rem;
+}
+
+.shopcat__sectionhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.shopcat__heading {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 0.5rem;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  color: var(--ink-2);
+}
+
+.shopcat__sectionhead .shopcat__heading {
+  margin-bottom: 0;
+}
+
+.shopcat__row {
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper-raised);
+  margin-bottom: 0.5rem;
+}
+
+.shopcat__row--new {
+  border-color: var(--accent);
+}
+
+/* No page on the storefront, so it does not get the storefront's affordances. */
+.shopcat__row--orphan {
+  background: var(--paper-inset);
+  border-style: dashed;
+}
+
+.shopcat__summary {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.shopcat__dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--rule);
+  flex: none;
+}
+
+.shopcat__name {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.shopcat__slug {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--ink-3);
+}
+
+.shopcat__count {
+  font-size: 0.8rem;
+  color: var(--ink-3);
+}
+
+.shopcat__flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--ink-4);
+}
+
+.shopcat__edit {
+  margin-left: auto;
+}
+
+.shopcat__blurb {
+  margin: 0.4rem 0 0;
+  font-size: 0.85rem;
+  color: var(--ink-3);
+}
+
+.shopcat__editor {
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--rule);
+}
+
+.shopcat__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.85rem;
+}
+
+.shopcat__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.shopcat__field--wide {
+  grid-column: 1 / -1;
+}
+
+.shopcat__label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.shopcat__hint {
+  font-size: 0.75rem;
+  color: var(--ink-4);
+}
+
+.shopcat__textarea {
+  resize: vertical;
+  min-height: 3rem;
+}
+
+.shopcat__tint {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.shopcat__swatch {
+  width: 2.25rem;
+  height: var(--ctl-h);
+  padding: 2px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--paper);
+  flex: none;
+}
+
+.shopcat__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+}
+
+/* Right-aligned, because it is the one action on this row that cannot be
+   undone by pressing the other one. */
+.shopcat__delete {
+  margin-left: auto;
+}

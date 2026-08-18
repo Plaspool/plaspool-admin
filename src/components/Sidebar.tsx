@@ -35,6 +35,7 @@ import {
   Settings as SettingsIcon,
   ShoppingBag,
   Star,
+  Tags,
   TicketPercent,
   Trash2,
   Users,
@@ -175,6 +176,13 @@ const SECTION_PAGES: Partial<Record<SectionId, SectionPage[]>> = {
     // the products empty state and `Receipt` is the orders one, so the rail and
     // the page agree rather than each inventing a symbol.
     { key: 'products', label: 'Products', to: '/shop/products', icon: Package },
+    /*
+     * Directly under Products, because it is the vocabulary Products uses: a
+     * category is created here and then picked there, and somebody who cannot
+     * find the name they want on the product form needs the next entry down to
+     * be the place they add it.
+     */
+    { key: 'categories', label: 'Categories', to: '/shop/categories', icon: Tags },
     { key: 'orders', label: 'Orders', to: '/shop/orders', icon: Receipt },
     { key: 'customers', label: 'Customers', to: '/shop/customers', icon: Users },
     /*
