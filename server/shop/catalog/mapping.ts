@@ -39,15 +39,17 @@ import type {
  * `server/repo/posts.ts:newId`, so a commerce id is indistinguishable in form
  * from a post id and neither is a guessable sequential integer on the wire.
  *
- * `prd_` and `var_` are contract §10's. `prc_` (a price row) and `prv_` (a
- * product revision) are additions — §10's list names no prefix for either,
- * because neither table appears in it. Both are internal: a price id is never
- * quoted to a customer and a revision id is admin-only.
+ * `prd_` and `var_` are contract §10's. `prc_` (a price row), `prv_` (a
+ * product revision) and `cat_` (a managed category, migration 0200) are
+ * additions — §10's list names no prefix for any of them, because none of those
+ * tables appears in it. All three are internal: a price id is never quoted to a
+ * customer, a revision id is admin-only, and a category is addressed publicly by
+ * its `slug` rather than its id.
  *
  * Time-prefixed in base 36 so ids sort roughly by creation, which is what makes
  * `ORDER BY id` a usable tiebreak in the keyset cursor.
  */
-export function newCatalogId(prefix: 'prd_' | 'var_' | 'prc_' | 'prv_'): string {
+export function newCatalogId(prefix: 'prd_' | 'var_' | 'prc_' | 'prv_' | 'cat_'): string {
   return `${prefix}${Date.now().toString(36)}${randomUUID().replace(/-/g, '').slice(0, 16)}`;
 }
 

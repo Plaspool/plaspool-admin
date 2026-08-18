@@ -9,7 +9,7 @@ import { canonicalCategory, canonicalTags, canonicalizeOptions, foldedTupleKey }
 import { createProduct, saveProduct } from './products';
 import { listProducts } from './query';
 import { createVariant, updateVariant, DuplicateOptionsError } from './variants';
-import { listShopCategories } from '../admin/categories';
+import { listShopCategoriesUnion as listShopCategories } from './categories';
 import { listShopTags } from '../admin/tags';
 import { rejection, seedProduct } from './test/catalog-harness';
 
@@ -86,7 +86,25 @@ describe('categories fold together', () => {
     const rows = (await listShopCategories(ctx.db)).filter(
       (r) => r.name.toLowerCase() === 'foldables',
     );
-    expect(rows).toEqual([{ name: 'Foldables', count: 3 }]);
+    /*
+     * The full row, not just name and count, because migration 0200 turned this
+     * list into a UNION and the null half is the half worth pinning: a value
+     * typed into `shop_products.category` with no managed row behind it is "in
+     * use, not managed" — no id, no slug, and therefore nothing the storefront
+     * can route to until somebody adopts it.
+     */
+    expect(rows).toEqual([
+      {
+        id: null,
+        slug: null,
+        name: 'Foldables',
+        blurb: '',
+        accentHex: null,
+        position: 0,
+        count: 3,
+        managed: false,
+      },
+    ]);
   });
 
   it('the product list filter matches every spelling of the category', async () => {

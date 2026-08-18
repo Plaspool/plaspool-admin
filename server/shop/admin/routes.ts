@@ -5,7 +5,6 @@ import { requireAuth } from '../../middleware/session';
 import { currentDb } from '../../app-env';
 import type { AppEnv } from '../../app-env';
 import { listAudit } from './audit';
-import { listShopCategories } from './categories';
 import { listShopTags } from './tags';
 import { listBuyers } from './customers';
 import { listInventory } from './inventory';
@@ -145,12 +144,21 @@ shopAdminRoutes.get('/admin/audit', auth, async (c) => {
   return c.json(await listAudit(currentDb(c), q));
 });
 
-shopAdminRoutes.get('/admin/categories', auth, async (c) => {
-  readQuery(c, NoQueryParams);
-  return c.json({ items: await listShopCategories(currentDb(c)) });
-});
+/*
+ * `GET /admin/categories` MOVED TO `server/shop/catalog/routes.ts` (migration
+ * 0200). It now returns the UNION of the managed `shop_categories` table and the
+ * values still in use as free text, which is a superset of the `{name, count}`
+ * this route used to serve — the product filter reads the same two fields and is
+ * unaffected.
+ *
+ * It moved rather than gaining a sibling because two endpoints answering "what
+ * categories are there?" with different rules is the confusion the managed table
+ * exists to end. It lives with the category WRITES, which cannot live here: this
+ * directory's header states that nothing in it writes anything, and its blanket
+ * `requireAuth()` decision is derived from that.
+ */
 
-/** The tag box's vocabulary — same shape, same no-params rule, same reason. */
+/** The tag box's vocabulary — the no-params rule, and the reason for it. */
 shopAdminRoutes.get('/admin/tags', auth, async (c) => {
   readQuery(c, NoQueryParams);
   return c.json({ items: await listShopTags(currentDb(c)) });

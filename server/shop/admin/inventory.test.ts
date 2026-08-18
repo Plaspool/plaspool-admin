@@ -8,7 +8,7 @@ import { reserve } from '../catalog/inventory';
 import { seedProduct, seedVariant } from '../catalog/test/catalog-harness';
 import { DEFAULT_LOW_STOCK_THRESHOLD, listInventory } from './inventory';
 import type { InventoryRow } from './inventory';
-import { listShopCategories } from './categories';
+import { listShopCategoriesUnion as listShopCategories } from '../catalog/categories';
 
 /**
  * The stock list and the admin category list (HANDOFF §2 A4).

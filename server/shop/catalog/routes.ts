@@ -29,6 +29,18 @@ import {
 } from './variants';
 import { priceHistory, setPrice } from './prices';
 import { adjustInventory, getInventory } from './inventory';
+import {
+  createShopCategory,
+  deleteShopCategory,
+  listPublicShopCategories,
+  listShopCategoriesUnion,
+  normaliseAccentHex,
+  normaliseShopCategoryBlurb,
+  normaliseShopCategoryName,
+  normaliseSlug,
+  updateShopCategory,
+} from './categories';
+import type { ShopCategoryPatch } from './categories';
 import type { ProductPatch } from './types';
 
 /**
@@ -281,7 +293,145 @@ routes.get('/variants/:id/availability', async (c) => {
   });
 });
 
+/**
+ * `GET /categories` — the storefront's category list (migration 0200).
+ *
+ * PUBLIC, beside `/products` rather than in a `/public/*` router, because it is
+ * catalogue data and `/products` is the surface it is read with. The reviews
+ * public router exists in its own file for a reason that does not apply here:
+ * it is mounted ABOVE `sessionMiddleware` so `Cache-Control: public` is safe by
+ * construction. Nothing here sets a cache header — the storefront's own ISR sits
+ * in front, exactly as it does for `/products` — so there is no shared-cache
+ * hazard to design against.
+ *
+ * MANAGED ROWS ONLY, and `listPublicShopCategories` sets out why: an unmanaged
+ * category has no slug, and `/store/<slug>` has nothing to route to.
+ */
+routes.get('/categories', async (c) => {
+  readQuery(c, NoCategoryParams);
+  return c.json({ items: await listPublicShopCategories(currentDb(c)) });
+});
+
 // -------------------------------------------------------------------- admin
+
+/**
+ * The managed-category surface (migration 0200).
+ *
+ * THE WRITES ARE HERE AND NOT IN `server/shop/admin/routes.ts`, which states in
+ * its own header that "nothing in this directory writes anything" and derives
+ * its blanket `requireAuth()` decision from that. Catalogue writes live in this
+ * file; putting three mutations in a documented read-only directory would break
+ * an invariant somebody relied on when they chose that permission.
+ *
+ * `requireAuth()` AND NOT `requireOwner()`, matching `/admin/products`: a writer
+ * who may create and publish a product may name the category it goes in. The
+ * standing gap this file's header records — that the catalog has no owner-only
+ * route at all — is unchanged by that and is still not closed here.
+ */
+/** Both category reads take nothing, and say so — the `/admin/tags` rule. */
+const NoCategoryParams = z.object({}).strict();
+
+const CategoryBody = z
+  .object({
+    name: str().min(1),
+    blurb: str().optional(),
+    /** `null` is "no tint", which is a real choice and not the same as absent. */
+    accentHex: str().nullable().optional(),
+    position: z.number().int().min(0).optional(),
+  })
+  .strict();
+
+const CategoryPatchBody = z
+  .object({
+    name: str().min(1).optional(),
+    /**
+     * Moving the URL, which is deliberate and separate from a rename — the rule
+     * `ProductPatch` states. A rename alone never touches it.
+     */
+    slug: str().min(1).optional(),
+    blurb: str().optional(),
+    accentHex: str().nullable().optional(),
+    position: z.number().int().min(0).optional(),
+  })
+  .strict();
+
+const CategoryDeleteQuery = z.object({ reassign: str().max(400).optional() }).strict();
+
+/**
+ * `-` MEANS UNCATEGORISED — the marker `server/routes/categories.ts` established
+ * for the blog, adopted verbatim rather than reinvented.
+ *
+ * A query parameter cannot carry "the empty string" in a way every layer agrees
+ * about: `URL.searchParams` and the client's own `url()` helper both drop an
+ * empty value entirely, so "move them to no category at all" needs a spelling
+ * that survives the round trip. The cost is that a category literally named `-`
+ * cannot be a reassignment target, which is the cheapest thing on the table to
+ * give up.
+ *
+ * `undefined` (the parameter absent) is NOT the same as `-`: absent means "only
+ * delete if nothing uses it", which is the refusal path.
+ *
+ * A QUERY PARAMETER RATHER THAN A BODY, also following the blog. A DELETE with a
+ * body is under-specified across HTTP clients and caches, and this one has
+ * exactly one scalar to carry.
+ */
+const UNCATEGORISED_MARKER = '-';
+
+function reassignTarget(raw: string | undefined): string | null {
+  if (raw === undefined) return null;
+  if (raw === UNCATEGORISED_MARKER || raw.trim() === '') return '';
+  return normaliseShopCategoryName(raw, 'reassign');
+}
+
+/** The union of the managed table and the values actually in use. */
+routes.get('/admin/categories', auth, async (c) => {
+  readQuery(c, NoCategoryParams);
+  return c.json({ items: await listShopCategoriesUnion(currentDb(c)) });
+});
+
+routes.post('/admin/categories', auth, async (c) => {
+  const body = await readJson(c, CategoryBody);
+  const category = await createShopCategory(currentDb(c), {
+    name: normaliseShopCategoryName(body.name, 'name'),
+    blurb: normaliseShopCategoryBlurb(body.blurb ?? '', 'blurb'),
+    accentHex: normaliseAccentHex(body.accentHex ?? null, 'accentHex'),
+    position: body.position ?? 0,
+  });
+  return c.json({ category }, 201);
+});
+
+/**
+ * A rename rewrites every product carrying the old value, in one statement, and
+ * reports how many moved. Renaming onto another MANAGED name is refused with a
+ * 409 carrying the row that already holds it — merging two managed rows is a
+ * different operation with a different confirmation.
+ */
+routes.patch('/admin/categories/:id', auth, async (c) => {
+  const body = await readJson(c, CategoryPatchBody);
+  const patch: ShopCategoryPatch = {};
+  if (body.name !== undefined) patch.name = normaliseShopCategoryName(body.name, 'name');
+  if (body.slug !== undefined) patch.slug = normaliseSlug(body.slug);
+  if (body.blurb !== undefined) patch.blurb = normaliseShopCategoryBlurb(body.blurb, 'blurb');
+  if ('accentHex' in body) patch.accentHex = normaliseAccentHex(body.accentHex ?? null, 'accentHex');
+  if (body.position !== undefined) patch.position = body.position;
+
+  const result = await updateShopCategory(currentDb(c), pathParam(c, 'id'), patch);
+  return c.json(result);
+});
+
+/**
+ * Refused with a 409 while products still carry the name, unless `?reassign=`
+ * names where they should go (`-` for uncategorised).
+ */
+routes.delete('/admin/categories/:id', auth, async (c) => {
+  const { reassign } = readQuery(c, CategoryDeleteQuery);
+  const result = await deleteShopCategory(
+    currentDb(c),
+    pathParam(c, 'id'),
+    reassignTarget(reassign),
+  );
+  return c.json(result);
+});
 
 routes.get('/admin/products', auth, async (c) => {
   const q = readQuery(c, AdminListQueryParams);
