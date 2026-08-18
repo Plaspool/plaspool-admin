@@ -46,7 +46,40 @@ export const CART_COOKIE = '__Host-shop_cart';
 const ATTRS = {
   httpOnly: true,
   secure: true,
-  sameSite: 'Lax',
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * `None`, NOT `Lax`, AND THIS IS A DELIBERATE WEAKENING WITH A REASON.
+   *
+   * WHAT CHANGED. The storefront is deployed on a DIFFERENT REGISTRABLE DOMAIN
+   * from this API — `…workers.dev` and `…vercel.app` are both on the Public
+   * Suffix List, so they are separate sites, not merely separate origins. The
+   * paragraph above used to say "`Lax` still withholds the cookie on every
+   * cross-site POST" as a security property; against that deployment it is
+   * instead a functional wall. A `Lax` cookie is not sent on a cross-site
+   * `fetch` at all, so every cart request from the storefront arrived with no
+   * cookie and minted a fresh anonymous cart — a basket that silently emptied
+   * itself, which is worse than a visible refusal.
+   *
+   * WHAT NOW CARRIES CSRF, ALONE. `originGuard` (`server/middleware/origin.ts`):
+   * an exact-match `APP_ORIGINS` allow-list on every unsafe method, with an
+   * ABSENT `Origin` refused rather than allowed. That guard was always the
+   * primary control — the paragraph above says so, describing `SameSite` as
+   * covering "the top-level navigation `Lax` does allow". What is lost is the
+   * defence in depth, not the defence. It is a real loss and it is stated here
+   * rather than buried.
+   *
+   * WHY THIS IS NOT THE END STATE. Serving the storefront and this API from ONE
+   * registrable domain makes these cookies first-party again, removes the CORS
+   * surface below entirely, and lets this go back to `Lax`. That is the
+   * deployment this file was written for, and the custom domain is the move
+   * that gets there. Revisit this constant then.
+   *
+   * `__Host-` IS UNAFFECTED. That prefix requires `Secure`, `Path=/` and no
+   * `Domain`; it says nothing about `SameSite`, so the session-fixation
+   * protection the paragraph above describes is fully intact.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  sameSite: 'None',
   path: '/',
 } as const;
 

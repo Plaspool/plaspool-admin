@@ -167,7 +167,7 @@ describe('the writer session and the customer session do not interfere', () => {
   });
 });
 
-describe('the customer cookie copies the writer cookie attributes exactly', () => {
+describe('the customer cookie matches the writer cookie except on SameSite', () => {
   it('is __Host- prefixed, Secure, Path=/ and carries no Domain', async () => {
     /*
      * Copied from `setSessionCookie`, including the reasoning: `__Host-` is
@@ -175,6 +175,10 @@ describe('the customer cookie copies the writer cookie attributes exactly', () =
      * unless it is Secure, has Path=/ and carries NO Domain. Without that last
      * one, any subdomain (a preview deployment, a marketing site) can set a
      * cookie the app treats as a session, which is fixation with no XSS at all.
+     *
+     * `SameSite` IS THE ONE ATTRIBUTE THAT NO LONGER MATCHES, and the case below
+     * pins the divergence rather than leaving it to be noticed. `__Host-` says
+     * nothing about `SameSite`, so every guarantee this case asserts is intact.
      */
     const customer = await createCustomer(ctx.db, { email: 'shopper@test.local' });
     const session = await createCustomerSession(ctx.db, customer.id);
@@ -187,8 +191,46 @@ describe('the customer cookie copies the writer cookie attributes exactly', () =
     expect(header).toMatch(/HttpOnly/i);
     expect(header).toMatch(/Secure/i);
     expect(header).toMatch(/Path=\//i);
-    expect(header).toMatch(/SameSite=Lax/i);
     expect(header).not.toMatch(/Domain=/i);
+  });
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * THE DELIBERATE DIVERGENCE: CUSTOMER `None`, WRITER `Lax`.
+   *
+   * The storefront is on a different REGISTRABLE DOMAIN from this API, so its
+   * requests are cross-SITE and a `Lax` cookie is not sent on them at all — the
+   * cart would mint a fresh empty basket on every request, with no error
+   * anywhere. `identity/cookies.ts` carries the full argument, including what
+   * relying on `originGuard` alone for CSRF costs.
+   *
+   * The WRITER session is untouched, and that is the point of asserting both
+   * here: the admin console is same-origin with its own API and has no reason to
+   * give up the defence in depth. A future change that relaxes it too would be a
+   * much wider decision than this one, and this case is what makes it deliberate
+   * rather than incidental.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  it('is SameSite=None, while the writer cookie stays Lax', async () => {
+    const customer = await createCustomer(ctx.db, { email: 'crosssite@test.local' });
+    const session = await createCustomerSession(ctx.db, customer.id);
+    const res = await client.post('/api/shop/customer/session/redeem', {
+      token: session.token,
+    });
+
+    const header = res.headers.getSetCookie().find((h) => h.startsWith(SHOP_SESSION_COOKIE));
+    expect(header).toMatch(/SameSite=None/i);
+    /* `None` without `Secure` is rejected by the browser outright, so the two
+       attributes are one decision rather than two. */
+    expect(header).toMatch(/Secure/i);
+
+    const login = await client.post('/api/auth/login', {
+      email: 'owner@test.local',
+      password: SEED_PASSWORD,
+    });
+    const writer = login.headers.getSetCookie().find((h) => h.startsWith(SESSION_COOKIE));
+    expect(writer, 'the writer cookie must still be set').toBeTruthy();
+    expect(writer).toMatch(/SameSite=Lax/i);
   });
 
   it('uses a DIFFERENT name from the writer cookie, and from the cart cookie', () => {
