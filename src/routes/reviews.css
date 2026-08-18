@@ -1,0 +1,205 @@
+/* ---------------------------------------------------------------
+   The moderation queue. Everything here draws from tokens.css —
+   no colour, size or spacing is invented in this file.
+----------------------------------------------------------------- */
+
+.rvfilters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  margin-bottom: var(--s5);
+}
+.rvfilters__right {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.rvfilters__select,
+.rvfilters__product {
+  width: auto;
+}
+.rvfilters__product {
+  min-width: 12rem;
+}
+
+/* A single column, and a narrow one. A review is a paragraph of prose and the
+   measure that makes prose readable is the same here as anywhere else — a
+   three-column grid of paragraphs is a grid nobody reads, they scan. */
+.rvlist {
+  display: grid;
+  gap: var(--s4);
+  max-width: 56rem;
+}
+.rvlist__more {
+  margin-top: var(--s5);
+  font-size: var(--step--1);
+  color: var(--ink-4);
+}
+
+.rvcard {
+  display: grid;
+  gap: var(--s3);
+  padding: var(--s5);
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-l);
+}
+.rvcard--skeleton {
+  gap: var(--s3);
+}
+
+/* The spine says the state at a glance down a column of cards, which is what
+   the eye uses when the same four buttons repeat on every one of them. */
+.rvcard {
+  border-left-width: 3px;
+  border-left-style: solid;
+}
+.rvcard--pending {
+  border-left-color: var(--warn);
+}
+.rvcard--approved {
+  border-left-color: var(--accent);
+}
+.rvcard--flagged {
+  border-left-color: var(--rule-strong);
+}
+.rvcard--rejected {
+  border-left-color: var(--danger);
+}
+
+.rvcard__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+}
+.rvcard__product {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--step--2);
+  color: var(--ink-4);
+}
+
+.rvstars {
+  display: inline-flex;
+  gap: 1px;
+  color: var(--ink-5);
+}
+.rvstars .ui-ic {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+.rvstars__on {
+  color: var(--accent);
+  fill: currentColor;
+}
+
+/* Sentiment is a label, not a verdict — it is a lexicon's guess and the
+   moderator is about to read the text anyway. Coloured, but quietly. */
+.rvchip--positive {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+.rvchip--neutral {
+  background: var(--paper-sunken);
+  color: var(--ink-3);
+}
+.rvchip--negative {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.rvchip--status-pending {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.rvchip--status-approved {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+.rvchip--status-flagged {
+  background: var(--paper-inset);
+  color: var(--ink-3);
+}
+.rvchip--status-rejected {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.rvcard__title {
+  font-family: var(--font-display);
+  font-size: var(--step-2);
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ink);
+}
+
+/* `pre-wrap` because a customer's paragraph breaks are theirs. The measure is
+   the reading one, and nothing clamps: see the component's comment. */
+.rvcard__body {
+  white-space: pre-wrap;
+  font-size: var(--step-0);
+  line-height: 1.65;
+  color: var(--ink-2);
+  max-width: var(--measure);
+}
+
+.rvcard__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s5);
+  margin: 0;
+  padding-top: var(--s3);
+  border-top: 1px solid var(--rule);
+  font-size: var(--step--1);
+}
+.rvcard__meta dt {
+  font-size: var(--step--2);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: 2px;
+}
+.rvcard__meta dd {
+  margin: 0;
+  color: var(--ink-2);
+}
+.rvcard__email {
+  color: var(--ink-3);
+  text-decoration: underline;
+  text-decoration-color: var(--rule-strong);
+  text-underline-offset: 2px;
+}
+.rvcard__email:hover {
+  color: var(--accent);
+}
+
+.rvcard__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--rule);
+}
+/* Pushed to the far end, away from the three it must not be mistaken for. */
+.rvcard__destroy {
+  margin-left: auto;
+}
+
+@media (max-width: 640px) {
+  .rvfilters {
+    align-items: stretch;
+  }
+  .rvfilters__right {
+    flex-wrap: wrap;
+  }
+  .rvcard {
+    padding: var(--s4);
+  }
+  .rvcard__destroy {
+    margin-left: 0;
+  }
+}
