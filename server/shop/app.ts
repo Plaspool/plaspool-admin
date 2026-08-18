@@ -7,6 +7,7 @@ import {
 } from './catalog/errors';
 import { DuplicateOptionsError, DuplicateSkuError } from './catalog/variants';
 import { routes as catalog } from './catalog/routes';
+import { routes as reviews } from './reviews/routes';
 import { catalogPort } from './catalog/port';
 import { orders } from './orders/routes';
 import { cartShopRoutes } from './cart/routes';
@@ -107,6 +108,7 @@ export function shopApp(): Hono<AppEnv> {
   });
 
   shop.route('/', catalog);
+  shop.route('/', reviews);
 
   shop.route('/', orders);
 

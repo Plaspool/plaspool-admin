@@ -416,3 +416,15 @@ export * from '../shop/payments/schema';
 // this file.
 // ============================================================================
 export * from '../shop/cart/schema';
+
+// ============================================================================
+// REVIEWS — owned by the Reviews subsystem (issue #4, migration range
+// 0180–0199). RE-EXPORTED FROM A FILE REVIEWS OWNS EXCLUSIVELY, following
+// Catalog, Payments and Cart above and for the reason they record: a block
+// declared here is a block a wholesale overwrite deletes silently.
+//
+// `shop_reviews`. §4's purpose is preserved: the table is reachable from this
+// one import path, and its applied shape is asserted against a migrated
+// database by `server/shop/reviews/schema.test.ts`.
+// ============================================================================
+export * from '../shop/reviews/schema';
