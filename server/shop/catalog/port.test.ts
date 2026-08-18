@@ -10,6 +10,7 @@ import { getInventory } from './inventory';
 import { unpublishProduct } from './products';
 import { seedSellable } from './test/catalog-harness';
 import type { CatalogPort } from '../../../shared/commerce/catalog-port';
+import { SHOP_CURRENCY } from '../currency';
 
 /**
  * `CatalogPort`, both implementations, against the same assertions.
@@ -89,7 +90,7 @@ function fakeWorld(): World {
         sku: `FAKE-${i}`,
         title: 'Fake',
         optionValues: {},
-        price: { amount: 1999, currency: 'GBP' },
+        price: { amount: 1999, currency: SHOP_CURRENCY },
         weightGrams: null,
         backorderable: o.backorderable ?? false,
         onHand: o.onHand,
@@ -115,7 +116,7 @@ describe.each([
     expect(quote?.available).toBe(7);
     expect(quote).not.toHaveProperty('onHand');
     expect(quote).not.toHaveProperty('reserved');
-    expect(quote?.price).toEqual({ amount: 1999, currency: 'GBP' });
+    expect(quote?.price).toEqual({ amount: 1999, currency: SHOP_CURRENCY });
   });
 
   it('quote is null for a variant that does not exist', async () => {

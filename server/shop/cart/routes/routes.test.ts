@@ -16,7 +16,7 @@ import { CART_COOKIE } from '../identity/cookies';
 import { shopCartRoutes } from './index';
 import { mapsShopErrors } from './errors';
 import { CART_CREATE_LIMIT } from '../limits';
-import { DEFAULT_STORE_CURRENCY } from '../checkout/shipping';
+import { SHOP_CURRENCY } from '../../currency';
 import { seedSellable } from '../../catalog/test/catalog-harness';
 import { unpublishProduct } from '../../catalog/products';
 import type { HttpClient } from '../../../test/http';
@@ -28,7 +28,7 @@ let client: HttpClient;
 let tee: { id: string; productId: string };
 let scarce: { id: string; productId: string };
 
-const CURRENCY = DEFAULT_STORE_CURRENCY;
+const CURRENCY = SHOP_CURRENCY;
 
 const UK = {
   name: 'A Shopper',

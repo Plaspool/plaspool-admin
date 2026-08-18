@@ -26,6 +26,7 @@ import {
   seedVariant,
 } from './test/catalog-harness';
 import type { Product } from './types';
+import { SHOP_CURRENCY } from '../currency';
 
 let ctx: TestCtx;
 const actor = () => ctx.users.owner;
@@ -285,10 +286,10 @@ describe('the outbox — contract §6 rule 1', () => {
       // The price rides along rather than being looked up: a consumer that had
       // to call back would read whatever is true NOW, which differs from what
       // was true when the event was written exactly when it matters.
-      price: { amount: 1999, currency: 'GBP' },
+      price: { amount: 1999, currency: SHOP_CURRENCY },
     });
     expect((await eventsFor(ctx.db, b.id))[0].payload).toMatchObject({
-      price: { amount: 2499, currency: 'GBP' },
+      price: { amount: 2499, currency: SHOP_CURRENCY },
     });
   });
 
