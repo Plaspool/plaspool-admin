@@ -20,7 +20,7 @@ import {
   unpublishProduct,
 } from './products';
 import { listProducts } from './query';
-import { toStorefrontProduct } from './mapping';
+import { toStorefrontProduct, toStorefrontVariant } from './mapping';
 import {
   createVariant,
   deleteVariant,
@@ -278,7 +278,7 @@ routes.get('/products', async (c) => {
       /* `?? []` and not the map's absence: a JSON response cannot have a
          `Map#get` miss, and a product with no variants is a real state that
          reads as an empty list on the wire. */
-      variants: variants.get(p.id) ?? [],
+      variants: (variants.get(p.id) ?? []).map(toStorefrontVariant),
     })),
   });
 });
@@ -296,7 +296,9 @@ routes.get('/products/:slug', async (c) => {
   const product = await getActiveProductBySlug(db, slug);
   if (!product) throw new NotFoundError(slug);
   const variants = await listVariantsWithPrices(db, product.id);
-  return c.json({ product: { ...toStorefrontProduct(product), variants } });
+  return c.json({
+    product: { ...toStorefrontProduct(product), variants: variants.map(toStorefrontVariant) },
+  });
 });
 
 /**

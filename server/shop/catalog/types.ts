@@ -84,6 +84,21 @@ export interface StorefrontProduct extends Product {
   imageUrls: string[];
 }
 
+/**
+ * A variant, plus the public URL of the photograph of THIS colour.
+ *
+ * The same rule and the same function as `StorefrontProduct` — one definition
+ * of the public URL, resolved on the routes where it is actually true. Added
+ * because the storefront had no way to draw a colour's own photograph: the
+ * variant carried a bare `imageId`, and the only way to use it there was to
+ * re-derive `/api/public/images/:id` on the far side of the network, which is
+ * the second definition `mapping.ts` exists to prevent.
+ */
+export interface StorefrontVariant extends VariantWithPrice {
+  /** `null` when nobody has photographed this colour yet. */
+  imageUrl: string | null;
+}
+
 export interface Variant {
   id: string;
   productId: string;
