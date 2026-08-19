@@ -107,6 +107,22 @@ const AdminListQuery = z.object({
  * The echo is the specific origin, never `*`: a wildcard cannot be scoped
  * down later without breaking callers, and `Vary: Origin` keeps any cache
  * from serving one origin's approval to another.
+ *
+ * `access-control-allow-credentials: true`, ALWAYS, when the origin is
+ * allowed at all — same as `shopCors()`/`shopPreflight()` in
+ * `server/shop/cart/cors.ts`. This intake stopped being anonymous the moment
+ * a customer session could attach `customer_id`: `resolveShopCustomer` reads
+ * `__Host-shop_session` off the request, and a browser will neither send that
+ * cookie nor accept `Set-Cookie` on the response without this header on both
+ * the preflight and the real response. Omit it and a signed-in customer's
+ * submission either never leaves the browser (with `credentials: 'include'`,
+ * the browser blocks the credentialed preflight outright) or arrives cookie-
+ * less (without it), and `customer_id` is silently null either way — exactly
+ * the bug this file used to have. NOT reused from Cart's `shopCors()` itself:
+ * that helper is wired into Cart's own router via `built.use('*', ...)`, and
+ * reviews is a sibling mount, not a route inside it — importing the same
+ * *shape* here, rather than the same middleware, keeps the two mounts
+ * independent of each other's registration order.
  */
 function corsHeaders(c: Context<AppEnv>): Record<string, string> {
   const origin = c.req.header('Origin');
@@ -114,6 +130,7 @@ function corsHeaders(c: Context<AppEnv>): Record<string, string> {
   if (!origin || !allowed.includes(origin)) return {};
   return {
     'access-control-allow-origin': origin,
+    'access-control-allow-credentials': 'true',
     vary: 'Origin',
   };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BadAssertionError, signAssertion, verifyAssertion } from './bridge';
+import { ASSERTION_TTL_MS, BadAssertionError, signAssertion, verifyAssertion } from './bridge';
 import type { Assertion } from './bridge';
 
 const SECRET = 'a'.repeat(32);
@@ -70,6 +70,25 @@ describe('assertion refusals', () => {
   it('refuses a version it does not know', () => {
     const raw = signAssertion(SECRET, make({ v: 2 as 1 }));
     expect(() => verifyAssertion(SECRET, raw, NOW)).toThrow(BadAssertionError);
+  });
+
+  it('refuses an assertion whose own window outlives ASSERTION_TTL_MS, even with a valid MAC and unexpired exp', () => {
+    // A valid MAC only proves the payload wasn't tampered with in transit —
+    // it says nothing about whether the MINTER kept its promise to issue a
+    // narrow window. This is what makes the 60s the verifier's own rule.
+    const raw = signAssertion(SECRET, make({ iat: NOW, exp: NOW + ASSERTION_TTL_MS + 1 }));
+    try {
+      verifyAssertion(SECRET, raw, NOW);
+      throw new Error('should not reach');
+    } catch (e) {
+      expect(e).toBeInstanceOf(BadAssertionError);
+      expect((e as BadAssertionError).reason).toBe('malformed');
+    }
+  });
+
+  it('accepts an assertion whose window is exactly ASSERTION_TTL_MS', () => {
+    const raw = signAssertion(SECRET, make({ iat: NOW, exp: NOW + ASSERTION_TTL_MS }));
+    expect(() => verifyAssertion(SECRET, raw, NOW)).not.toThrow();
   });
 
   it('refuses garbage', () => {

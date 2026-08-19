@@ -45,14 +45,16 @@ export const CHECKOUT_START_LIMIT = 10;
 export const CHECKOUT_START_WINDOW_MS = 15 * 60_000;
 
 /**
- * Magic-link requests, per address and per IP.
+ * The identity-bridge exchange (`POST /customer/session/exchange`), per IP.
  *
- * The per-address bucket stops one address being mail-bombed. The per-IP bucket
- * is what stops the address list being WALKED — `repo/ratelimit.ts` records that
- * finding for login and it applies identically here: five attempts against each
- * of twenty addresses is a hundred requests and not one of them crosses a
- * per-address threshold.
+ * This used to be two buckets guarding the retired magic-link flow: one per
+ * address (stopping one address being mail-bombed) and one per IP (stopping
+ * the address list being WALKED — `repo/ratelimit.ts` records that finding for
+ * login). The exchange route has no address to bucket on — it verifies a
+ * signed assertion, not an email a caller supplies — so only the per-IP shape
+ * survives: it bounds how many assertions one caller can throw at the
+ * verifier (and, on a failure, at `spendAssertion`'s write) regardless of
+ * which identity each one names.
  */
-export const MAGIC_LINK_LIMIT = 5;
-export const MAGIC_LINK_IP_LIMIT = 20;
-export const MAGIC_LINK_WINDOW_MS = 15 * 60_000;
+export const EXCHANGE_IP_LIMIT = 20;
+export const EXCHANGE_WINDOW_MS = 15 * 60_000;

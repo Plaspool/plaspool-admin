@@ -108,6 +108,29 @@ describe('the customer intake', () => {
     expect(res.headers.get('access-control-allow-methods')).toBe('POST');
   });
 
+  /*
+   * Pins the credentialed preflight so it cannot regress: this was a live
+   * production bug where `access-control-allow-credentials` was missing on
+   * both the preflight and the response, which meant `__Host-shop_session`
+   * never reached this endpoint cross-origin and every review's `customer_id`
+   * was silently null. The existing suite drove this route server-side, where
+   * CORS is never enforced, so only a header-level assertion catches it.
+   */
+  it('answers the preflight WITH CREDENTIALS, matching Cart', async () => {
+    const res = await anon.request(SUBMIT, {
+      method: 'OPTIONS',
+      headers: { Origin: TEST_ORIGIN, 'Access-Control-Request-Method': 'POST' },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+  });
+
+  it('answers a real submission WITH CREDENTIALS too', async () => {
+    const res = await anon.post(SUBMIT, submission(), fromFreshIp());
+    expect(res.status).toBe(201);
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+  });
+
   it('holds the per-email budget: the fourth submission from one address 429s', async () => {
     const ip = { headers: { 'x-real-ip': '198.51.100.77' } };
     const email = 'budget@example.com';

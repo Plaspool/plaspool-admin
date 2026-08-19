@@ -13,11 +13,17 @@ import type { ShopEnv } from './shop-env';
  * decides both "may this origin write" (the guard's 403) and "may this browser
  * read the answer" (these headers); the echo is the specific origin, never `*`.
  *
- * WHAT IS DIFFERENT IS CREDENTIALS. A review submission is anonymous — it
- * carries no cookie, so that file needs none of this. The cart is the opposite:
- * `__Host-shop_cart` IS the basket's identity and `__Host-shop_session` is the
- * customer's, so a cart request without its cookies is a request for somebody
- * else's empty cart. Two consequences follow, and they are not optional:
+ * REVIEWS NOW NEEDS THE SAME CREDENTIALS TREATMENT, FOR THE SAME REASON. A
+ * review submission stopped being anonymous once a signed-in customer's review
+ * could carry `customer_id` — `resolveShopCustomer` reads `__Host-shop_session`
+ * off the request, so reviews' own `corsHeaders()` in `routes.ts` sends
+ * `access-control-allow-credentials: true` too. It is not this file's helper,
+ * because reviews is a sibling mount and not a route inside Cart's router —
+ * but the shape, and the reasoning below, is shared. The cart is still the
+ * heavier case: `__Host-shop_cart` IS the basket's identity and
+ * `__Host-shop_session` is the customer's, so a cart request without its
+ * cookies is a request for somebody else's empty cart. Two consequences
+ * follow, and they are not optional:
  *
  *   - `access-control-allow-credentials: true`, or the browser drops the cookie
  *     on the way out and ignores `Set-Cookie` on the way back

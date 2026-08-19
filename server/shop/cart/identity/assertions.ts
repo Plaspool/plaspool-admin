@@ -28,11 +28,16 @@ export async function spendAssertion(
   const spent = res.rows.length > 0;
 
   /*
-   * Opportunistic sweep, best-effort, exactly as `createCustomerSession` does.
-   * A spent key is only useful for as long as an assertion could still be
-   * within its own TTL; past that the MAC check rejects it anyway, so keeping
-   * the row buys nothing. A failure here must never cost a customer a sign-in,
-   * hence the swallowed catch.
+   * Opportunistic sweep, best-effort, the same SHAPE as `createCustomerSession`
+   * — swallowed catch, never blocks the caller — but NOT the same rule. That
+   * one sweeps unconditionally on its own `expires_at` column; this table has
+   * no expiry column, so this sweep only runs on a successful spend, and it
+   * deletes everything older than `ASSERTION_TTL_MS * 10`, not `ASSERTION_TTL_MS`
+   * itself — a tenfold margin past the longest an assertion could legitimately
+   * still be live, so a row is never swept while it could still matter for
+   * replay detection. A spent key past that horizon is safe to drop: the MAC
+   * check rejects the assertion on its own expiry long before then anyway, so
+   * keeping the row buys nothing.
    */
   if (spent) {
     await db

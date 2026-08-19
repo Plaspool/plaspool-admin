@@ -7,7 +7,7 @@ import { BadAssertionError, verifyAssertion } from '../identity/bridge';
 import { spendAssertion } from '../identity/assertions';
 import { NotImplementedError } from '../errors';
 import { currentCustomer, shopClientIp, shopDb, shopLimit } from '../shop-env';
-import { MAGIC_LINK_IP_LIMIT, MAGIC_LINK_WINDOW_MS } from '../limits';
+import { EXCHANGE_IP_LIMIT, EXCHANGE_WINDOW_MS } from '../limits';
 import type { ShopCartDeps } from './deps';
 import type { ShopEnv } from '../shop-env';
 
@@ -65,8 +65,8 @@ export function customerRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     await shopLimit(
       c,
       `shop-exchange:${shopClientIp(c)}`,
-      MAGIC_LINK_IP_LIMIT,
-      MAGIC_LINK_WINDOW_MS,
+      EXCHANGE_IP_LIMIT,
+      EXCHANGE_WINDOW_MS,
     );
 
     // BEFORE any verification, so an unconfigured deployment answers the same
