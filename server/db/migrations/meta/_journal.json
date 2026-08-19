@@ -148,6 +148,13 @@
                         "when":  1786600001300,
                         "tag":  "0200_shop_categories",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  21,
+                        "version":  "7",
+                        "when":  1786600001400,
+                        "tag":  "0220_shop_auth_assertions",
+                        "breakpoints":  true
                     }
                 ]
 }
