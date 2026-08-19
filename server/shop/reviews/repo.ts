@@ -73,6 +73,8 @@ export interface CreateReviewInput {
   body: string;
   authorName: string;
   authorEmail: string;
+  /** Set when the submitter held a live customer session. Null for guests. */
+  customerId?: string | null;
   now: number;
 }
 
@@ -95,6 +97,7 @@ export async function createReview(db: Db, input: CreateReviewInput): Promise<Ad
       body: input.body,
       authorName: input.authorName,
       authorEmail: input.authorEmail,
+      customerId: input.customerId ?? null,
       status: 'pending',
       sentimentLabel: sentiment.label,
       sentimentScore: sentiment.score,
