@@ -101,5 +101,16 @@ export function verifyAssertion(secret: string, raw: string, now = Date.now()): 
   // a tolerance here is a replay window with a friendly name.
   if (p.exp <= now) throw new BadAssertionError('expired');
 
+  // `ASSERTION_TTL_MS` documents the lifetime this bridge is FOR, but nothing
+  // above bounds `exp - iat` — a payload with a valid MAC can claim any
+  // window it likes, and this verifier has no other way to know the minter
+  // kept its promise. Refusing anything wider makes the 60 seconds the
+  // VERIFIER's own invariant rather than the minter's word for it: a minter
+  // bug or a compromised signer that issued a long-lived assertion is refused
+  // here rather than accepted and merely outliving `spendAssertion`'s sweep
+  // horizon (`ASSERTION_TTL_MS * 10`), which would otherwise reopen the
+  // replay window it exists to close.
+  if (p.exp - p.iat > ASSERTION_TTL_MS) throw new BadAssertionError('malformed');
+
   return { ...(p as Assertion), email: p.email.trim().toLowerCase() };
 }
