@@ -462,7 +462,7 @@ describe('every route maps this subsystem’s errors', () => {
     });
   }
 
-  it('exchanges a good assertion for a session cookie', async () => {
+  it('exchanges a good assertion for a session cookie, and never leaks the token', async () => {
     const wired = standaloneShop(ctx.db, { bridgeSecret: BRIDGE_SECRET });
     const res = await wired.request('/customer/session/exchange', {
       method: 'POST',
@@ -470,9 +470,24 @@ describe('every route maps this subsystem’s errors', () => {
       body: JSON.stringify({ assertion: assertionFor('buyer@example.com') }),
     });
     expect(res.status).toBe(200);
-    const body = await json<{ customer: { email: string } }>(res);
+
+    const setCookie = res.headers.get('set-cookie');
+    expect(setCookie).toMatch(/__Host-shop_session=/);
+    const token = setCookie?.match(/__Host-shop_session=([^;]+)/)?.[1];
+    expect(token).toBeTruthy();
+
+    // The body says nothing about the session's own credential — the same
+    // property the old magic-link route's "never leaks the token" test held.
+    // The exchange answers `{ customer }`, and the failure this guards
+    // against is someone adding `session`/`token` to that body for storefront
+    // convenience: every other assertion here would still pass while a
+    // cross-site page gained JS-readable access to a credential HttpOnly
+    // exists to keep out of reach.
+    const bodyText = await res.text();
+    expect(bodyText).not.toContain(token);
+
+    const body = JSON.parse(bodyText) as { customer: { email: string } };
     expect(body.customer.email).toBe('buyer@example.com');
-    expect(res.headers.get('set-cookie')).toMatch(/__Host-shop_session=/);
   });
 
   it('is the same customer on a second, independent sign-in', async () => {
@@ -533,13 +548,25 @@ describe('every route maps this subsystem’s errors', () => {
   });
 
   it('501s when no bridge secret is configured', async () => {
-    // The app-level client mounts `server/shop/app.ts`'s real deps, which have
-    // no bridge secret configured in this test environment.
-    const res = await client.post('/api/shop/customer/session/exchange', {
-      assertion: assertionFor('nobody@example.com'),
+    // `bridgeSecret: undefined` EXPLICITLY, rather than relying on the ambient
+    // test environment having no `SHOP_AUTH_BRIDGE_SECRET` set. Relying on the
+    // ambient value would make this pass today and fail for anyone who has
+    // that variable in a local `.env`, for a reason unrelated to the route.
+    const wired = standaloneShop(ctx.db, { bridgeSecret: undefined });
+    const res = await wired.request('/customer/session/exchange', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ assertion: assertionFor('nobody@example.com') }),
     });
     expect(res.status).toBe(501);
     expect((await json<{ feature: string }>(res)).feature).toBe('identity-bridge');
+
+    // And nothing was written on the way to refusing — pinned exactly as the
+    // old magic-link 501 test pinned it, so a future reorder that resolved
+    // the customer before the config check would fail here rather than
+    // silently starting to write rows for an unconfigured deployment.
+    const rows = await ctx.db.execute(sql`SELECT count(*)::int AS n FROM shop_customers`);
+    expect(Number(rows.rows[0].n)).toBe(0);
   });
 
   it('no longer serves the retired magic-link routes', async () => {
