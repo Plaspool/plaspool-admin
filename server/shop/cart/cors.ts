@@ -1,5 +1,20 @@
-import type { Context, MiddlewareHandler } from 'hono';
+import type { Context, Env, MiddlewareHandler } from 'hono';
 import type { ShopEnv } from './shop-env';
+
+/**
+ * The narrowest environment this file actually needs: `c.get('origins')`, the
+ * allow-list `originGuard` (`server/middleware/origin.ts`) publishes on every
+ * `AppEnv`. `ShopEnv` extends `AppEnv` with one more key this file never
+ * touches, so it satisfies this constraint too — which is what lets the same
+ * two functions below be called from a router typed `Hono<ShopEnv>` (Cart) or
+ * one typed `Hono<AppEnv>` (Orders, Payments; see admin#26) without a second
+ * copy of either. Generic rather than hard-coded to one or the other, because
+ * `Context<E>` is invariant in `E` (see the long note in `shop-env.ts`) — a
+ * `MiddlewareHandler<AppEnv>` is not assignable where a
+ * `MiddlewareHandler<ShopEnv>` is expected, or the reverse, so a single
+ * concrete type here would only ever work for one of the two callers.
+ */
+type CorsEnv = Env & { Variables: { origins: readonly string[] } };
 
 /**
  * Cross-site CORS for the cart and checkout, WITH CREDENTIALS.
@@ -64,7 +79,7 @@ const HEADERS = 'content-type';
  *  latency on the first write of every session. */
 const MAX_AGE = '86400';
 
-function allowedOrigin(c: Context<ShopEnv>): string | null {
+function allowedOrigin<E extends CorsEnv>(c: Context<E>): string | null {
   const origin = c.req.header('Origin');
   const allowed = (c.get('origins') as string[] | undefined) ?? [];
   return origin && allowed.includes(origin) ? origin : null;
@@ -89,7 +104,7 @@ function allowedOrigin(c: Context<ShopEnv>): string | null {
  * and hand it to a different one, which is the same defect in the opposite
  * direction from the reviews router's public caching note.
  */
-export function shopCors(): MiddlewareHandler<ShopEnv> {
+export function shopCors<E extends CorsEnv = ShopEnv>(): MiddlewareHandler<E> {
   return async (c, next) => {
     await next();
     c.header('vary', 'Origin', { append: true });
@@ -112,7 +127,7 @@ export function shopCors(): MiddlewareHandler<ShopEnv> {
  * no permission headers, and the browser refuses the real request itself. There
  * is nothing useful to say in a body no page will ever read.
  */
-export function shopPreflight(c: Context<ShopEnv>): Response {
+export function shopPreflight<E extends CorsEnv = ShopEnv>(c: Context<E>): Response {
   const origin = allowedOrigin(c);
   if (!origin) return c.body(null, 204);
   return c.body(null, 204, {

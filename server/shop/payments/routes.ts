@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { shopCors } from '../cart/cors';
 import { pathParam, readJson, str } from '../../middleware/errors';
 import { requireOwner } from '../../middleware/session';
 import { NotFoundError } from '../../repo/errors';
@@ -224,6 +225,28 @@ export function createWebhookRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
 export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const checkout = deps.checkout ?? unwiredCheckoutPort();
+
+  /*
+   * THE RESPONSE-SIDE CORS HEADER, ON THE PUBLIC `/shop/payments/*` ROUTES
+   * ONLY — not `/shop/admin/payments/*`, which is `requireOwner()`-gated a few
+   * lines below and mounted under the same router (admin#26).
+   *
+   * Same gap as Orders (see the long note in `orders/routes.ts` for the full
+   * reasoning): the preflight already works — Cart's `built.options('/*',
+   * shopPreflight)` catches every `OPTIONS` under `/api/shop/*`, this router
+   * included — but `shopCors()` used to run only inside Cart's own router, so
+   * `POST /api/shop/payments/intents` came back with no
+   * `access-control-allow-credentials` on the real response. Measured against
+   * production in the issue: checkout cannot create a payment intent from a
+   * cross-site browser without it.
+   *
+   * NOT LIFTED TO `shopApp()`: that would also cover `/admin/*`, which has
+   * never been reviewed for a credentialed cross-origin surface — the
+   * writer's session cookie being `SameSite=Lax` today is not a reason to make
+   * it load-bearing by accident. `/shop/payments/*` is scoped short of
+   * `/shop/admin/payments/*` for exactly that reason.
+   */
+  app.use('/shop/payments/*', shopCors<AppEnv>());
 
   /**
    * Create (or recover) a payment intent for a checkout.
