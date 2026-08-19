@@ -342,6 +342,7 @@ export class PaystackProvider implements PaymentProvider {
         provider: this.name,
         operation,
         status: response.status,
+        field: this.#classifyField(envelope),
       });
     }
 
@@ -380,6 +381,27 @@ export class PaystackProvider implements PaymentProvider {
     // A 2xx whose envelope said `status: false` — the request was understood and
     // refused. Permanent, so the client must not retry it as a 500.
     return 'invalid_request' as const;
+  }
+
+  /**
+   * Which field an `invalid_request` blames, or none (admin#30 review).
+   *
+   * `invalid_request` is the bucket for every 4xx Paystack returns — a bad
+   * email, an amount below the processor's minimum, a currency the account
+   * has not enabled, a malformed `callback_url`. Naming `email` for all of
+   * them would tell a customer to fix an address that was fine while an
+   * operator misconfiguration goes unpaged — the exact failure this issue
+   * exists to remove, just moved one layer up. So this ONLY returns `'email'`
+   * when Paystack's own message names the address; every other cause returns
+   * `null` and the caller falls through to the honest answer, a 500.
+   *
+   * `message` IS MATCHED AGAINST, NEVER CARRIED — same discipline as
+   * `#classify`: a substring test cannot leak the string, and returning it
+   * would.
+   */
+  #classifyField(envelope: PaystackEnvelope | null): 'email' | null {
+    const message = typeof envelope?.message === 'string' ? envelope.message.toLowerCase() : '';
+    return message.includes('email') ? 'email' : null;
   }
 
   #toIntent(data: Record<string, unknown>, fallbackReference: string): ProviderIntent {

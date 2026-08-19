@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { BadRequestError, NotFoundError } from '../../repo/errors';
 import { toEpochMs, toEpochMsOrNull } from '../../db/client';
-import { ProviderError } from './provider/scrub';
+import { ProviderError, isIndeterminate, isRetryable } from './provider/scrub';
 import { intentId as mintIntentId, eventId as mintEventId, providerReferenceFor } from './ids';
 import type { Db } from '../../db/client';
 import type { PaymentsCheckoutPort } from './checkout';
@@ -299,15 +299,67 @@ async function attachProvider(
     if (code === 'duplicate_reference') {
       providerIntent = await provider.fetchIntent(reference);
     } else {
-      await recordIntentError(db, intent.id, code, now);
+      /*
+       * TERMINAL FOR THIS ATTEMPT, AND THE STATUS SAYS SO (admin#30). A code
+       * that is neither retryable nor indeterminate can never resolve itself —
+       * re-sending the identical request would get the identical refusal — so
+       * leaving the row at `requires_payment` misrepresents it as payable when
+       * it has no `authorization_url` and never will for this attempt. Retryable
+       * (`network`, `rate_limited`, `provider_unavailable`) and indeterminate
+       * (`timeout`) codes are left alone: those genuinely might still succeed,
+       * and `readThrough` already re-drives `attachProvider` for a row whose
+       * `provider_intent_id` is still NULL regardless of `status`, so marking
+       * this row `failed` does not block that retry — it only stops the row
+       * from lying about being payable in the meantime.
+       *
+       * ONLY A GENUINE `ProviderError` EARNS `terminal` (admin#30 review).
+       * `err instanceof ProviderError` is checked here too, not just for
+       * `code` above — a `TypeError` from a bug in this function reads as
+       * `code === 'unknown'`, which is also neither retryable nor
+       * indeterminate, and would otherwise stamp an intent `failed` with
+       * `last_error: 'unknown'` for OUR bug rather than a payment failure.
+       * `recordIntentError` still records `code` either way, for the log.
+       */
+      const terminal = err instanceof ProviderError && !isRetryable(code) && !isIndeterminate(code);
+      await recordIntentError(db, intent.id, code, now, terminal);
+
+      /*
+       * A PROVIDER REJECTION IS A 4xx, NOT A 500 — BUT ONLY WHEN THE PROVIDER
+       * ACTUALLY NAMED THE FIELD (admin#30, sharpened on review).
+       * `invalid_request` is the bucket for EVERY Paystack 4xx: a bad email,
+       * an amount below the processor's minimum, a currency the account has
+       * not enabled, a malformed `callback_url`. Assuming `email` for all of
+       * them would tell a customer to fix an address that was fine, while a
+       * genuine operator misconfiguration gets laundered into a client error
+       * that never pages anyone — the exact failure this issue exists to
+       * remove, just moved one layer up. So this only fires when
+       * `err.field === 'email'`, which `paystack.ts`'s `#classifyField`
+       * sets ONLY by matching Paystack's own message against the word
+       * "email" (matched, never carried — same discipline as `#classify`).
+       * Every other `invalid_request` — and every other non-retryable code —
+       * falls through to `throw err`, which has no mapping in
+       * `server/middleware/errors.ts` and becomes a 500: a vague-but-true
+       * refusal beats a specific lie, and an unrecognised misconfiguration
+       * SHOULD page someone.
+       */
+      if (code === 'invalid_request' && err instanceof ProviderError && err.field === 'email') {
+        throw new BadRequestError('email');
+      }
       throw err;
     }
   }
 
+  /*
+   * A RETRY THAT SUCCEEDS UN-FAILS THE ROW (admin#30). A prior attempt on this
+   * same key may have marked the row 'failed' (see recordIntentError's
+   * `terminal` flag); this attempt just proved that wrong, so `status` is set
+   * back to 'requires_payment' explicitly rather than left alone.
+   */
   const updated = await db.execute(sql`
     UPDATE shop_payment_intents
        SET provider_intent_id = ${providerIntent.providerIntentId},
            authorization_url = ${providerIntent.authorizationUrl},
+           status = 'requires_payment',
            last_error = NULL,
            updated_at = ${now},
            revision = revision + 1
@@ -335,15 +387,34 @@ async function attachProvider(
  * message, never a body. `shop_payment_intents.last_error` is read by humans in
  * psql and shipped into logs, and this is the column an error message would
  * have to pass through to get there.
+ *
+ * `terminal` MOVES THE STATUS TO `'failed'` (admin#30). `'failed'` is already a
+ * valid `PaymentStatus` and already in the `shop_payment_intents_status_ck`
+ * CHECK — no migration for this. Left `false` for a code the caller may still
+ * retry into success (`network`, `timeout`, `rate_limited`,
+ * `provider_unavailable`), where `requires_payment` remains the honest status.
+ *
+ * A RAW `UPDATE`, DELIBERATELY NOT `applyIntentStatus` (admin#30 review). This
+ * bypasses the `EVENT_FOR['failed'] -> 'payment.failed'` outbox write below —
+ * on purpose, not as an oversight: `applyIntentStatus` announces a provider
+ * TRANSACTION reaching a terminal state, and here none ever existed to
+ * announce. Orders has nothing to react to for an intent Paystack refused
+ * before it was ever created at the provider.
  */
 export async function recordIntentError(
   db: Db,
   id: string,
   code: string,
   now: number = Date.now(),
+  terminal = false,
 ): Promise<void> {
   await db.execute(sql`
-    UPDATE shop_payment_intents SET last_error = ${code}, updated_at = ${now} WHERE id = ${id}`);
+    UPDATE shop_payment_intents
+       SET last_error = ${code},
+           updated_at = ${now},
+           status = ${terminal ? 'failed' : sql`status`},
+           revision = ${terminal ? sql`revision + 1` : sql`revision`}
+     WHERE id = ${id}`);
 }
 
 // --------------------------------------------------------- the status ladder

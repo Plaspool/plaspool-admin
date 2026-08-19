@@ -12,6 +12,7 @@ import { createRefund, listRefunds } from './refunds';
 import { completeCheckoutForIntent, drainPaymentEvents, processEvent, storeEvent } from './webhook';
 import type { Context } from 'hono';
 import type { AppEnv } from '../../app-env';
+import { DEFAULT_PAYMENTS_CALLBACK_URL } from './utils/callback-url';
 import type { Db } from '../../db/client';
 import type { PaymentsCheckoutPort } from './checkout';
 import type { PaymentProvider } from './provider/types';
@@ -510,9 +511,24 @@ function publicIntent(intent: {
  */
 function safeCallbackUrl(): string | undefined {
   try {
-    return paymentsEnv().PAYMENTS_CALLBACK_URL;
+    /*
+     * The environment still wins, so a preview can redirect somewhere else
+     * without a code change. What changed is the FALLBACK: it used to be
+     * `undefined`, which meant a deployment that had never set the variable
+     * silently sent the customer nowhere and Paystack showed its own generic
+     * "payment complete" page instead of ours. A URL that is public anyway is
+     * better held in the repository than in a variable nobody remembers exists —
+     * see `utils/callback-url.ts`.
+     */
+    // `||`, DELIBERATELY NOT `??` (admin#30 review). `PAYMENTS_CALLBACK_URL`
+    // is `z.string().optional()` with no `.min(1)`, so an empty-string env var
+    // parses to `''` rather than `undefined` — `??` would pass that `''`
+    // straight through, `paystack.ts` would omit `callback_url` entirely, and
+    // the customer would land on Paystack's generic page, which is the exact
+    // regression this fallback exists to prevent.
+    return paymentsEnv().PAYMENTS_CALLBACK_URL || DEFAULT_PAYMENTS_CALLBACK_URL;
   } catch {
-    return undefined;
+    return DEFAULT_PAYMENTS_CALLBACK_URL;
   }
 }
 
