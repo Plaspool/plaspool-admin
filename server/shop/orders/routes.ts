@@ -519,18 +519,67 @@ function registerAdminRoutes(
  * going while passes make progress and stops the moment one does not, so a
  * backlog clears over one invocation instead of one row-batch per call. Its own
  * wall-clock budget sits inside `maxDuration`.
+ *
+ * PAYMENTS DRAINED FIRST, BEFORE EITHER SWEEPER — that is what closes the gap a
+ * real production payment fell through. The webhook route acknowledges the
+ * request, THEN does the post-response work that turns the stored event into a
+ * `commerce_events` row; Vercel is free to freeze the function the instant the
+ * response is sent, and when it does, `shop_payment_events.processed_at` stays
+ * null forever with no error recorded anywhere. `POST /shop/admin/payments/
+ * events/drain` is the owner-driven safety net for that; `d.drainPayments`
+ * (§`ports.ts`) is the same safety net reached from a schedule, injected rather
+ * than imported so Orders never reaches into Payments' module directly.
+ *
+ * A COMMERCE SWEEP THAT ONLY EVER RAN ONCE PER INVOCATION WOULD NOT BE ENOUGH,
+ * even with the payment drain fixed. Draining payments emits fresh
+ * `commerce_events` rows (a `checkout.completed`, a `payment.captured`) that a
+ * single `sweepCommerceEvents` pass can select in the WRONG order relative to
+ * each other within that same pass — `payment.captured` parks on its own
+ * `checkout.completed` predecessor when both are newly minted in the same
+ * drain. That predecessor only gets applied on a LATER pass (never retried
+ * within the one that parked it — `consumer.ts`'s own doc comment on
+ * `sweepCommerceEvents`), so a fixed-point loop across passes, not a single
+ * pass, is what actually clears a backlog seeded by this same call.
+ * `drainCommerceEvents` already IS that loop (stops at "no progress", i.e. a
+ * pass that applied and ignored nothing, so it cannot spin on a permanently
+ * parked event) — this only needed a caller that goes to it after payments.
+ *
+ * `passes: RUN_SWEEP_COMMERCE_PASS_CEILING` NARROWS ITS DEFAULT CEILING OF 20
+ * DOWN TO 5, because unlike `drainCommerceEvents`'s other callers, this one
+ * shares its `maxDuration: 30` budget with `drainPayments` above it — the two
+ * scanned-and-applied-recovery, capture-created-order sequence measured by hand
+ * only ever needed two commerce passes (apply `checkout.completed`, then apply
+ * the parked `payment.captured`), so five is headroom, not the tight number.
  */
 async function runSweep(c: Context<AppEnv>, d: ResolvedDeps) {
   const db = currentDb(c);
   const now = d.now();
+  const payments = await d.drainPayments(db, now);
   const events = await drainCommerceEvents(
     db,
     { origin: c.get('origins')?.[0] ?? null },
-    { now, limit: SWEEP_BATCH },
+    { now, limit: SWEEP_BATCH, passes: RUN_SWEEP_COMMERCE_PASS_CEILING },
   );
   const emails = await sweepEmailIntents(db, d.mailer, now);
-  return { events, emails };
+  return { payments, events, emails, passes: events.passes };
 }
+
+/**
+ * How many `sweepCommerceEvents` passes one `runSweep` call allows itself.
+ *
+ * Small on purpose (contract's own reasoning for `SWEEP_BATCH` applies again
+ * here): `vercel.json` caps this function at `maxDuration: 30` and Vercel does
+ * not retry a timed-out cron, so an over-large unit of work is one that never
+ * completes rather than one that runs slowly. `drainCommerceEvents`'s own
+ * ceiling of 20 was sized for a caller that owns the whole budget; `runSweep`
+ * also pays for `drainPayments` and `sweepEmailIntents` out of the same 30
+ * seconds, so its slice of the commerce sweep is capped lower. 5 passes clears
+ * the two-pass "predecessor arrives in the same drain" case measured by hand
+ * with three passes of headroom for an ordinary backlog, and still gives up on
+ * a permanently-parked event well inside the function's time budget rather than
+ * spinning until `maxDuration` kills it.
+ */
+export const RUN_SWEEP_COMMERCE_PASS_CEILING = 5;
 
 /**
  * How many outbox rows one pass of one invocation takes on.

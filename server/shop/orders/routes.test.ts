@@ -29,7 +29,7 @@ import {
   paymentCaptured,
 } from './test/fixtures';
 import { sweepCommerceEvents, type ConsumerDeps } from './repo/consumer';
-import { SWEEP_CRON_PATH } from './routes';
+import { RUN_SWEEP_COMMERCE_PASS_CEILING, SWEEP_CRON_PATH } from './routes';
 import { createApp } from '../../index';
 import { markOrderPaid, readOrder, readOrderByCheckout, type OrderRead } from './repo/orders';
 import { mintGuestToken } from './tokens';
@@ -936,6 +936,62 @@ describe('POST /admin/sweep is the caller both sweepers otherwise lack', () => {
     expect(second.events.applied).toBe(0);
     expect(second.events.parked).toBe(0);
     expect(second.emails.sent).toBe(0);
+  });
+
+  it('sweeps commerce events for MORE THAN ONE PASS when a later row applies its own predecessor', async () => {
+    /*
+     * THE EXACT SHAPE THE HAND-RUN RECOVERY NEEDED A SECOND `sweepCommerceEvents`
+     * CALL FOR (see `runSweep`'s doc comment): a `payment.captured` and the
+     * `checkout.completed` it depends on, both newly written in one drain, with
+     * `occurred_at` tied. `sweepCommerceEvents` breaks ties `id ASC`, and
+     * `evt_captured_1` sorts before `evt_checkout_1` — so within a SINGLE pass the
+     * capture is selected before its own predecessor and parks. Only a second pass
+     * finds the (now-applied) checkout and completes the capture.
+     */
+    const owner = await login(ctx.users.owner);
+    await insertEvents(ctx.db, [
+      checkoutCompleted({}), // occurredAt: T0, id: evt_checkout_1
+      paymentCaptured({ occurredAt: T0 }), // tied with the row above, id: evt_captured_1
+    ]);
+
+    const body = await json<{
+      events: { applied: number; parked: number; passes: number };
+    }>(await owner.post('/api/shop/admin/sweep'));
+
+    // Both rows are eventually applied — the capture's park inside pass 1 did not
+    // strand it — and it took more than the one pass a naive `runSweep` used to run.
+    // `parked` is a per-pass count SUMMED across passes (`CommerceDrainSummary`), so
+    // the capture's pass-1 park is still counted even though pass 2 goes on to apply
+    // it — it is `applied` that proves nothing was left stranded.
+    expect(body.events.applied).toBe(2);
+    expect(body.events.parked).toBeGreaterThanOrEqual(1);
+    expect(body.events.passes).toBeGreaterThan(1);
+    expect(body.events.passes).toBeLessThanOrEqual(RUN_SWEEP_COMMERCE_PASS_CEILING);
+    expect((await readOrderByCheckout(ctx.db, CHECKOUT))?.order.status).toBe('paid');
+  });
+
+  it('terminates instead of spinning on a permanently-parked event', async () => {
+    /*
+     * A capture whose `checkout.completed` will NEVER arrive (no such row is ever
+     * inserted) parks on pass one and stays parked on every pass after — the
+     * candidate set never changes and neither does the decision. `runSweep` must
+     * come back with a response, not hang trying to make the parked row un-park
+     * itself, and it must not silently loop past its own bound doing it.
+     */
+    const owner = await login(ctx.users.owner);
+    await insertEvents(ctx.db, [
+      paymentCaptured({ checkoutId: 'chk_never_completes' }),
+    ]);
+
+    const body = await json<{
+      events: { applied: number; parked: number; passes: number };
+    }>(await owner.post('/api/shop/admin/sweep'));
+
+    expect(body.events.parked).toBe(1);
+    expect(body.events.applied).toBe(0);
+    // Stopped on "no progress", well inside the bound — not spun until the ceiling.
+    expect(body.events.passes).toBeLessThanOrEqual(RUN_SWEEP_COMMERCE_PASS_CEILING);
+    expect(body.events.passes).toBeGreaterThanOrEqual(1);
   });
 });
 
