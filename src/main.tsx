@@ -29,6 +29,7 @@ import MigrateRoute from './routes/Migrate';
 import Shop from './routes/Shop';
 import ShopProducts from './routes/ShopProducts';
 import ShopCategories from './routes/ShopCategories';
+import ShopShippingZones from './routes/ShopShippingZones';
 import ShopOrders from './routes/ShopOrders';
 import ShopCustomers from './routes/ShopCustomers';
 import ShopAudit from './routes/ShopAudit';
@@ -219,6 +220,11 @@ const router = createHashRouter([
       { path: '/shop', element: <Shop />, errorElement: <RouteError /> },
       { path: '/shop/products', element: <ShopProducts />, errorElement: <RouteError /> },
       { path: '/shop/categories', element: <ShopCategories />, errorElement: <RouteError /> },
+      {
+        path: '/shop/shipping-zones',
+        element: <ShopShippingZones />,
+        errorElement: <RouteError />,
+      },
       { path: '/shop/orders', element: <ShopOrders />, errorElement: <RouteError /> },
       { path: '/shop/customers', element: <ShopCustomers />, errorElement: <RouteError /> },
       { path: '/shop/reviews', element: <ShopReviews />, errorElement: <RouteError /> },

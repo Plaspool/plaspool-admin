@@ -137,27 +137,42 @@ describe('the storefront works through the real application', () => {
     );
     expect(Number(held.rows[0].reserved)).toBe(2);
 
+    /*
+     * A NIGERIAN ADDRESS: the real app (`createApp()`) now reads shipping
+     * zones from the database (admin#19), so a `GB` address here would fall
+     * to the same fallback zone Lagos does — Lagos is used so the option id
+     * asserted below is a real, live one.
+     */
     const addressed = await client.request('/api/shop/checkout/addresses', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        shipping: { name: 'A Shopper', line1: '1 High St', city: 'London', countryCode: 'GB' },
+        shipping: {
+          name: 'A Shopper',
+          line1: '1 Broad Street',
+          city: 'Lagos',
+          region: 'Lagos',
+          countryCode: 'NG',
+        },
       }),
     });
     expect(addressed.status).toBe(200);
 
-    await client.request('/api/shop/checkout/shipping', {
+    const shipped = await client.request('/api/shop/checkout/shipping', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ optionId: 'standard' }),
+      body: JSON.stringify({ optionId: 'ship_lagos_standard' }),
     });
+    expect(shipped.status).toBe(200);
 
     const frozen = await client.post('/api/shop/checkout/freeze');
     expect(frozen.status).toBe(200);
+    // 2 x 1999 item price + ₦10,000 Lagos delivery (1_000_000 minor units) +
+    // 0 tax (taxRateBps is 0 for every NG zone).
     expect(
       (await json<{ totals: { grandTotal: { amount: number } } }>(frozen)).totals.grandTotal
         .amount,
-    ).toBe(3998 + 399 + 880);
+    ).toBe(3998 + 1_000_000);
   });
 
   it('still answers 404 rather than 500 for an unrouted shop path', async () => {

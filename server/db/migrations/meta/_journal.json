@@ -155,6 +155,13 @@
                         "when":  1786600001400,
                         "tag":  "0220_shop_auth_assertions",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  22,
+                        "version":  "7",
+                        "when":  1786600001500,
+                        "tag":  "0240_shop_shipping_zones",
+                        "breakpoints":  true
                     }
                 ]
 }

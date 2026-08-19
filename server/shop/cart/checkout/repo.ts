@@ -115,7 +115,7 @@ export async function putAddresses(
   assertAddress(a.shipping);
   if (a.billing) assertAddress(a.billing);
 
-  const zone = zoneFor(config.zones, a.shipping.countryCode);
+  const zone = zoneFor(config.zones, a.shipping.countryCode, a.shipping.region);
   // The cart write goes FIRST because it carries the CAS and the state guard: if
   // the cart is not open, or has moved on, no address is written at all.
   await updateCartFields(db, {
@@ -157,7 +157,10 @@ export async function shippingOptionsForCart(
   // before it knows the destination shows a number that goes up at the last
   // step, which is when a customer abandons.
   if (!address) return [];
-  return shippingOptionsFor(zoneFor(config.zones, address.countryCode), config.storeCurrency);
+  return shippingOptionsFor(
+    zoneFor(config.zones, address.countryCode, address.region),
+    config.storeCurrency,
+  );
 }
 
 export async function setShipping(
@@ -167,7 +170,7 @@ export async function setShipping(
 ): Promise<ShippingQuote> {
   const address = await getAddress(db, a.cartId, 'shipping');
   if (!address) throw new BadRequestError('shipping_address');
-  const zone = zoneFor(config.zones, address.countryCode);
+  const zone = zoneFor(config.zones, address.countryCode, address.region);
   const option = shippingOptionById(zone, config.storeCurrency, a.optionId);
   // An option from ANOTHER zone is refused rather than honoured: accepting the
   // UK next-day price for a parcel to France is a real loss on every order.
@@ -259,7 +262,7 @@ export async function freezeCheckout(
   const address = await getAddress(db, a.cartId, 'shipping');
   if (!address) return { ok: false, reason: 'no_shipping_address' };
 
-  const zone = zoneFor(config.zones, address.countryCode);
+  const zone = zoneFor(config.zones, address.countryCode, address.region);
   const shipping = cart.shippingOptionId
     ? shippingOptionById(zone, config.storeCurrency, cart.shippingOptionId)
     : null;

@@ -661,6 +661,62 @@ export interface ShopCategoryRenameResult {
   movedProducts: number;
 }
 
+/**
+ * A shipping zone and its delivery options — the admin-editable replacement
+ * for `DEFAULT_SHIPPING_ZONES` (migration 0240, admin#19).
+ */
+export interface ShopShippingOption {
+  id: string;
+  zoneId: string;
+  label: string;
+  /** Minor units, in the store currency. Integer. */
+  amountMinor: number;
+  estimate: string;
+  position: number;
+}
+
+export interface ShopShippingZone {
+  id: string;
+  label: string;
+  countries: string[];
+  /** Empty means "no region restriction" — matches any region in the country. */
+  regions: string[];
+  taxRateBps: number;
+  taxLabel: string;
+  shippingTaxable: boolean;
+  isFallback: boolean;
+  position: number;
+  options: ShopShippingOption[];
+}
+
+export interface ShopShippingZoneDraft {
+  label: string;
+  countries: string[];
+  regions: string[];
+  taxRateBps: number;
+  taxLabel: string;
+  shippingTaxable: boolean;
+  isFallback: boolean;
+  position: number;
+}
+
+export type ShopShippingZonePatch = Partial<ShopShippingZoneDraft>;
+
+export interface ShopShippingOptionDraft {
+  zoneId: string;
+  label: string;
+  amountMinor: number;
+  estimate?: string;
+  position?: number;
+}
+
+export interface ShopShippingOptionPatch {
+  label?: string;
+  amountMinor?: number;
+  estimate?: string;
+  position?: number;
+}
+
 /** One row of the tag vocabulary — canonical spelling per case-fold group. */
 export interface ShopTag {
   name: string;
@@ -1000,6 +1056,72 @@ export const shopApi = {
       id,
       subject: 'Category',
       query: reassign === undefined ? {} : { reassign: reassign === '' ? '-' : reassign },
+    });
+  },
+
+  /** Every shipping zone with its options, for the admin screen. */
+  async listShippingZones(signal?: AbortSignal): Promise<ShopShippingZone[]> {
+    const res = await shopFetch<{ items: ShopShippingZone[] }>(`${BASE}/shipping-zones`, {
+      signal,
+    });
+    return res.items ?? [];
+  },
+
+  async createShippingZone(draft: ShopShippingZoneDraft): Promise<ShopShippingZone> {
+    const res = await shopFetch<{ zone: ShopShippingZone }>(`${BASE}/shipping-zones`, {
+      method: 'POST',
+      body: draft,
+      subject: 'Shipping zone',
+    });
+    return res.zone;
+  },
+
+  async saveShippingZone(
+    id: string,
+    patch: ShopShippingZonePatch,
+  ): Promise<ShopShippingZone> {
+    const res = await shopFetch<{ zone: ShopShippingZone }>(
+      `${BASE}/shipping-zones/${seg(id)}`,
+      { method: 'PATCH', id, subject: 'Shipping zone', body: patch },
+    );
+    return res.zone;
+  },
+
+  async deleteShippingZone(id: string): Promise<void> {
+    await shopFetch<{ ok: boolean }>(`${BASE}/shipping-zones/${seg(id)}`, {
+      method: 'DELETE',
+      id,
+      subject: 'Shipping zone',
+    });
+  },
+
+  async createShippingOption(
+    draft: ShopShippingOptionDraft,
+  ): Promise<ShopShippingOption> {
+    const res = await shopFetch<{ option: ShopShippingOption }>(`${BASE}/shipping-options`, {
+      method: 'POST',
+      body: draft,
+      subject: 'Shipping option',
+    });
+    return res.option;
+  },
+
+  async saveShippingOption(
+    id: string,
+    patch: ShopShippingOptionPatch,
+  ): Promise<ShopShippingOption> {
+    const res = await shopFetch<{ option: ShopShippingOption }>(
+      `${BASE}/shipping-options/${seg(id)}`,
+      { method: 'PATCH', id, subject: 'Shipping option', body: patch },
+    );
+    return res.option;
+  },
+
+  async deleteShippingOption(id: string): Promise<void> {
+    await shopFetch<{ ok: boolean }>(`${BASE}/shipping-options/${seg(id)}`, {
+      method: 'DELETE',
+      id,
+      subject: 'Shipping option',
     });
   },
 

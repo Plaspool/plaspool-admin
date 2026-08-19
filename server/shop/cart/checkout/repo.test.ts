@@ -13,7 +13,7 @@ import { migratedDb, resetShopTables } from '../test/harness';
 import { fakeCatalog } from '../test/fake-catalog';
 import { GUARDS, mutating } from '../test/mutating';
 import { addLine, createCart, getCart } from '../cart/repo';
-import { DEFAULT_SHIPPING_ZONES, DEFAULT_STORE_CURRENCY } from './shipping';
+import type { ShippingZone } from './shipping';
 import {
   completeCheckout,
   freezeCheckout,
@@ -32,8 +32,52 @@ let db: Db;
 let close: () => Promise<void>;
 let catalog: CartFakeCatalog;
 
-const CURRENCY = DEFAULT_STORE_CURRENCY;
-const CONFIG = { zones: DEFAULT_SHIPPING_ZONES, storeCurrency: CURRENCY };
+/*
+ * A LOCAL FIXTURE, DELIBERATELY NOT `DEFAULT_SHIPPING_ZONES` (admin#19).
+ *
+ * This file exercises checkout MECHANICS — multiple zones, per-zone VAT,
+ * taxable-vs-not shipping, a fallback for an unmatched country — and those
+ * properties need a fixture shaped to show them off, not the shop's real
+ * three same-country Nigerian zones. `DEFAULT_SHIPPING_ZONES` is now the
+ * empty-database fallback for a real NGN deployment (see `shipping.ts`);
+ * coupling this file to its contents would make an unrelated pricing change
+ * break tests that are not about pricing.
+ */
+const CURRENCY = 'GBP';
+const TEST_ZONES: readonly ShippingZone[] = [
+  {
+    id: 'domestic',
+    label: 'United Kingdom',
+    countries: ['GB'],
+    taxRateBps: 2000,
+    taxLabel: 'VAT',
+    shippingTaxable: true,
+    options: [
+      { id: 'standard', label: 'Standard (3–5 days)', amountMinor: 399 },
+      { id: 'express', label: 'Express (next day)', amountMinor: 799 },
+    ],
+  },
+  {
+    id: 'eu',
+    label: 'Europe',
+    countries: ['IE', 'FR', 'DE', 'ES', 'IT', 'NL', 'BE', 'PT', 'AT', 'SE', 'DK', 'PL'],
+    taxRateBps: 0,
+    taxLabel: 'No VAT charged (export)',
+    shippingTaxable: false,
+    options: [{ id: 'standard', label: 'Standard (5–10 days)', amountMinor: 999 }],
+  },
+  {
+    id: 'international',
+    label: 'Rest of world',
+    countries: [],
+    taxRateBps: 0,
+    taxLabel: 'No VAT charged (export)',
+    shippingTaxable: false,
+    options: [{ id: 'standard', label: 'Standard (10–20 days)', amountMinor: 1999 }],
+    fallback: true,
+  },
+];
+const CONFIG = { zones: TEST_ZONES, storeCurrency: CURRENCY };
 
 const UK = {
   name: 'A Shopper',

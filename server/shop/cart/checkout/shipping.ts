@@ -17,11 +17,16 @@ import type { ShippingQuote, TaxRate } from '../../../../shared/commerce/ports';
  * implementation swap and not a rewrite of the engine — brief §5's requirement,
  * met by making the rate an argument rather than a lookup.
  *
- * THE NUMBERS BELOW ARE PLACEHOLDERS AND ARE WRONG FOR ANY REAL SHOP. They are
- * shaped correctly and priced arbitrarily; a real deployment injects its own
- * `zones` through `ShopCartDeps`. Said out loud here because a hard-coded 20%
- * that nobody notices is hard-coded is precisely the class of thing GAUNTLET
- * keeps finding — a claim the code makes that nobody checked.
+ * `DEFAULT_SHIPPING_ZONES` IS THE EMPTY-DATABASE FALLBACK, NOT "THE CONFIG"
+ * (admin#19). The real config is `shop_shipping_zones` /
+ * `shop_shipping_options`, loaded per request by
+ * `loadShippingZones` (`shipping-zones-repo.ts`) and handed in through
+ * `ShopCartDeps` — this file still takes `zones` as a plain argument rather
+ * than reading a table itself, so the constant below is what a deployment
+ * with zero rows in that table falls back to. It is priced as the real
+ * starting values the owner confirmed for this shop (Abuja, Lagos, rest of
+ * Nigeria — see the constant itself), not as an arbitrary placeholder; a shop
+ * that changes its rates does so in the admin screen, not here.
  */
 
 export interface ShippingOptionConfig {
@@ -36,6 +41,13 @@ export interface ShippingZone {
   label: string;
   /** ISO-3166-1 alpha-2, uppercase. Ignored when `fallback` is true. */
   countries: readonly string[];
+  /**
+   * Region names (state/province, free text as the address form captures it)
+   * that further restrict this zone within a matched country. Empty/absent
+   * means "no region restriction" — the zone matches on country alone.
+   * Compared case- and whitespace-insensitively.
+   */
+  regions?: readonly string[];
   /** Basis points. `2000` is 20%. */
   taxRateBps: number;
   taxLabel: string;
@@ -50,42 +62,63 @@ export interface ShippingZone {
   fallback?: boolean;
 }
 
-/** Contract §13: one store currency, no conversion, no per-customer currency. */
+/**
+ * Contract §13: one store currency, no conversion, no per-customer currency.
+ *
+ * DELIBERATELY STILL `'GBP'` — this is `resolveShopCartDeps`'s own scaffolding
+ * default (see `store-currency.test.ts`), separate from `SHOP_CURRENCY` (=
+ * `'NGN'`, `server/shop/currency.ts`), which is what `server/shop/app.ts`
+ * actually injects. Changing this constant does not touch production; only the
+ * explicit `storeCurrency: SHOP_CURRENCY` argument in `app.ts` does. Left as
+ * `'GBP'` so a future deployment that forgets to inject `storeCurrency` fails
+ * the same way this one once did — visibly, as `preview: null` — rather than
+ * silently agreeing with itself in NGN and hiding a real wiring bug.
+ */
 export const DEFAULT_STORE_CURRENCY = 'GBP';
 
+/**
+ * THIS IS NO LONGER "THE CONFIG" — it is the empty-database fallback.
+ *
+ * A real deployment reads its zones from `shop_shipping_zones` /
+ * `shop_shipping_options` (see `shipping-zones-repo.ts`) so an operator can
+ * correct a rate without a deploy. This constant is consulted ONLY when the
+ * database has zero zone rows (a fresh/empty deployment), so it is kept in
+ * sync with the real starting values rather than left as unrelated
+ * placeholder data — see admin#19.
+ */
 export const DEFAULT_SHIPPING_ZONES: readonly ShippingZone[] = [
   {
-    id: 'domestic',
-    label: 'United Kingdom',
-    countries: ['GB'],
-    taxRateBps: 2000,
-    taxLabel: 'VAT',
-    shippingTaxable: true,
-    options: [
-      { id: 'standard', label: 'Standard (3–5 days)', amountMinor: 399 },
-      { id: 'express', label: 'Express (next day)', amountMinor: 799 },
-    ],
-  },
-  {
-    id: 'eu',
-    label: 'Europe',
-    countries: ['IE', 'FR', 'DE', 'ES', 'IT', 'NL', 'BE', 'PT', 'AT', 'SE', 'DK', 'PL'],
-    // Zero, and not because Europe is untaxed: on an export the importing
-    // country's authority collects, and this shop is not registered to collect
-    // it. A shop that IS registered sets its own rate here.
+    id: 'abuja',
+    label: 'Abuja',
+    countries: ['NG'],
+    regions: ['Abuja', 'FCT', 'Federal Capital Territory'],
     taxRateBps: 0,
-    taxLabel: 'No VAT charged (export)',
+    taxLabel: 'No tax charged',
     shippingTaxable: false,
-    options: [{ id: 'standard', label: 'Standard (5–10 days)', amountMinor: 999 }],
+    options: [{ id: 'standard', label: 'Standard delivery', amountMinor: 300_000 }],
   },
   {
-    id: 'international',
-    label: 'Rest of world',
+    id: 'lagos',
+    label: 'Lagos',
+    countries: ['NG'],
+    regions: ['Lagos'],
+    taxRateBps: 0,
+    taxLabel: 'No tax charged',
+    shippingTaxable: false,
+    options: [{ id: 'standard', label: 'Standard delivery', amountMinor: 1_000_000 }],
+  },
+  {
+    id: 'rest-of-nigeria',
+    label: 'Rest of Nigeria',
+    // Empty, and deliberately so: this is the FALLBACK zone, which `zoneFor`
+    // consults for any country/region no other zone claims — matching the
+    // original UK config's `international` zone, whose `countries: []` meant
+    // exactly the same thing.
     countries: [],
     taxRateBps: 0,
-    taxLabel: 'No VAT charged (export)',
+    taxLabel: 'No tax charged',
     shippingTaxable: false,
-    options: [{ id: 'standard', label: 'Standard (10–20 days)', amountMinor: 1999 }],
+    options: [{ id: 'standard', label: 'Standard delivery', amountMinor: 1_000_000 }],
     fallback: true,
   },
 ];
@@ -110,10 +143,34 @@ export class ShippingConfigError extends Error {
  * A configuration with no fallback THROWS rather than picking one. A shop that
  * cannot price a destination must refuse the destination, not guess.
  */
-export function zoneFor(zones: readonly ShippingZone[], countryCode: string): ShippingZone {
+function normalizeRegion(region: string): string {
+  return region.trim().toLowerCase();
+}
+
+export function zoneFor(
+  zones: readonly ShippingZone[],
+  countryCode: string,
+  region?: string | null,
+): ShippingZone {
   const code = countryCode.trim().toUpperCase();
-  const exact = zones.find((zone) => zone.countries.includes(code));
+  const normalizedRegion = region != null ? normalizeRegion(region) : null;
+
+  const candidates = zones.filter((zone) => zone.countries.includes(code));
+
+  // Prefer a zone that NAMES the region over one with no region restriction:
+  // otherwise a catch-all zone in the same country could shadow a specific
+  // one purely by list order.
+  const bySpecificRegion =
+    normalizedRegion != null
+      ? candidates.find((zone) =>
+          (zone.regions ?? []).some((r) => normalizeRegion(r) === normalizedRegion),
+        )
+      : undefined;
+  if (bySpecificRegion) return bySpecificRegion;
+
+  const exact = candidates.find((zone) => !zone.regions || zone.regions.length === 0);
   if (exact) return exact;
+
   const fallback = zones.find((zone) => zone.fallback);
   if (!fallback) {
     throw new ShippingConfigError(
