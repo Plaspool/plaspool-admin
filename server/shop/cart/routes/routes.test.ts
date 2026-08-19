@@ -39,6 +39,23 @@ const UK = {
   countryCode: 'GB',
 };
 
+/*
+ * A NIGERIAN ADDRESS, for the checkout-flow test below. That test runs
+ * through the REAL app (`createApp()`), which now reads shipping zones from
+ * the database (admin#19) rather than from `deps.zones` — so a `GB` address
+ * falls to the same-country-only-fallback zone rather than exercising a
+ * distinct "domestic" zone the way it used to under the UK scaffolding.
+ * Lagos is used because it names a region, exercising the region match added
+ * alongside the zone rewrite.
+ */
+const LAGOS = {
+  name: 'A Shopper',
+  line1: '1 Broad Street',
+  city: 'Lagos',
+  region: 'Lagos',
+  countryCode: 'NG',
+};
+
 beforeAll(async () => {
   ctx = await freshDb();
 });
@@ -294,24 +311,28 @@ describe('the checkout flow, end to end', () => {
     const addressed = await client.request('/api/shop/checkout/addresses', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ shipping: UK }),
+      body: JSON.stringify({ shipping: LAGOS }),
     });
     expect(addressed.status).toBe(200);
     const zoneBody = await json<{ zone: string; options: Array<{ id: string }> }>(addressed);
-    expect(zoneBody.zone).toBe('domestic');
-    expect(zoneBody.options.map((o) => o.id)).toEqual(['standard', 'express']);
+    expect(zoneBody.zone).toBe('zone_lagos');
+    expect(zoneBody.options.map((o) => o.id)).toEqual(
+      expect.arrayContaining(['ship_lagos_standard']),
+    );
 
     const shipped = await client.request('/api/shop/checkout/shipping', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ optionId: 'standard' }),
+      body: JSON.stringify({ optionId: 'ship_lagos_standard' }),
     });
     expect(shipped.status).toBe(200);
 
     const frozen = await client.post('/api/shop/checkout/freeze');
     expect(frozen.status).toBe(200);
     const totals = (await json<{ totals: { grandTotal: { amount: number } } }>(frozen)).totals;
-    expect(totals.grandTotal.amount).toBe(3998 + 399 + 880);
+    // 2 x ₦19.99-in-old-units item price (1999) + ₦10,000 Lagos delivery
+    // (1_000_000 minor units) + 0 tax (taxRateBps is 0 for every NG zone).
+    expect(totals.grandTotal.amount).toBe(3998 + 1_000_000);
 
     // And the frozen number is what a re-render sees.
     const reread = await client.get('/api/shop/checkout/totals');

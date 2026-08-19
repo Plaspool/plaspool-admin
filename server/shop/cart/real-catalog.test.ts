@@ -48,13 +48,42 @@ import {
   setShipping,
   startCheckout,
 } from './checkout/repo';
-import { DEFAULT_SHIPPING_ZONES, DEFAULT_STORE_CURRENCY } from './checkout/shipping';
+import type { ShippingZone } from './checkout/shipping';
 import type { TestCtx } from './test/harness';
 
 let ctx: TestCtx;
 
-const CURRENCY = DEFAULT_STORE_CURRENCY;
-const CONFIG = { zones: DEFAULT_SHIPPING_ZONES, storeCurrency: CURRENCY };
+/*
+ * A LOCAL FIXTURE, DELIBERATELY NOT `DEFAULT_SHIPPING_ZONES` (admin#19) — see
+ * the identical note in `checkout/repo.test.ts`. This file is about the real
+ * Catalog port, not about the shop's real Nigerian zones.
+ */
+const CURRENCY = 'GBP';
+const TEST_ZONES: readonly ShippingZone[] = [
+  {
+    id: 'domestic',
+    label: 'United Kingdom',
+    countries: ['GB'],
+    taxRateBps: 2000,
+    taxLabel: 'VAT',
+    shippingTaxable: true,
+    options: [
+      { id: 'standard', label: 'Standard (3–5 days)', amountMinor: 399 },
+      { id: 'express', label: 'Express (next day)', amountMinor: 799 },
+    ],
+  },
+  {
+    id: 'international',
+    label: 'Rest of world',
+    countries: [],
+    taxRateBps: 0,
+    taxLabel: 'No VAT charged (export)',
+    shippingTaxable: false,
+    options: [{ id: 'standard', label: 'Standard (10–20 days)', amountMinor: 1999 }],
+    fallback: true,
+  },
+];
+const CONFIG = { zones: TEST_ZONES, storeCurrency: CURRENCY };
 
 const UK = {
   name: 'A Shopper',

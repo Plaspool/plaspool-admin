@@ -17,6 +17,8 @@ import { cartShopRoutes } from './cart/routes';
 import { resolveShopCustomer } from './cart/identity/customers';
 import { SHOP_CURRENCY } from './currency';
 import { shopAdminRoutes } from './admin/routes';
+import { shippingZoneRoutes } from './cart/checkout/shipping-zones-routes';
+import { ShippingZonePreconditionFailedError } from './cart/checkout/shipping-zones-repo';
 
 /**
  * The shop sub-app — everything under `/api/shop` (contract §10).
@@ -105,6 +107,14 @@ export function shopApp(): Hono<AppEnv> {
                 category: err.category,
               }
             : /*
+             * EXACTLY-ONE-FALLBACK-ZONE, refused rather than silently
+             * dropped: the constraint `shop_shipping_zones_fallback_uq`
+             * (migration 0240) enforces it, and this renders that 23505 as a
+             * conflict an admin screen can explain instead of a bare 500.
+             */
+            err instanceof ShippingZonePreconditionFailedError
+            ? { error: 'precondition_failed', operation: err.operation }
+            : /*
              * A TAKEN SKU IS A CONFLICT WITH EXISTING STATE, not a malformed
              * field, and the difference is the whole of what a caller can do
              * next. It used to arrive as a bare 400 `detail: 'sku'` — the same
@@ -182,15 +192,16 @@ export function shopApp(): Hono<AppEnv> {
    * exactly what surfaced this — the failure was a null preview rather than a
    * silently converted number, which is the direction to be wrong in.
    *
-   * ⚠️  THE SHIPPING ZONES ARE STILL THE UK DEFAULTS, and they are NOT fixed
-   *     here. `DEFAULT_SHIPPING_ZONES` carries United Kingdom / Europe / Rest of
-   *     world with amounts in pence (`399`, `799`) and a 20% VAT line. Under NGN
-   *     those read as ₦3.99 and ₦7.99, which is nonsense — but shipping is only
-   *     consulted at CHECKOUT, and the cart's subtotal computes without it. So
-   *     the cart works and checkout does not, which is the honest state: real
-   *     delivery rates and whether this shop collects Nigerian VAT are business
-   *     facts, not defaults to invent. Tracked for the checkout bundle
-   *     (Plaspool/plaspool-storefront#22).
+   * SHIPPING ZONES NOW COME FROM THE DATABASE (admin#19), not from
+   * `DEFAULT_SHIPPING_ZONES`. That constant is kept only as the empty-database
+   * fallback and its contents were rewritten from the UK placeholders to the
+   * three Nigerian zones the owner confirmed (Abuja ₦3,000, Lagos ₦10,000, rest
+   * of Nigeria ₦10,000 — `server/shop/cart/checkout/shipping.ts`), so a fresh
+   * deployment with no `shop_shipping_zones` rows is not wrong either. The
+   * checkout routes (`server/shop/cart/routes/checkout.ts`) read the live rows
+   * per request through `loadShippingZonesForCheckout`, falling back to this
+   * `zones` value only when the table is empty, so an operator can correct a
+   * rate without a deploy.
    * ═══════════════════════════════════════════════════════════════════════════
    */
   shop.route(
@@ -201,6 +212,13 @@ export function shopApp(): Hono<AppEnv> {
       bridgeSecret: getEnv().SHOP_AUTH_BRIDGE_SECRET || undefined,
     }),
   );
+
+  /*
+   * SHIPPING ZONE ADMIN — `/admin/shipping-zones`, `/admin/shipping-options`
+   * (admin#19). Auth-gated per route inside the router itself, exactly as
+   * Catalog's `/admin/categories` and the dashboard's read surface are.
+   */
+  shop.route('/', shippingZoneRoutes);
 
   /*
    * THE DASHBOARD'S READ SURFACE — `/admin/stats`, `/admin/customers`,

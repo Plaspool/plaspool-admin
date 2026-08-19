@@ -12,6 +12,7 @@ import {
   shippingOptionsForCart,
   startCheckout,
 } from '../checkout/repo';
+import { loadShippingZonesForCheckout } from '../checkout/shipping-zones-repo';
 import { extendReservations } from '../reservations/repo';
 import { runCartMaintenance } from '../events/consumer';
 import { assertCronRequest } from '../cron-auth';
@@ -43,7 +44,21 @@ import type { Db } from '../../../db/client';
  */
 export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
   const routes = new Hono<ShopEnv>();
-  const config: CheckoutConfig = { zones: deps.zones, storeCurrency: deps.storeCurrency };
+
+  /**
+   * Live zones, read from the database on every request (admin#19), so an
+   * operator's rate edit is visible on the next checkout call rather than after
+   * a deploy. `deps.zones` — which defaults to `DEFAULT_SHIPPING_ZONES`, the
+   * empty-database fallback in `checkout/shipping.ts` — is used only when the
+   * table has zero rows, exactly as a fresh deployment needs.
+   */
+  async function loadConfig(db: Db): Promise<CheckoutConfig> {
+    const dbZones = await loadShippingZonesForCheckout(db);
+    return {
+      zones: dbZones.length > 0 ? dbZones : deps.zones,
+      storeCurrency: deps.storeCurrency,
+    };
+  }
 
   /** Reserve stock. Freezes nothing. */
   routes.post('/checkout/start', async (c) => {
@@ -82,6 +97,7 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     const db = shopDb(c);
     const body = await readJson(c, AddressesBody);
     const cart = await requireCart(c, db);
+    const config = await loadConfig(db);
     const { zone } = await putAddresses(db, config, {
       cartId: cart.id,
       shipping: body.shipping,
@@ -94,6 +110,7 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
   routes.get('/checkout/shipping-options', async (c) => {
     const db = shopDb(c);
     const cart = await requireCart(c, db);
+    const config = await loadConfig(db);
     return c.json({ options: await shippingOptionsForCart(db, config, cart.id) });
   });
 
@@ -101,6 +118,7 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     const db = shopDb(c);
     const body = await readJson(c, ShippingBody);
     const cart = await requireCart(c, db);
+    const config = await loadConfig(db);
     const option = await setShipping(db, config, {
       cartId: cart.id,
       optionId: body.optionId,
@@ -120,6 +138,7 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     const db = shopDb(c);
     const body = await readJsonOrEmpty(c, BaseOnlyBody);
     const cart = await requireCart(c, db);
+    const config = await loadConfig(db);
 
     const result = await freezeCheckout(db, deps.catalog, config, {
       cartId: cart.id,
