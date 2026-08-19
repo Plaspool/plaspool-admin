@@ -16,7 +16,8 @@ import { rejectNul } from '../../repo/cursor';
 import { currentDb, currentUser } from '../../app-env';
 import type { AppEnv } from '../../app-env';
 import type { Db } from '../../db/client';
-import { sweepCommerceEvents } from './repo/consumer';
+import { drainCommerceEvents } from './repo/consumer';
+import { assertCronRequest } from '../cart/cron-auth';
 import { requireOrderNumber } from './order-number';
 import { mintGuestToken, verifyGuestToken } from './tokens';
 import { resolveDeps, type OrdersDeps, type ResolvedDeps } from './ports';
@@ -419,32 +420,62 @@ function registerAdminRoutes(
    *
    * AN HTTP ROUTE, BECAUSE THAT IS WHAT THIS CODEBASE ALREADY DOES with maintenance
    * work: `POST /api/posts/sweep-blank` and the image orphan collector are both routes,
-   * behind a session, invoked by a dashboard or a schedule. Owner-only because draining
-   * the outbox moves money-adjacent state — a capture becomes a paid order and a
-   * confirmation goes out.
+   * behind a session, invoked by a dashboard or a schedule. Authenticated on both
+   * methods because draining the outbox moves money-adjacent state — a capture becomes
+   * a paid order and a confirmation goes out.
    *
-   * **NOTHING SCHEDULES IT YET.** A production deployment needs a `vercel.json` cron
-   * pointing here (or any other periodic caller); `vercel.json` is not this subsystem's
-   * file. Until then the sweep runs when somebody asks for it, which is enough to be
-   * correct and not enough to be automatic. Said plainly in the report rather than left
-   * for someone to discover.
+   * IT NOW HAS THREE CALLERS, none of them a `vercel.json` cron of its own — there is
+   * no third slot on Hobby and both are taken:
+   *
+   *  1. **The capture path**, inline and bounded, so an order exists seconds after the
+   *     customer pays (`server/shop/payments/routes.ts`).
+   *  2. **An external cron service**, minute by minute, through the GET below.
+   *  3. **The cart's daily maintenance cron**, which drains this outbox too
+   *     (`server/shop/app.ts` injects it) — the backstop if 1 and 2 both stop.
+   *
+   * The line that used to stand here — "NOTHING SCHEDULES IT YET" — was true, and it
+   * was measured: production held every `commerce_events` row at `processed_at = NULL,
+   * attempts = 0`, including a real customer's capture, and `shop_orders` was empty.
    *
    * ⚠️  `emails.sent` MEANS "HANDED TO THE MAILER". The default mailer records the
    *     message and sends nothing (see `OrdersDeps.mailer`).
    */
-  routes.post('/admin/sweep', requireOwner(), async (c) => {
-    const db = currentDb(c);
-    const d = deps();
-    const now = d.now();
-    /*
-     * Events first, then email. The order matters: draining the outbox is what WRITES
-     * the email intents, so doing it the other way round would always leave this sweep's
-     * own new mail for the next one.
-     */
-    const events = await sweepCommerceEvents(db, { origin: c.get('origins')?.[0] ?? null }, now);
-    const emails = await sweepEmailIntents(db, d.mailer, now);
-    return c.json({ events, emails });
+  /*
+   * GET, FOR AN EXTERNAL CRON SERVICE (admin#29 follow-up).
+   *
+   * `vercel.json` IS AT THE HOBBY CEILING OF TWO CRONS AND BOTH SLOTS ARE TAKEN
+   * — `server/routes/email.ts` states it: "Two crons is also the Hobby ceiling; a
+   * third needs a plan, not a config line." Worse, a Hobby cron runs DAILY with
+   * ±59 minutes of jitter, and a customer waiting up to a day to learn their
+   * order exists is not an order pipeline. Folding the sweep into the cart's
+   * maintenance cron (which this change does NOT remove) buys a backstop, not a
+   * mechanism.
+   *
+   * A free external scheduler — cron-job.org and its like — can call an HTTPS
+   * endpoint every minute, which solves the latency properly and needs no plan
+   * upgrade. What it needs from us is a GET it can authenticate, because that is
+   * all such a service issues.
+   *
+   * SAME SHAPE AS `GET /api/admin/email/drain`, COPIED RATHER THAN REINVENTED:
+   * one path, two methods, TWO DIFFERENT CREDENTIALS, one shared implementation.
+   * A leaked session must not become a way to drive the sweeper, and the cron
+   * token must not become a general-purpose admin credential — and `runSweep`
+   * below is what stops the two credentials growing two behaviours.
+   *
+   * `assertCronRequest` FAILS CLOSED, and that is the whole security of this
+   * route. `originGuard` waves every GET through (`SAFE_METHODS`), so the bearer
+   * token is the ONLY thing in front of it: a deployment with no `CRON_SECRET`,
+   * or one shorter than 16 characters, answers 401 to everybody rather than
+   * opening the endpoint. NOT UNAUTHENTICATED, deliberately — draining this
+   * outbox turns a capture into a paid order and sends a confirmation email, and
+   * an open endpoint would let anyone drive money-adjacent work.
+   */
+  routes.get('/admin/sweep', async (c) => {
+    assertCronRequest(c.req.header('Authorization'));
+    return c.json(await runSweep(c, deps()));
   });
+
+  routes.post('/admin/sweep', requireOwner(), async (c) => c.json(await runSweep(c, deps())));
 
   /**
    * `requireOwner()`, not `requireAuth()` — contract §HTTP puts anything money-adjacent
@@ -466,6 +497,56 @@ function registerAdminRoutes(
     return c.json({ order });
   });
 }
+
+/**
+ * The work both sweep methods share, so the two credentials cannot drift into two
+ * behaviours — `server/routes/email.ts`'s `runDrain`, in this subsystem.
+ *
+ * EVENTS FIRST, THEN EMAIL. The order matters: draining the outbox is what WRITES
+ * the email intents, so doing it the other way round would always leave this
+ * sweep's own new mail for the next one.
+ *
+ * BOUNDED AT `SWEEP_BATCH`, AND THE REASON STILL APPLIES TO AN EXTERNAL CALLER.
+ * `vercel.json` caps these functions at `maxDuration: 30`, and that cap is on the
+ * FUNCTION, not on whoever invoked it — an external scheduler has no timeout of
+ * its own to worry about, but the platform still kills the invocation at thirty
+ * seconds and neither Vercel nor cron-job.org retries what it killed. So an
+ * over-large batch is one that never completes rather than one that runs slowly.
+ * The bound also keeps each run's load on Neon predictable, which matters far
+ * more at one call a minute than at one a day.
+ *
+ * `drainCommerceEvents` RATHER THAN A SINGLE `sweepCommerceEvents` PASS: it keeps
+ * going while passes make progress and stops the moment one does not, so a
+ * backlog clears over one invocation instead of one row-batch per call. Its own
+ * wall-clock budget sits inside `maxDuration`.
+ */
+async function runSweep(c: Context<AppEnv>, d: ResolvedDeps) {
+  const db = currentDb(c);
+  const now = d.now();
+  const events = await drainCommerceEvents(
+    db,
+    { origin: c.get('origins')?.[0] ?? null },
+    { now, limit: SWEEP_BATCH },
+  );
+  const emails = await sweepEmailIntents(db, d.mailer, now);
+  return { events, emails };
+}
+
+/**
+ * How many outbox rows one pass of one invocation takes on.
+ *
+ * The same 50 the cart's maintenance cron uses (`CRON_BATCH`), and spelled here
+ * rather than imported because the two are the same NUMBER for the same REASON,
+ * not the same setting — coupling Orders' batch to Cart's would make an unrelated
+ * change to one silently retune the other.
+ */
+export const SWEEP_BATCH = 50;
+
+/** What an external cron service should be pointed at. Exported so
+ *  `routes.test.ts` asserts the string the operator is given is the string the
+ *  router registers — a path in a runbook that nothing checks is a scheduled job
+ *  that 404s on time, forever. */
+export const SWEEP_CRON_PATH = '/api/shop/admin/sweep';
 
 async function requireOrder(db: Db, id: string): Promise<OrderRead> {
   const read = await readOrder(db, id);

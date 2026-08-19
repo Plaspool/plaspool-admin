@@ -11,7 +11,7 @@
  * and the mounting is where `requireAuth()`-as-blanket-middleware turned an unrouted 404
  * into a 401 on the blog side.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { SEED_PASSWORD, freshDb } from '../../test/harness';
 import type { TestCtx } from '../../test/harness';
@@ -29,6 +29,8 @@ import {
   paymentCaptured,
 } from './test/fixtures';
 import { sweepCommerceEvents, type ConsumerDeps } from './repo/consumer';
+import { SWEEP_CRON_PATH } from './routes';
+import { createApp } from '../../index';
 import { markOrderPaid, readOrder, readOrderByCheckout, type OrderRead } from './repo/orders';
 import { mintGuestToken } from './tokens';
 import { formatOrderNumber } from './order-number';
@@ -934,6 +936,104 @@ describe('POST /admin/sweep is the caller both sweepers otherwise lack', () => {
     expect(second.events.applied).toBe(0);
     expect(second.events.parked).toBe(0);
     expect(second.emails.sent).toBe(0);
+  });
+});
+
+/**
+ * `GET /api/shop/admin/sweep` — the externally-callable half.
+ *
+ * WHY IT EXISTS: `vercel.json` is at the Hobby ceiling of two crons and both
+ * slots are taken, and a Hobby cron is daily with ±59 minutes of jitter. A free
+ * external scheduler can call an HTTPS endpoint every minute, which is what an
+ * order pipeline actually needs — but such a service issues a GET and a header,
+ * and nothing else.
+ *
+ * THE FAILS-CLOSED PROPERTY IS THE WHOLE SECURITY OF THIS ROUTE, so it is what
+ * this block is about. `originGuard` waves every GET through (`SAFE_METHODS`),
+ * so the bearer token is the ONLY thing in front of it — and draining this
+ * outbox turns a capture into a paid order and sends a confirmation. An
+ * unauthenticated version would let anybody drive money-adjacent work, and a
+ * "compare the secret if one is configured" version would be exactly that on
+ * every deployment and every preview that has not set `CRON_SECRET`.
+ */
+describe('GET /admin/sweep, for an external cron service', () => {
+  const SECRET = 'a-test-cron-secret-at-least-16-chars';
+  const bearer = (token: string) => ({ headers: { authorization: `Bearer ${token}` } });
+
+  afterEach(() => {
+    delete process.env.CRON_SECRET;
+  });
+
+  it('401s with no Authorization header at all', async () => {
+    process.env.CRON_SECRET = SECRET;
+    expect((await client().get('/api/shop/admin/sweep')).status).toBe(401);
+  });
+
+  it('401s with the wrong bearer token', async () => {
+    process.env.CRON_SECRET = SECRET;
+    expect(
+      (await client().get('/api/shop/admin/sweep', bearer('not-the-secret-but-long'))).status,
+    ).toBe(401);
+    // Same length as the real one, so this exercises the constant-time compare
+    // rather than the length guard that precedes it.
+    expect(
+      (await client().get('/api/shop/admin/sweep', bearer('X'.repeat(SECRET.length)))).status,
+    ).toBe(401);
+  });
+
+  it('FAILS CLOSED when CRON_SECRET is unset, or too short to be one', async () => {
+    /*
+     * THE ONE THAT MATTERS. A deployment with no secret is the default state of a
+     * new project and of every preview, and the tempting implementation makes
+     * exactly those deployments public. No secret means NO ACCESS — including for
+     * a caller who presents nothing, which is the shape an attacker would try
+     * first.
+     */
+    delete process.env.CRON_SECRET;
+    expect((await client().get('/api/shop/admin/sweep')).status).toBe(401);
+    expect((await client().get('/api/shop/admin/sweep', bearer(SECRET))).status).toBe(401);
+
+    // Vercel's own advice is "at least 16 characters", enforced rather than hoped
+    // for: a two-character secret is a secret in name only.
+    process.env.CRON_SECRET = 'short';
+    expect((await client().get('/api/shop/admin/sweep', bearer('short'))).status).toBe(401);
+  });
+
+  it('sweeps for the right bearer, and does the same work the POST does', async () => {
+    process.env.CRON_SECRET = SECRET;
+    await insertEvents(ctx.db, [checkoutCompleted(), paymentCaptured()]);
+
+    const res = await client().get('/api/shop/admin/sweep', bearer(SECRET));
+
+    expect(res.status).toBe(200);
+    const body = await json<{
+      events: { applied: number; parked: number };
+      emails: { sent: number };
+    }>(res);
+    expect(body.events.applied).toBe(2);
+    expect((await readOrderByCheckout(ctx.db, CHECKOUT))?.order.status).toBe('paid');
+  });
+
+  it('does not accept a WRITER SESSION in place of the token', async () => {
+    /*
+     * Two credentials, and neither is accepted in place of the other. A leaked
+     * session must not become a way to drive the sweeper — the POST is
+     * `requireOwner()` and this method is the token, full stop.
+     */
+    process.env.CRON_SECRET = SECRET;
+    const writer = await login(ctx.users.writer);
+    expect((await writer.get('/api/shop/admin/sweep')).status).toBe(401);
+  });
+
+  it('the path an operator is given is the path the router registers', () => {
+    /*
+     * A path in a runbook that nothing checks is a scheduled job that 404s on
+     * time, forever — Vercel's own documentation says as much about its crons,
+     * and an external service is no better. `SWEEP_CRON_PATH` is what the
+     * operator configures, so it is asserted against the router's own table.
+     */
+    const registered = new Set(createApp().routes.map((r) => `${r.method} ${r.path}`));
+    expect(registered.has(`GET ${SWEEP_CRON_PATH}`)).toBe(true);
   });
 });
 

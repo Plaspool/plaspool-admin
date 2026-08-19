@@ -224,9 +224,14 @@ describe('vercel.json actually points at this route', () => {
  * still pass with no entry added.
  *
  * Before this, NOTHING drained `commerce_events` for Orders in a deployment.
- * `orders/routes.ts` offers an owner-only `/admin/sweep` and says of it
- * "NOTHING SCHEDULES IT YET"; production proved it, with every row sitting at
+ * `orders/routes.ts` offered a `/admin/sweep` route and said of it "NOTHING
+ * SCHEDULES IT YET"; production proved it, with every row sitting at
  * `processed_at = NULL, attempts = 0` — including a real customer's capture.
+ *
+ * THIS IS THE BACKSTOP, NOT THE PRIMARY PATH: the capture drains inline, and an
+ * external cron service calls `GET /api/shop/admin/sweep` by the minute. A daily
+ * run with ±59 minutes of jitter earns its place as the one caller that still
+ * runs when both of those have stopped.
  *
  * Driven through `createApp()`, so it fails if `server/shop/app.ts` ever stops
  * handing `sweepEvents` to the cart router.

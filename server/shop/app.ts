@@ -224,11 +224,16 @@ export function shopApp(): Hono<AppEnv> {
        * imports the other.
        *
        * BEFORE THIS LINE NOTHING DRAINED `commerce_events` FOR ORDERS AT ALL.
-       * `orders/routes.ts` still says "NOTHING SCHEDULES IT YET" of its
-       * `/admin/sweep` route, and it was right: production held seven
+       * `orders/routes.ts` said "NOTHING SCHEDULES IT YET" of its `/admin/sweep`
+       * route, and it was right: production held seven
        * `catalog.variant.published` rows and a `payment.captured` all at
        * `processed_at = NULL, attempts = 0`, and a customer who had genuinely
        * paid had no order.
+       *
+       * THIS IS THE BACKSTOP, NOT THE PRIMARY PATH. The capture drains inline,
+       * and an external cron service calls `GET /api/shop/admin/sweep` by the
+       * minute; a daily run with ±59 minutes of jitter earns its place only as
+       * the caller that still runs when both of those have stopped.
        */
       sweepEvents: (db, origin) => drainCommerceEvents(db, { origin }, { limit: 50 }),
     }),
