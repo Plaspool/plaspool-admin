@@ -9,7 +9,7 @@ import { ProviderError } from './provider/scrub';
 import { paystackProvider, paymentsEnv } from './config';
 import { cancelIntent, createIntent, getIntent, applyIntentStatus } from './intents';
 import { createRefund, listRefunds } from './refunds';
-import { drainPaymentEvents, processEvent, storeEvent } from './webhook';
+import { completeCheckoutForIntent, drainPaymentEvents, processEvent, storeEvent } from './webhook';
 import type { Context } from 'hono';
 import type { AppEnv } from '../../app-env';
 import type { Db } from '../../db/client';
@@ -42,6 +42,25 @@ export interface PaymentDeps {
   checkout?: PaymentsCheckoutPort;
   /** Where the customer lands after paying. A UI hint only. */
   callbackUrl?: string;
+
+  /**
+   * DRAIN `commerce_events` OPPORTUNISTICALLY AFTER A CAPTURE (admin#29).
+   *
+   * Orders reacts to the outbox and nothing was draining it: every row in
+   * production sat `processed_at = NULL, attempts = 0`. The scheduled backstop
+   * now runs inside the cart-maintenance cron — `vercel.json` is at the Hobby
+   * ceiling of two crons, so a third was not available — but a Hobby cron runs
+   * DAILY with up to an hour of jitter, and a customer waiting a day to learn
+   * their order exists is not an order pipeline. So the capture path drains a
+   * few rows itself and the cron becomes the backstop for parked and failed
+   * events rather than the primary path.
+   *
+   * INJECTED RATHER THAN IMPORTED: Payments reaches Orders through the outbox
+   * and nowhere else (contract §2 R4), so the sweep arrives from the composition
+   * root exactly as `checkout` does. Absent means no inline drain — correct for
+   * every test that cares only about the status ladder, and the cron still runs.
+   */
+  sweepEvents?: (db: Db, origin: string | null) => Promise<unknown>;
 }
 
 /**
@@ -53,14 +72,28 @@ export interface PaymentDeps {
  * A named failure says the actual thing.
  */
 function unwiredCheckoutPort(): PaymentsCheckoutPort {
+  const unwired = () =>
+    new Error(
+      'CheckoutPort is not wired: pass `checkout` to createPaymentRoutes(). ' +
+        'Cart owns the real implementation (contract §5).',
+    );
   return {
     totals() {
-      return Promise.reject(
-        new Error(
-          'CheckoutPort is not wired: pass `checkout` to createPaymentRoutes(). ' +
-            'Cart owns the real implementation (contract §5).',
-        ),
-      );
+      return Promise.reject(unwired());
+    },
+    /*
+     * IT REJECTS, AND THE CAPTURE PATH SWALLOWS THAT. Returning
+     * `'already-completed'` here would be the worst possible default: it says
+     * "somebody else has the order in hand" when nobody does, which is precisely
+     * the silence admin#27 measured in production. A rejection is logged by
+     * `completeCheckoutForIntent`, the payment is still recorded, and the outbox
+     * still holds the capture for a later sweep.
+     */
+    complete() {
+      return Promise.reject(unwired());
+    },
+    recordContact() {
+      return Promise.reject(unwired());
     },
   };
 }
@@ -211,8 +244,36 @@ export function createWebhookRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
      * prevented by the `processed_at IS NULL` gate rather than by this branch.
      */
     if (!stored.duplicate) {
+      /*
+       * `unwiredCheckoutPort()` RATHER THAN `undefined`, so a deployment that
+       * forgot to inject Cart's port gets a logged rejection on every capture
+       * instead of a pipeline that quietly never completes a checkout. That
+       * silence is exactly what admin#27 was.
+       */
+      const captureDeps = { checkout: deps.checkout ?? unwiredCheckoutPort() };
+      const origin = c.get('origins')?.[0] ?? null;
       afterResponse(c, () =>
-        processEvent(db, stored.rowId).then(() => drainPaymentEvents(db, 5)),
+        processEvent(db, stored.rowId, Date.now(), captureDeps)
+          .then(() => drainPaymentEvents(db, 5, Date.now(), captureDeps))
+          /*
+           * THE INLINE OUTBOX DRAIN (admin#29), AND IT IS THE LAST THING AND THE
+           * LEAST IMPORTANT THING.
+           *
+           * It runs after the capture is already committed, it is bounded to a
+           * handful of rows — the events for one checkout, not a backlog — and
+           * its failure is swallowed exactly the way `createCustomerSession`'s
+           * opportunistic sweep and Cart's lazy `runCartMaintenance` swallow
+           * theirs. A drain that could fail the webhook would turn a slow or
+           * unlucky Orders sweep into a Paystack redelivery storm for an event
+           * we had already recorded correctly.
+           *
+           * NOTHING IS LOST WHEN IT FAILS. It deletes nothing and claims
+           * nothing: an event it did not reach is simply still in
+           * `commerce_events` with no consumption row, which is the same state
+           * it was in a moment ago, and the cart-maintenance cron drains it.
+           */
+          .then(() => deps.sweepEvents?.(db, origin))
+          .catch(() => undefined),
       );
     }
 
@@ -322,6 +383,17 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
     });
 
     if (!stored.duplicate) {
+      /*
+       * THE SAME ORDER AS THE WEBHOOK, for the same reason. This route is a
+       * genuine capture path — a customer returning from Paystack whose webhook
+       * is late reaches `captured` here and nowhere else — so leaving the
+       * completion out would have made the fix work only for the delivery that
+       * happened to arrive first. `completeCheckoutForIntent` is a no-op for
+       * every other status.
+       */
+      if (truth.status === 'captured') {
+        await completeCheckoutForIntent(db, intent.id, { checkout });
+      }
       await applyIntentStatus(db, {
         eventRowId: stored.rowId,
         intentId: intent.id,
@@ -329,6 +401,9 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
         providerIntentId: intent.providerIntentId,
         failureReason: truth.failureReason,
       });
+      // Best-effort, bounded, and never able to fail the confirm — see the
+      // webhook route's note.
+      await deps.sweepEvents?.(db, c.get('origins')?.[0] ?? null).catch(() => undefined);
     }
 
     const current = await getIntent(db, intent.id);
@@ -378,7 +453,9 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
    * post-response work did not finish because the function was frozen.
    */
   app.post('/shop/admin/payments/events/drain', owner, async (c) =>
-    c.json({ processed: await drainPaymentEvents(currentDb(c), 50) }),
+    c.json({
+      processed: await drainPaymentEvents(currentDb(c), 50, Date.now(), { checkout }),
+    }),
   );
 
   return app;

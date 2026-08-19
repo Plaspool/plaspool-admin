@@ -20,9 +20,12 @@ import { readFileSync } from 'node:fs';
 import { sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { freshDb, resetShopTables, SEED_PASSWORD } from './test/harness';
+import { resetOrderTables } from '../orders/test/harness';
 import { httpClient, json } from '../../test/http';
 import { createApp } from '../../index';
 import { CRON_PATH } from './routes/checkout';
+import { checkoutCompleted, insertEvents, CHECKOUT } from '../orders/test/fixtures';
+import { readOrderByCheckout } from '../orders/repo/orders';
 import type { HttpClient } from '../../test/http';
 import type { TestCtx } from './test/harness';
 
@@ -38,6 +41,10 @@ afterAll(() => ctx.close());
 
 beforeEach(async () => {
   await resetShopTables(ctx.db);
+  // Orders' tables too, now that this cron drives Orders' consumer: its
+  // consumption ledger outlives `resetShopTables` and would make the second test
+  // in a file find every event already handled.
+  await resetOrderTables(ctx.db);
   await ctx.db.execute(sql`TRUNCATE shop_products, shop_inventory_holds CASCADE`);
   process.env.CRON_SECRET = SECRET;
   client = httpClient(ctx.db);
@@ -69,6 +76,14 @@ describe('the cron endpoint', () => {
       // exit. `exhausted` false means it finished the work, not the budget.
       passes: 1,
       exhausted: false,
+      /*
+       * THE SECOND HALF OF THE SAME CRON (admin#29), and it is asserted here
+       * rather than only in its own block below because this is the test that
+       * pins the WHOLE response shape. Zero of everything on an empty outbox,
+       * and ONE pass — `drainCommerceEvents` stops the moment a pass makes no
+       * progress, which on an empty table is the first one.
+       */
+      events: { applied: 0, ignored: 0, parked: 0, passes: 1 },
     });
   });
 
@@ -196,5 +211,61 @@ describe('vercel.json actually points at this route', () => {
       expect(Number(minute)).toBeLessThan(60);
       expect(Number(hour)).toBeLessThan(24);
     }
+  });
+});
+
+/**
+ * THE COMMERCE OUTBOX'S ONLY SCHEDULED DRAIN (admin#29).
+ *
+ * `vercel.json` is at the Hobby ceiling of two crons and both slots are taken
+ * (`server/routes/email.ts`: "Two crons is also the Hobby ceiling; a third needs
+ * a plan, not a config line"), so Orders' sweep is folded into this cron rather
+ * than given one of its own — which is why the `vercel.json` assertions above
+ * still pass with no entry added.
+ *
+ * Before this, NOTHING drained `commerce_events` for Orders in a deployment.
+ * `orders/routes.ts` offers an owner-only `/admin/sweep` and says of it
+ * "NOTHING SCHEDULES IT YET"; production proved it, with every row sitting at
+ * `processed_at = NULL, attempts = 0` — including a real customer's capture.
+ *
+ * Driven through `createApp()`, so it fails if `server/shop/app.ts` ever stops
+ * handing `sweepEvents` to the cart router.
+ */
+describe('the cron drains the commerce outbox as well (admin#29)', () => {
+  it('turns a pending checkout.completed into an order', async () => {
+    await insertEvents(ctx.db, [checkoutCompleted()]);
+    expect(await readOrderByCheckout(ctx.db, CHECKOUT)).toBeNull();
+
+    const res = await client.get(CRON_PATH, bearer(SECRET));
+
+    expect(res.status).toBe(200);
+    const body = await json<{ events: { applied: number; passes: number } | null }>(res);
+    expect(body.events).not.toBeNull();
+    expect(body.events?.applied).toBe(1);
+
+    const read = await readOrderByCheckout(ctx.db, CHECKOUT);
+    expect(read).not.toBeNull();
+    expect(read?.order.status).toBe('pending');
+  });
+
+  it('is still idempotent with the second half attached', async () => {
+    // Cron delivery may duplicate. The consumption ledger is keyed on
+    // `(consumer, event_id)`, so the second run finds nothing left to apply —
+    // and must not raise, double-create, or report work it did not do.
+    await insertEvents(ctx.db, [checkoutCompleted()]);
+
+    const first = await json<{ events: { applied: number } }>(
+      await client.get(CRON_PATH, bearer(SECRET)),
+    );
+    const second = await json<{ events: { applied: number } }>(
+      await client.get(CRON_PATH, bearer(SECRET)),
+    );
+
+    expect(first.events.applied).toBe(1);
+    expect(second.events.applied).toBe(0);
+
+    const orders = await ctx.db.execute(sql`
+      SELECT count(*)::int AS n FROM shop_orders WHERE checkout_id = ${CHECKOUT}`);
+    expect(Number(orders.rows[0]?.n)).toBe(1);
   });
 });

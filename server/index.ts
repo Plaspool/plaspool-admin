@@ -25,11 +25,9 @@ import { registerOrdersDefaults } from './shop/orders/ports';
 import { resendMailer } from './mail/resend';
 import { SHOP_PREFIX, shopApp } from './shop/app';
 import { createReviewPublicRoutes } from './shop/reviews/public';
-import {
-  createPaymentRoutes,
-  webhookRoutes as paymentsWebhook,
-} from './shop/payments/routes';
+import { createPaymentRoutes, createWebhookRoutes } from './shop/payments/routes';
 import { checkoutPort } from './shop/cart/port';
+import { drainCommerceEvents } from './shop/orders/repo/consumer';
 import { resolveShopCustomer } from './shop/cart/identity/customers';
 import { paymentPort } from './shop/payments/port';
 import type { Mailer } from './mail/port';
@@ -247,7 +245,38 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * reading a cookie is the one thing that would make the origin exemption
    * unsafe.
    */
-  app.route(API_PREFIX, paymentsWebhook);
+  /*
+   * `createWebhookRoutes({ … })` AND NOT THE PRE-BUILT `webhookRoutes` EXPORT.
+   *
+   * THIS LINE WAS THE PRODUCTION BUG (admin#27). The pre-built export is
+   * `createWebhookRoutes()` with no dependencies, so the highest-severity route
+   * in the system ran with an unwired `CheckoutPort` — and once capture learned
+   * to complete a checkout, mounting the dependency-free export would have meant
+   * the fix worked in every test and did nothing at all in production. That is
+   * the exact shape of the two bugs this codebase has now shipped twice: a test
+   * app registering what the composition root did not.
+   *
+   * The same reasoning `createPaymentRoutes({ checkout: checkoutPort() })` below
+   * carries: THIS FILE is the only place allowed to know both halves of the
+   * seam, and it hands Cart's real port to Payments rather than letting Payments
+   * import Cart.
+   */
+  app.route(
+    API_PREFIX,
+    createWebhookRoutes({
+      checkout: checkoutPort(),
+      /*
+       * THE INLINE OUTBOX DRAIN (admin#29). Bounded to a handful of rows —
+       * enough for the two events one checkout produces, not a backlog — and its
+       * failure is swallowed inside the route. A Hobby cron runs DAILY with up
+       * to an hour of jitter, so without this a paying customer would wait until
+       * tomorrow to see an order; with it the cron is the backstop for parked
+       * and failed events, which is what a backstop should be.
+       */
+      sweepEvents: (db, origin) =>
+        drainCommerceEvents(db, { origin }, { limit: 10, passes: 2, budgetMs: 5_000 }),
+    }),
+  );
 
   /*
    * UNSUBSCRIBE, AND IT IS ABOVE `originGuard` FOR THE SAME REASON THE WEBHOOK IS.
@@ -479,7 +508,16 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * does — Cart's `checkoutPort()` is handed in from here, exactly as
    * `catalogPort` is handed to Cart in `server/shop/app.ts`.
    */
-  app.route(API_PREFIX, createPaymentRoutes({ checkout: checkoutPort() }));
+  app.route(
+    API_PREFIX,
+    createPaymentRoutes({
+      checkout: checkoutPort(),
+      // The `/confirm` route is a genuine capture path too — a customer back
+      // from Paystack whose webhook is late reaches `captured` there.
+      sweepEvents: (db, origin) =>
+        drainCommerceEvents(db, { origin }, { limit: 10, passes: 2, budgetMs: 5_000 }),
+    }),
+  );
 
   /*
    * COMMERCE, UNDER `/api/shop` (commerce contract §10). ONE LINE, and it is the
