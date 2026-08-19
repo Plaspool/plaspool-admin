@@ -387,12 +387,25 @@ async function insertOrderLineForVariant(
 describe('deleting a variant (issue #18)', () => {
   beforeAll(login);
 
-  it('deletes a never-ordered variant outright', async () => {
+  it('deletes a never-ordered variant outright, taking its price and inventory rows with it', async () => {
     const created = await createProduct('Delete Me');
     const variantRes = await http.post(`/api/shop/admin/products/${created.id}/variants`, {
       sku: 'DELETE-1',
+      onHand: 5,
     });
     const { variant } = await json<{ variant: { id: string } }>(variantRes);
+    // `createVariant` writes an inventory row in the same statement; this
+    // adds a `shop_prices` row too, so both cascades are actually exercised
+    // rather than deleting a variant that never had either.
+    expect(
+      (
+        await http.request(`/api/shop/admin/variants/${variant.id}/price`, {
+          method: 'PUT',
+          headers: { origin: TEST_ORIGIN, 'content-type': 'application/json' },
+          body: JSON.stringify({ amount: 999, currency: 'GBP' }),
+        })
+      ).status,
+    ).toBe(200);
 
     const res = await http.del(`/api/shop/admin/variants/${variant.id}`);
     expect(res.status).toBe(200);
@@ -400,6 +413,16 @@ describe('deleting a variant (issue #18)', () => {
     const detail = await http.get(`/api/shop/admin/products/${created.id}`);
     const body = await json<{ product: { variants: unknown[] } }>(detail);
     expect(body.product.variants).toHaveLength(0);
+
+    // Their removal rides on the CTEs (and, for inventory, an FK cascade) —
+    // asserted directly so a future schema change that drops the cascade is
+    // caught here rather than discovered as an orphaned row in production.
+    const prices = await ctx.db.execute(sql`
+      SELECT 1 FROM shop_prices WHERE variant_id = ${variant.id}`);
+    expect(prices.rows).toHaveLength(0);
+    const inventory = await ctx.db.execute(sql`
+      SELECT 1 FROM shop_inventory WHERE variant_id = ${variant.id}`);
+    expect(inventory.rows).toHaveLength(0);
   });
 
   it('cascades a never-ordered variant out of an open cart line', async () => {

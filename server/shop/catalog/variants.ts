@@ -484,6 +484,16 @@ export async function updateVariant(
  * whole statement deletes nothing rather than deleting half of a variant that
  * just got itself an order.
  *
+ * THE RACE IS NARROWED, NOT CLOSED. `shop_order_lines.variant_id` is
+ * deliberately NOT a foreign key (Catalog does not own that table), so an
+ * order committed in the instant after `ord`'s snapshot but before this
+ * statement's write is invisible to it — the delete would proceed and that
+ * order line would end up naming a variant that no longer exists. Closing it
+ * fully needs the cross-subsystem FK the contract forbids. It is extremely
+ * narrow (a checkout completing in the same tens-of-milliseconds as an admin
+ * clicking Delete on a variant with zero prior orders), and worth stating
+ * rather than letting the guarantee above read as absolute when it is not.
+ *
  * CART LINES CASCADE, PRICES AND INVENTORY GO WITH THEM. This is the
  * deliberate decision from issue #18's open question: a cart line pointing at
  * a deleted variant would break every subsequent cart read for that customer,
@@ -491,6 +501,24 @@ export async function updateVariant(
  * honest outcome is that it silently leaves the basket. A cart is a basket,
  * not a record — unlike an order line, which is exactly why an order line
  * blocks the delete instead of cascading the same way.
+ *
+ * A HELD RESERVATION IS RELEASED, NOT LEFT ORPHANED. `shop_reservations` (Cart's
+ * table) is a FIFTH place `variant_id` is named, and issue #18's table did not
+ * list it. `shop_inventory_holds` — Catalog's OWN mirror of the same hold — has
+ * a real FK to `shop_variants` with `ON DELETE CASCADE`, so it vanishes for
+ * free the instant the variant row goes. `shop_reservations` has no such FK
+ * (R3: it is Cart's, not Catalog's), so left alone a `held` row would survive
+ * the variant it names, and `releaseHold` — which matches by
+ * `reservation_id` against a `shop_inventory_holds` row that is by then already
+ * gone — would find nothing and return `false` forever: a permanent orphan the
+ * sweeper can never clear. `state` is moved to `'released'` rather than the row
+ * being deleted, for the same reason a hold is released rather than destroyed
+ * everywhere else in this state machine (`reservations/repo.ts`): the row is
+ * the record of "this hold existed and ended", and `'released'` is exactly what
+ * capture/release already means when a hold does not convert to an order —
+ * which, by construction here, this one never will. Restricted to `state =
+ * 'held'`: a `committed` or already-`expired`/`released` row is a terminal
+ * state this delete has no business moving.
  *
  * RETURNS THE DELETED VARIANT (for the caller's response / audit use), or
  * throws `VariantPreconditionFailedError` carrying the still-live variant when
@@ -503,6 +531,10 @@ export async function deleteVariant(db: Db, id: string): Promise<Variant> {
     ), del_cart AS (
       DELETE FROM shop_cart_lines
        WHERE variant_id = ${id} AND NOT EXISTS (SELECT 1 FROM ord)
+    ), rel_resv AS (
+      UPDATE shop_reservations
+         SET state = 'released'
+       WHERE variant_id = ${id} AND state = 'held' AND NOT EXISTS (SELECT 1 FROM ord)
     ), del_price AS (
       DELETE FROM shop_prices
        WHERE variant_id = ${id} AND NOT EXISTS (SELECT 1 FROM ord)
@@ -514,17 +546,22 @@ export async function deleteVariant(db: Db, id: string): Promise<Variant> {
        WHERE id = ${id} AND NOT EXISTS (SELECT 1 FROM ord)
       RETURNING ${sql.raw(VARIANT_COLUMNS.join(', '))}
     )
-    SELECT (SELECT 1 FROM ord) AS blocked,
-           ${sql.raw(VARIANT_COLUMNS.map((c) => `del_var.${c}`).join(', '))}
+    SELECT ${sql.raw(VARIANT_COLUMNS.map((c) => `del_var.${c}`).join(', '))}
       FROM del_var`);
 
   const row = res.rows[0];
   if (row) return rowToVariant(row);
 
-  // Nothing came back from `del_var`: either the row was never there, or the
-  // delete was blocked by `ord`. The two need a second, cheap read to tell
-  // apart — the write statement above deliberately returns no row either way,
-  // so this is not a race, it is disambiguating what already happened.
+  /*
+   * Nothing came back from `del_var`: either the row was never there, or the
+   * delete was blocked by `ord`. The write statement above deliberately
+   * returns no row either way — every CTE in it is gated the same way, so a
+   * blocked write and a missing row are indistinguishable from its result
+   * alone — so telling them apart is a second, cheap read done here rather
+   * than a column threaded through the write that could never actually carry
+   * a value (a delete that returns zero rows cannot also return `blocked`
+   * from that same zero-row result).
+   */
   const blocked = await db.execute(sql`
     SELECT 1 FROM shop_order_lines WHERE variant_id = ${id} LIMIT 1`);
   if (blocked.rows[0]) {
