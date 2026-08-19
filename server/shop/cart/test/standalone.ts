@@ -12,12 +12,13 @@ import type { Db } from '../../../db/client';
  * ═══ WHY THIS EXISTS, AND WHY IT IS NOT THE DEFAULT ═══
  *
  * `server/shop/app.ts` builds the cart router once, with the real `CatalogPort`
- * and no magic-link deliverer, and `createApp()` mounts it. That is the shape
- * production has, so it is the shape almost every route test drives — through
- * `httpClient()`, at `/api/shop/...`, with the whole middleware stack.
+ * and whatever `SHOP_AUTH_BRIDGE_SECRET` the environment provides, and
+ * `createApp()` mounts it. That is the shape production has, so it is the
+ * shape almost every route test drives — through `httpClient()`, at
+ * `/api/shop/...`, with the whole middleware stack.
  *
  * What that arrangement cannot do is inject. `AppDeps` has no `catalog` and no
- * `deliverMagicLink` field, and `server/index.ts` belongs to Catalog (contract
+ * `bridgeSecret` field, and `server/index.ts` belongs to Catalog (contract
  * §3), so a test cannot reach past `createApp()` to hand Cart a different
  * dependency. Mounting a SECOND cart router into the same app is not the answer
  * either: Hono resolves two routers claiming one path by registration order

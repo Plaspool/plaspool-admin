@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { getEnv } from '../env';
 import type { AppEnv } from '../app-env';
 import { toResponse } from '../middleware/errors';
 import {
@@ -169,7 +170,14 @@ export function shopApp(): Hono<AppEnv> {
    *     (Plaspool/plaspool-storefront#22).
    * ═══════════════════════════════════════════════════════════════════════════
    */
-  shop.route('/', cartShopRoutes({ catalog: catalogPort, storeCurrency: SHOP_CURRENCY }));
+  shop.route(
+    '/',
+    cartShopRoutes({
+      catalog: catalogPort,
+      storeCurrency: SHOP_CURRENCY,
+      bridgeSecret: getEnv().SHOP_AUTH_BRIDGE_SECRET || undefined,
+    }),
+  );
 
   /*
    * THE DASHBOARD'S READ SURFACE — `/admin/stats`, `/admin/customers`,

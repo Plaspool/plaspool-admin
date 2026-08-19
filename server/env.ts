@@ -23,6 +23,13 @@ const Schema = z.object({
    */
   RESEND_API_KEY: z.string().default(''),
   MAIL_FROM: z.string().default(''),
+  /*
+   * The storefront identity bridge (customer auth). `.default('')` for the same
+   * reason as the mail vars: a deployment without it still boots and still
+   * serves everything else — only `POST /api/shop/customer/session/exchange`
+   * fails, with a named 501 rather than an import-time crash.
+   */
+  SHOP_AUTH_BRIDGE_SECRET: z.string().default(''),
   NODE_ENV: z.string().default('development'),
 });
 

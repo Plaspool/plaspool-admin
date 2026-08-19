@@ -15,15 +15,54 @@
  * accepted by the other resolver.
  */
 import { sql } from 'drizzle-orm';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { freshDb, SEED_PASSWORD } from '../test/harness';
 import { httpClient, json, TEST_ORIGIN } from '../../../test/http';
 import { SESSION_COOKIE } from '../../../middleware/session';
 import { CART_COOKIE, SHOP_SESSION_COOKIE } from './cookies';
 import { createCustomer, createCustomerSession } from './customers';
+import { signAssertion } from './bridge';
 
 import type { HttpClient } from '../../../test/http';
 import type { TestCtx } from '../test/harness';
+import type { Assertion } from './bridge';
+
+/*
+ * `server/shop/app.ts` reads its bridge secret from `getEnv()`, not from an
+ * injectable dep — there is no `AppDeps` seam for it, unlike `catalog` and
+ * `deliverMagicLink` before it. Mocking `getEnv()` here is the only way to
+ * drive the real exchange route through the full stack (`httpClient`, origin
+ * guard, session middleware, cookie jar) rather than through
+ * `standaloneShop`, which would give up the very things this file tests.
+ *
+ * `vi.mock` factories are hoisted above every other top-level statement, so
+ * the secret is inlined rather than referenced from a `const` declared below.
+ */
+vi.mock('../../../env', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../env')>();
+  return {
+    ...actual,
+    getEnv: () => ({
+      ...actual.getEnv(),
+      SHOP_AUTH_BRIDGE_SECRET: 'session-test-bridge-secret-32-chars',
+    }),
+  };
+});
+
+const BRIDGE_SECRET = 'session-test-bridge-secret-32-chars';
+
+function assertionFor(email: string, over: Partial<Assertion> = {}): string {
+  const now = Date.now();
+  return signAssertion(BRIDGE_SECRET, {
+    v: 1,
+    sub: '11111111-2222-3333-4444-555555555555',
+    email,
+    iat: now,
+    exp: now + 60_000,
+    jti: `jti-${Math.random().toString(36).slice(2)}`,
+    ...over,
+  });
+}
 
 let ctx: TestCtx;
 let client: HttpClient;
@@ -53,22 +92,21 @@ async function loginAsWriter(): Promise<void> {
 }
 
 /**
- * A customer session, minted through the repo and planted in the jar.
+ * A customer session, minted through the real exchange route and planted in
+ * the jar.
  *
- * Through the REPO and not through the HTTP surface, deliberately: magic-link
- * delivery is not implemented in v1 (see `routes/customer.ts`), so the only
- * honest way to hold a customer session in a test is to mint it the way the
- * redeem route will. The cookie that comes back is the real one, set by the
- * real `setShopSessionCookie`.
+ * Through the HTTP surface, deliberately, now that there is a real route to
+ * drive: a signed assertion stands in for whatever Neon Auth would have
+ * verified upstream, and `client.post` carries the resulting `Set-Cookie` into
+ * the jar exactly as a browser would.
  */
-async function loginAsCustomer(email: string): Promise<{ id: string; token: string }> {
-  const customer = await createCustomer(ctx.db, { email });
-  const session = await createCustomerSession(ctx.db, customer.id);
-  const res = await client.post('/api/shop/customer/session/redeem', {
-    token: session.token,
+async function loginAsCustomer(email: string): Promise<{ id: string }> {
+  const res = await client.post('/api/shop/customer/session/exchange', {
+    assertion: assertionFor(email),
   });
   expect(res.status).toBe(200);
-  return { id: customer.id, token: session.token };
+  const body = await json<{ customer: { id: string } }>(res);
+  return { id: body.customer.id };
 }
 
 describe('the writer session and the customer session do not interfere', () => {
@@ -180,10 +218,8 @@ describe('the customer cookie matches the writer cookie except on SameSite', () 
      * pins the divergence rather than leaving it to be noticed. `__Host-` says
      * nothing about `SameSite`, so every guarantee this case asserts is intact.
      */
-    const customer = await createCustomer(ctx.db, { email: 'shopper@test.local' });
-    const session = await createCustomerSession(ctx.db, customer.id);
-    const res = await client.post('/api/shop/customer/session/redeem', {
-      token: session.token,
+    const res = await client.post('/api/shop/customer/session/exchange', {
+      assertion: assertionFor('shopper@test.local'),
     });
 
     const header = res.headers.getSetCookie().find((h) => h.startsWith(SHOP_SESSION_COOKIE));
@@ -212,10 +248,8 @@ describe('the customer cookie matches the writer cookie except on SameSite', () 
    * ═══════════════════════════════════════════════════════════════════════════
    */
   it('is SameSite=None, while the writer cookie stays Lax', async () => {
-    const customer = await createCustomer(ctx.db, { email: 'crosssite@test.local' });
-    const session = await createCustomerSession(ctx.db, customer.id);
-    const res = await client.post('/api/shop/customer/session/redeem', {
-      token: session.token,
+    const res = await client.post('/api/shop/customer/session/exchange', {
+      assertion: assertionFor('crosssite@test.local'),
     });
 
     const header = res.headers.getSetCookie().find((h) => h.startsWith(SHOP_SESSION_COOKIE));
