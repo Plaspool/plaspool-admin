@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
+import { shopCors } from '../cart/cors';
 import {
   UnauthenticatedError,
   pathParam,
@@ -62,6 +63,40 @@ import { MAX_SEARCH_LENGTH, readOrderByNumber, searchOrders } from '../admin/ord
  */
 export function createOrdersRoutes(construction: OrdersDeps = {}): Hono<AppEnv> {
   const routes = new Hono<AppEnv>();
+
+  /*
+   * THE RESPONSE-SIDE CORS HEADER, REGISTERED HERE AND NOT LIFTED TO
+   * `shopApp()` (admin#26).
+   *
+   * Preflights already pass: Cart's `built.options('/*', shopPreflight)`
+   * (`cart/routes/index.ts`) catches every `OPTIONS` under `/api/shop/*`,
+   * Orders included, since Orders registers no `OPTIONS` handler of its own —
+   * so adding one here would be solving a problem that does not exist. What
+   * was missing is `access-control-allow-credentials` on the REAL response:
+   * `shopCors()` used to be `built.use('*', …)` *inside Cart's router*, which
+   * never ran for a sibling mount like this one. `GET /api/shop/orders`
+   * therefore came back with no credentials header, and a cross-site browser
+   * refused to hand the (successful) response to the storefront's JS —
+   * measured against production in the issue.
+   *
+   * REGISTERED ON THIS ROUTER, NOT ON `shopApp()`. Lifting `shopCors()` to the
+   * shop app's root would be the smaller diff and would remove the whole class
+   * of "sibling mount forgot CORS" bugs rather than this one instance — but it
+   * would also silently hand a credentialed cross-origin surface to
+   * `/admin/*`, which is writer-gated and has never been reviewed for that.
+   * The writer session cookie is `SameSite=Lax`, so it would not actually
+   * travel cross-site today — but that is a second line of defence doing the
+   * first line's job, and it would become load-bearing without anyone
+   * deciding that on purpose. Widening the credentialed surface is a decision
+   * per mount, not a side effect of a refactor — so it is made here, on the
+   * two customer-facing routes this router owns, and left unmade for the
+   * admin ones in the same file.
+   *
+   * `<AppEnv>` EXPLICITLY: this router is `Hono<AppEnv>`, not `Hono<ShopEnv>`
+   * — `shopCors()` is generic over exactly that difference (see `cors.ts`).
+   */
+  routes.use('/orders/*', shopCors<AppEnv>());
+
   /*
    * RESOLVED PER REQUEST, NOT ONCE HERE. `server/shop/app.ts` composes routers with
    * no arguments, so the real `CustomerResolver` arrives through

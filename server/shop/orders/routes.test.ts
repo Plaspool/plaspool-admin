@@ -974,3 +974,44 @@ describe('mounting these routes changes nothing else about the app', () => {
     expect(res.headers.get('x-request-id')).toMatch(/[0-9a-f-]{36}/);
   });
 });
+
+// ================================================================ CORS (admin#26)
+
+/**
+ * `GET /api/shop/orders` returning no `access-control-allow-credentials` on
+ * its REAL response — the preflight already worked — is exactly what admin#26
+ * measured in production, and no route test above this one could see it:
+ * they all drive the app server-side, where CORS is never enforced. This is
+ * the header-level regression test the issue asked for.
+ */
+describe('the credentialed response headers (admin#26)', () => {
+  it('are on GET /api/shop/orders, a real request and not only the preflight', async () => {
+    const c = client();
+    c.asCustomer({ id: CUSTOMER_A });
+    const res = await c.get('/api/shop/orders', { headers: { Origin: TEST_ORIGIN } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBe(TEST_ORIGIN);
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    // Exactly once — `shopCors()`'s own preflight handler used to duplicate
+    // this in production (`Vary: Origin, Origin`), so a single writer matters.
+    expect(res.headers.get('vary')).toBe('Origin');
+  });
+
+  it('are present even on the admin surface’s own responses, but not on an unlisted origin', async () => {
+    const res = await client().get('/api/shop/orders', {
+      headers: { Origin: 'https://evil.example' },
+    });
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    expect(res.headers.get('access-control-allow-credentials')).toBeNull();
+    expect(res.headers.get('vary')).toBe('Origin');
+  });
+
+  it('does not carry these headers on the admin-only /admin/orders — only the customer surface opted in', async () => {
+    const owner = await login(ctx.users.owner);
+    const res = await owner.get('/api/shop/admin/orders', {
+      headers: { Origin: TEST_ORIGIN },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-credentials')).toBeNull();
+  });
+});

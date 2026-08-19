@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
+import { shopCors } from '../cart/cors';
 import { ForbiddenError, pathParam, readJson, readQuery, str } from '../../middleware/errors';
 import { clientIp, limit } from '../../middleware/ratelimit';
 import { requireAuth } from '../../middleware/session';
@@ -101,39 +102,30 @@ const AdminListQuery = z.object({
  * public routers are GET-only (simple requests), and the returns intake has
  * no storefront caller yet. This is where that stops being deferrable.
  *
- * The allow-list is `APP_ORIGINS`, via the same `c.get('origins')` the
- * origin guard publishes — ONE list decides both "may this origin write"
- * (the guard's 403) and "may this browser read the answer" (these headers).
- * The echo is the specific origin, never `*`: a wildcard cannot be scoped
- * down later without breaking callers, and `Vary: Origin` keeps any cache
- * from serving one origin's approval to another.
+ * NOW THE SHARED `shopCors()` / `shopPreflight()` FROM `server/shop/cart/cors.ts`
+ * (admin#26), NOT A HAND-ROLLED COPY. The hand-rolled `corsHeaders()` this
+ * used to be existed because, at the time, `shopCors()` was wired into Cart's
+ * own router via `built.use('*', ...)` — reachable only as a blanket
+ * middleware over EVERY cart path, with no way for a sibling mount like this
+ * one to take just the shape without also taking a dependency on Cart's own
+ * registration order.
  *
- * `access-control-allow-credentials: true`, ALWAYS, when the origin is
- * allowed at all — same as `shopCors()`/`shopPreflight()` in
- * `server/shop/cart/cors.ts`. This intake stopped being anonymous the moment
- * a customer session could attach `customer_id`: `resolveShopCustomer` reads
- * `__Host-shop_session` off the request, and a browser will neither send that
- * cookie nor accept `Set-Cookie` on the response without this header on both
- * the preflight and the real response. Omit it and a signed-in customer's
- * submission either never leaves the browser (with `credentials: 'include'`,
- * the browser blocks the credentialed preflight outright) or arrives cookie-
- * less (without it), and `customer_id` is silently null either way — exactly
- * the bug this file used to have. NOT reused from Cart's `shopCors()` itself:
- * that helper is wired into Cart's own router via `built.use('*', ...)`, and
- * reviews is a sibling mount, not a route inside it — importing the same
- * *shape* here, rather than the same middleware, keeps the two mounts
- * independent of each other's registration order.
+ * That reason is gone. Fixing admin#26 (Orders and Payments returning no
+ * `access-control-allow-credentials` on their real responses) made `shopCors()`
+ * generic and callable as a scoped, per-route `.use()` on ANY sibling router's
+ * own `Hono<AppEnv>` — exactly the shape this file always wanted and could not
+ * have. Registering it below is therefore not a new dependency on Cart's
+ * mount, only on Cart's `cors.ts` module, same as the type import Reviews
+ * already trusted for the reasoning.
+ *
+ * SCOPED TO `/reviews/submit` ONLY, not the whole router — `shopCors()` would
+ * be equally wrong to apply blanket here as it would to lift to `shopApp()`
+ * (see the note on Orders): `/reviews`, `/reviews/:id` (GET, PATCH, DELETE)
+ * are staff routes behind `requireAuth()`, called from this app's own admin
+ * UI, same-origin, and have never been reviewed for a credentialed
+ * cross-origin surface. Matches the "decision per mount, not a side effect"
+ * principle admin#26 applies to Orders and Payments.
  */
-function corsHeaders(c: Context<AppEnv>): Record<string, string> {
-  const origin = c.req.header('Origin');
-  const allowed = c.get('origins') ?? [];
-  if (!origin || !allowed.includes(origin)) return {};
-  return {
-    'access-control-allow-origin': origin,
-    'access-control-allow-credentials': 'true',
-    vary: 'Origin',
-  };
-}
 
 /**
  * The router factory. **Injected**, exactly as `cartShopRoutes` in
@@ -146,16 +138,31 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
   const routes = new Hono<AppEnv>();
   const resolveCustomer = deps.customer ?? NO_CUSTOMER;
 
-  routes.options('/reviews/submit', (c) => {
-    const cors = corsHeaders(c);
-    if (!('access-control-allow-origin' in cors)) return c.body(null, 204);
-    return c.body(null, 204, {
-      ...cors,
+  /*
+   * SCOPED TO THIS ONE PATH, AND BEFORE THE PREFLIGHT HANDLER SO IT ALSO
+   * COVERS THE `OPTIONS` RESPONSE — `shopCors()` appends `Vary: Origin` and,
+   * for an allowed origin, `access-control-allow-origin` /
+   * `-allow-credentials`, on the way out of whatever the preflight or the
+   * POST handler below produces. That is the actual duplication this file
+   * used to carry: deciding whether an origin may see credentials at all.
+   * See the long note above for why it is the shared helper now.
+   *
+   * `shopPreflight` ITSELF IS NOT REUSED, ON PURPOSE. It answers for every
+   * cart path with the same fixed method list (`GET, POST, PATCH, PUT,
+   * DELETE`); this route only ever accepts `POST`, and advertising the other
+   * four would be an inaccurate answer to "what may you send here" for a
+   * route that 404s on all of them. So the method/headers/max-age half of
+   * the preflight — the part that is genuinely specific to this one route —
+   * stays local, and only the origin-permission half is shared.
+   */
+  routes.use('/reviews/submit', shopCors<AppEnv>());
+  routes.options('/reviews/submit', (c) =>
+    c.body(null, 204, {
       'access-control-allow-methods': 'POST',
       'access-control-allow-headers': 'content-type',
       'access-control-max-age': '86400',
-    });
-  });
+    }),
+  );
 
   // ----------------------------------------------------------------- intake
 
@@ -232,7 +239,6 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
         sentiment: review.sentimentLabel,
       },
       201,
-      corsHeaders(c),
     );
   });
 
