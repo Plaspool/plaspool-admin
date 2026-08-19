@@ -419,6 +419,17 @@ describe('the maintenance cron route', () => {
         sweep: { released: 0, failed: 0 },
         passes: 2,
         exhausted: false,
+        /*
+         * ORDERS' HALF OF THE SAME OUTBOX (admin#29), folded into this route
+         * because `vercel.json` is at the Hobby ceiling of two crons. The two
+         * consumers keep SEPARATE consumption ledgers over one table, which is
+         * why Orders `ignored` the same two `catalog.variant.published` rows
+         * that Cart just ignored — neither can hide a row from the other.
+         *
+         * `passes: 2` for the same reason Cart's drain took two: the first pass
+         * made progress, the second found nothing left and stopped.
+         */
+        events: { applied: 0, ignored: 2, parked: 0, passes: 2 },
       });
   });
 });

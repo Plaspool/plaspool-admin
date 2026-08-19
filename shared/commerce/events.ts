@@ -270,6 +270,27 @@ export interface CheckoutCompletedLine {
   /** The frozen unit price. Repeated from `totals.lines` so a consumer building
    * an order line never has to correlate two arrays to get a price. */
   unit: AmountFields;
+  /**
+   * `unit` AND `lineTotal` UNDER THE NAMES ORDERS ACTUALLY READS (admin#27).
+   *
+   * Both are copies of frozen values, never a recomputation: `unitAmount` is
+   * `unit`, and `lineTotal` is `totals.lines[].lineTotal` — the figure the
+   * totals engine produced at freeze time and the customer was charged.
+   *
+   * THEY ARE HERE BECAUSE THE TWO HALVES OF THIS CONTRACT DISAGREED IN
+   * PRODUCTION AND NOTHING COULD SEE IT. `checkout.completed` had never been
+   * emitted for any cart, so Orders' `parseCheckoutCompleted` — which requires
+   * `unitAmount` and `lineTotal` on every line and parks the event naming the
+   * missing field otherwise — had never met a real one. Emitting the event
+   * without these would have replaced "no order is created" with "the event
+   * parks at `lines.0.unitAmount` twenty times and is abandoned", which is a
+   * worse bug because it looks like progress.
+   *
+   * `shared/commerce/events.test.ts` now drives Cart's real payload through
+   * Orders' real parser, so the two cannot disagree silently again.
+   */
+  unitAmount: AmountFields;
+  lineTotal: AmountFields;
   /** Nullable, matching `VariantQuote`: NULL is honest for a variant nobody has
    * weighed, and a shipping estimator has to be able to say so. */
   weightGrams: number | null;

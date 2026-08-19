@@ -13,6 +13,7 @@ import { routes as catalog } from './catalog/routes';
 import { createReviewRoutes } from './reviews/routes';
 import { catalogPort } from './catalog/port';
 import { orders } from './orders/routes';
+import { drainCommerceEvents } from './orders/repo/consumer';
 import { cartShopRoutes } from './cart/routes';
 import { resolveShopCustomer } from './cart/identity/customers';
 import { SHOP_CURRENCY } from './currency';
@@ -210,6 +211,31 @@ export function shopApp(): Hono<AppEnv> {
       catalog: catalogPort,
       storeCurrency: SHOP_CURRENCY,
       bridgeSecret: getEnv().SHOP_AUTH_BRIDGE_SECRET || undefined,
+      /*
+       * THE COMMERCE OUTBOX'S SCHEDULED BACKSTOP (admin#29), AND THIS IS THE
+       * SEAM THAT MAKES IT ONE CRON INSTEAD OF TWO.
+       *
+       * Cart's maintenance cron is the only scheduled thing under `/api/shop`
+       * and `vercel.json` is at the Hobby ceiling of two entries, so Orders'
+       * sweep is handed to it here rather than given a cron of its own. This
+       * file is the shop's composition point — it already mounts all four
+       * subsystems — so it is the one place allowed to know that Cart's cron
+       * and Orders' consumer belong to the same table. Neither subsystem
+       * imports the other.
+       *
+       * BEFORE THIS LINE NOTHING DRAINED `commerce_events` FOR ORDERS AT ALL.
+       * `orders/routes.ts` said "NOTHING SCHEDULES IT YET" of its `/admin/sweep`
+       * route, and it was right: production held seven
+       * `catalog.variant.published` rows and a `payment.captured` all at
+       * `processed_at = NULL, attempts = 0`, and a customer who had genuinely
+       * paid had no order.
+       *
+       * THIS IS THE BACKSTOP, NOT THE PRIMARY PATH. The capture drains inline,
+       * and an external cron service calls `GET /api/shop/admin/sweep` by the
+       * minute; a daily run with ±59 minutes of jitter earns its place only as
+       * the caller that still runs when both of those have stopped.
+       */
+      sweepEvents: (db, origin) => drainCommerceEvents(db, { origin }, { limit: 50 }),
     }),
   );
 

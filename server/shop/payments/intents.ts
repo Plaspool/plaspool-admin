@@ -163,6 +163,33 @@ export async function createIntent(
   const totals = await checkout.totals(db, input.checkoutId);
   const { amount, currency } = totals.grandTotal;
 
+  /*
+   * 1b. HAND THE EMAIL BACK TO CART, because this is the only moment anything
+   *     knows it (admin#27).
+   *
+   * `shop_carts.email` is nullable and no cart route collects one, so without
+   * this every `checkout.completed` would carry `email: null` — and Orders parks
+   * an event with no email, twenty times, then abandons it. A customer charged
+   * and no order, which is the whole of the issue this closes.
+   *
+   * BEST EFFORT, AND DELIBERATELY NOT ALLOWED TO FAIL THE INTENT. The port
+   * refuses silently for a cart that has moved on; anything else it raises is
+   * logged and dropped, because a checkout that cannot be paid for is strictly
+   * worse than a confirmation email somebody has to reconcile. It runs BEFORE
+   * the provider call so a slow provider cannot leave it unrun.
+   */
+  await checkout.recordContact(db, input.checkoutId, input.email).catch((err: unknown) => {
+    // eslint-disable-next-line no-console -- names only; this column and this
+    // log are read by humans and an arbitrary message is not scrubbed.
+    console.error(
+      '[payments] could not record the checkout contact',
+      JSON.stringify({
+        checkoutId: input.checkoutId,
+        error: err instanceof Error ? err.name : typeof err,
+      }),
+    );
+  });
+
   const id = mintIntentId(now);
   const fp = fingerprint(input.checkoutId, amount, currency);
 

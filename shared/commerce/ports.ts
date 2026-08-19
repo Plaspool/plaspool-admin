@@ -243,7 +243,97 @@ export interface FrozenTotals {
  */
 export interface CheckoutPort<Db> {
   totals(db: Db, checkoutId: string): Promise<FrozenTotals>;
+
+  /**
+   * The checkout is paid: move it `converting → converted` and emit
+   * `checkout.completed` (admin#27).
+   *
+   * WHY THIS IS ON THE PORT AT ALL. Brief §7 emits `checkout.completed` "when
+   * the cart freezes AND payment is authorised", and Cart cannot learn the
+   * second half — `completeCheckout` sat with no caller from the day it was
+   * written, so `checkout.completed` had never been emitted for any cart and a
+   * paid customer got no order. Payments knows the moment; Cart owns the
+   * transition; contract R2 forbids Payments importing `server/shop/cart/`. A
+   * port method is the only shape that satisfies all three.
+   *
+   * IT RETURNS A RESULT AND DOES NOT THROW FOR THE ORDINARY REFUSALS, which is
+   * the whole reason it is not just `completeCheckout` re-exported. Paystack
+   * redelivers `charge.success` and the webhook is retried, so the SECOND
+   * capture for a cart is expected traffic, not an error — `completeCheckout`
+   * answers it with `CartPreconditionError` because the cart is already
+   * `converted`. Mapping that to a value here keeps the knowledge of Cart's
+   * error classes inside Cart, where it belongs, and leaves Payments with a
+   * total function it cannot mishandle by forgetting a `catch`.
+   *
+   * - `completed`         — this call performed the transition and wrote exactly
+   *                         one `checkout.completed`.
+   * - `already-completed` — somebody else already did (a duplicate delivery, or
+   *                         the cart is not `converting`). Nothing was written.
+   *                         **A success from the caller's point of view.**
+   * - `unavailable`       — no such cart, or it was never frozen. Also not an
+   *                         error to the caller: the payment still gets
+   *                         recorded, and an operator reconciles.
+   * - `retry-later`       — a lost write race (`CartStaleWriteError`): a
+   *                         concurrent revision bump landed between the read and
+   *                         the UPDATE. Nothing was written and nothing is
+   *                         wrong; the SAME call would succeed a moment later.
+   *
+   * `retry-later` IS A SEPARATE ARM RATHER THAN A THROW, AND THE DIFFERENCE WAS
+   * A LOST ORDER. It used to throw, on the stated reasoning that "the caller's
+   * next drain retries" — which was not true. The capture path swallows what
+   * `complete()` raises (it must: recording the payment outranks completing the
+   * checkout), `applyIntentStatus` then marks the provider event row processed,
+   * and `drainPaymentEvents` selects on `processed_at IS NULL` — so there was no
+   * next drain. The capture was recorded, `checkout.completed` was never
+   * emitted, and `payment.captured` parked twenty times and was abandoned.
+   *
+   * Rare, and the single throw class the whole design assumed was recoverable.
+   * Naming it here is what lets the caller tell "try again in a moment" apart
+   * from the two answers that are final, and act on the difference.
+   *
+   * Anything else still throws. An unknown failure is not known to be transient,
+   * and treating it as one is how a caller ends up re-driving the same row for
+   * ever.
+   */
+  complete(db: Db, checkoutId: string): Promise<CheckoutCompletion>;
+
+  /**
+   * Record the email the customer gave at the payment step, against the
+   * checkout (admin#27).
+   *
+   * ═══ WHY THIS EXISTS, AND IT IS NOT A CONVENIENCE ═══
+   * `shop_carts.email` is nullable and, before this, NOTHING IN THE APPLICATION
+   * EVER WROTE IT. No cart route takes an email, `putAddresses` does not carry
+   * one, and adoption by a signed-in customer does not copy one across — so
+   * `checkout.completed` would have been emitted with `email: null` for every
+   * checkout ever made, and Orders' parser requires it: `min(1)`, so a null
+   * parks the event at `email`, twenty times, and then abandons it.
+   *
+   * That would have been admin#27 again in a new costume — a customer charged,
+   * no order, a pipeline that looks wired — and no test could have seen it,
+   * because Orders' fixtures supply an email and Cart's suites never emitted a
+   * real event.
+   *
+   * THE PAYMENT STEP IS THE ONLY MOMENT THE EMAIL IS KNOWN. `POST
+   * /api/shop/payments/intents` carries it (the provider needs it for the
+   * receipt) and it is the sole place a guest ever types one. Payments cannot
+   * write Cart's table — R2 — so it hands it back through the port, which is
+   * precisely what a port is for.
+   *
+   * BEST EFFORT AND NEVER FATAL. It must not be able to fail an intent: a
+   * checkout that cannot be paid for is strictly worse than one whose
+   * confirmation email needs reconciling. Implementations return rather than
+   * throw when the cart is gone or no longer accepting writes.
+   */
+  recordContact(db: Db, checkoutId: string, email: string): Promise<void>;
 }
+
+/** What `CheckoutPort.complete` answers. See the doc comment above. */
+export type CheckoutCompletion =
+  | 'completed'
+  | 'already-completed'
+  | 'unavailable'
+  | 'retry-later';
 
 // ============================================================================
 // CATALOG — owned by the Catalog subsystem (`01-catalog.md`).

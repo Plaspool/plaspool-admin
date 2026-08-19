@@ -454,3 +454,69 @@ export async function sweepCommerceEvents(
 
   return summary;
 }
+
+/**
+ * Sweep repeatedly until no further progress is possible, or the budget runs
+ * out (admin#29).
+ *
+ * ═══ WHY A LOOP AT ALL ═══
+ * `sweepCommerceEvents` is deliberately ONE PASS, and its own doc comment says
+ * why a loop-until-empty inside it could never terminate: a parked row stays in
+ * the candidate set forever, so "until the candidate set is empty" is not a
+ * condition that arrives. But a single fixed pass is not a backstop either —
+ * measured on Cart's identical problem, a batch of 50 against a day of 120
+ * captures leaves 70 behind and falls further behind every day. A daily cron
+ * that drains a fixed slice does not catch up.
+ *
+ * ═══ THE TERMINATION CONDITION IS PROGRESS, NOT EMPTINESS ═══
+ * A pass that `applied` or `ignored` nothing changed nothing, so the next pass
+ * would select the same rows and decide the same way. That is the honest stop:
+ * everything left is parked and waiting on something this invocation cannot
+ * produce. Bounded additionally by wall clock and by a pass ceiling, because
+ * `vercel.json` caps these functions at `maxDuration: 30` and **Vercel does not
+ * retry a timed-out cron** — an over-large batch is one that never completes.
+ *
+ * NO `db.transaction` ANYWHERE BELOW, and none is wanted: every pass is
+ * individually idempotent through the `(consumer, event_id)` consumption ledger,
+ * so being interrupted between passes costs a delay and nothing else.
+ */
+export const COMMERCE_SWEEP_BUDGET_MS = 15_000;
+export const COMMERCE_SWEEP_MAX_PASSES = 20;
+
+export interface CommerceDrainSummary {
+  applied: number;
+  ignored: number;
+  parked: number;
+  passes: number;
+}
+
+export async function drainCommerceEvents(
+  db: Db,
+  deps: ConsumerDeps,
+  a: {
+    now?: number;
+    limit?: number;
+    passes?: number;
+    budgetMs?: number;
+  } = {},
+): Promise<CommerceDrainSummary> {
+  const started = Date.now();
+  const budget = a.budgetMs ?? COMMERCE_SWEEP_BUDGET_MS;
+  const ceiling = a.passes ?? COMMERCE_SWEEP_MAX_PASSES;
+  const summary: CommerceDrainSummary = { applied: 0, ignored: 0, parked: 0, passes: 0 };
+
+  for (let pass = 0; pass < ceiling; pass += 1) {
+    const one = await sweepCommerceEvents(db, deps, a.now ?? Date.now(), a.limit);
+    summary.applied += one.applied;
+    summary.ignored += one.ignored;
+    summary.parked += one.parked;
+    summary.passes += 1;
+
+    // No progress: everything left is parked on something this run cannot make
+    // appear. Looping again would re-decide the same rows the same way.
+    if (one.applied === 0 && one.ignored === 0) break;
+    if (Date.now() - started >= budget) break;
+  }
+
+  return summary;
+}

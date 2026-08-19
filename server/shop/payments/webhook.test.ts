@@ -10,9 +10,10 @@ import { fakeCheckoutPort } from './checkout';
 import { resetPayments } from './test/db';
 import { createIntent, getIntent } from './intents';
 import { createPaymentRoutes, createWebhookRoutes } from './routes';
-import { drainPaymentEvents } from './webhook';
+import { drainPaymentEvents, processEvent } from './webhook';
 import type { AppEnv } from '../../app-env';
 import type { Db } from '../../db/client';
+import type { CheckoutCompletion } from '../../../shared/commerce/ports';
 
 /**
  * The webhook endpoint, over HTTP, end to end.
@@ -122,7 +123,7 @@ async function seedIntent() {
 
 async function storedEvents() {
   const res = await db.execute(
-    sql`SELECT id, provider_event_id, type, processed_at, anomaly, intent_id
+    sql`SELECT id, provider_event_id, type, processed_at, anomaly, last_error, intent_id
         FROM shop_payment_events ORDER BY received_at, id`,
   );
   return res.rows;
@@ -474,5 +475,132 @@ describe('the public projection', () => {
       'refundedTotal',
       'status',
     ]);
+  });
+});
+
+/**
+ * A LOST WRITE RACE INSIDE `completeCheckout` MUST NOT COST THE ORDER.
+ *
+ * `completeCheckout` reads the cart and then UPDATEs on that revision, so a
+ * concurrent write landing between the two raises `CartStaleWriteError`. Nothing
+ * was written and the same call would succeed a moment later — the design always
+ * assumed that case was recoverable, and it was not:
+ *
+ *   `completeCheckoutForIntent` swallows what the port raises (it must — recording
+ *   the payment outranks completing the checkout), `applyIntentStatus` then marks
+ *   the provider event row processed, and `drainPaymentEvents` selects on
+ *   `processed_at IS NULL`. So there was no next drain. The capture was recorded,
+ *   `checkout.completed` was never emitted, and `payment.captured` would park
+ *   twenty times and be abandoned. A customer charged, and no order.
+ *
+ * The port now reports that one case as `retry-later` and the row is left
+ * unprocessed, so the next drain finishes the job. Both halves are asserted here:
+ * the money is recorded on the FIRST pass regardless, and the checkout is
+ * completed on the second.
+ */
+describe('a lost write race leaves the capture re-drivable', () => {
+  /** A port that loses the race `attempts` times and then wins. */
+  function racyPort(attempts: number): {
+    port: typeof checkout;
+    completes: string[];
+  } {
+    const completes: string[] = [];
+    let remaining = attempts;
+    return {
+      completes,
+      port: {
+        ...checkout,
+        complete(_db: Db, checkoutId: string): Promise<CheckoutCompletion> {
+          void _db;
+          completes.push(checkoutId);
+          if (remaining > 0) {
+            remaining -= 1;
+            return Promise.resolve('retry-later');
+          }
+          return Promise.resolve('completed');
+        },
+      },
+    };
+  }
+
+  async function storedEvent() {
+    const rows = await storedEvents();
+    expect(rows).toHaveLength(1);
+    return rows[0];
+  }
+
+  /**
+   * The stored row, inserted directly rather than delivered over HTTP.
+   *
+   * The webhook route processes in `afterResponse`, which without an
+   * `ExecutionContext` is a detached promise — so a suite that POSTed and then
+   * called `processEvent` itself would be racing its own fixture. `4.` above
+   * already proves the route stores and drains; this block is about what
+   * `processEvent` does with a row, so it starts from one.
+   */
+  async function stranded(intentId: string, reference: string): Promise<string> {
+    await db.execute(sql`
+      INSERT INTO shop_payment_events (id, provider_event_id, intent_id, type, payload, received_at)
+      VALUES ('pev_racy', 'charge.success:racy', ${intentId}, 'charge.success',
+              ${JSON.stringify({ data: { reference } })}::jsonb, ${now})`);
+    return 'pev_racy';
+  }
+
+  it('records the payment, leaves the row unprocessed, and completes on the next drain', async () => {
+    const intent = await seedIntent();
+    const rowId = await stranded(intent.id, intent.providerIntentId as string);
+
+    const racy = racyPort(1);
+    const first = await processEvent(db, rowId, now, { checkout: racy.port });
+
+    // MONEY SAFETY IS UNTOUCHED. The capture is recorded on this pass whatever
+    // the completion did — that is the ordering rule, and it is the half that
+    // must never regress in the name of retrying.
+    expect(first.outcome).toBe('applied');
+    expect((await getIntent(db, intent.id))?.status).toBe('captured');
+    expect(await outboxRows()).toHaveLength(1);
+
+    // AND THE ROW IS STILL OPEN, which is the fix: `processed_at` back to NULL
+    // and `last_error` naming why, so the next drain re-drives it.
+    const row = await storedEvent();
+    expect(row.processed_at).toBeNull();
+    expect(row.last_error).toBe('checkout_completion_lost_race');
+    expect(racy.completes).toEqual([CHECKOUT]);
+
+    // The next drain wins the race and completes the checkout.
+    await drainPaymentEvents(db, 10, now + 1, { checkout: racy.port });
+
+    expect(racy.completes).toEqual([CHECKOUT, CHECKOUT]);
+    const settled = await storedEvent();
+    expect(settled.processed_at).not.toBeNull();
+
+    // NO SECOND `payment.captured`. The re-drive goes through
+    // `applyIntentStatus` again and the rank guard sees the intent already at
+    // `captured`, so it moves nothing and emits nothing.
+    expect(await outboxRows()).toHaveLength(1);
+    expect((await getIntent(db, intent.id))?.status).toBe('captured');
+  });
+
+  it('a terminal answer settles the row rather than re-driving it for ever', async () => {
+    /*
+     * THE OTHER HALF, AND IT IS WHAT KEEPS THE FIX FROM BECOMING A LOOP. Only a
+     * lost race re-opens the row. A cart that is missing or already converted is
+     * final — the same call would answer the same way at every drain — so the row
+     * is marked processed and the operator's signal is the parked
+     * `payment.captured`, not a provider event this drain picks up for ever.
+     */
+    const intent = await seedIntent();
+    const rowId = await stranded(intent.id, intent.providerIntentId as string);
+
+    const terminal = {
+      ...checkout,
+      complete: (): Promise<CheckoutCompletion> => Promise.resolve('unavailable'),
+    };
+    await processEvent(db, rowId, now, { checkout: terminal });
+
+    const row = await storedEvent();
+    expect(row.processed_at).not.toBeNull();
+    expect(row.last_error).toBeNull();
+    expect((await getIntent(db, intent.id))?.status).toBe('captured');
   });
 });

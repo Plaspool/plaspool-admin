@@ -224,8 +224,9 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
  * for checkouts that are over. Neither has any other signal, and Vercel does not
  * retry a failed cron invocation.
  */
-function maintenance(c: Context<ShopEnv>, deps: ShopCartDeps, limit?: number) {
-  return runCartMaintenance(shopDb(c), deps.catalog, {
+async function maintenance(c: Context<ShopEnv>, deps: ShopCartDeps, limit?: number) {
+  const db = shopDb(c);
+  const cart = await runCartMaintenance(db, deps.catalog, {
     limit: limit ?? CRON_BATCH,
     /*
      * UNTIL THE OUTBOX IS EMPTY, not one batch. Measured with the batch at 50
@@ -237,6 +238,36 @@ function maintenance(c: Context<ShopEnv>, deps: ShopCartDeps, limit?: number) {
      */
     untilEmpty: true,
   });
+
+  /*
+   * AND THEN THE OTHER CONSUMERS' HALF OF THE SAME OUTBOX (admin#29).
+   *
+   * WHY IT IS HERE RATHER THAN IN A THIRD CRON: `vercel.json` is at the Hobby
+   * ceiling of two, both taken. Folding the commerce drain into a cron that
+   * already exists keeps the count at two, so `vercel.json` is not touched and
+   * `cron.test.ts` — which walks every entry and asserts the app registers it —
+   * keeps passing unchanged.
+   *
+   * AFTER THE CART HALF, NOT BEFORE. `runCartMaintenance` drains Cart's
+   * consumer and then releases expired holds; running Orders first would let its
+   * `payment.captured` mark an order paid while the stock behind it was still
+   * `held` and a millisecond from expiry. Cart commits the stock, then Orders
+   * tells the customer. The two consumers keep separate consumption ledgers, so
+   * neither can hide a row from the other whichever way round they run — this is
+   * about what a customer is told, not about correctness of the ledger.
+   *
+   * `catch` AND NOT `throw`: a failure in the newer half must not stop the cron
+   * reporting the older half's `abandoned` and `failed` counts, which are the
+   * only signal that stock is being held for sales that already happened. Vercel
+   * does not retry a failed cron invocation, so a 500 here costs a whole day.
+   */
+  const events = deps.sweepEvents
+    ? await deps
+        .sweepEvents(db, c.get('origins')?.[0] ?? null)
+        .catch(() => ({ applied: 0, ignored: 0, parked: 0, passes: 0, failed: true }))
+    : null;
+
+  return { ...cart, events };
 }
 
 async function requireCart(c: Context<ShopEnv>, db: Db) {

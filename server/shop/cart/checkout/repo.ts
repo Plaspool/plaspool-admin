@@ -293,7 +293,10 @@ export async function freezeCheckout(
    * the drift freezing exists to prevent, so both halves are frozen at the same
    * instant, from the same reads, into the same statement.
    */
-  const frozenLines: CheckoutCompletedLine[] = quotes.map(({ line, quote }) => ({
+  // `StoredCheckoutLine`, not `CheckoutCompletedLine`: `unitAmount` and
+  // `lineTotal` are joined on from the frozen totals when the event is built, and
+  // storing a second copy of two numbers is a second copy that can disagree.
+  const frozenLines: StoredCheckoutLine[] = quotes.map(({ line, quote }) => ({
     variantId: line.variantId,
     productId: quote?.productId ?? '',
     sku: quote?.sku ?? '',
@@ -383,6 +386,40 @@ export async function frozenTotals(db: Db, checkoutId: string): Promise<FrozenTo
   return parsed;
 }
 
+// ------------------------------------------------------------------- contact
+
+/**
+ * Record the customer's email against the checkout. Best effort (admin#27).
+ *
+ * NOT `updateCartFields`, and the difference is the guard. That helper refuses
+ * anything but `status = 'open'` — correct for an address, whose whole point is
+ * that it cannot change once a total has been frozen from it — but this is
+ * called from the PAYMENT step, by which time the cart is `converting`. An email
+ * is not an input to any total, so writing it after the freeze changes no number
+ * anybody has seen.
+ *
+ * IT REFUSES SILENTLY RATHER THAN THROWING. A cart that is already `converted`,
+ * abandoned or gone matches nothing and this returns; the caller is creating a
+ * payment intent, and failing that because a contact detail could not be filed
+ * would trade a reconcilable gap for a customer who cannot pay at all.
+ *
+ * `revision + 1` because every write of any kind moves it (see `cart/repo.ts`) —
+ * an A→B→A change has to stay visible, and an exception here would be an
+ * exception somebody has to remember.
+ */
+export async function setCheckoutContact(
+  db: Db,
+  a: { cartId: string; email: string },
+): Promise<void> {
+  const now = Date.now();
+  await db.execute(sql`
+    UPDATE shop_carts
+       SET email = ${a.email}, revision = revision + 1, updated_at = ${now}
+     WHERE id = ${a.cartId}
+       AND status IN ('open', 'converting')
+       AND email IS DISTINCT FROM ${a.email}`);
+}
+
 // ------------------------------------------------------------------ complete
 
 /**
@@ -469,14 +506,62 @@ async function buildCompletedPayload(
 
   const stored = await db.execute(sql`
     SELECT frozen_lines FROM shop_carts WHERE id = ${cartId}`);
-  const lines = (stored.rows[0]?.frozen_lines ?? []) as CheckoutCompletedLine[];
+  const frozen = (stored.rows[0]?.frozen_lines ?? []) as StoredCheckoutLine[];
+
+  /*
+   * `unitAmount` AND `lineTotal`, JOINED ON `variantId` FROM THE FROZEN TOTALS.
+   *
+   * COPIED, NEVER COMPUTED. `unit × qty` would be arithmetic performed after the
+   * customer saw a number, which is the one thing freezing exists to prevent —
+   * `TotalsLine.lineTotal` is the figure the totals engine produced at freeze
+   * time and it is the figure that was charged, so it is the figure that travels.
+   * `frozen_lines` is stored without them (it predates this) and is NOT rewritten
+   * here: an order is built from the event, and the event carries them.
+   *
+   * WHY AT ALL: Orders' `parseCheckoutCompleted` requires both names on every
+   * line and parks the event naming the missing field otherwise. Emitting
+   * `checkout.completed` without them would have turned "no order" into "an event
+   * that parks twenty times and is abandoned". See `shared/commerce/events.ts`.
+   *
+   * A line with no matching totals row falls back to `unit` and a zero total
+   * rather than being dropped: a missing line is a silently short order, and
+   * a zero that appears on an invoice gets noticed.
+   */
+  const byVariant = new Map(totals.lines.map((line) => [line.variantId, line]));
+  const lines: CheckoutCompletedLine[] = frozen.map((line) => {
+    const totalsLine = byVariant.get(line.variantId);
+    return {
+      ...line,
+      unitAmount: totalsLine ? { ...totalsLine.unit } : { ...line.unit },
+      lineTotal: totalsLine
+        ? { ...totalsLine.lineTotal }
+        : { amount: 0, currency: line.unit.currency },
+    };
+  });
 
   const held = await heldReservations(db, cartId);
+
+  /*
+   * THE EMAIL, WITH THE CUSTOMER ROW AS A FALLBACK.
+   *
+   * `shop_carts.email` is filled by `setCheckoutContact` at the payment step, so
+   * a guest checkout has one by the time this runs. A SIGNED-IN customer who
+   * never reached that step — an order completed by hand, say — still has one on
+   * `shop_customers`, and reading it is strictly better than emitting `null`:
+   * Orders requires the field and parks the event without it, which costs the
+   * customer their order to save a join.
+   *
+   * `''` IS NOT USED AS A FALLBACK. Orders' `min(1)` would reject it just the
+   * same, and a park naming `email` is a legible instruction; an empty string on
+   * an order is a confirmation sent nowhere and nobody told.
+   */
+  const email =
+    cart.email ?? (cart.customerId ? await customerEmail(db, cart.customerId) : null);
 
   return {
     checkoutId: cartId,
     customerId: cart.customerId,
-    email: cart.email,
+    email,
     currency: cart.currency,
     totals,
     lines,
@@ -485,4 +570,23 @@ async function buildCompletedPayload(
     reservationIds: held.map((reservation) => reservation.id),
     occurredAt: 0,
   };
+}
+
+/**
+ * A row as it sits in `shop_carts.frozen_lines`.
+ *
+ * `CheckoutCompletedLine` MINUS the two fields `buildCompletedPayload` adds on the
+ * way out. Spelled separately rather than reusing the event type because the two
+ * are genuinely different things: this is storage written at freeze time, that is
+ * a message written at completion time, and typing the stored rows as the event
+ * shape is what would let a missing field pass the compiler and park in production.
+ */
+type StoredCheckoutLine = Omit<CheckoutCompletedLine, 'unitAmount' | 'lineTotal'>;
+
+/** The customer's own email, for a checkout that never recorded one. */
+async function customerEmail(db: Db, customerId: string): Promise<string | null> {
+  const res = await db.execute(sql`
+    SELECT email FROM shop_customers WHERE id = ${customerId}`);
+  const email = res.rows[0]?.email;
+  return email == null ? null : String(email);
 }
