@@ -469,6 +469,38 @@ function registerAdminRoutes(
    * opening the endpoint. NOT UNAUTHENTICATED, deliberately — draining this
    * outbox turns a capture into a paid order and sends a confirmation email, and
    * an open endpoint would let anyone drive money-adjacent work.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * ⚠️  THE CADENCE IS A SPENDING DECISION, NOT A FREE DIAL. Read this before
+   *     changing how often this is called.
+   *
+   * Neon's free plan bills COMPUTE HOURS and autosuspends the compute after
+   * ~5 minutes idle — the database is meant to be asleep most of the time, and
+   * that is the whole economics of the plan. **Any cron faster than the
+   * autosuspend window keeps it awake permanently.**
+   *
+   * At one call a minute the compute never sleeps: ~720 hours a month against a
+   * free allowance in the ~190-hour range, exhausted in about a week. The cost
+   * is not this endpoint's own work — an idle sweep is a handful of rows — it is
+   * that calling it at all resets the idle timer.
+   *
+   * IT IS SET TO ONE MINUTE ANYWAY, deliberately. The storefront's
+   * `/checkout/complete` polls for SIXTY SECONDS before it settles on "still
+   * confirming your payment", so a cron slower than that guarantees every paying
+   * customer sees a timeout and has to refresh. While the shop is quiet, the
+   * customer's moment right after paying was judged worth more than the compute
+   * hours.
+   *
+   * IF YOU SLOW IT DOWN, WIDEN THAT POLL WINDOW TO MATCH. Leaving them
+   * mismatched means every order times out on screen — worse than an honest
+   * "we will email you when it is confirmed", because it reads as a failure.
+   *
+   * The highest-leverage lever is not here: shortening Neon's autosuspend
+   * decides what each wake-up costs regardless of how often this is called.
+   *
+   * None of this survives real traffic — customers keep the compute awake by
+   * themselves. It only bites while the store is empty.
+   * ═══════════════════════════════════════════════════════════════════════════
    */
   routes.get('/admin/sweep', async (c) => {
     assertCronRequest(c.req.header('Authorization'));
