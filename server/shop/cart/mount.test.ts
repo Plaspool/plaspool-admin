@@ -94,7 +94,7 @@ describe('the shop app claims each path exactly once', () => {
       'GET /checkout/shipping-options',
       'PUT /checkout/shipping',
       'POST /checkout/freeze',
-      'POST /customer/session',
+      'POST /customer/session/exchange',
       'POST /admin/cart/maintenance',
     ]) {
       expect(paths, route).toContain(route);

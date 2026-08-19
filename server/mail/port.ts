@@ -1,12 +1,13 @@
 /**
  * Outbound mail, as a PORT.
  *
- * The same seam `ShopCartDeps.deliverMagicLink` uses, and for the same reason
- * spelled out in `server/shop/cart/routes/customer.ts`: a route that has to
- * deliver a credential to an address must NOT be testable by handing the
- * credential back in its own response body. Injecting the transport means the
- * suite drives the real route with a fake that records what was sent, and the
- * default is a transport that refuses rather than one that pretends.
+ * The same seam `ShopCartDeps.bridgeSecret` uses for customer sign-in, and for
+ * the same reason spelled out in `server/shop/cart/routes/customer.ts`: a
+ * route that has to deliver or verify a credential must NOT be testable by
+ * handing the credential back in its own response body. Injecting the
+ * transport means the suite drives the real route with a fake that records
+ * what was sent, and the default is a transport that refuses rather than one
+ * that pretends.
  */
 
 /** One message. `text` and `html` are both required: no client sees only one. */

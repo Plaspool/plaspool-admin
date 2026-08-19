@@ -25,18 +25,12 @@ export interface ShopCartDeps {
   catalog: CatalogPort;
 
   /**
-   * Magic-link delivery. NO DEFAULT — absent means the route answers 501.
-   *
-   * See `routes/customer.ts` for why this is injected rather than defaulted to
-   * something that returns the token: a route that hands a session token back in
-   * its own response body is an unauthenticated account-takeover primitive, and
-   * it would have passed every test written against it.
+   * The storefront identity bridge's shared secret. NO DEFAULT — absent means
+   * the exchange route answers 501, exactly the discipline `deliverMagicLink`
+   * established before it: a default that pretended would be an
+   * account-takeover primitive, and it would have passed every test.
    */
-  deliverMagicLink?: (a: {
-    email: string;
-    token: string;
-    expiresAt: number;
-  }) => Promise<void>;
+  bridgeSecret?: string;
 
   /** How long a redeemed customer session lasts. Matches the row's own TTL. */
   sessionTtlMs: number;
@@ -51,7 +45,7 @@ export interface ShopCartDeps {
 export function resolveShopCartDeps(partial: Partial<ShopCartDeps> = {}): ShopCartDeps {
   return {
     catalog: partial.catalog ?? unavailableCatalog(),
-    deliverMagicLink: partial.deliverMagicLink,
+    bridgeSecret: partial.bridgeSecret,
     sessionTtlMs: partial.sessionTtlMs ?? SHOP_SESSION_TTL_MS,
     storeCurrency: partial.storeCurrency ?? DEFAULT_STORE_CURRENCY,
     zones: partial.zones ?? DEFAULT_SHIPPING_ZONES,

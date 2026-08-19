@@ -13,6 +13,7 @@ import { freshDb, resetShopTables, SEED_PASSWORD } from '../test/harness';
 import { standaloneShop } from '../test/standalone';
 import { httpClient, json } from '../../../test/http';
 import { CART_COOKIE } from '../identity/cookies';
+import { signAssertion } from '../identity/bridge';
 import { shopCartRoutes } from './index';
 import { mapsShopErrors } from './errors';
 import { CART_CREATE_LIMIT } from '../limits';
@@ -21,6 +22,7 @@ import { seedSellable } from '../../catalog/test/catalog-harness';
 import { unpublishProduct } from '../../catalog/products';
 import type { HttpClient } from '../../../test/http';
 import type { TestCtx } from '../test/harness';
+import type { Assertion } from '../identity/bridge';
 
 let ctx: TestCtx;
 let client: HttpClient;
@@ -443,50 +445,133 @@ describe('every route maps this subsystem’s errors', () => {
     expect(body.cart.status).toBe('converting');
   });
 
-  it('answers 501 for the magic link, because delivery is not implemented', async () => {
-    /*
-     * A stub that REFUSES rather than one that pretends. The alternative —
-     * returning the session token in the response body — is an unauthenticated
-     * account-takeover primitive for any address an attacker types, and it would
-     * have passed every test written against it. See AMENDMENTS A-006.
-     */
-    const res = await client.post('/api/shop/customer/session', {
-      email: 'someone@test.local',
+  // --- customer session exchange -------------------------------------------
+
+  const BRIDGE_SECRET = 'c'.repeat(32);
+
+  function assertionFor(email: string, over: Partial<Assertion> = {}): string {
+    const now = Date.now();
+    return signAssertion(BRIDGE_SECRET, {
+      v: 1,
+      sub: '11111111-2222-3333-4444-555555555555',
+      email,
+      iat: now,
+      exp: now + 60_000,
+      jti: `jti-${Math.random().toString(36).slice(2)}`,
+      ...over,
+    });
+  }
+
+  it('exchanges a good assertion for a session cookie, and never leaks the token', async () => {
+    const wired = standaloneShop(ctx.db, { bridgeSecret: BRIDGE_SECRET });
+    const res = await wired.request('/customer/session/exchange', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ assertion: assertionFor('buyer@example.com') }),
+    });
+    expect(res.status).toBe(200);
+
+    const setCookie = res.headers.get('set-cookie');
+    expect(setCookie).toMatch(/__Host-shop_session=/);
+    const token = setCookie?.match(/__Host-shop_session=([^;]+)/)?.[1];
+    expect(token).toBeTruthy();
+
+    // The body says nothing about the session's own credential — the same
+    // property the old magic-link route's "never leaks the token" test held.
+    // The exchange answers `{ customer }`, and the failure this guards
+    // against is someone adding `session`/`token` to that body for storefront
+    // convenience: every other assertion here would still pass while a
+    // cross-site page gained JS-readable access to a credential HttpOnly
+    // exists to keep out of reach.
+    const bodyText = await res.text();
+    expect(bodyText).not.toContain(token);
+
+    const body = JSON.parse(bodyText) as { customer: { email: string } };
+    expect(body.customer.email).toBe('buyer@example.com');
+  });
+
+  it('is the same customer on a second, independent sign-in', async () => {
+    const wired = standaloneShop(ctx.db, { bridgeSecret: BRIDGE_SECRET });
+    const request = (assertion: string) =>
+      wired.request('/customer/session/exchange', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ assertion }),
+      });
+
+    const one = await json<{ customer: { id: string } }>(
+      await request(assertionFor('repeat@example.com')),
+    );
+    const two = await json<{ customer: { id: string } }>(
+      await request(assertionFor('repeat@example.com')),
+    );
+    expect(two.customer.id).toBe(one.customer.id);
+  });
+
+  it('refuses a replayed assertion, indistinguishably from a bad MAC', async () => {
+    const wired = standaloneShop(ctx.db, { bridgeSecret: BRIDGE_SECRET });
+    const request = (assertion: string) =>
+      wired.request('/customer/session/exchange', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ assertion }),
+      });
+
+    const raw = assertionFor('replay@example.com');
+    expect((await request(raw)).status).toBe(200);
+
+    const replayed = await request(raw);
+    const forged = await request(
+      signAssertion('d'.repeat(32), {
+        v: 1,
+        sub: 'x',
+        email: 'a@b.c',
+        iat: Date.now(),
+        exp: Date.now() + 60_000,
+        jti: 'jti-forged',
+      }),
+    );
+
+    expect(replayed.status).toBe(400);
+    expect(await json(replayed)).toEqual(await json(forged));
+  });
+
+  it('names an expired assertion distinctly, because the client can re-mint', async () => {
+    const wired = standaloneShop(ctx.db, { bridgeSecret: BRIDGE_SECRET });
+    const res = await wired.request('/customer/session/exchange', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ assertion: assertionFor('late@example.com', { exp: Date.now() - 1 }) }),
+    });
+    expect(res.status).toBe(400);
+    expect((await json<{ detail: string }>(res)).detail).toBe('assertion_expired');
+  });
+
+  it('501s when no bridge secret is configured', async () => {
+    // `bridgeSecret: undefined` EXPLICITLY, rather than relying on the ambient
+    // test environment having no `SHOP_AUTH_BRIDGE_SECRET` set. Relying on the
+    // ambient value would make this pass today and fail for anyone who has
+    // that variable in a local `.env`, for a reason unrelated to the route.
+    const wired = standaloneShop(ctx.db, { bridgeSecret: undefined });
+    const res = await wired.request('/customer/session/exchange', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ assertion: assertionFor('nobody@example.com') }),
     });
     expect(res.status).toBe(501);
-    const body = await json<{ error: string; feature: string }>(res);
-    expect(body.error).toBe('not_implemented');
-    expect(body.feature).toBe('magic-link delivery');
-    // And nothing was written on the way to refusing.
+    expect((await json<{ feature: string }>(res)).feature).toBe('identity-bridge');
+
+    // And nothing was written on the way to refusing — pinned exactly as the
+    // old magic-link 501 test pinned it, so a future reorder that resolved
+    // the customer before the config check would fail here rather than
+    // silently starting to write rows for an unconfigured deployment.
     const rows = await ctx.db.execute(sql`SELECT count(*)::int AS n FROM shop_customers`);
     expect(Number(rows.rows[0].n)).toBe(0);
   });
 
-  it('accepts the magic link when a deliverer IS injected, and never leaks the token', async () => {
-    const delivered: Array<{ email: string; token: string }> = [];
-    const wired = standaloneShop(ctx.db, {
-      deliverMagicLink: async (a) => {
-        delivered.push({ email: a.email, token: a.token });
-      },
-    });
-
-    const res = await wired.request('/customer/session', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email: 'A@Test.Local' }),
-    });
-
-    expect(res.status).toBe(202);
-    const body = await res.text();
-    // The body says nothing about whether the address was known — a different
-    // answer for a known address is a customer-enumeration oracle, and for a
-    // shop it leaks who has bought something here.
-    expect(JSON.parse(body)).toEqual({ sent: true });
-    expect(delivered).toHaveLength(1);
-    expect(delivered[0].email).toBe('a@test.local');
-    // The token reached the DELIVERER and not the response. This is the whole
-    // difference between a stub and an account-takeover primitive.
-    expect(body).not.toContain(delivered[0].token);
+  it('no longer serves the retired magic-link routes', async () => {
+    expect((await client.post('/api/shop/customer/session', { email: 'a@b.c' })).status).toBe(404);
+    expect((await client.post('/api/shop/customer/session/redeem', { token: 'x' })).status).toBe(404);
   });
 });
 
