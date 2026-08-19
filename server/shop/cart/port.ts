@@ -1,5 +1,5 @@
 import { completeCheckout, frozenTotals, setCheckoutContact } from './checkout/repo';
-import { CartPreconditionError } from './errors';
+import { CartPreconditionError, CartStaleWriteError } from './errors';
 import { NotFoundError } from '../../repo/errors';
 import type { Db } from '../../db/client';
 import type { CheckoutCompletion, CheckoutPort, FrozenTotals } from '../../../shared/commerce/ports';
@@ -79,9 +79,21 @@ export function checkoutPort(): CheckoutPort<Db> {
       } catch (err: unknown) {
         if (err instanceof CartPreconditionError) return 'already-completed';
         if (err instanceof NotFoundError) return 'unavailable';
-        // `CartStaleWriteError` and anything else: genuinely transient or
-        // genuinely unknown. Let it out; the caller swallows it and the next
-        // drain retries.
+        /*
+         * A LOST WRITE RACE IS A VALUE, NOT A THROW, AND THAT IS A CORRECTNESS
+         * FIX RATHER THAN A TIDINESS ONE.
+         *
+         * `completeCheckout` reads the cart and then UPDATEs on that revision, so
+         * a concurrent write landing between the two raises this. Nothing was
+         * written; the same call would succeed a moment later. Throwing it left
+         * the capture path with no way to tell it apart from a genuine failure —
+         * it swallowed it, marked the provider event processed, and never came
+         * back, so `checkout.completed` was never emitted and the capture was
+         * abandoned after twenty parks. See the port's doc comment.
+         */
+        if (err instanceof CartStaleWriteError) return 'retry-later';
+        // Anything else is not KNOWN to be transient, and assuming it is would
+        // re-drive the same row for ever. Let it out.
         throw err;
       }
     },

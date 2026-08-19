@@ -273,9 +273,27 @@ export interface CheckoutPort<Db> {
    * - `unavailable`       — no such cart, or it was never frozen. Also not an
    *                         error to the caller: the payment still gets
    *                         recorded, and an operator reconciles.
+   * - `retry-later`       — a lost write race (`CartStaleWriteError`): a
+   *                         concurrent revision bump landed between the read and
+   *                         the UPDATE. Nothing was written and nothing is
+   *                         wrong; the SAME call would succeed a moment later.
    *
-   * A genuine race (`CartStaleWriteError`) still throws. It is transient by
-   * definition, and the caller's next drain — or the outbox sweep — retries.
+   * `retry-later` IS A SEPARATE ARM RATHER THAN A THROW, AND THE DIFFERENCE WAS
+   * A LOST ORDER. It used to throw, on the stated reasoning that "the caller's
+   * next drain retries" — which was not true. The capture path swallows what
+   * `complete()` raises (it must: recording the payment outranks completing the
+   * checkout), `applyIntentStatus` then marks the provider event row processed,
+   * and `drainPaymentEvents` selects on `processed_at IS NULL` — so there was no
+   * next drain. The capture was recorded, `checkout.completed` was never
+   * emitted, and `payment.captured` parked twenty times and was abandoned.
+   *
+   * Rare, and the single throw class the whole design assumed was recoverable.
+   * Naming it here is what lets the caller tell "try again in a moment" apart
+   * from the two answers that are final, and act on the difference.
+   *
+   * Anything else still throws. An unknown failure is not known to be transient,
+   * and treating it as one is how a caller ends up re-driving the same row for
+   * ever.
    */
   complete(db: Db, checkoutId: string): Promise<CheckoutCompletion>;
 
@@ -311,7 +329,11 @@ export interface CheckoutPort<Db> {
 }
 
 /** What `CheckoutPort.complete` answers. See the doc comment above. */
-export type CheckoutCompletion = 'completed' | 'already-completed' | 'unavailable';
+export type CheckoutCompletion =
+  | 'completed'
+  | 'already-completed'
+  | 'unavailable'
+  | 'retry-later';
 
 // ============================================================================
 // CATALOG — owned by the Catalog subsystem (`01-catalog.md`).

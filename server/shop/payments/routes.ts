@@ -21,9 +21,9 @@ import type { PaymentProvider } from './provider/types';
  * under `/api/shop/admin/*`).
  *
  * TWO ROUTERS, AND THE SPLIT IS A SECURITY BOUNDARY RATHER THAN TIDINESS.
- * `webhookRoutes` must be mounted BEFORE `originGuard`; `routes` must be
+ * The webhook router must be mounted BEFORE `originGuard`; `routes` must be
  * mounted after it, like everything else. See the long note on
- * `webhookRoutes` — and AMENDMENTS A-001, because the mount itself is in
+ * `createWebhookRoutes` — and AMENDMENTS A-001, because the mount itself is in
  * `server/index.ts`, which this subsystem does not own.
  *
  * DEPENDENCIES ARE INJECTED, NEVER IMPORTED AT MODULE SCOPE. `createApp` in
@@ -272,8 +272,18 @@ export function createWebhookRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
            * `commerce_events` with no consumption row, which is the same state
            * it was in a moment ago, and the cart-maintenance cron drains it.
            */
-          .then(() => deps.sweepEvents?.(db, origin))
-          .catch(() => undefined),
+          /*
+           * `.catch` ON THE SWEEP ALONE, NOT ON THE WHOLE CHAIN.
+           *
+           * Wrapping the lot would swallow a `processEvent` or
+           * `drainPaymentEvents` failure as well — and `afterResponse`'s
+           * `swallow()` is the ONLY thing that logs a post-acknowledgement
+           * failure anywhere. Recovery would be unaffected either way (the row
+           * stays `processed_at IS NULL` and the next drain re-drives it), but a
+           * stuck capture would produce no line at all, and invisibility is how
+           * this entire class of bug reached production in the first place.
+           */
+          .then(() => deps.sweepEvents?.(db, origin)?.catch(() => undefined)),
       );
     }
 
@@ -508,6 +518,32 @@ function safeCallbackUrl(): string | undefined {
 
 /** For `server/index.ts`, once AMENDMENTS A-001 is resolved. */
 export const routes: Hono<AppEnv> = createPaymentRoutes();
-export const webhookRoutes: Hono<AppEnv> = createWebhookRoutes();
+
+/*
+ * THERE IS NO PRE-BUILT `webhookRoutes` EXPORT, AND ITS ABSENCE IS DELIBERATE.
+ *
+ * `export const webhookRoutes = createWebhookRoutes()` stood here, and it was
+ * the whole of admin#27. `server/index.ts` mounted it, so the highest-severity
+ * route in the commerce system ran with an UNWIRED `CheckoutPort`: a real
+ * Paystack payment reached `captured`, `completeCheckout` was never called,
+ * `shop_orders` stayed at 0, and the capture parked "awaiting predecessor:
+ * checkout.completed" until it would have been abandoned.
+ *
+ * What made it survive is that NOTHING FAILED. Payments' own suites build their
+ * own router and inject `fakeCheckoutPort`, so they stayed green; only
+ * `server/shop/composition.test.ts` — added by that fix — can see it. A
+ * ready-made, dependency-free export sitting beside a factory that needs two
+ * dependencies is a trap for the next person mounting a route, and it is a trap
+ * that costs a customer their order rather than a test its colour.
+ *
+ * `createWebhookRoutes({ checkout, sweepEvents })` is now the only way in. It is
+ * a few words longer at the one call site that exists, and it cannot be wired
+ * wrongly by accident.
+ *
+ * The `routes` export above is left alone: `createPaymentRoutes()` with no
+ * dependencies answers every checkout as unpayable, LOUDLY — a bad deployment
+ * rather than a silent one — and `server/index.ts` does not use it either, for
+ * the reason written beside that mount.
+ */
 
 export type { Db };

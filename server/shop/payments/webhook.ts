@@ -187,13 +187,14 @@ export async function completeCheckoutForIntent(
   db: Db,
   intentId: string | null,
   deps: CaptureDeps,
-): Promise<void> {
+): Promise<CompletionOutcome> {
   const port = deps.checkout;
-  if (!port || !intentId) return;
+  if (!port || !intentId) return 'settled';
   try {
     const intent = await getIntent(db, intentId);
-    if (!intent) return;
+    if (!intent) return 'settled';
     const outcome = await port.complete(db, intent.checkoutId);
+    if (outcome === 'retry-later') return 'retry';
     if (outcome === 'unavailable') {
       // eslint-disable-next-line no-console -- a capture whose cart is gone is
       // an operator's problem, and this is the only place it is visible.
@@ -202,6 +203,7 @@ export async function completeCheckoutForIntent(
         JSON.stringify({ intentId, checkoutId: intent.checkoutId }),
       );
     }
+    return 'settled';
   } catch (err: unknown) {
     // NAMES ONLY. This is the same discipline `recordIntentError` follows: a
     // message can quote a value, and this line goes to a log.
@@ -211,7 +213,51 @@ export async function completeCheckoutForIntent(
       '[payments] completing the checkout failed; recording the payment anyway',
       JSON.stringify({ intentId, error: err instanceof Error ? err.name : typeof err }),
     );
+    /*
+     * `settled`, NOT `retry`. An unknown failure is not known to be transient —
+     * an unwired port rejects every single time — so re-driving on it would turn
+     * a misconfiguration into a row this drain picks up for ever. The capture is
+     * still recorded, the outbox still holds it, and the parked
+     * `payment.captured` plus this log line are what an operator acts on.
+     */
+    return 'settled';
   }
+}
+
+/**
+ * Whether the provider event row may be marked processed.
+ *
+ * `retry` is reserved for the ONE case known to be transient — a lost write race
+ * inside `completeCheckout`, which the port reports as `retry-later`. Everything
+ * else settles, including the failures, for the reason given above.
+ */
+export type CompletionOutcome = 'settled' | 'retry';
+
+/**
+ * Un-gate a provider event row so the next drain re-drives it.
+ *
+ * ORDER IS THE WHOLE POINT: this runs AFTER `applyIntentStatus`, so the capture
+ * is already recorded and money safety is untouched. Only the row's
+ * `processed_at` is put back, because `drainPaymentEvents` selects on
+ * `processed_at IS NULL` and that column is the only thing standing between a
+ * half-finished capture and a retry.
+ *
+ * RE-DRIVING IS SAFE, NOT MERELY TOLERABLE. The second pass calls
+ * `completeCheckoutForIntent` again — which is idempotent, and this time wins the
+ * race — and then `applyIntentStatus` again, where the rank guard sees the intent
+ * already at `captured`, moves nothing and emits no second `payment.captured`.
+ * The re-drive costs one statement and completes the checkout that was lost.
+ *
+ * `last_error` AND NOT `anomaly`: the two columns exist separately so that "we
+ * tried and failed" and "we chose not to act" stay distinguishable at 2am. This
+ * is the first.
+ */
+async function reopenForRetry(db: Db, rowId: string, now: number): Promise<void> {
+  await db.execute(sql`
+    UPDATE shop_payment_events
+       SET processed_at = NULL,
+           last_error = 'checkout_completion_lost_race'
+     WHERE id = ${rowId} AND processed_at = ${now}`);
 }
 
 /**
@@ -266,7 +312,7 @@ export async function processEvent(
      * `occurred_at` ordering that lets one sweep produce the order, and the fact
      * that this call cannot throw past this line.
      */
-    await completeCheckoutForIntent(db, row.intentId, deps);
+    const completion = await completeCheckoutForIntent(db, row.intentId, deps);
 
     const applied = await applyIntentStatus(
       db,
@@ -279,6 +325,21 @@ export async function processEvent(
       },
       now,
     );
+    /*
+     * A LOST RACE LEAVES THIS ROW UNPROCESSED, so the next drain finishes the
+     * job — and it happens HERE, after the capture is recorded, never instead of
+     * recording it. Money safety is unchanged: the intent is already `captured`
+     * and `payment.captured` is already in the outbox by the time this runs.
+     *
+     * Without it the design's one supposedly-recoverable failure was not
+     * recoverable at all: the completion is swallowed, `applyIntentStatus` marks
+     * this row processed, `drainPaymentEvents` only selects rows where
+     * `processed_at IS NULL`, and so nothing ever calls `complete()` for that
+     * cart again. `checkout.completed` is never emitted and the capture parks
+     * twenty times and is abandoned.
+     */
+    if (completion === 'retry') await reopenForRetry(db, rowId, now);
+
     return {
       outcome: applied.moved ? 'applied' : 'ignored',
       emittedEventId: applied.emittedEventId,
