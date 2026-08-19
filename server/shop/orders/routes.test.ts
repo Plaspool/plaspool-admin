@@ -106,6 +106,77 @@ async function secondOrder(customerId: string): Promise<OrderRead> {
   return (await readOrderByCheckout(ctx.db, 'chk_0002'))!;
 }
 
+describe('GET /api/shop/orders/addresses', () => {
+  /*
+   * The addresses a returning shopper can pick from at checkout. Every checkout
+   * used to begin at an empty form, because `shop_addresses` is keyed on the
+   * CART and snapshotted onto the order — so there was nothing a customer could
+   * be offered. This reads the evidence that an address was actually used.
+   */
+  const ADDRESS_A = { name: 'A Buyer', line1: '1 Test Street', country: 'GB' };
+
+  it('answers the customer’s own addresses, and 401s a guest', async () => {
+    await paidOrder(CUSTOMER_A);
+
+    const guest = client();
+    expect((await guest.get('/api/shop/orders/addresses')).status).toBe(401);
+
+    const c = client();
+    c.asCustomer({ id: CUSTOMER_A });
+    const res = await c.get('/api/shop/orders/addresses');
+    expect(res.status).toBe(200);
+    const body = await json<{ addresses: { address: Record<string, unknown> }[] }>(res);
+    expect(body.addresses).toHaveLength(1);
+    expect(body.addresses[0].address).toMatchObject(ADDRESS_A);
+  });
+
+  it('is not swallowed by the /orders/:orderNumber wildcard', async () => {
+    /*
+     * Hono matches in REGISTRATION order, so this route has to be declared
+     * before `/orders/:orderNumber` or every call lands in the lookup and 404s
+     * against an order numbered "addresses". The ordering is the fix; this is
+     * the test that keeps it.
+     */
+    const c = client();
+    c.asCustomer({ id: CUSTOMER_A });
+    const res = await c.get('/api/shop/orders/addresses');
+    expect(res.status).not.toBe(404);
+    expect(await json<{ addresses: unknown[] }>(res)).toHaveProperty('addresses');
+  });
+
+  it('never shows one customer another’s address', async () => {
+    await paidOrder(CUSTOMER_A);
+    await secondOrder(CUSTOMER_B);
+
+    const c = client();
+    c.asCustomer({ id: CUSTOMER_B });
+    const body = await json<{ addresses: { address: { name?: string } }[] }>(
+      await c.get('/api/shop/orders/addresses'),
+    );
+    // B's own order carries the same fixture address, so the assertion that
+    // matters is the COUNT: B sees one, not A's as well.
+    expect(body.addresses).toHaveLength(1);
+  });
+
+  it('collapses repeats and answers an empty list for somebody who has never ordered', async () => {
+    // Two orders to the same address are one choice, not two identical ones.
+    await paidOrder(CUSTOMER_A);
+    await secondOrder(CUSTOMER_A);
+
+    const c = client();
+    c.asCustomer({ id: CUSTOMER_A });
+    expect(
+      (await json<{ addresses: unknown[] }>(await c.get('/api/shop/orders/addresses'))).addresses,
+    ).toHaveLength(1);
+
+    const fresh = client();
+    fresh.asCustomer({ id: 'cus_never_ordered' });
+    expect(
+      (await json<{ addresses: unknown[] }>(await fresh.get('/api/shop/orders/addresses'))).addresses,
+    ).toEqual([]);
+  });
+});
+
 // ================================================================ authorization
 
 describe('customer A cannot read customer B’s order', () => {
@@ -546,6 +617,45 @@ describe('the admin surface', () => {
       reason: 'admin',
       actorId: ctx.users.owner.id,
     });
+  });
+
+  it('AN ADMIN CANCEL RELEASES THE ORDER’S SPOOLPOINTS (admin#2)', async () => {
+    /*
+     * THE HOLE THIS CLOSES, AND WHY NO OTHER TEST WOULD HAVE FOUND IT.
+     *
+     * The release was originally wired only into the consumer's `payment.failed`
+     * and `payment.refunded` branches. An admin cancel is not an event: this
+     * route calls `cancelOrder` directly, and the `order.cancelled` it emits is
+     * IGNORED by the consumer as one of this subsystem's own emissions. So a
+     * person cancelling a paid order reached no release at all, and the customer
+     * was left having spent points on an order that no longer exists — the exact
+     * failure `release()` was written to prevent.
+     *
+     * The port is a fake because the real one lives behind a boundary this
+     * subsystem may not import, and because what is being asserted is that the
+     * route CALLS it — not what marketing does in response, which
+     * `server/marketing/redemption/port.test.ts` already owns.
+     */
+    const released: Array<{ orderId: string; reason: string }> = [];
+    const read = await paidOrder(CUSTOMER_A);
+    const owner = await login(ctx.users.owner, {
+      redemption: () => ({
+        quote: () => {
+          throw new Error('a cancel must never quote');
+        },
+        redeem: () => {
+          throw new Error('a cancel must never redeem');
+        },
+        release: async (input: { orderId: string; reason: string }) => {
+          released.push(input);
+          return { ok: true as const, entryId: 'entry_1', balance: 1000 };
+        },
+      }),
+    });
+
+    const res = await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`);
+    expect(res.status).toBe(200);
+    expect(released).toEqual([{ orderId: read.order.id, reason: 'admin' }]);
   });
 
   it('cancelling a cancelled order is a 409 precondition_failed, not a 500', async () => {

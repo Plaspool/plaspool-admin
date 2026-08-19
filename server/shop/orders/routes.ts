@@ -16,7 +16,7 @@ import { rejectNul } from '../../repo/cursor';
 import { currentDb, currentUser } from '../../app-env';
 import type { AppEnv } from '../../app-env';
 import type { Db } from '../../db/client';
-import { drainCommerceEvents } from './repo/consumer';
+import { refundPoints, drainCommerceEvents } from './repo/consumer';
 import { assertCronRequest } from '../cart/cron-auth';
 import { requireOrderNumber } from './order-number';
 import { mintGuestToken, verifyGuestToken } from './tokens';
@@ -28,6 +28,7 @@ import {
   getOrderForGuest,
   listAllOrders,
   listCustomerOrders,
+  listCustomerShippingAddresses,
   listTimeline,
   readOrder,
   settleOrderFulfilled,
@@ -224,6 +225,26 @@ function registerCustomerRoutes(routes: Hono<AppEnv>, deps: Deps): void {
       items: page.items.map((item) => customerView(item.order, item.lines)),
       nextCursor: page.nextCursor,
     });
+  });
+
+  /**
+   * The addresses this customer has shipped to before.
+   *
+   * REGISTERED BEFORE `/orders/:orderNumber`, and that ordering is load-bearing:
+   * Hono matches in registration order, so the wildcard below would otherwise
+   * swallow this path and answer 404 for an order numbered "addresses".
+   *
+   * FOR THE CHECKOUT, which is why it exists — every checkout began at an empty
+   * form, and a returning shopper retyped an address they had already given us.
+   * It lives on the ORDERS surface rather than the checkout's because an order
+   * is where the evidence is; Cart reading `shop_orders` directly would put a
+   * second owner on that table.
+   */
+  routes.get('/orders/addresses', async (c) => {
+    const customer = await deps().customer(c);
+    if (!customer) throw new UnauthenticatedError();
+    const addresses = await listCustomerShippingAddresses(currentDb(c), customer.id);
+    return c.json({ addresses });
   });
 
   routes.get('/orders/:orderNumber', async (c) => {
@@ -526,6 +547,33 @@ function registerAdminRoutes(
       deps().now(),
       null,
     );
+
+    /*
+     * GIVE BACK ANY SPOOLPOINTS THE ORDER SPENT (admin#2).
+     *
+     * THIS ROUTE IS NOT AN EVENT, AND THAT IS WHY IT NEEDS ITS OWN LINE.
+     * `cancelOrder` emits `order.cancelled`, but the consumer ignores that type
+     * as one of this subsystem's own emissions — so a cancel driven by a person
+     * reaches no branch of the consumer at all. Wiring the release only into
+     * `payment.failed` and `payment.refunded` left an admin cancel stranding the
+     * debit, which is the exact failure `release()` was written to prevent: the
+     * order is gone, the points are not coming back, and the customer is quietly
+     * out of pocket with no recovery path anybody named.
+     *
+     * AFTER THE CANCEL, AND IT NEVER THROWS. The state change has already been
+     * applied and is what the caller is owed; a throw here would turn a
+     * successful cancellation into a 500 and invite an operator to click again.
+     * `release()` is idempotent per order, so the second click is harmless, but
+     * the first one should not look like a failure. A points release that could
+     * not be completed is recoverable by hand; an admin who believes the cancel
+     * failed is not.
+     *
+     * UNCONDITIONAL. `release()` answers `entryId: null` when there was nothing
+     * to release and documents that as a success, so no caller has to check
+     * first — and most cancelled orders never spent a point.
+     */
+    await refundPoints(db, deps().redemption, read.order.id, 'admin');
+
     return c.json({ order });
   });
 }

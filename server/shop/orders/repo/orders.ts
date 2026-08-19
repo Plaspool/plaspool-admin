@@ -404,6 +404,50 @@ export function listCustomerOrders(
   return listOrders(db, sql`o.customer_id = ${customerId}`, q);
 }
 
+/**
+ * The distinct addresses this customer has actually shipped to, most recent
+ * first.
+ *
+ * ═══ WHY THE ORDERS AND NOT AN ADDRESS BOOK ═══
+ * `shop_addresses` is keyed on the CART (`(cart_id, kind)` unique, `ON DELETE
+ * CASCADE`) and is snapshotted onto the order at conversion, so there has never
+ * been anything a returning shopper could pick from — every checkout started at
+ * an empty form. The obvious fix is a `customer_id` on that table and a new
+ * write path to maintain it; this is the same answer with no migration, no
+ * backfill and no second source of truth to drift: an order IS the record that
+ * an address was used, and it is already scoped to the customer.
+ *
+ * What it deliberately cannot do is remember an address typed into a checkout
+ * that never completed. That is the correct trade — "somewhere I have had
+ * something delivered" is a stronger claim than "somewhere I once typed", and
+ * it is the one a shopper is actually choosing between.
+ *
+ * GROUPED ON THE JSONB ITSELF, so two orders to the same address collapse and a
+ * changed flat number does not. `jsonb` has equality, so this needs no
+ * normalisation function that would then have to agree with the one on the
+ * write side.
+ */
+export async function listCustomerShippingAddresses(
+  db: Db,
+  customerId: string,
+  limit = 5,
+): Promise<{ address: Record<string, unknown>; lastUsedAt: number }[]> {
+  if (customerId.length === 0) throw new BadRequestError('customerId');
+  const res = await db.execute(sql`
+    SELECT shipping_address, MAX(placed_at) AS last_used
+      FROM shop_orders
+     WHERE customer_id = ${customerId}
+       AND shipping_address IS NOT NULL
+       AND shipping_address <> '{}'::jsonb
+     GROUP BY shipping_address
+     ORDER BY last_used DESC
+     LIMIT ${limit}`);
+  return res.rows.map((row) => ({
+    address: (row.shipping_address ?? {}) as Record<string, unknown>,
+    lastUsedAt: toEpochMs(row.last_used),
+  }));
+}
+
 /** Admin: every order. Behind `requireAuth()` at the route. */
 export function listAllOrders(db: Db, q: ListQuery): Promise<OrderPage> {
   return listOrders(db, sql`true`, q);
