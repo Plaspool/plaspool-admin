@@ -71,6 +71,8 @@ export interface CheckoutPayload {
   shippingAddress: Record<string, unknown>;
   billingAddress: Record<string, unknown>;
   lines: unknown[];
+  /** SpoolPoints spent at the freeze (admin#2). Absent on every legacy event. */
+  redemption?: { email: string; points: number } | null;
 }
 
 function basePayload(): CheckoutPayload {

@@ -4,6 +4,7 @@ import { SHOP_SESSION_TTL_MS } from '../identity/customers';
 import type { Db } from '../../../db/client';
 import type { CatalogPort } from '../catalog-port';
 import type { ShippingZone } from '../checkout/shipping';
+import type { PointsRedemptionPort } from '../../../../shared/marketing/redemption';
 
 /**
  * Everything the shop routes need that is not a database handle.
@@ -64,6 +65,32 @@ export interface ShopCartDeps {
    * wants and is exactly the behaviour this cron had before.
    */
   sweepEvents?: (db: Db, origin: string | null) => Promise<CommerceSweepCounts>;
+
+  /**
+   * SPEND SPOOLPOINTS AT THE FREEZE (admin#2). The other half of the seam
+   * `server/index.ts` describes; this is the field that comment promised.
+   *
+   * A FACTORY OVER THE HANDLE, NOT A PORT. `PointsRedemptionPort` is frozen in
+   * `shared/marketing/redemption.ts` and takes no database argument on any of
+   * its three methods — it was frozen that way because the browser bundle
+   * compiles it and it therefore cannot name a server-only type. Marketing's
+   * implementation closes over a handle instead, and `currentDb(c)` is
+   * request-scoped, so what this field can hold is a function of the handle
+   * rather than a long-lived object. `server/marketing/redemption/port.ts` says
+   * so in its own header; this is the shape it asked for.
+   *
+   * TYPED FROM `shared/`, INJECTED AT THE COMPOSITION ROOT. Spec D9 forbids
+   * `server/shop/**` importing `server/marketing/**` and the reverse, and a
+   * type-only import is still an import — but `shared/marketing/redemption.ts`
+   * is explicitly "the only thing marketing and the shop may both know about",
+   * so naming the interface here breaks nothing. The implementation is injected
+   * by `server/index.ts` and by nothing else.
+   *
+   * ABSENT MEANS TODAY'S BEHAVIOUR: no quote, no adjustment, no debit. Every
+   * Cart-only suite gets exactly the totals it got before this landed, which is
+   * what makes the wiring safe to add to a shop that is already taking money.
+   */
+  redemption?: (db: Db) => PointsRedemptionPort;
 }
 
 /** What the injected commerce drain reports back. Counts only — the per-event
@@ -83,5 +110,6 @@ export function resolveShopCartDeps(partial: Partial<ShopCartDeps> = {}): ShopCa
     storeCurrency: partial.storeCurrency ?? DEFAULT_STORE_CURRENCY,
     zones: partial.zones ?? DEFAULT_SHIPPING_ZONES,
     sweepEvents: partial.sweepEvents,
+    redemption: partial.redemption,
   };
 }

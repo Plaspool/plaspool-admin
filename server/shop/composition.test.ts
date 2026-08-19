@@ -205,6 +205,30 @@ describe('the payment port, as the deployment registers it', () => {
     // panel silently null again, which is a value the UI already renders.
     expect(resolveDeps().payments).toBe(paymentPort);
   });
+
+  /**
+   * SPOOLPOINTS (admin#2) — THE FIFTH SEAM, AND IT FAILS THE SAME SILENT WAY.
+   *
+   * `OrdersDeps.redemption` absent does not throw and does not 500. Every order
+   * is still created, still paid and still confirmed; the customer is simply
+   * charged a discounted total whose points are never debited, forever, with no
+   * error anywhere. That is a shop giving away money while its suite is green —
+   * precisely the shape of failure this file was created for.
+   *
+   * A FACTORY IS ASSERTED, NOT AN OBJECT. Unlike `payments`, this seam cannot be
+   * compared by identity: the frozen port takes no database handle, so the
+   * composition root registers a closure over one and a fresh port comes back
+   * per request. Asserting it is callable and yields the three frozen methods is
+   * what distinguishes "wired" from "absent" here.
+   */
+  it('registers a SpoolPoints redemption factory', () => {
+    const factory = resolveDeps().redemption;
+    expect(factory).toBeTypeOf('function');
+    const port = factory!(ctx.db);
+    expect(port.quote).toBeTypeOf('function');
+    expect(port.redeem).toBeTypeOf('function');
+    expect(port.release).toBeTypeOf('function');
+  });
 });
 
 // ============================================================================

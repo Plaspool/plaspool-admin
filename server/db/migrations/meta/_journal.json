@@ -162,6 +162,13 @@
                         "when":  1786600001500,
                         "tag":  "0240_shop_shipping_zones",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  23,
+                        "version":  "7",
+                        "when":  1786600001600,
+                        "tag":  "0260_shop_points_redemption",
+                        "breakpoints":  true
                     }
                 ]
 }

@@ -331,6 +331,29 @@ export interface CheckoutCompletedPayload {
   billingAddress: AddressSnapshot | null;
   /** The holds taken at checkout start, so they can be committed on capture. */
   reservationIds: string[];
+  /**
+   * SPOOLPOINTS SPENT ON THIS CHECKOUT, decided at the freeze (admin#2).
+   *
+   * `null` IS THE ORDINARY CASE — a guest, a signed-out shopper, redemption
+   * switched off, or a balance that bought nothing. Optional as well as
+   * nullable, because every event written before this field existed is still in
+   * the outbox and must keep parsing.
+   *
+   * WHY THE COUNT RIDES HERE AT ALL. The discount itself is already in
+   * `totals.adjustments` — but an `Adjustment` is `{ code, label, amount }`, and
+   * `PointsRedemptionPort.redeem()` needs the integer number of POINTS. Nothing
+   * in the frozen totals carries it, and re-deriving it from the discount would
+   * mean inverting a conversion rate an operator may have edited since. So the
+   * number that was quoted is the number that travels.
+   *
+   * `email` IS THE WALLET, NOT THE RECEIPT ADDRESS. Balances are email-keyed and
+   * the payload's own `email` is where the confirmation goes; today they are the
+   * same address and nothing enforces that they stay so.
+   *
+   * The consumer spends these at `payment.captured`, not here — an order exists
+   * at this event but is `pending`, and points are spent when money arrives.
+   */
+  redemption?: { email: string; points: number } | null;
   /** Epoch-ms, from the same clock reading as the state change that caused it. */
   occurredAt: number;
 }

@@ -31,6 +31,7 @@ import { drainCommerceEvents } from './shop/orders/repo/consumer';
 import { resolveShopCustomer } from './shop/cart/identity/customers';
 import { paymentPort } from './shop/payments/port';
 import { drainPaymentEvents } from './shop/payments/webhook';
+import { redemptionPort } from './marketing/redemption/port';
 import type { Mailer } from './mail/port';
 import type { AppEnv } from './app-env';
 
@@ -177,6 +178,9 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
     drainPayments: async (db, now) => ({
       count: (await drainPaymentEvents(db, 50, now, { checkout: checkoutPort() })).length,
     }),
+    /* SpoolPoints. Orders spends them at the capture and gives them back on a
+     * cancellation or a refund; see the seam comment below. */
+    redemption: (db) => redemptionPort(db),
   });
 
   /*
@@ -289,7 +293,14 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
        * and failed events, which is what a backstop should be.
        */
       sweepEvents: (db, origin) =>
-        drainCommerceEvents(db, { origin }, { limit: 10, passes: 2, budgetMs: 5_000 }),
+        drainCommerceEvents(
+          db,
+          /* The inline drain applies `payment.captured` too, so it must be able to
+           * spend points — otherwise whether a debit happens would depend on
+           * which drain got there first. */
+          { origin, redemption: (handle) => redemptionPort(handle) },
+          { limit: 10, passes: 2, budgetMs: 5_000 },
+        ),
     }),
   );
 
@@ -479,22 +490,41 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * consumer and it runs per request.
    *
    * ═══════════════════════════════════════════════════════════════════════════
-   * THE REDEMPTION SEAM IS DELIBERATELY NOT WIRED, AND THIS IS WHERE IT WOULD BE.
+   * THE REDEMPTION SEAM IS WIRED, AND THIS FILE IS WHERE THE TWO HALVES MEET
+   * (admin#2). It was left out of v1 on purpose; `redemptionPort` below is the
+   * line this comment used to promise.
    *
    * Spending points at checkout is a `PointsRedemptionPort` — declared in
    * `shared/marketing/redemption.ts`, implemented over the ledger in
-   * `server/marketing/`, and consumed by the cart, which today hard-codes
-   * `adjustments: []`. Marketing may not import `server/shop/**` and the shop may
-   * not import `server/marketing/**` (spec D9), so the two halves can only meet
-   * in a composition root — this file, the way `createPaymentRoutes({ checkout:
-   * checkoutPort() })` below joins Cart and Payments. When it lands,
-   * `ShopCartDeps` gains an optional `redemption?` and it is injected HERE.
+   * `server/marketing/`, and consumed by the cart. Marketing may not import
+   * `server/shop/**` and the shop may not import `server/marketing/**` (spec
+   * D9), so the two halves can only meet in a composition root — this file, the
+   * way `createPaymentRoutes({ checkout: checkoutPort() })` below joins Cart and
+   * Payments. `ShopCartDeps.redemption` and `OrdersDeps.redemption` take it from
+   * here and from nowhere else.
    *
-   * Left unwired in v1 on purpose: the cart's files belong to another session,
-   * and a port with no caller is a much smaller thing to carry than a half-wired
-   * one. The gap the shop must not assume away is written down in spec D9 — a
-   * quote does not RESERVE, so a balance can drop between the checkout quote and
-   * the paid-webhook redeem.
+   * A FACTORY, NOT A PORT: `redemptionPort` closes over a request's database
+   * handle because the frozen interface takes none — the browser bundle compiles
+   * it and it therefore cannot name a server-only type.
+   *
+   * ═══ THE GAP D9 NAMES, AND WHAT WAS DECIDED ABOUT IT ═══
+   *
+   * A QUOTE DOES NOT RESERVE. The discount is decided at the freeze and the
+   * points are debited at the capture, and a balance can fall in between — a
+   * concurrent checkout, an admin clawback.
+   *
+   * THE DECISION: the customer is charged the total they agreed to, always. When
+   * `redeem()` answers `insufficient_balance` the order is still created, still
+   * paid and still confirmed, and the shortfall is recorded against the
+   * consumption row with the `anomaly:` prefix so one `LIKE` finds it. The shop
+   * absorbs a discount it could not fund; the customer is never charged twice and
+   * never left paid-with-no-order, which is the failure this whole pipeline
+   * exists to prevent. `server/shop/orders/repo/consumer.ts` (`spendPoints`)
+   * carries the full reasoning at the point it happens.
+   *
+   * The escape hatch, if the gap ever bites at real volume, is the reservation
+   * ledger kind `shared/marketing/redemption.ts` names — which is why `release()`
+   * already exists. It is not built, deliberately.
    * ═══════════════════════════════════════════════════════════════════════════
    */
   app.route(`${API_PREFIX}${MARKETING_PREFIX}`, marketingApp({ mailer: deps.mailer }));
@@ -530,7 +560,14 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
       // The `/confirm` route is a genuine capture path too — a customer back
       // from Paystack whose webhook is late reaches `captured` there.
       sweepEvents: (db, origin) =>
-        drainCommerceEvents(db, { origin }, { limit: 10, passes: 2, budgetMs: 5_000 }),
+        drainCommerceEvents(
+          db,
+          /* The inline drain applies `payment.captured` too, so it must be able to
+           * spend points — otherwise whether a debit happens would depend on
+           * which drain got there first. */
+          { origin, redemption: (handle) => redemptionPort(handle) },
+          { limit: 10, passes: 2, budgetMs: 5_000 },
+        ),
     }),
   );
 
@@ -551,7 +588,7 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * conflict errors with a `product` rather than a `post`, falling through to
    * `toResponse` for every other row of the §8 table.
    */
-  app.route(`${API_PREFIX}${SHOP_PREFIX}`, shopApp());
+  app.route(`${API_PREFIX}${SHOP_PREFIX}`, shopApp({ redemption: (db) => redemptionPort(db) }));
 
   return app;
 }

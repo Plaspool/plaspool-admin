@@ -12,6 +12,7 @@ import {
 } from '../inbound';
 import { mintGuestToken } from '../tokens';
 import type { AccessLink } from '../mailer';
+import type { PointsRedemptionPort } from '../../../../shared/marketing/redemption';
 import {
   CONSUMER,
   cancelOrder,
@@ -102,6 +103,13 @@ export interface ConsumerDeps {
    * `null` means emails carry no link, which is a degraded but honest state.
    */
   origin: string | null;
+
+  /**
+   * SpoolPoints (admin#2). Absent means an order that spent points is still
+   * created, paid and confirmed — the points are simply not debited. See
+   * `OrdersDeps.redemption`.
+   */
+  redemption?: (db: Db) => PointsRedemptionPort;
 }
 
 // ------------------------------------------------------------------ dispatch
@@ -179,6 +187,103 @@ function awaitingCheckout(checkoutId: string): Disposition {
     kind: 'parked',
     detail: `awaiting predecessor: checkout.completed for ${checkoutId}`,
   };
+}
+
+/**
+ * Spend the SpoolPoints an order was frozen with. Returns a `detail` string when
+ * something is worth recording, or null for the ordinary silent success.
+ *
+ * ═══ THE D9 DECISION, AND IT IS MADE HERE ═══
+ *
+ * Spec D9: **a quote does not RESERVE.** The discount was decided at the freeze
+ * and the debit happens now, and between those two instants a balance can fall —
+ * a concurrent checkout, an admin clawback. `redeem()` answers
+ * `insufficient_balance` rather than overdrawing, because the balance column has
+ * a `CHECK (balance >= 0)` and the debit is guarded in SQL.
+ *
+ * **WHEN THAT HAPPENS THE ORDER IS STILL PAID AND STILL SHIPS.** The customer
+ * agreed to the frozen total, paid the frozen total, and has a confirmation. The
+ * shortfall is the SHOP's — it granted a discount it could not fund — and the
+ * honest handling of that is a reconciliation note, not a customer who is
+ * charged a second time or an order that never appears. Refusing the order here
+ * would take money and give nothing, which is the one failure this pipeline
+ * exists to prevent.
+ *
+ * SO IT IS RECORDED WITH THE `anomaly:` PREFIX, the same convention
+ * capture-against-a-cancelled-order uses above, so one `LIKE` over
+ * `shop_order_event_consumptions.detail` finds every order that needs looking at.
+ * `shop_orders_redemption_idx` (migration 0260) is the other half of that query.
+ *
+ * NEVER THROWS, AND THAT IS DELIBERATE. This runs AFTER `markOrderPaid`. Throwing
+ * would park an event whose state change has already been applied, and the next
+ * sweep would replay it — so the failure mode of a marketing outage would be an
+ * order stuck parked rather than an order that is simply missing its debit. The
+ * points are recoverable by hand; a parked paid order is not recoverable by the
+ * customer at all.
+ *
+ * IDEMPOTENT BY CONSTRUCTION, so the replay a parked-then-retried sweep produces
+ * is harmless: a partial unique index on `(order_id) WHERE kind = 'redemption'`
+ * makes the second call return the first call's entry instead of debiting twice.
+ */
+async function spendPoints(
+  db: Db,
+  deps: ConsumerDeps,
+  orderId: string,
+  now: number,
+): Promise<string | null> {
+  if (!deps.redemption) return null;
+  try {
+    /*
+     * READ HERE RATHER THAN THROUGH `Order`. `ORDER_COLUMNS` is an explicit list
+     * for the reason `orders.ts` gives — a column added to it joins every order
+     * response — and the wallet address is not something an order page needs.
+     */
+    const res = await db.execute(sql`
+      SELECT redemption_points, redemption_email, currency
+        FROM shop_orders WHERE id = ${orderId}`);
+    const row = res.rows[0];
+    if (!row || row.redemption_points == null || row.redemption_email == null) return null;
+
+    const result = await deps.redemption(db).redeem({
+      orderId,
+      email: String(row.redemption_email),
+      points: Number(row.redemption_points),
+      currency: String(row.currency),
+    });
+    if (result.ok) return null;
+
+    return `anomaly: ${result.code} redeeming ${Number(row.redemption_points)} points — order is paid, the discount was not funded; reconcile with marketing`;
+  } catch (err: unknown) {
+    return `anomaly: redemption failed after payment — ${err instanceof Error ? err.message : String(err)}; order is paid, reconcile with marketing`;
+  }
+}
+
+/**
+ * Give back the points a cancelled or refunded order spent.
+ *
+ * UNCONDITIONAL, AND THAT IS THE PORT'S OWN INSTRUCTION: `release()` answers
+ * `entryId: null` when there was no redemption, which it documents as a success
+ * rather than an error precisely so every cancellation path can call it without
+ * checking first. Most cancelled orders never spent a point.
+ *
+ * NEVER THROWS, for the same reason `spendPoints` does not: the cancellation has
+ * already been applied by the time this runs, and a throw would park an event
+ * whose state change stands. A customer whose refund is missing its point credit
+ * is a fixable ledger entry; a parked cancellation is a stuck pipeline.
+ */
+async function refundPoints(
+  db: Db,
+  deps: ConsumerDeps,
+  orderId: string,
+  reason: string,
+): Promise<string | null> {
+  if (!deps.redemption) return null;
+  try {
+    await deps.redemption(db).release({ orderId, reason });
+    return null;
+  } catch (err: unknown) {
+    return `anomaly: could not return redeemed points — ${err instanceof Error ? err.message : String(err)}; reconcile with marketing`;
+  }
 }
 
 function accessLink(read: OrderRead, deps: ConsumerDeps, now: number): AccessLink | null {
@@ -286,7 +391,27 @@ async function dispatch(
         { eventId: row.id },
         parsed.value.intentId,
       );
-      return { kind: 'applied' };
+
+      /*
+       * SPOOLPOINTS ARE SPENT HERE — AT THE CAPTURE, NOT AT `checkout.completed`.
+       *
+       * An order row exists at `checkout.completed`, but it is `pending`. Debiting
+       * a wallet there means every checkout that is completed and then never paid
+       * for — the ordinary abandonment — strands a debit that something has to
+       * find and give back. Spending when the money actually arrives means the
+       * common case spends nothing and needs no compensation, and `release()` is
+       * left with only the case it was written for: an order that WAS paid and is
+       * then cancelled or refunded.
+       *
+       * IT RUNS INSIDE THE SWEEP'S OWN REQUEST, which is the reason it is safe to
+       * put it after the state change at all. Post-response work does not run on
+       * Vercel — the function freezes once it has answered, measured twice — but
+       * the sweep is a cron-driven request that is still executing here.
+       */
+      const redeemed = await spendPoints(db, deps, read.order.id, now);
+      return redeemed === null
+        ? { kind: 'applied' }
+        : { kind: 'applied', detail: redeemed };
     }
 
     case 'payment.failed': {
@@ -311,7 +436,10 @@ async function dispatch(
         now,
         { eventId: row.id },
       );
-      return { kind: 'applied' };
+      /* The order never shipped and never will; the points it was frozen with go
+       * back. Unconditional — see `refundPoints`. */
+      const released = await refundPoints(db, deps, read.order.id, 'payment_failed');
+      return released === null ? { kind: 'applied' } : { kind: 'applied', detail: released };
     }
 
     case 'payment.refunded': {
@@ -332,7 +460,16 @@ async function dispatch(
         now,
         { eventId: row.id },
       );
-      return { kind: 'applied' };
+      /*
+       * RELEASED ON ANY REFUND, INCLUDING A PARTIAL ONE, and that is a choice
+       * rather than an oversight. `release()` gives back what was debited, in
+       * full — the ledger has no notion of a fraction of a redemption and
+       * inventing one here would be a second place for the number to be wrong.
+       * Returning the customer's points to them when the shop has kept some of
+       * the money is the direction to round in; the alternative keeps both.
+       */
+      const returned = await refundPoints(db, deps, read.order.id, 'payment_refunded');
+      return returned === null ? { kind: 'applied' } : { kind: 'applied', detail: returned };
     }
   }
 }
@@ -356,7 +493,31 @@ function ignoreAndLog(row: EventRow, detail: string): Disposition {
  * the only arrangement in which the two cannot disagree.
  */
 async function record(db: Db, row: EventRow, disposition: Disposition, now: number): Promise<void> {
-  if (disposition.kind === 'applied') return;
+  if (disposition.kind === 'applied') {
+    /*
+     * AN APPLIED DISPOSITION USUALLY CARRIES NO DETAIL, and there is nothing to
+     * write: the consumption row was inserted by the repo function in the SAME
+     * statement as the state change, which is what makes the outcome impossible
+     * to lose or double-count.
+     *
+     * IT CARRIES ONE WHEN THE STATE CHANGE SUCCEEDED AND SOMETHING BESIDE IT DID
+     * NOT — today that means SpoolPoints (admin#2): the order is paid, and the
+     * discount it was frozen with could not be funded. The row is already there,
+     * so this patches its `detail` rather than inserting; without this the
+     * `anomaly:` string is computed, returned, and silently discarded, which is
+     * the same as not recording it at all.
+     *
+     * `processed_at` IS DELIBERATELY NOT TOUCHED and `last_error` is left alone:
+     * the event WAS applied, and writing an error against it would put a
+     * successful capture into every query an operator runs for failures.
+     */
+    if (disposition.detail === undefined) return;
+    await db.execute(sql`
+      UPDATE shop_order_event_consumptions
+         SET detail = ${disposition.detail}
+       WHERE consumer = ${CONSUMER} AND event_id = ${row.id}`);
+    return;
+  }
 
   if (disposition.kind === 'ignored') {
     await db.execute(sql`
