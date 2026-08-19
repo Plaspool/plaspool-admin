@@ -364,6 +364,11 @@ describe('toStorefrontVariant', () => {
     updatedAt: 0,
     price: null,
     available: null,
+    /* Neither is what this test is about — it exercises image resolution — but
+       `VariantWithPrice` requires both, so the fixture states them rather than
+       leaving the file failing `tsc -b`. */
+    backorderable: false,
+    everOrdered: false,
   };
 
   it('resolves the image through the shared URL rule', () => {

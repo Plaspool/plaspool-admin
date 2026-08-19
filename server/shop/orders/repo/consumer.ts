@@ -261,6 +261,14 @@ async function spendPoints(
 /**
  * Give back the points a cancelled or refunded order spent.
  *
+ * CALLED FROM THE CONSUMER'S FAILURE PATHS **AND FROM THE OWNER'S CANCEL ROUTE**
+ * (`routes.ts`), which is why it is exported. An admin cancelling a paid order is
+ * not an event this consumer ever sees: `cancelOrder` emits `order.cancelled`,
+ * and the switch above ignores that as one of this subsystem's OWN emissions. So
+ * a cancel driven by a person reaches no branch here, and wiring the release only
+ * into the event paths left exactly the hole `release()` exists to close — a
+ * cancelled order with its debit stranded and the customer quietly out of pocket.
+ *
  * UNCONDITIONAL, AND THAT IS THE PORT'S OWN INSTRUCTION: `release()` answers
  * `entryId: null` when there was no redemption, which it documents as a success
  * rather than an error precisely so every cancellation path can call it without
@@ -271,15 +279,15 @@ async function spendPoints(
  * whose state change stands. A customer whose refund is missing its point credit
  * is a fixable ledger entry; a parked cancellation is a stuck pipeline.
  */
-async function refundPoints(
+export async function refundPoints(
   db: Db,
-  deps: ConsumerDeps,
+  redemption: ((handle: Db) => PointsRedemptionPort) | undefined,
   orderId: string,
   reason: string,
 ): Promise<string | null> {
-  if (!deps.redemption) return null;
+  if (!redemption) return null;
   try {
-    await deps.redemption(db).release({ orderId, reason });
+    await redemption(db).release({ orderId, reason });
     return null;
   } catch (err: unknown) {
     return `anomaly: could not return redeemed points — ${err instanceof Error ? err.message : String(err)}; reconcile with marketing`;
@@ -438,7 +446,7 @@ async function dispatch(
       );
       /* The order never shipped and never will; the points it was frozen with go
        * back. Unconditional — see `refundPoints`. */
-      const released = await refundPoints(db, deps, read.order.id, 'payment_failed');
+      const released = await refundPoints(db, deps.redemption, read.order.id, 'payment_failed');
       return released === null ? { kind: 'applied' } : { kind: 'applied', detail: released };
     }
 
@@ -468,7 +476,7 @@ async function dispatch(
        * Returning the customer's points to them when the shop has kept some of
        * the money is the direction to round in; the alternative keeps both.
        */
-      const returned = await refundPoints(db, deps, read.order.id, 'payment_refunded');
+      const returned = await refundPoints(db, deps.redemption, read.order.id, 'payment_refunded');
       return returned === null ? { kind: 'applied' } : { kind: 'applied', detail: returned };
     }
   }
