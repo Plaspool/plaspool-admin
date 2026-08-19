@@ -44,6 +44,20 @@ const ZoneBody = z
 
 const ZonePatchBody = ZoneBody.partial().strict();
 
+/**
+ * ISO-3166-1 alpha-2, uppercase, no surrounding whitespace — the exact shape
+ * `zoneFor` compares against (`countryCode.trim().toUpperCase()`,
+ * `shipping.ts`). The admin screen already uppercases before it POSTs, which
+ * is why a zone built through it always matches; this is the same
+ * normalization applied server-side, because the route is reachable directly
+ * and a zone stored as `["ng"]` never matches an uppercase `"NG"` — it falls
+ * through to the fallback, silently charging the fallback zone's rate to
+ * every customer the intended zone was supposed to price.
+ */
+function normalizeCountries(countries: string[]): string[] {
+  return countries.map((c) => c.trim().toUpperCase());
+}
+
 const OptionBody = z
   .object({
     zoneId: str().min(1).max(200),
@@ -70,13 +84,19 @@ shippingZoneRoutes.get('/admin/shipping-zones', auth, async (c) => {
 
 shippingZoneRoutes.post('/admin/shipping-zones', auth, async (c) => {
   const body = await readJson(c, ZoneBody);
-  const zone = await createShippingZone(currentDb(c), body);
+  const zone = await createShippingZone(currentDb(c), {
+    ...body,
+    countries: normalizeCountries(body.countries),
+  });
   return c.json({ zone }, 201);
 });
 
 shippingZoneRoutes.patch('/admin/shipping-zones/:id', auth, async (c) => {
   const body = await readJson(c, ZonePatchBody);
-  const patch: ShippingZonePatch = { ...body };
+  const patch: ShippingZonePatch = {
+    ...body,
+    ...(body.countries ? { countries: normalizeCountries(body.countries) } : {}),
+  };
   const zone = await updateShippingZone(currentDb(c), pathParam(c, 'id'), patch);
   return c.json({ zone });
 });

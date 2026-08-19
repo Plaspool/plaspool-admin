@@ -17,11 +17,16 @@ import type { ShippingQuote, TaxRate } from '../../../../shared/commerce/ports';
  * implementation swap and not a rewrite of the engine — brief §5's requirement,
  * met by making the rate an argument rather than a lookup.
  *
- * THE NUMBERS BELOW ARE PLACEHOLDERS AND ARE WRONG FOR ANY REAL SHOP. They are
- * shaped correctly and priced arbitrarily; a real deployment injects its own
- * `zones` through `ShopCartDeps`. Said out loud here because a hard-coded 20%
- * that nobody notices is hard-coded is precisely the class of thing GAUNTLET
- * keeps finding — a claim the code makes that nobody checked.
+ * `DEFAULT_SHIPPING_ZONES` IS THE EMPTY-DATABASE FALLBACK, NOT "THE CONFIG"
+ * (admin#19). The real config is `shop_shipping_zones` /
+ * `shop_shipping_options`, loaded per request by
+ * `loadShippingZones` (`shipping-zones-repo.ts`) and handed in through
+ * `ShopCartDeps` — this file still takes `zones` as a plain argument rather
+ * than reading a table itself, so the constant below is what a deployment
+ * with zero rows in that table falls back to. It is priced as the real
+ * starting values the owner confirmed for this shop (Abuja, Lagos, rest of
+ * Nigeria — see the constant itself), not as an arbitrary placeholder; a shop
+ * that changes its rates does so in the admin screen, not here.
  */
 
 export interface ShippingOptionConfig {

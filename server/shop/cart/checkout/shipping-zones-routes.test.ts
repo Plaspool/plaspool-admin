@@ -117,12 +117,103 @@ describe('shipping zone CRUD', () => {
     expect(res.status).toBe(409);
   });
 
-  it('refuses flipping an existing zone to fallback while another already is', async () => {
+  /*
+   * FLIPPING A ZONE TO FALLBACK WHILE ANOTHER ALREADY IS ONE DOES NOT 409 —
+   * it PROMOTES: the previous fallback is demoted and the target takes over,
+   * because "designate another zone as the fallback" is the one operation
+   * this screen offers an operator for correcting the fallback, and it has to
+   * succeed for the DEMOTE and DELETE refusals below to have anywhere to send
+   * someone. `zone_abuja` is restored to non-fallback afterwards so later
+   * tests in this file still find `zone_rest_of_nigeria` as the seed left it.
+   */
+  it('flipping an existing zone to fallback demotes the previous one instead of conflicting', async () => {
     await login();
     const res = await http.patch('/api/shop/admin/shipping-zones/zone_abuja', {
       isFallback: true,
     });
+    expect(res.status).toBe(200);
+
+    const rows = await ctx.db.execute(
+      sql`SELECT id FROM shop_shipping_zones WHERE is_fallback = true`,
+    );
+    expect(rows.rows).toHaveLength(1);
+    expect((rows.rows[0] as { id: string }).id).toBe('zone_abuja');
+
+    const restore = await http.patch('/api/shop/admin/shipping-zones/zone_rest_of_nigeria', {
+      isFallback: true,
+    });
+    expect(restore.status).toBe(200);
+  });
+
+  /*
+   * AT LEAST ONE FALLBACK, NOT JUST AT MOST ONE. The partial unique index only
+   * ever stopped a SECOND fallback from existing; nothing stopped the sole one
+   * from being deleted or unset, which would leave `zoneFor` with nothing to
+   * hand an unmatched customer — and `zoneFor` throws in that case, so the
+   * next `PUT /checkout/addresses` for anyone outside Abuja and Lagos would
+   * 500 with no warning anywhere first.
+   */
+  it('refuses deleting the sole fallback zone', async () => {
+    await login();
+    const res = await http.del('/api/shop/admin/shipping-zones/zone_rest_of_nigeria');
     expect(res.status).toBe(409);
+    const body = await json<{ operation?: string }>(res);
+    expect(body.operation).toBe('delete_fallback');
+  });
+
+  it('refuses unsetting the sole fallback zone without promoting another', async () => {
+    await login();
+    const res = await http.patch('/api/shop/admin/shipping-zones/zone_rest_of_nigeria', {
+      isFallback: false,
+    });
+    expect(res.status).toBe(409);
+    const body = await json<{ operation?: string }>(res);
+    expect(body.operation).toBe('unset_fallback');
+  });
+
+  it('promoting a new fallback demotes the old one, leaving exactly one', async () => {
+    await login();
+    const res = await http.patch('/api/shop/admin/shipping-zones/zone_lagos', {
+      isFallback: true,
+    });
+    expect(res.status).toBe(200);
+
+    const rows = await ctx.db.execute(
+      sql`SELECT id, is_fallback FROM shop_shipping_zones WHERE is_fallback = true`,
+    );
+    expect(rows.rows).toHaveLength(1);
+    expect((rows.rows[0] as { id: string }).id).toBe('zone_lagos');
+
+    // Restore the seed's fallback so later tests in this file are unaffected.
+    const restore = await http.patch('/api/shop/admin/shipping-zones/zone_rest_of_nigeria', {
+      isFallback: true,
+    });
+    expect(restore.status).toBe(200);
+  });
+
+  /*
+   * A zone POSTed with a lowercase country never matched `zoneFor`'s uppercase
+   * comparison before this normalization — an Abuja customer routed through a
+   * zone stored as `["ng"]` fell through to the fallback and its ₦10,000 rate
+   * instead of Abuja's ₦3,000. The admin screen already uppercases, so this
+   * proves the route itself does too, for any other caller.
+   */
+  it('normalizes a lowercase country code so the zone still matches', async () => {
+    await login();
+    const created = await http.post('/api/shop/admin/shipping-zones', {
+      label: 'Lowercase Country Zone',
+      countries: [' ng '],
+      regions: ['Kwara'],
+      taxRateBps: 0,
+      taxLabel: '',
+      shippingTaxable: false,
+      isFallback: false,
+      position: 50,
+    });
+    expect(created.status).toBe(201);
+    const zone = (await json<{ zone: { id: string; countries: string[] } }>(created)).zone;
+    expect(zone.countries).toEqual(['NG']);
+    await http.del(`/api/shop/admin/shipping-zones/${zone.id}`);
   });
 });
 

@@ -27,6 +27,18 @@ import './shop.css';
 function messageFor(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
     if (err.status === 409) {
+      /*
+       * Four different refusals share this status, and the server tells them
+       * apart with `operation` (`shipping-zones-repo.ts`) precisely so this
+       * screen can say the right thing instead of one generic "conflict".
+       */
+      const body = err.body as { operation?: string } | undefined;
+      if (body?.operation === 'delete_fallback') {
+        return 'This is the fallback zone — every unmatched address prices from it. Designate another zone as the fallback first, then delete this one.';
+      }
+      if (body?.operation === 'unset_fallback') {
+        return 'This is the fallback zone. Designate another zone as the fallback first — that switches it automatically — rather than turning this one off.';
+      }
       return 'Only one zone can be the fallback. Remove the fallback flag from the current one first.';
     }
     if (err.status === 400 && err.detail === 'zone_has_options') {
