@@ -36,6 +36,7 @@ import {
   ShoppingBag,
   Star,
   Tags,
+  Truck,
   TicketPercent,
   Trash2,
   Users,
@@ -183,6 +184,12 @@ const SECTION_PAGES: Partial<Record<SectionId, SectionPage[]>> = {
      * be the place they add it.
      */
     { key: 'categories', label: 'Categories', to: '/shop/categories', icon: Tags },
+    {
+      key: 'shipping-zones',
+      label: 'Shipping zones',
+      to: '/shop/shipping-zones',
+      icon: Truck,
+    },
     { key: 'orders', label: 'Orders', to: '/shop/orders', icon: Receipt },
     { key: 'customers', label: 'Customers', to: '/shop/customers', icon: Users },
     /*
