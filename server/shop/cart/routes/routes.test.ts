@@ -207,6 +207,105 @@ describe('GET /api/shop/cart', () => {
   });
 });
 
+describe('a cart that has become an order stops being this browser’s basket', () => {
+  /*
+   * ═══ THE BUG THIS SUITE MISSED, FOUND IN A BROWSER ═══
+   *
+   * `converted` is terminal — `cart/repo.ts` gives it no outgoing edge — but
+   * nothing retired the cookie naming it. So after a successful checkout the
+   * storefront went on drawing the paid-for basket forever: `GET /cart`
+   * answered the dead cart with its lines and a live price preview, every line
+   * write was correctly refused with `409 precondition_failed` so "Remove" did
+   * nothing, and checkout could not start again. `clearCartCookie` had existed
+   * for exactly this and had never been called from anywhere in the server.
+   *
+   * Reported from production with the 409 body in hand:
+   *   {"error":"precondition_failed","operation":"remove_line",
+   *    "cart":{"status":"converted", ...}}
+   *
+   * These tests drive the cookie jar, not the repo, because the cookie IS the
+   * defect — a repo-level assertion would have passed throughout.
+   */
+  async function convert(): Promise<string> {
+    const view = await newCart();
+    await client.post('/api/shop/cart/lines', { variantId: tee.id, qty: 1 });
+    const id = view.cart!.id;
+    /* Straight to the terminal state. The route's contract is "a cart in this
+       status is not a basket", and how it got there — capture, or the sweep
+       marking it abandoned — is not this seam's business. */
+    await ctx.db.execute(sql`UPDATE shop_carts SET status = 'converted' WHERE id = ${id}`);
+    return id;
+  }
+
+  it('answers an EMPTY basket and retires the cookie', async () => {
+    await convert();
+
+    const res = await client.get('/api/shop/cart');
+    expect(res.status).toBe(200);
+    const view = await json<CartView>(res);
+    expect(view.cart).toBeNull();
+    expect(view.lines).toEqual([]);
+    // The cookie is gone, so the next request does not re-find it.
+    expect(client.cookies().get(CART_COOKIE)).toBeFalsy();
+  });
+
+  it('does not leave the shopper holding a basket they cannot empty', async () => {
+    /*
+     * The symptom that was reported. The line write must not answer 409
+     * `precondition_failed` — by the time it is reached there is no cart to
+     * refuse a write on, because the read above already cleared the cookie.
+     */
+    await convert();
+    await client.get('/api/shop/cart');
+
+    const res = await client.del('/api/shop/cart/lines/line_whatever');
+    expect(res.status).toBe(404);
+    expect((await json<{ error: string }>(res)).error).not.toBe('precondition_failed');
+  });
+
+  it('gives the next add a genuinely new cart rather than reviving the order', async () => {
+    const dead = await convert();
+
+    const res = await client.post('/api/shop/cart', undefined, ip('10.0.0.2'));
+    expect(res.status).toBe(201);
+    const fresh = await json<CartView>(res);
+    expect(fresh.cart?.id).not.toBe(dead);
+    expect(fresh.cart?.status).toBe('open');
+    expect(fresh.lines).toEqual([]);
+    // And the cookie now names the NEW cart — the clear must not outlive it.
+    expect(client.cookies().get(CART_COOKIE)).toBe(fresh.cart?.id);
+  });
+
+  it('leaves a cart mid-payment alone', async () => {
+    /*
+     * `converting` is a cart whose shopper is on the payment page. A failed
+     * payment sends it back to `open` and they still have their basket, so
+     * retiring the cookie here would throw away a live checkout.
+     */
+    const view = await newCart();
+    await client.post('/api/shop/cart/lines', { variantId: tee.id, qty: 1 });
+    await ctx.db.execute(
+      sql`UPDATE shop_carts SET status = 'converting' WHERE id = ${view.cart!.id}`,
+    );
+
+    const after = await json<CartView>(await client.get('/api/shop/cart'));
+    expect(after.cart?.id).toBe(view.cart?.id);
+    expect(after.lines).toHaveLength(1);
+    expect(client.cookies().get(CART_COOKIE)).toBe(view.cart?.id);
+  });
+
+  it('treats an abandoned cart the same way', async () => {
+    const view = await newCart();
+    await ctx.db.execute(
+      sql`UPDATE shop_carts SET status = 'abandoned' WHERE id = ${view.cart!.id}`,
+    );
+
+    const after = await json<CartView>(await client.get('/api/shop/cart'));
+    expect(after.cart).toBeNull();
+    expect(client.cookies().get(CART_COOKIE)).toBeFalsy();
+  });
+});
+
 describe('line mutations', () => {
   it('adds, changes and removes', async () => {
     await newCart();

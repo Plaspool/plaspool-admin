@@ -7,7 +7,7 @@ import { adoptCartForCustomer } from '../cart/merge';
 import { runCartMaintenance } from '../events/consumer';
 import { computeTotals } from '../totals/compute';
 import { unknownZoneTaxRate } from '../checkout/shipping';
-import { cartCookie, setCartCookie } from '../identity/cookies';
+import { cartCookie, clearCartCookie, setCartCookie } from '../identity/cookies';
 import { currentCustomer, shopClientIp, shopDb, shopLimit } from '../shop-env';
 import {
   CART_CREATE_LIMIT,
@@ -151,6 +151,16 @@ async function limitWrites(c: Context<ShopEnv>, cartId: string): Promise<void> {
   await shopLimit(c, `shop-cart-write:${cartId}`, CART_WRITE_LIMIT, CART_WRITE_WINDOW_MS);
 }
 
+/**
+ * Statuses a browser may still be holding as "my basket".
+ *
+ * `converting` IS ONE OF THEM: that is a cart mid-payment, and the shopper is
+ * looking at the page that will either finish or fail — a payment that fails
+ * sends it back to `open` and they still have their basket. `converted` and
+ * `abandoned` are terminal, and `currentCart` retires the cookie naming one.
+ */
+const LIVE_STATUSES: readonly Cart['status'][] = ['open', 'converting'];
+
 /** The cart the cookie names, or null. Never creates one. */
 async function currentCart(c: Context<ShopEnv>, db: Db): Promise<Cart | null> {
   const id = cartCookie(c);
@@ -163,6 +173,42 @@ async function currentCart(c: Context<ShopEnv>, db: Db): Promise<Cart | null> {
    * the shop's landing page is a dead end they cannot clear without knowing
    * about cookies.
    */
+  if (!cart) return null;
+
+  /*
+   * ═══ A CART THAT HAS BECOME AN ORDER IS NOT THIS BROWSER'S BASKET ═══
+   *
+   * `converted` is TERMINAL — `cart/repo.ts` gives it no outgoing edge at all,
+   * because it has become an order and Orders owns what happens next. But
+   * nothing retired the cookie that named it, so the browser went on presenting
+   * a dead cart as its live basket:
+   *
+   *   - `GET /cart` answered the converted cart, lines and all, with a live
+   *     price preview — so the drawer redrew a basket the shopper had already
+   *     paid for, indefinitely.
+   *   - every line write was then correctly refused with
+   *     `409 precondition_failed`, so "Remove" did nothing.
+   *   - checkout could not start again, and the shopper had no way to clear it
+   *     that did not involve knowing what a cookie is.
+   *
+   * `clearCartCookie` existed for this and had NEVER been called from anywhere
+   * in the server. This is the call site it was written for.
+   *
+   * THE SAME ANSWER AS A SWEPT CART, and deliberately so: from the shopper's
+   * side "your basket is gone because you bought it" and "your basket is gone
+   * because it expired" are the same situation — an empty basket they can fill
+   * again. The order itself is not lost; it is in `/account/orders` and in the
+   * receipt email, which is where an order belongs.
+   *
+   * `POST /cart` calls this too, so a shopper who adds something after checking
+   * out gets a genuinely new cart: this clears the stale cookie and the create
+   * path writes a fresh one over it in the same response.
+   */
+  if (!LIVE_STATUSES.includes(cart.status)) {
+    clearCartCookie(c);
+    return null;
+  }
+
   return cart;
 }
 
