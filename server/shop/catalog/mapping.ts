@@ -238,6 +238,7 @@ export function rowToVariantWithPrice(row: Record<string, unknown>): VariantWith
      */
     available: row.available == null ? null : Number(row.available),
     backorderable: row.backorderable === true,
+    everOrdered: row.ever_ordered === true,
   };
 }
 

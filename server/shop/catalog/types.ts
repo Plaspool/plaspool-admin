@@ -124,6 +124,14 @@ export interface VariantWithPrice extends Variant {
   price: { amount: number; currency: string } | null;
   available: number | null;
   backorderable: boolean;
+  /**
+   * Whether any `shop_order_lines` row has ever referenced this variant
+   * (issue #18). Carried on the read so the admin panel can hide Delete
+   * outright rather than offer a control that only ever answers 409 — the
+   * panel already shows price and stock on this same row, and "has this ever
+   * sold" is one more fact about it, not a separate request.
+   */
+  everOrdered: boolean;
 }
 
 /** A row of `shop_inventory`, for the admin surface. `available` is derived. */

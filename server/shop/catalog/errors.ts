@@ -1,6 +1,6 @@
 import { PreconditionFailedError, StaleWriteError } from '../../repo/errors';
 import type { Post } from '../../../shared/types';
-import type { Product } from './types';
+import type { Product, Variant } from './types';
 
 /**
  * Catalog's two conflict errors.
@@ -75,5 +75,36 @@ export class ProductPreconditionFailedError extends PreconditionFailedError {
     super(operation, {} as Post);
     this.name = 'ProductPreconditionFailedError';
     this.product = product;
+  }
+}
+
+/**
+ * `DELETE /admin/variants/:id` refused because the variant has been ordered
+ * (issue #18).
+ *
+ * SAME SHAPE AS `ProductPreconditionFailedError`, FOR THE SAME REASON: a
+ * `shop_order_lines` row snapshots its variant, so a hard delete would tear a
+ * hole in order history the moment somebody rendered that order again. This is
+ * not a stale write — there is no revision the caller raced — it is a refusal
+ * that will still be true on retry, which is exactly what
+ * `PreconditionFailedError`'s vocabulary already says: "there is nothing to do,
+ * it is already in a state (has sold) that forbids this."
+ *
+ * Carries the variant rather than an order id list because the UI's one job on
+ * a 409 here is to say "this has been sold — archive it instead", which needs
+ * the variant, not the orders. `operation` is always `'delete'` today but is
+ * kept as a field rather than a constant so the renderer in `server/shop/app.ts`
+ * does not need a second special case if a future refusal joins it.
+ */
+export class VariantPreconditionFailedError extends PreconditionFailedError {
+  readonly variant: Variant;
+
+  constructor(operation: string, variant: Variant) {
+    // See `ProductPreconditionFailedError` above: the base class wants a
+    // non-null `Post`, this has none, and nothing reads `.post` on a Catalog
+    // error — the renderer that handles this reads `.variant`.
+    super(operation, {} as Post);
+    this.name = 'VariantPreconditionFailedError';
+    this.variant = variant;
   }
 }

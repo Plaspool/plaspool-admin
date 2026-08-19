@@ -1,6 +1,18 @@
 import { useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Banknote, Boxes, Check, History, ImagePlus, Minus, Plus, X } from 'lucide-react';
+import {
+  Archive,
+  ArchiveRestore,
+  Banknote,
+  Boxes,
+  Check,
+  History,
+  ImagePlus,
+  Minus,
+  Plus,
+  Trash2,
+  X,
+} from 'lucide-react';
 import {
   shopApi,
   currencyDigits,
@@ -1079,6 +1091,55 @@ function VariantCard({
       'That colour code did not go through.',
     );
 
+  /*
+   * ARCHIVE / RESTORE — the existing `PATCH .../variants/:id` `status` field,
+   * with no new API (issue #18). ARCHIVE DOES NOT CONFIRM: it is reversible by
+   * the Restore button right beside it, and a confirmation dialog on a
+   * reversible action is the thing that teaches people to click through
+   * dialogs without reading them.
+   */
+  const archive = () =>
+    run(
+      async () => {
+        await shopApi.updateVariant(variant.id, { status: 'discontinued' });
+      },
+      'Archived — restore it any time',
+      'That did not go through.',
+    );
+
+  const restore = () =>
+    run(
+      async () => {
+        await shopApi.updateVariant(variant.id, { status: 'active' });
+      },
+      'Restored',
+      'That did not go through.',
+    );
+
+  /*
+   * DELETE — the one irreversible control here, so unlike archive it DOES
+   * confirm (issue #18). Only ever offered when `variant.everOrdered` is
+   * false: the server refuses an ordered variant with a 409, and a control
+   * that exists only to be refused is the app asking "are you sure?" about
+   * something it will not do — so this hides rather than lets that 409 render.
+   */
+  const removeVariant = async (): Promise<void> => {
+    if (
+      !window.confirm(
+        `Delete ${optionSummary(variant)}? This removes it completely and cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    await run(
+      async () => {
+        await shopApi.deleteVariant(variant.id);
+      },
+      'Deleted',
+      'That did not go through.',
+    );
+  };
+
   const available =
     variant.available === null ? 'No stock record' : `${variant.available} available`;
 
@@ -1166,7 +1227,49 @@ function VariantCard({
               <ImagePlus className="ui-ic" aria-hidden="true" />
               {variant.imageId ? 'Change photo' : 'Add photo'}
             </button>
+            {variant.status === 'discontinued' ? (
+              <button
+                type="button"
+                className="btn btn--outline btn--sm"
+                disabled={busy}
+                onClick={() => void restore()}
+              >
+                <ArchiveRestore className="ui-ic" aria-hidden="true" />
+                Restore
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn btn--outline btn--sm"
+                disabled={busy}
+                onClick={() => void archive()}
+              >
+                <Archive className="ui-ic" aria-hidden="true" />
+                Archive
+              </button>
+            )}
           </div>
+          {/*
+           * DELETE, PUSHED AWAY FROM THE THREE ABOVE — it is the one
+           * irreversible control in this group (issue #18's UI note). Absent
+           * entirely for a variant that has ever been ordered: the server
+           * would answer 409, and offering a button whose only job is to
+           * refuse is the app asking "are you sure?" about something it will
+           * not do.
+           */}
+          {!variant.everOrdered && (
+            <div className="vactions vactions--danger">
+              <button
+                type="button"
+                className="btn btn--danger btn--sm"
+                disabled={busy}
+                onClick={() => void removeVariant()}
+              >
+                <Trash2 className="ui-ic" aria-hidden="true" />
+                Delete
+              </button>
+            </div>
+          )}
           <p className="panel__note">
             {variant.price
               ? 'Price and stock changes each ask why and keep the answer — the photo is just a photo.'
@@ -1476,7 +1579,7 @@ export function VariantsPanel({
                 <li key={v.id}>
                   <button
                     type="button"
-                    className={`vlist__item${v.id === current?.id ? ' is-active' : ''}`}
+                    className={`vlist__item${v.id === current?.id ? ' is-active' : ''}${v.status === 'discontinued' ? ' is-discontinued' : ''}`}
                     aria-current={v.id === current?.id ? 'true' : undefined}
                     onClick={() => setSelected(v.id)}
                   >
@@ -1490,7 +1593,16 @@ export function VariantsPanel({
                       )}
                     </span>
                     <span className="vlist__text">
-                      <span className="vlist__name">{optionSummary(v)}</span>
+                      <span className="vlist__name">
+                        {optionSummary(v)}
+                        {/* THE LIST, NOT ONLY THE DETAIL PANE (issue #18) — this
+                            is where somebody scans for "what is still real",
+                            and the old build only said "discontinued" once a
+                            row was already open. */}
+                        {v.status === 'discontinued' && (
+                          <span className="chip chip--discontinued vlist__badge">Archived</span>
+                        )}
+                      </span>
                       <span className="vlist__meta">
                         {v.price
                           ? formatMinor(v.price.amount, v.price.currency)
