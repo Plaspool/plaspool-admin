@@ -12,6 +12,7 @@ import type {
   InventoryLevel,
   Product,
   StorefrontProduct,
+  StorefrontVariant,
   Variant,
   VariantWithPrice,
 } from './types';
@@ -196,6 +197,20 @@ export function toStorefrontProduct(product: Product): StorefrontProduct {
       .filter((id) => id !== '')
       .map(publicImageUrl),
   };
+}
+
+/**
+ * A variant as the storefront needs it: its `imageId` resolved through the same
+ * `publicImageUrl` the product's cover goes through.
+ *
+ * NORMALISED FIRST and EMPTY DROPPED, for the reasons `toStorefrontProduct`
+ * gives at length — the id is stored both bare and `asset:`/`idb:`-prefixed,
+ * and `/api/public/images/` is a different route rather than that route with a
+ * bad id.
+ */
+export function toStorefrontVariant(variant: VariantWithPrice): StorefrontVariant {
+  const id = variant.imageId == null ? '' : normalizeBlobId(variant.imageId);
+  return { ...variant, imageUrl: id === '' ? null : publicImageUrl(id) };
 }
 
 export function rowToVariant(row: Record<string, unknown>): Variant {

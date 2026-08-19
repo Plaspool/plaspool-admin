@@ -24,9 +24,9 @@ import { freshDb, SEED_PASSWORD, type TestCtx } from '../../test/harness';
 import { httpClient, json, type HttpClient } from '../../test/http';
 import { BadRequestError } from '../../repo/errors';
 import { createProduct, getProduct, publishProduct, saveProduct } from './products';
-import { toStorefrontProduct } from './mapping';
+import { toStorefrontProduct, toStorefrontVariant } from './mapping';
 import { rejection } from './test/catalog-harness';
-import type { Product } from './types';
+import type { Product, VariantWithPrice } from './types';
 
 let ctx: TestCtx;
 let http: HttpClient;
@@ -337,6 +337,61 @@ describe('toStorefrontProduct', () => {
     expect(Object.keys(out).sort()).toEqual(
       [...Object.keys(input), 'coverImageUrl', 'imageUrls'].sort(),
     );
+  });
+});
+
+describe('toStorefrontVariant', () => {
+  /*
+   * A COLOUR'S OWN PHOTOGRAPH, resolved by the same rule as the product's cover.
+   *
+   * The variant carried a bare `imageId` and nothing else, so the storefront had
+   * no way to draw it without re-deriving `/api/public/images/:id` on the far
+   * side of the network — the second definition of the public URL that
+   * `mapping.ts` exists to prevent. It drew a generated SVG instead, which meant
+   * a photograph uploaded in the admin never reached a customer.
+   */
+  const variant: VariantWithPrice = {
+    id: 'v1',
+    productId: 'p1',
+    sku: 'SKU-1',
+    optionValues: { Colour: 'Black' },
+    position: 0,
+    weightGrams: null,
+    status: 'active',
+    imageId: null,
+    colorHex: '#000000',
+    createdAt: 0,
+    updatedAt: 0,
+    price: null,
+    available: null,
+  };
+
+  it('resolves the image through the shared URL rule', () => {
+    expect(toStorefrontVariant({ ...variant, imageId: 'img_black' }).imageUrl).toBe(
+      '/api/public/images/img_black',
+    );
+  });
+
+  it('strips the asset:/idb: prefix, like the cover does', () => {
+    expect(toStorefrontVariant({ ...variant, imageId: 'asset:img_black' }).imageUrl).toBe(
+      '/api/public/images/img_black',
+    );
+    expect(toStorefrontVariant({ ...variant, imageId: 'idb:img_black' }).imageUrl).toBe(
+      '/api/public/images/img_black',
+    );
+  });
+
+  it('is null when nobody has photographed this colour, and for an empty id', () => {
+    // Null is the state the storefront falls back on, so it must not become
+    // `/api/public/images/` — a different route, not this one with a bad id.
+    expect(toStorefrontVariant(variant).imageUrl).toBeNull();
+    expect(toStorefrontVariant({ ...variant, imageId: '' }).imageUrl).toBeNull();
+  });
+
+  it('adds exactly one field and changes nothing else', () => {
+    const out = toStorefrontVariant({ ...variant, imageId: 'img_black' });
+    expect(out).toMatchObject({ ...variant, imageId: 'img_black' });
+    expect(Object.keys(out).sort()).toEqual([...Object.keys(variant), 'imageUrl'].sort());
   });
 });
 
