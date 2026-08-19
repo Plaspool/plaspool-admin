@@ -3,6 +3,7 @@ import type { AppEnv } from '../../app-env';
 import type { Db } from '../../db/client';
 import type { PaymentPort } from '../../../shared/commerce/ports';
 import { LoggingMailer, type Mailer } from './mailer';
+import type { PointsRedemptionPort } from '../../../shared/marketing/redemption';
 
 /**
  * What this subsystem needs from the two it cannot see, **taken by injection** (contract
@@ -108,6 +109,23 @@ export interface OrdersDeps {
    * "delivered", and that is true of a real provider too.
    */
   mailer?: Mailer;
+  /**
+   * SPOOLPOINTS, SPENT AND GIVEN BACK (admin#2).
+   *
+   * A FACTORY OVER THE HANDLE, for the reason `ShopCartDeps.redemption` gives:
+   * `PointsRedemptionPort` is frozen without a database argument because the
+   * browser bundle compiles it, so the handle is closed over instead.
+   *
+   * TYPED FROM `shared/marketing/redemption.ts` — the one module spec D9 lets
+   * both halves name — and injected at the composition root. This subsystem
+   * never imports `server/marketing/**`.
+   *
+   * ABSENT MEANS NO DEBIT AND NO CREDIT. An order that carries a point count is
+   * still created, still paid and still confirmed; the points simply are not
+   * spent, which is a deployment that has not wired marketing rather than a
+   * customer whose checkout fails.
+   */
+  redemption?: (db: Db) => PointsRedemptionPort;
 }
 
 export interface ResolvedDeps {
@@ -116,6 +134,7 @@ export interface ResolvedDeps {
   now: () => number;
   mailer: Mailer;
   drainPayments: PaymentDrain;
+  redemption?: (db: Db) => PointsRedemptionPort;
 }
 
 /**
@@ -202,6 +221,7 @@ export function resolveDeps(deps: OrdersDeps = {}): ResolvedDeps {
     now: merged.now ?? (() => Date.now()),
     mailer: merged.mailer ?? DEFAULT_MAILER,
     drainPayments: merged.drainPayments ?? NO_PAYMENT_DRAIN,
+    redemption: merged.redemption,
   };
 }
 

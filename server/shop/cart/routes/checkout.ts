@@ -57,6 +57,10 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     return {
       zones: dbZones.length > 0 ? dbZones : deps.zones,
       storeCurrency: deps.storeCurrency,
+      /* SpoolPoints, when this deployment wired them (admin#2). Passed straight
+       * through: the route decides nothing about redemption, `freezeCheckout`
+       * does. */
+      redemption: deps.redemption,
     };
   }
 
@@ -136,13 +140,14 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
    */
   routes.post('/checkout/freeze', async (c) => {
     const db = shopDb(c);
-    const body = await readJsonOrEmpty(c, BaseOnlyBody);
+    const body = await readJsonOrEmpty(c, FreezeBody);
     const cart = await requireCart(c, db);
     const config = await loadConfig(db);
 
     const result = await freezeCheckout(db, deps.catalog, config, {
       cartId: cart.id,
       baseRevision: body.baseRevision,
+      redeemPoints: body.redeemPoints,
     });
     if (!result.ok) {
       if (result.reason === 'unresolved_lines') {
@@ -345,6 +350,25 @@ const ShippingBody = z
   .strict();
 
 const BaseOnlyBody = z.object({ baseRevision: Base }).strict();
+
+/**
+ * The freeze's body. `baseRevision` as everywhere, plus the SpoolPoints opt-in.
+ *
+ * `redeemPoints` IS OPT-IN, AND ABSENT MEANS SPEND NOTHING (admin#2). The port
+ * treats an omitted `pointsRequested` as "as much as the rules allow", which is
+ * the right default for a widget the customer has already agreed with and the
+ * WRONG one for a route: it would spend a signed-in shopper's whole balance on
+ * their next order without anyone asking. So the shop does not pass the omission
+ * through — it declines to quote at all, and the number arrives only when a
+ * customer has chosen it.
+ *
+ * A number LARGER than the balance is clamped rather than refused, by `quote()`
+ * itself. `0` is not "no thanks" but "spend zero", which converts to nothing and
+ * answers null anyway; both end at the same place, and neither is an error.
+ */
+const FreezeBody = z
+  .object({ baseRevision: Base, redeemPoints: z.number().int().min(0).max(100_000_000).optional() })
+  .strict();
 
 const SweepBody = z
   .object({ limit: z.number().int().min(1).max(1000).optional() })

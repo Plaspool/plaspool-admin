@@ -23,6 +23,10 @@ import type {
   CheckoutCompletedPayload,
 } from '../../../../shared/commerce/events';
 import type { FrozenTotals, ShippingQuote } from '../../../../shared/commerce/ports';
+import type {
+  PointsRedemptionPort,
+  RedemptionQuote,
+} from '../../../../shared/marketing/redemption';
 
 /**
  * Checkout — a state machine over the cart (brief §5).
@@ -51,6 +55,13 @@ import type { FrozenTotals, ShippingQuote } from '../../../../shared/commerce/po
 export interface CheckoutConfig {
   zones: readonly ShippingZone[];
   storeCurrency: string;
+  /**
+   * SpoolPoints, if this deployment wired them (admin#2). See
+   * `ShopCartDeps.redemption` for why it is a factory rather than a port, and
+   * `freezeCheckout` for what it does with it. Absent is the ordinary case and
+   * means no adjustment — the behaviour every total in this file had before.
+   */
+  redemption?: (db: Db) => PointsRedemptionPort;
 }
 
 // ------------------------------------------------------------------ addresses
@@ -233,6 +244,78 @@ export type FreezeOutcome =
     };
 
 /**
+ * What the freeze decided about SpoolPoints, or null for the ordinary cart.
+ *
+ * The email is carried BESIDE the quote rather than re-derived later: it is the
+ * wallet the quote was taken against, and migration 0260's header explains why
+ * the receipt address is not a safe substitute for it.
+ */
+interface FrozenRedemption {
+  email: string;
+  quote: RedemptionQuote;
+}
+
+/**
+ * Quote the customer's points against this cart, or answer null.
+ *
+ * SIGNED-IN ONLY, AND THAT IS A CONSTRAINT RATHER THAN A POLICY. Balances are
+ * email-keyed, and `shop_carts.email` is not written until the PAYMENT step
+ * (`setCheckoutContact`, called from `payments/intents.ts`) — which runs after
+ * this function. A guest genuinely has no address to look a balance up by at the
+ * moment the total is decided, and frozen totals are never recomputed, so there
+ * is no later point at which a guest's discount could be applied. Offering
+ * points to guests means collecting contact before the freeze, which is a change
+ * to the checkout flow and not to this file.
+ *
+ * `cart.customerId` IS THE SIGNAL, NOT THE SESSION COOKIE. This is a repo
+ * function with no request in scope, and the cart was already adopted onto the
+ * customer by `cart.ts`'s read path — so the row itself carries the answer.
+ *
+ * EVERY FAILURE ANSWERS NULL, INCLUDING A THROWN ONE. `quote()` is a pure read
+ * whose whole purpose is to decide whether a widget exists; spec D9 models "no
+ * widget" as null rather than as an error precisely so a checkout does not break
+ * when a customer has four points. Extending that to a marketing subsystem that
+ * is down means the worst case is a cart priced without a discount — which is
+ * the price the shop charged yesterday — rather than a customer who cannot pay
+ * at all. The alternative fails the freeze, and the freeze is the step
+ * immediately before money.
+ */
+async function quoteRedemption(
+  db: Db,
+  config: CheckoutConfig,
+  cart: { customerId: string | null; currency: string },
+  cartTotalMinor: number,
+  pointsRequested: number | undefined,
+): Promise<FrozenRedemption | null> {
+  /*
+   * NO REQUEST, NO REDEMPTION — and this is the opt-in, stated once, here.
+   *
+   * `quote()` reads an omitted `pointsRequested` as "as much as the rules
+   * allow". That is correct for the port and wrong as a shop default: passing
+   * the omission through would spend a signed-in customer's entire balance on
+   * their next checkout without anyone having asked them. The number arrives
+   * from the storefront's widget, or it does not arrive and nothing is spent.
+   */
+  if (pointsRequested === undefined) return null;
+  if (!config.redemption || !cart.customerId) return null;
+  try {
+    const email = await customerEmail(db, cart.customerId);
+    if (!email) return null;
+    const quote = await config.redemption(db).quote({
+      email,
+      customerId: cart.customerId,
+      currency: cart.currency,
+      cartTotalMinor,
+      pointsRequested,
+    });
+    if (!quote || quote.points <= 0) return null;
+    return { email, quote };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Price the cart once, store the answer, and close the door.
  *
  * Every input to `computeTotals` is gathered HERE and passed in: this function
@@ -243,7 +326,7 @@ export async function freezeCheckout(
   db: Db,
   catalog: CatalogPort,
   config: CheckoutConfig,
-  a: { cartId: string; baseRevision?: number },
+  a: { cartId: string; baseRevision?: number; redeemPoints?: number },
 ): Promise<FreezeOutcome> {
   const cart = await getCart(db, a.cartId);
   if (!cart) throw new NotFoundError(a.cartId);
@@ -309,16 +392,44 @@ export async function freezeCheckout(
     weightGrams: quote?.weightGrams ?? null,
   }));
 
-  const computed = computeTotals({
+  const tax = cart.taxZone ? taxRateFor(zone) : unknownZoneTaxRate();
+
+  /*
+   * PRICED ONCE WITHOUT POINTS, THEN — IF THERE ARE ANY — ONCE MORE WITH THEM.
+   *
+   * `max_redeem_bps` is "how much of an ORDER may be paid for in points", so the
+   * number it is a share of has to be the undiscounted grand total. Quoting
+   * against an already-discounted figure would let each pass discount the last
+   * one's output, which is a cap that moves every time it is applied.
+   *
+   * TWO PASSES OF A PURE FUNCTION, not two trips to the database. `computeTotals`
+   * has no handle and no clock (see the header) — the second pass re-adds the
+   * same line quotes that are already in hand, so what it costs is arithmetic.
+   */
+  const undiscounted = computeTotals({
     currency: cart.currency,
     lines: totalsLines,
     shipping,
     // A cart with no address yet would have had no shipping either; the named
     // zero-rate exists so a preview never shows a domestic VAT figure it will
     // then change.
-    tax: cart.taxZone ? taxRateFor(zone) : unknownZoneTaxRate(),
+    tax,
     adjustments: [],
   });
+
+  const redemption = undiscounted.ok
+    ? await quoteRedemption(db, config, cart, undiscounted.totals.grandTotal.amount, a.redeemPoints)
+    : null;
+
+  const computed = redemption
+    ? computeTotals({
+        currency: cart.currency,
+        lines: totalsLines,
+        shipping,
+        tax,
+        adjustments: [redemption.quote.adjustment],
+      })
+    : undiscounted;
 
   if (!computed.ok) {
     if (computed.reason === 'unresolved_lines') {
@@ -346,6 +457,18 @@ export async function freezeCheckout(
            frozen_totals = ${JSON.stringify(computed.totals)}::jsonb,
            frozen_lines = ${JSON.stringify(frozenLines)}::jsonb,
            frozen_at = ${now},
+           /*
+            * THE POINT COUNT GOES DOWN IN THE SAME STATEMENT AS THE DISCOUNT IT
+            * PAID FOR (migration 0260). Written apart, a crash between the two
+            * writes would leave a total the customer is charged and no record of
+            * what bought it — or a debit owed against a discount nobody got.
+            *
+            * Bare NULL binds need an explicit cast or Postgres raises 42P18
+            * (§5); these are cast at the parameter rather than left to
+            * inference for that reason.
+            */
+           redemption_points = ${redemption?.quote.points ?? null}::integer,
+           redemption_email = ${redemption?.email ?? null}::text,
            revision = revision + 1,
            updated_at = ${now}
      WHERE id = ${a.cartId} AND revision = ${base} AND status = 'open'
@@ -504,9 +627,36 @@ async function buildCompletedPayload(
   const cart = await getCart(db, cartId);
   if (!cart) throw new NotFoundError(cartId);
 
+  /*
+   * READ HERE RATHER THAN THROUGH `getCart`. `CART_COLUMNS` is an explicit list
+   * for the reason `cart/repo.ts` gives — a column added to it silently joins
+   * every cart response — and these two are wanted at exactly one place, which
+   * is this one. They ride along with `frozen_lines` because they were written
+   * by the same statement that wrote it.
+   */
   const stored = await db.execute(sql`
-    SELECT frozen_lines FROM shop_carts WHERE id = ${cartId}`);
+    SELECT frozen_lines, redemption_points, redemption_email
+      FROM shop_carts WHERE id = ${cartId}`);
   const frozen = (stored.rows[0]?.frozen_lines ?? []) as StoredCheckoutLine[];
+
+  /*
+   * SPOOLPOINTS, CARRIED IN THE PAYLOAD RATHER THAN LOOKED UP BY THE CONSUMER.
+   *
+   * `shared/commerce/events.ts` requires payloads to be self-sufficient: a
+   * consumer reacting to this event must not have to call back into Cart to
+   * learn a number, because that is a synchronous cross-subsystem call wearing
+   * an event's clothes. Orders cannot read `shop_carts` at all (contract §2), so
+   * the count travels or it does not arrive.
+   *
+   * The CHECK in migration 0260 makes these two columns all-or-nothing, so
+   * testing one of them is testing both.
+   */
+  const points = stored.rows[0]?.redemption_points;
+  const redemptionEmail = stored.rows[0]?.redemption_email;
+  const redemption =
+    points == null || redemptionEmail == null
+      ? null
+      : { email: String(redemptionEmail), points: Number(points) };
 
   /*
    * `unitAmount` AND `lineTotal`, JOINED ON `variantId` FROM THE FROZEN TOTALS.
@@ -568,6 +718,7 @@ async function buildCompletedPayload(
     shippingAddress: await getAddress(db, cartId, 'shipping'),
     billingAddress: await getAddress(db, cartId, 'billing'),
     reservationIds: held.map((reservation) => reservation.id),
+    redemption,
     occurredAt: 0,
   };
 }

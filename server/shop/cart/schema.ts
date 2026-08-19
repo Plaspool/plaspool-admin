@@ -109,6 +109,19 @@ export const shopCarts = pgTable(
     /** The goods, frozen at the same instant from the same `quote` calls. */
     frozenLines: jsonb('frozen_lines'),
     frozenAt: epochMs('frozen_at'),
+    /**
+     * SPOOLPOINTS QUOTED AT THE FREEZE (admin#2, migration 0260).
+     *
+     * The discount itself is already inside `frozenTotals.adjustments`; these
+     * two carry the integer point count and the wallet it was quoted against,
+     * because an `Adjustment` is `{ code, label, amount }` and `redeem()` needs
+     * the count. Written by the same statement as `frozenTotals`, so a discount
+     * and the points that paid for it cannot disagree.
+     *
+     * NULL is the ordinary cart. Both or neither — `shop_carts_redemption_ck`.
+     */
+    redemptionPoints: integer('redemption_points'),
+    redemptionEmail: text('redemption_email'),
     createdAt: epochMs('created_at').notNull(),
     updatedAt: epochMs('updated_at').notNull(),
     expiresAt: epochMs('expires_at').notNull(),
@@ -124,6 +137,11 @@ export const shopCarts = pgTable(
       sql`${t.status} IN ('open','converting','converted','abandoned')`,
     ),
     check('shop_carts_revision_ck', sql`${t.revision} > 0`),
+    check(
+      'shop_carts_redemption_ck',
+      sql`(${t.redemptionPoints} IS NULL AND ${t.redemptionEmail} IS NULL)
+          OR (${t.redemptionPoints} > 0 AND ${t.redemptionEmail} <> '')`,
+    ),
     check('shop_carts_currency_ck', sql`${t.currency} ~ '^[A-Z]{3}$'`),
     check(
       'shop_carts_frozen_ck',

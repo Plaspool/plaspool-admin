@@ -589,7 +589,7 @@ async function runSweep(c: Context<AppEnv>, d: ResolvedDeps) {
   const payments = await d.drainPayments(db, now);
   const events = await drainCommerceEvents(
     db,
-    { origin: c.get('origins')?.[0] ?? null },
+    { origin: c.get('origins')?.[0] ?? null, redemption: d.redemption },
     { now, limit: SWEEP_BATCH, passes: RUN_SWEEP_COMMERCE_PASS_CEILING },
   );
   const emails = await sweepEmailIntents(db, d.mailer, now);

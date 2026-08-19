@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import { getEnv } from '../env';
 import type { AppEnv } from '../app-env';
+import type { Db } from '../db/client';
+import type { PointsRedemptionPort } from '../../shared/marketing/redemption';
 import { toResponse } from '../middleware/errors';
 import {
   ProductPreconditionFailedError,
@@ -39,8 +41,19 @@ import { ShippingZonePreconditionFailedError } from './cart/checkout/shipping-zo
  */
 export const SHOP_PREFIX = '/shop';
 
-export function shopApp(): Hono<AppEnv> {
+/** What the shop's composition point may be handed from the app's own. */
+export interface ShopAppOptions {
+  /**
+   * SpoolPoints redemption, injected at `server/index.ts` (admin#2). A factory
+   * over the request's database handle — see `ShopCartDeps.redemption` for why
+   * the frozen port cannot take one itself.
+   */
+  redemption?: (db: Db) => PointsRedemptionPort;
+}
+
+export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
   const shop = new Hono<AppEnv>();
+  const { redemption } = opts;
 
   /**
    * Catalog's two conflict errors, rendered with the payload they carry.
@@ -235,7 +248,18 @@ export function shopApp(): Hono<AppEnv> {
        * minute; a daily run with ±59 minutes of jitter earns its place only as
        * the caller that still runs when both of those have stopped.
        */
-      sweepEvents: (db, origin) => drainCommerceEvents(db, { origin }, { limit: 50 }),
+      sweepEvents: (db, origin) =>
+        drainCommerceEvents(db, { origin, redemption }, { limit: 50 }),
+      /*
+       * SPOOLPOINTS AT THE FREEZE (admin#2). Handed down from `server/index.ts`,
+       * which is the only file allowed to know both halves of the seam — spec D9
+       * forbids `server/shop/**` importing `server/marketing/**`, so this router
+       * receives the port and never constructs one.
+       *
+       * Absent is a legal deployment: the cart prices exactly as it did before
+       * redemption existed.
+       */
+      redemption,
     }),
   );
 

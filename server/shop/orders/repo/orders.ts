@@ -482,12 +482,15 @@ export async function createOrderFromCheckout(
             id, order_number, customer_id, email, currency,
             subtotal, shipping_total, tax_total, grand_total,
             status, shipping_address, billing_address, placed_at,
-            revision, source_event_id, checkout_id)
+            revision, source_event_id, checkout_id,
+            redemption_points, redemption_email)
           VALUES (
             ${orderId}, ${orderNumber}, ${input.customerId}, ${input.email}, ${input.currency},
             ${input.subtotal}, ${input.shippingTotal}, ${input.taxTotal}, ${input.grandTotal},
             'pending', ${jsonb(input.shippingAddress)}, ${jsonb(input.billingAddress)},
-            ${event.occurredAt}, 1, ${event.id}, ${input.checkoutId})
+            ${event.occurredAt}, 1, ${event.id}, ${input.checkoutId},
+            ${input.redemption?.points ?? null}::integer,
+            ${input.redemption?.email ?? null}::text)
           RETURNING ${sql.raw(ORDER_COLUMNS.join(', '))}
         ), ins_lines AS (
           INSERT INTO shop_order_lines (id, order_id, line_no, variant_id, sku, title,
