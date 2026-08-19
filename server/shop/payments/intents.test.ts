@@ -547,3 +547,62 @@ describe('cancel', () => {
     });
   });
 });
+
+/**
+ * THE CONTACT HAND-BACK (admin#27).
+ *
+ * `shop_carts.email` is nullable and NOTHING in the application collects one: no
+ * cart route takes it, `putAddresses` does not carry it, adoption does not copy
+ * it. `POST /api/shop/payments/intents` is the only place a customer ever types
+ * an email, so Payments hands it back through the port — and if it stops doing
+ * so, every `checkout.completed` carries `email: null`, Orders parks it at
+ * `email` twenty times and abandons it, and a paying customer gets no order.
+ *
+ * That failure is completely invisible from either subsystem's own suite, which
+ * is why it is asserted here, at the seam, against a port that records.
+ */
+describe('the email is handed back to Cart when an intent is created', () => {
+  function recordingPort(): {
+    port: ReturnType<typeof fakeCheckoutPort>;
+    calls: { checkoutId: string; email: string }[];
+  } {
+    const calls: { checkoutId: string; email: string }[] = [];
+    const base = fakeCheckoutPort({
+      [CHECKOUT]: { checkoutId: CHECKOUT, total: 40_333, currency: 'NGN' },
+    });
+    return {
+      calls,
+      port: {
+        ...base,
+        recordContact(_db: Db, checkoutId: string, email: string): Promise<void> {
+          void _db;
+          calls.push({ checkoutId, email });
+          return Promise.resolve();
+        },
+      },
+    };
+  }
+
+  it('records it once, with the address the caller gave', async () => {
+    const { port, calls } = recordingPort();
+    await createIntent(db, provider, port, input(), now);
+    expect(calls).toEqual([{ checkoutId: CHECKOUT, email: input().email }]);
+  });
+
+  it('still creates the intent when recording the contact fails', async () => {
+    /*
+     * A checkout that cannot be PAID FOR is strictly worse than one whose
+     * confirmation needs reconciling, so this failure is swallowed. Asserted
+     * rather than assumed: an unhandled rejection here would turn a filing
+     * problem into a customer who cannot check out at all.
+     */
+    const { port } = recordingPort();
+    const failing = {
+      ...port,
+      recordContact: () => Promise.reject(new Error('cart is gone')),
+    };
+    const { intent } = await createIntent(db, provider, failing, input(), now);
+    expect(intent.checkoutId).toBe(CHECKOUT);
+    expect(intent.status).toBe('requires_payment');
+  });
+});

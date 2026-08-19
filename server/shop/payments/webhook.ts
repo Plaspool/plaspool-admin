@@ -1,9 +1,10 @@
 import { sql } from 'drizzle-orm';
 import { toEpochMs, toEpochMsOrNull } from '../../db/client';
 import { paymentEventId as mintPaymentEventId } from './ids';
-import { applyIntentStatus, getIntentByProviderRef } from './intents';
+import { applyIntentStatus, getIntent, getIntentByProviderRef } from './intents';
 import { applyRefundEvent } from './refunds';
 import type { Db } from '../../db/client';
+import type { PaymentsCheckoutPort } from './checkout';
 import type { ProviderEvent } from './provider/types';
 import type { PaymentStatus } from '../../../shared/commerce/ports';
 
@@ -130,6 +131,90 @@ export interface ProcessResult {
 }
 
 /**
+ * What processing a capture needs beyond the database.
+ *
+ * OPTIONAL, AND ABSENT MEANS "DO NOT COMPLETE THE CHECKOUT" rather than "fail".
+ * `drainPaymentEvents` and `processEvent` are called from an owner route, from a
+ * cron and from tests that care about nothing but the intent's status ladder;
+ * making the port mandatory would turn every one of those into a wiring chore
+ * and, worse, into a place where somebody passes a stub. The composition root
+ * (`server/index.ts`) passes the real port to the paths that matter, and
+ * `composition.test.ts` drives capture → order through THAT, not through a test
+ * app with its own ports — which is the specific hole both this bug and the
+ * earlier Orders 401 fell through.
+ */
+export interface CaptureDeps {
+  /** Cart's port. Injected — Payments must not import `server/shop/cart/`. */
+  checkout?: PaymentsCheckoutPort;
+}
+
+/**
+ * Complete the checkout that this intent belongs to, BEFORE the capture is
+ * recorded — and never let it break the capture (admin#27).
+ *
+ * ═══ WHY BEFORE ═══
+ * `checkout.completed` must exist for `payment.captured` to do anything:
+ * Orders' consumer parks a capture whose order does not exist yet with
+ * "awaiting predecessor: checkout.completed". Its sweep processes candidates
+ * `ORDER BY occurred_at ASC`, so emitting the completion first — with a strictly
+ * earlier `occurred_at` than the `payment.captured` written by
+ * `applyIntentStatus` a moment later — lets a SINGLE sweep apply both, in order,
+ * and the customer's order exists seconds after they pay rather than after a
+ * second sweep.
+ *
+ * THE GUARANTEE BEING RELIED ON IS NOT THAT ORDERING, THOUGH. `consumer.ts`'s
+ * "a parked row is retried on every sweep" is what makes this safe: if this call
+ * loses its race, or is skipped entirely because no port was injected, or fails,
+ * the capture parks and a LATER `checkout.completed` unparks it on a subsequent
+ * sweep. The ordering above buys latency, not correctness. That distinction is
+ * why the failure below can be swallowed at all.
+ *
+ * ═══ WHY THE FAILURE IS SWALLOWED ═══
+ * A payment recorded with no order is recoverable — a sweep, or an operator,
+ * turns it into one. A payment NOT recorded because completing the checkout
+ * threw is money received and forgotten, and no later process can discover it
+ * because nothing wrote it down. So this runs first for latency, and its failure
+ * cannot stop `applyIntentStatus` from running. RECORDING THE PAYMENT IS THE
+ * MORE IMPORTANT OF THE TWO AND THE CODE SAYS SO BY CONSTRUCTION.
+ *
+ * ═══ DUPLICATES ═══
+ * A redelivered `charge.success` reaches here again and the port answers
+ * `already-completed`: no second `checkout.completed`, no error, no duplicate
+ * order. `unavailable` (no such cart, never frozen) is the same — recorded in a
+ * log line and otherwise ignored, because the payment still has to be recorded.
+ */
+export async function completeCheckoutForIntent(
+  db: Db,
+  intentId: string | null,
+  deps: CaptureDeps,
+): Promise<void> {
+  const port = deps.checkout;
+  if (!port || !intentId) return;
+  try {
+    const intent = await getIntent(db, intentId);
+    if (!intent) return;
+    const outcome = await port.complete(db, intent.checkoutId);
+    if (outcome === 'unavailable') {
+      // eslint-disable-next-line no-console -- a capture whose cart is gone is
+      // an operator's problem, and this is the only place it is visible.
+      console.warn(
+        '[payments] captured a checkout that cannot be completed',
+        JSON.stringify({ intentId, checkoutId: intent.checkoutId }),
+      );
+    }
+  } catch (err: unknown) {
+    // NAMES ONLY. This is the same discipline `recordIntentError` follows: a
+    // message can quote a value, and this line goes to a log.
+    // eslint-disable-next-line no-console -- see the doc comment: swallowing
+    // silently would make a stuck pipeline invisible.
+    console.error(
+      '[payments] completing the checkout failed; recording the payment anyway',
+      JSON.stringify({ intentId, error: err instanceof Error ? err.name : typeof err }),
+    );
+  }
+}
+
+/**
  * Process one stored event.
  *
  * UNKNOWN EVENT TYPES ARE LOGGED AND IGNORED, NEVER AN ERROR (contract §6 rule
@@ -145,6 +230,7 @@ export async function processEvent(
   db: Db,
   rowId: string,
   now: number = Date.now(),
+  deps: CaptureDeps = {},
 ): Promise<ProcessResult> {
   const row = await getStoredEvent(db, rowId);
   if (!row) return { outcome: 'ignored', emittedEventId: null };
@@ -173,6 +259,15 @@ export async function processEvent(
    */
   if (row.type === 'charge.success') {
     const next = INTENT_STATUS.captured;
+
+    /*
+     * COMPLETE THE CHECKOUT FIRST, CAPTURE SECOND (admin#27). Never the other
+     * way round: see `completeCheckoutForIntent` for both halves of why — the
+     * `occurred_at` ordering that lets one sweep produce the order, and the fact
+     * that this call cannot throw past this line.
+     */
+    await completeCheckoutForIntent(db, row.intentId, deps);
+
     const applied = await applyIntentStatus(
       db,
       {
@@ -239,6 +334,7 @@ export async function drainPaymentEvents(
   db: Db,
   limit = 10,
   now: number = Date.now(),
+  deps: CaptureDeps = {},
 ): Promise<ProcessResult[]> {
   const pending = await db.execute(sql`
     SELECT id FROM shop_payment_events
@@ -248,7 +344,7 @@ export async function drainPaymentEvents(
 
   const results: ProcessResult[] = [];
   for (const row of pending.rows) {
-    results.push(await processEvent(db, String(row.id), now));
+    results.push(await processEvent(db, String(row.id), now, deps));
   }
   return results;
 }

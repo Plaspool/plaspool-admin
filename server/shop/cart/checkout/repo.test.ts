@@ -19,12 +19,15 @@ import {
   freezeCheckout,
   frozenTotals,
   putAddresses,
+  setCheckoutContact,
   setShipping,
   shippingOptionsForCart,
   startCheckout,
 } from './repo';
 import { CartPreconditionError, CartStaleWriteError } from '../errors';
 import { NotFoundError } from '../../../repo/errors';
+import { checkoutPort } from '../port';
+import { parseCheckoutCompleted } from '../../orders/inbound';
 import type { CartFakeCatalog } from '../test/fake-catalog';
 import type { Db } from '../../../db/client';
 
@@ -452,6 +455,15 @@ describe('checkout.completed', () => {
     const cart = await readyCart(2);
     const frozen = await freezeCheckout(db, catalog, CONFIG, { cartId: cart.id });
     if (!frozen.ok) throw new Error('expected totals');
+    /*
+     * THE PAYMENT STEP, WHICH IS THE ONLY THING THAT EVER RECORDS AN EMAIL.
+     * `POST /api/shop/payments/intents` carries it and hands it back through
+     * `CheckoutPort.recordContact`; no cart route collects one. Without this
+     * line the payload below carries `email: null` and Orders parks it — which
+     * is exactly what production would have done, so the fixture reproduces the
+     * real sequence rather than pre-filling the column.
+     */
+    await setCheckoutContact(db, { cartId: cart.id, email: 'buyer@example.test' });
 
     await completeCheckout(db, { cartId: cart.id });
 
@@ -469,6 +481,7 @@ describe('checkout.completed', () => {
 
     const payload = row.payload as Record<string, unknown>;
     expect(payload.checkoutId).toBe(cart.id);
+    expect(payload.email).toBe('buyer@example.test');
     expect(payload.currency).toBe(CURRENCY);
     expect(payload.totals).toEqual(JSON.parse(JSON.stringify(frozen.totals)));
 
@@ -483,9 +496,46 @@ describe('checkout.completed', () => {
         optionValues: { Size: 'M' },
         qty: 2,
         unit: { amount: 1999, currency: CURRENCY },
+        /*
+         * `unitAmount` AND `lineTotal`, UNDER THE NAMES ORDERS' PARSER READS
+         * (admin#27). COPIED from the frozen totals, never `unit × qty` computed
+         * here — the figure that travels must be the figure the customer was
+         * charged. `shop_carts.frozen_lines` stores neither; they are joined on
+         * when the event is built, which is why this assertion is on the EVENT
+         * payload and the one in `freezes` is not.
+         */
+        unitAmount: { amount: 1999, currency: CURRENCY },
+        lineTotal: { amount: 3998, currency: CURRENCY },
         weightGrams: 180,
       },
     ]);
+
+    /*
+     * AND THE SEAM ITSELF, ASSERTED RATHER THAN ASSUMED.
+     *
+     * This is the fault that would have survived fixing admin#27's missing
+     * caller: `parseCheckoutCompleted` requires `unitAmount` and `lineTotal` on
+     * every line and `billingAddress` as an object, and Cart emits `unit` and
+     * `null`. Nothing could see the disagreement because `checkout.completed`
+     * had never been emitted for any cart — so both halves were green and the
+     * event would have parked twenty times and been abandoned.
+     *
+     * Cart's REAL payload through Orders' REAL parser. If either side moves, one
+     * of the two subsystems fails a test instead of a customer losing an order.
+     */
+    const parsed = parseCheckoutCompleted(payload, cart.id);
+    expect(parsed.ok, parsed.ok ? '' : `parked at: ${parsed.detail}`).toBe(true);
+    if (!parsed.ok) throw new Error(parsed.detail);
+    expect(parsed.value.grandTotal).toBe(frozen.totals.grandTotal.amount);
+    expect(parsed.value.lines[0]).toMatchObject({
+      sku: 'TEE-NAVY-M',
+      qty: 2,
+      unitAmount: 1999,
+      lineTotal: 3998,
+    });
+    // No separate billing address means it IS the shipping address, not a park.
+    expect(payload.billingAddress).toBeNull();
+    expect(parsed.value.billingAddress).toEqual(parsed.value.shippingAddress);
 
     // The address is a COPY. `shop_addresses` is Cart's table under R3, so an
     // event carrying only an id would force the callback brief §7 forbids.
@@ -521,5 +571,45 @@ describe('checkout.completed', () => {
     // outbox guarantee; at-least-once EMISSION would be a second order.
     const events = await db.execute(sql`SELECT id FROM commerce_events`);
     expect(events.rows).toHaveLength(1);
+  });
+});
+
+/**
+ * `CheckoutPort.complete` — the answer to `completeCheckout`'s "WHO CALLS THIS"
+ * (admin#27), and the reason it returns a value instead of throwing.
+ *
+ * Payments calls this from the capture path, and Paystack redelivers
+ * `charge.success`. So the SECOND call for a cart is expected traffic, not an
+ * error: `completeCheckout` refuses it with `CartPreconditionError` because the
+ * cart is already `converted`, and mapping that to a value here is what keeps a
+ * duplicate webhook from 500ing — which Paystack would answer by redelivering
+ * every 3 minutes and then hourly for 72 hours.
+ */
+describe('CheckoutPort.complete', () => {
+  const port = checkoutPort();
+
+  it('completes once and answers already-completed thereafter', async () => {
+    const cart = await readyCart();
+    await freezeCheckout(db, catalog, CONFIG, { cartId: cart.id });
+    await setCheckoutContact(db, { cartId: cart.id, email: 'buyer@example.test' });
+
+    expect(await port.complete(db, cart.id)).toBe('completed');
+    expect(await port.complete(db, cart.id)).toBe('already-completed');
+    expect(await port.complete(db, cart.id)).toBe('already-completed');
+
+    // ONE event, not three. The transition matched nothing on calls two and
+    // three, and the event INSERT selects FROM that transition.
+    const events = await db.execute(sql`
+      SELECT id FROM commerce_events WHERE type = 'checkout.completed'`);
+    expect(events.rows).toHaveLength(1);
+  });
+
+  it('answers unavailable for a cart that was never frozen', async () => {
+    // `frozenTotals` raises `NotFoundError` for both "no such cart" and "not
+    // frozen", and neither is something a retry fixes — so neither may throw
+    // past the capture path and cost the payment its record.
+    const cart = await readyCart();
+    expect(await port.complete(db, cart.id)).toBe('unavailable');
+    expect(await port.complete(db, 'crt_does_not_exist')).toBe('unavailable');
   });
 });

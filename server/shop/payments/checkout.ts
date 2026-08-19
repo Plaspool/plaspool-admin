@@ -1,5 +1,5 @@
 import { money, zero } from '../../../shared/commerce/money';
-import type { CheckoutPort, FrozenTotals } from '../../../shared/commerce/ports';
+import type { CheckoutCompletion, CheckoutPort, FrozenTotals } from '../../../shared/commerce/ports';
 import type { Db } from '../../db/client';
 
 /**
@@ -49,6 +49,14 @@ export type PaymentsCheckoutPort = CheckoutPort<Db>;
 export function fakeCheckoutPort(
   entries: Record<string, { total: number; currency: string; checkoutId?: string }>,
 ): PaymentsCheckoutPort {
+  /*
+   * WHICH CHECKOUTS THIS FAKE HAS ALREADY COMPLETED, so `complete()` answers
+   * `already-completed` on a second call exactly as the real port does against a
+   * cart that has reached `converted`. A fake that answered `completed` twice
+   * would let a duplicate-capture bug pass its test and fail in production —
+   * which is the failure this whole change exists to close.
+   */
+  const completed = new Set<string>();
   return {
     totals(_db: Db, checkoutId: string): Promise<FrozenTotals> {
       void _db;
@@ -76,6 +84,22 @@ export function fakeCheckoutPort(
         grandTotal: total,
         rounding: 'half-up',
       });
+    },
+
+    /** The fake stores nothing: no Payments behaviour reads it back. */
+    recordContact(_db: Db, _checkoutId: string, _email: string): Promise<void> {
+      void _db;
+      void _checkoutId;
+      void _email;
+      return Promise.resolve();
+    },
+
+    complete(_db: Db, checkoutId: string): Promise<CheckoutCompletion> {
+      void _db;
+      if (!entries[checkoutId]) return Promise.resolve('unavailable');
+      if (completed.has(checkoutId)) return Promise.resolve('already-completed');
+      completed.add(checkoutId);
+      return Promise.resolve('completed');
     },
   };
 }

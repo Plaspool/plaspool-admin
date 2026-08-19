@@ -1,6 +1,8 @@
-import { frozenTotals } from './checkout/repo';
+import { completeCheckout, frozenTotals, setCheckoutContact } from './checkout/repo';
+import { CartPreconditionError } from './errors';
+import { NotFoundError } from '../../repo/errors';
 import type { Db } from '../../db/client';
-import type { CheckoutPort, FrozenTotals } from '../../../shared/commerce/ports';
+import type { CheckoutCompletion, CheckoutPort, FrozenTotals } from '../../../shared/commerce/ports';
 
 /**
  * `CheckoutPort`, implemented (contract §5). Consumed by Payments.
@@ -39,5 +41,49 @@ export function checkoutPort(): CheckoutPort<Db> {
      */
     totals: (db: Db, checkoutId: string): Promise<FrozenTotals> =>
       frozenTotals(db, checkoutId),
+
+    /**
+     * THE ANSWER TO `completeCheckout`'s "WHO CALLS THIS" (admin#27).
+     *
+     * Everything this adds over `completeCheckout` is the mapping below, and the
+     * mapping is the point: Cart owns `CartPreconditionError` and `NotFoundError`,
+     * so Cart is where "already converted" is recognised as ordinary rather than
+     * exceptional. Payments gets a value it cannot mishandle.
+     *
+     * `CartPreconditionError` HERE MEANS ONE OF EXACTLY TWO THINGS, both benign:
+     * the cart is already `converted` (a redelivered `charge.success`, which
+     * Paystack does, or a webhook retry), or it was never frozen. Neither is
+     * something a retry fixes and neither should 500 a webhook — Paystack would
+     * redeliver a 5xx every 3 minutes and then hourly for 72 hours.
+     *
+     * `completeCheckout` REMAINS ONE STATEMENT and this does not wrap it in a
+     * transaction: the Neon HTTP driver rejects `db.transaction()` unconditionally
+     * while PGlite accepts it, so a transaction here would pass every test in this
+     * repo and 500 in production (spec §4.3a). The `already-completed` branch is
+     * safe without one precisely because that statement's event INSERT selects
+     * `FROM upd` — a transition that matches nothing writes no event, so a
+     * duplicate capture cannot produce a second `checkout.completed`.
+     */
+    /**
+     * `CheckoutPort.recordContact` — the payment step handing back the one field
+     * no cart route ever collects. See the port's doc comment for why the email
+     * is null on every cart without it, and what that costs.
+     */
+    recordContact: (db: Db, checkoutId: string, email: string): Promise<void> =>
+      setCheckoutContact(db, { cartId: checkoutId, email }),
+
+    async complete(db: Db, checkoutId: string): Promise<CheckoutCompletion> {
+      try {
+        await completeCheckout(db, { cartId: checkoutId });
+        return 'completed';
+      } catch (err: unknown) {
+        if (err instanceof CartPreconditionError) return 'already-completed';
+        if (err instanceof NotFoundError) return 'unavailable';
+        // `CartStaleWriteError` and anything else: genuinely transient or
+        // genuinely unknown. Let it out; the caller swallows it and the next
+        // drain retries.
+        throw err;
+      }
+    },
   };
 }
