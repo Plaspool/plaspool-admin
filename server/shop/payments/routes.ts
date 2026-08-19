@@ -520,6 +520,12 @@ function safeCallbackUrl(): string | undefined {
      * better held in the repository than in a variable nobody remembers exists —
      * see `utils/callback-url.ts`.
      */
+    // `||`, DELIBERATELY NOT `??` (admin#30 review). `PAYMENTS_CALLBACK_URL`
+    // is `z.string().optional()` with no `.min(1)`, so an empty-string env var
+    // parses to `''` rather than `undefined` — `??` would pass that `''`
+    // straight through, `paystack.ts` would omit `callback_url` entirely, and
+    // the customer would land on Paystack's generic page, which is the exact
+    // regression this fallback exists to prevent.
     return paymentsEnv().PAYMENTS_CALLBACK_URL || DEFAULT_PAYMENTS_CALLBACK_URL;
   } catch {
     return DEFAULT_PAYMENTS_CALLBACK_URL;

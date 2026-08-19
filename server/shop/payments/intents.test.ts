@@ -266,8 +266,8 @@ describe('a lost provider response is recoverable, and never a second charge', (
 });
 
 describe('a provider rejection (admin#30) is a 4xx and never leaves the intent looking payable', () => {
-  it('turns invalid_request into BadRequestError naming the email field, and marks the intent failed', async () => {
-    provider.program('createIntent', { kind: 'fail', code: 'invalid_request' });
+  it('turns invalid_request into BadRequestError naming the email field ONLY when the provider named it, and marks the intent failed', async () => {
+    provider.program('createIntent', { kind: 'fail', code: 'invalid_request', field: 'email' });
 
     // A BadRequestError, not the raw ProviderError — the route layer maps this
     // to 400 { error: 'bad_request', detail: 'email' }, never the provider's
@@ -291,6 +291,29 @@ describe('a provider rejection (admin#30) is a 4xx and never leaves the intent l
     expect(row.last_error).toBe('invalid_request');
   });
 
+  it('an invalid_request with NO identified field is a vague-but-true 500, not a wrong 4xx (review finding)', async () => {
+    /*
+     * `invalid_request` is Paystack's bucket for every 4xx: a disabled
+     * currency, an amount below the minimum, a malformed callback_url — none
+     * of which are the customer's email. Naming `email` regardless would tell
+     * a customer to fix an address that was fine, and would launder a genuine
+     * operator misconfiguration into a 4xx that never pages anyone. So with no
+     * `field`, this stays an ordinary ProviderError — unmapped by
+     * `server/middleware/errors.ts`, and therefore a 500 at the route layer —
+     * while the intent is still marked `failed`, because it is exactly as
+     * unpayable as the email case.
+     */
+    provider.program('createIntent', { kind: 'fail', code: 'invalid_request' });
+
+    const err = await createIntent(db, provider, checkout, input(), now).catch((e) => e);
+    expect(err).not.toBeInstanceOf(BadRequestError);
+    expect(err).toMatchObject({ code: 'invalid_request', field: null });
+
+    const rows = await db.execute(sql`SELECT status, last_error FROM shop_payment_intents`);
+    expect(rows.rows[0].status).toBe('failed');
+    expect(rows.rows[0].last_error).toBe('invalid_request');
+  });
+
   it('lets a corrected retry with the SAME idempotency key succeed', async () => {
     /*
      * RETRY-AFTER-REJECTION, DECIDED: the same idempotency key resumes the
@@ -302,7 +325,7 @@ describe('a provider rejection (admin#30) is a 4xx and never leaves the intent l
      * their email and fixes it can press pay again with the same key and it
      * goes through; no new idempotency key is required.
      */
-    provider.program('createIntent', { kind: 'fail', code: 'invalid_request' });
+    provider.program('createIntent', { kind: 'fail', code: 'invalid_request', field: 'email' });
     await expect(createIntent(db, provider, checkout, input(), now)).rejects.toBeInstanceOf(
       BadRequestError,
     );

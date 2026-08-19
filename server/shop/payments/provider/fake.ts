@@ -36,8 +36,18 @@ import type {
   RefundRequest,
 } from './types';
 
-/** One queued outcome. `ok` runs the normal path; `fail` throws before it. */
-export type FakeOutcome = { kind: 'ok' } | { kind: 'fail'; code: ProviderErrorCode };
+/**
+ * One queued outcome. `ok` runs the normal path; `fail` throws before it.
+ *
+ * `field` MIRRORS `ProviderError.field` (admin#30 review): a test that queues
+ * `{ code: 'invalid_request' }` with no `field` exercises the common case — a
+ * 4xx Paystack returns for a reason that is NOT the email (a disabled
+ * currency, an amount below the minimum) — and `field: 'email'` exercises the
+ * one Paystack message this codebase positively recognises.
+ */
+export type FakeOutcome =
+  | { kind: 'ok' }
+  | { kind: 'fail'; code: ProviderErrorCode; field?: 'email' | null };
 
 export interface FakeProviderOptions {
   /** Mirrors Paystack unless a test is exercising the other shape. */
@@ -89,7 +99,12 @@ export class FakeProvider implements PaymentProvider {
   #gate(op: string): void {
     const next = this.#queued.get(op)?.shift();
     if (next?.kind === 'fail') {
-      throw new ProviderError({ code: next.code, provider: this.name, operation: op });
+      throw new ProviderError({
+        code: next.code,
+        provider: this.name,
+        operation: op,
+        field: next.field ?? null,
+      });
     }
   }
 

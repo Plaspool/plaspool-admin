@@ -120,12 +120,25 @@ export class ProviderError extends Error {
   readonly retryable: boolean;
   /** True when the operation's outcome is UNKNOWN, not known-failed. */
   readonly indeterminate: boolean;
+  /**
+   * WHICH REQUEST FIELD the provider's own message implicated — enumerated,
+   * never carried (admin#30 review). `invalid_request` is the bucket for
+   * EVERY Paystack 4xx: a bad email, an amount below the minimum, a disabled
+   * currency, a malformed `callback_url`. Blaming the caller's email for all
+   * of them would relocate the bug this issue exists to remove rather than
+   * fix it — a vague-but-true refusal beats a specific lie. `null` unless the
+   * adapter positively matched the provider's message against a known field
+   * name (see `paystack.ts`'s `#classify`), in which case ONLY the field name
+   * survives — never the message that identified it.
+   */
+  readonly field: 'email' | null;
 
   constructor(meta: {
     code: ProviderErrorCode;
     provider: string;
     operation: string;
     status?: number | null;
+    field?: 'email' | null;
   }) {
     /*
      * The message is BUILT FROM THE ENUMERATED FIELDS, never passed in. A
@@ -144,6 +157,7 @@ export class ProviderError extends Error {
     this.status = meta.status ?? null;
     this.retryable = isRetryable(meta.code);
     this.indeterminate = isIndeterminate(meta.code);
+    this.field = meta.field ?? null;
     Error.captureStackTrace?.(this, ProviderError);
   }
 }

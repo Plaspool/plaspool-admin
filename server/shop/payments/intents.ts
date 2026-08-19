@@ -311,24 +311,38 @@ async function attachProvider(
        * `provider_intent_id` is still NULL regardless of `status`, so marking
        * this row `failed` does not block that retry — it only stops the row
        * from lying about being payable in the meantime.
+       *
+       * ONLY A GENUINE `ProviderError` EARNS `terminal` (admin#30 review).
+       * `err instanceof ProviderError` is checked here too, not just for
+       * `code` above — a `TypeError` from a bug in this function reads as
+       * `code === 'unknown'`, which is also neither retryable nor
+       * indeterminate, and would otherwise stamp an intent `failed` with
+       * `last_error: 'unknown'` for OUR bug rather than a payment failure.
+       * `recordIntentError` still records `code` either way, for the log.
        */
-      const terminal = !isRetryable(code) && !isIndeterminate(code);
+      const terminal = err instanceof ProviderError && !isRetryable(code) && !isIndeterminate(code);
       await recordIntentError(db, intent.id, code, now, terminal);
 
       /*
-       * A PROVIDER REJECTION IS A 4xx, NOT A 500 (admin#30). `invalid_request`
-       * is Paystack refusing to even attempt the charge because of something in
-       * OUR REQUEST — in `createIntent`, the only caller-supplied, provider-
-       * bound field is `email` (amount/currency come from `CheckoutPort`,
-       * `reference` is derived, `callbackUrl` is ours), so that is the field
-       * named. `BadRequestError`'s `{ error: 'bad_request', detail }` is the
-       * existing vocabulary (`readJson`, `str()`, `cart/routes/customer.ts`) —
-       * no new dialect, and nothing of the provider's own wording crosses this
-       * line. Every OTHER non-retryable code (`auth`, `malformed_response`,
-       * `unsupported`, `declined`) is OUR fault or a shape we do not support,
-       * not the caller's, so those fall through and stay a 500.
+       * A PROVIDER REJECTION IS A 4xx, NOT A 500 — BUT ONLY WHEN THE PROVIDER
+       * ACTUALLY NAMED THE FIELD (admin#30, sharpened on review).
+       * `invalid_request` is the bucket for EVERY Paystack 4xx: a bad email,
+       * an amount below the processor's minimum, a currency the account has
+       * not enabled, a malformed `callback_url`. Assuming `email` for all of
+       * them would tell a customer to fix an address that was fine, while a
+       * genuine operator misconfiguration gets laundered into a client error
+       * that never pages anyone — the exact failure this issue exists to
+       * remove, just moved one layer up. So this only fires when
+       * `err.field === 'email'`, which `paystack.ts`'s `#classifyField`
+       * sets ONLY by matching Paystack's own message against the word
+       * "email" (matched, never carried — same discipline as `#classify`).
+       * Every other `invalid_request` — and every other non-retryable code —
+       * falls through to `throw err`, which has no mapping in
+       * `server/middleware/errors.ts` and becomes a 500: a vague-but-true
+       * refusal beats a specific lie, and an unrecognised misconfiguration
+       * SHOULD page someone.
        */
-      if (code === 'invalid_request') {
+      if (code === 'invalid_request' && err instanceof ProviderError && err.field === 'email') {
         throw new BadRequestError('email');
       }
       throw err;
@@ -379,6 +393,13 @@ async function attachProvider(
  * CHECK — no migration for this. Left `false` for a code the caller may still
  * retry into success (`network`, `timeout`, `rate_limited`,
  * `provider_unavailable`), where `requires_payment` remains the honest status.
+ *
+ * A RAW `UPDATE`, DELIBERATELY NOT `applyIntentStatus` (admin#30 review). This
+ * bypasses the `EVENT_FOR['failed'] -> 'payment.failed'` outbox write below —
+ * on purpose, not as an oversight: `applyIntentStatus` announces a provider
+ * TRANSACTION reaching a terminal state, and here none ever existed to
+ * announce. Orders has nothing to react to for an intent Paystack refused
+ * before it was ever created at the provider.
  */
 export async function recordIntentError(
   db: Db,

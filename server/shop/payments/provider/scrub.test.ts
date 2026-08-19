@@ -203,6 +203,10 @@ describe('ProviderError itself', () => {
     // assumed, because "there is no field for it" is the whole guarantee.
     expect(Object.keys(err).sort()).toEqual([
       'code',
+      // Enumerated (`'email' | null`), and only ever set by matching a
+      // provider message against a known field name — never carrying it
+      // (admin#30 review).
+      'field',
       'indeterminate',
       // `Error.name`, set by convention. Not the provider's name — that is
       // `provider`, and neither can hold a value.
