@@ -29,6 +29,7 @@ import { createPaymentRoutes, createWebhookRoutes } from './shop/payments/routes
 import { checkoutPort } from './shop/cart/port';
 import { drainCommerceEvents } from './shop/orders/repo/consumer';
 import { resolveShopCustomer } from './shop/cart/identity/customers';
+import { shopCors } from './shop/cart/cors';
 import { paymentPort } from './shop/payments/port';
 import { drainPaymentEvents } from './shop/payments/webhook';
 import { redemptionPort } from './marketing/redemption/port';
@@ -527,7 +528,33 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * already exists. It is not built, deliberately.
    * ═══════════════════════════════════════════════════════════════════════════
    */
-  app.route(`${API_PREFIX}${MARKETING_PREFIX}`, marketingApp({ mailer: deps.mailer }));
+  app.route(
+    `${API_PREFIX}${MARKETING_PREFIX}`,
+    marketingApp({
+      mailer: deps.mailer,
+      /*
+       * THE CUSTOMER HALF OF SPOOLPOINTS (admin#2). `/me/points` and
+       * `/me/points/ledger` let a signed-in shopper read their own balance and
+       * history; the operator routes beside them are `auth`-gated and keyed by a
+       * path email, which serves an admin screen and cannot serve a shopper.
+       *
+       * BOTH OF THESE ARE CART'S AND ARE HANDED IN HERE, because spec D9 forbids
+       * marketing importing `server/shop/**` — the same reason `redemptionPort`
+       * travels the other way in the seam described below. `resolveShopCustomer`
+       * is the identical resolver `registerOrdersDefaults` gets, so a session
+       * slides its expiry the same way on every customer-facing route.
+       *
+       * `shopCors()` IS SCOPED BY THE RECEIVING ROUTER TO `/me/points/*` AND
+       * NOTHING ELSE. It is passed rather than applied at the marketing app's
+       * root deliberately: that app is almost entirely operator routes, and
+       * giving them a credentialed cross-origin surface as a side effect of
+       * adding two customer ones is the widening `server/shop/orders/routes.ts`
+       * examined and refused to make.
+       */
+      customer: resolveShopCustomer,
+      cors: shopCors<AppEnv>(),
+    }),
+  );
 
   /*
    * PAYMENTS' STOREFRONT AND ADMIN ROUTES — behind the guard and the session,
