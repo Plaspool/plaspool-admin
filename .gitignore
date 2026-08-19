@@ -48,3 +48,11 @@ api-build
 # one `git add -A` away from being committed.
 *.env
 !.env.example
+
+# ...and the same credentials under a name that is neither. `npx vercel env pull
+# <file>` writes the whole production environment — DATABASE_URL, the Paystack
+# secret, SESSION_SECRET, SHOP_AUTH_BRIDGE_SECRET — to whatever it is told, and
+# the instruction to delete it afterwards is a step a person can forget. The
+# rules above anchor on the word "env"; a scratch file called `.cron.tmp` slipped
+# past every one of them and sat in the working tree unignored.
+*.tmp
