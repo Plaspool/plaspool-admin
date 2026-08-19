@@ -9,10 +9,11 @@ import {
 import { ShopCategoryPreconditionFailedError } from './catalog/categories';
 import { DuplicateOptionsError, DuplicateSkuError } from './catalog/variants';
 import { routes as catalog } from './catalog/routes';
-import { routes as reviews } from './reviews/routes';
+import { createReviewRoutes } from './reviews/routes';
 import { catalogPort } from './catalog/port';
 import { orders } from './orders/routes';
 import { cartShopRoutes } from './cart/routes';
+import { resolveShopCustomer } from './cart/identity/customers';
 import { SHOP_CURRENCY } from './currency';
 import { shopAdminRoutes } from './admin/routes';
 
@@ -126,7 +127,15 @@ export function shopApp(): Hono<AppEnv> {
   });
 
   shop.route('/', catalog);
-  shop.route('/', reviews);
+  /*
+   * REVIEWS, WITH THE REAL CUSTOMER RESOLVER INJECTED — the same shape as
+   * Cart below and Orders' registry: `createReviewRoutes` defaults to
+   * `NO_CUSTOMER`, so a deployment that forgot this line would still submit
+   * reviews as a guest rather than 500ing. `resolveShopCustomer` reads
+   * `__Host-shop_session` and is Cart's; Reviews never imports Cart directly,
+   * only this composition root does.
+   */
+  shop.route('/', createReviewRoutes({ customer: resolveShopCustomer }));
 
   shop.route('/', orders);
 

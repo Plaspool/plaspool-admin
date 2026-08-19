@@ -4,6 +4,8 @@ import { TEST_ORIGIN, httpClient } from '../../test/http';
 import type { TestCtx } from '../../test/harness';
 import type { HttpClient } from '../../test/http';
 import type { AuthUser } from '../../../shared/types';
+import { createCustomer, createCustomerSession } from '../cart/identity/customers';
+import { SHOP_SESSION_COOKIE } from '../cart/identity/cookies';
 
 /**
  * The reviews pipeline, end to end over real HTTP against a migrated
@@ -131,6 +133,115 @@ describe('the customer intake', () => {
     });
     expect(res.status).toBe(204);
     expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+});
+
+describe('a signed-in customer, through the REAL composition root', () => {
+  /*
+   * NOT A TEST APP WITH ITS OWN RESOLVER. This suite's `ctx.app` (via
+   * `httpClient`) is built by `server/index.ts`'s real `createApp()`, which
+   * mounts `server/shop/app.ts` and wires `resolveShopCustomer` into
+   * `createReviewRoutes` at that one composition-root call site. Reviews has
+   * no `test/app.ts` of its own to register a stand-in resolver, so a future
+   * edit that drops the wiring from `app.ts` fails HERE — the same shape
+   * `server/shop/composition.test.ts` uses for Orders, after the identical
+   * bug shipped there once.
+   */
+  async function signedInCustomer(
+    email: string | null,
+    displayName: string | null,
+  ): Promise<{ id: string; cookie: string }> {
+    const customer = await createCustomer(ctx.db, { email, displayName });
+    const session = await createCustomerSession(ctx.db, customer.id);
+    return { id: customer.id, cookie: `${SHOP_SESSION_COOKIE}=${session.token}` };
+  }
+
+  /** One `x-real-ip` header plus a cookie header, computed exactly once. */
+  function withCookie(cookie: string): { headers: Record<string, string> } {
+    return { headers: { ...fromFreshIp().headers, cookie } };
+  }
+
+  it('leaves customer_id null and behaves exactly as a guest submission when there is no session', async () => {
+    const res = await anon.post(SUBMIT, submission(), fromFreshIp());
+    expect(res.status).toBe(201);
+    const { reviewId } = (await res.json()) as { reviewId: string };
+    const admin = await owner.get(`${ADMIN}/${reviewId}`);
+    const { review } = (await admin.json()) as { review: { customerId: string | null } };
+    expect(review.customerId).toBeNull();
+  });
+
+  it('sets customer_id and stores the SESSION email, even when the body carries a different one', async () => {
+    const { id, cookie } = await signedInCustomer('session-owner@example.com', 'Session Name');
+    const res = await anon.post(
+      SUBMIT,
+      submission({ authorEmail: 'body-address@example.com', authorName: 'Body Name' }),
+      withCookie(cookie),
+    );
+    expect(res.status).toBe(201);
+    const { reviewId } = (await res.json()) as { reviewId: string };
+
+    const admin = await owner.get(`${ADMIN}/${reviewId}`);
+    const { review } = (await admin.json()) as {
+      review: { customerId: string | null; authorEmail: string; authorName: string };
+    };
+    expect(review.customerId).toBe(id);
+    expect(review.authorEmail).toBe('session-owner@example.com');
+    // The session's displayName wins over the body's authorName.
+    expect(review.authorName).toBe('Session Name');
+  });
+
+  it("falls back to the body's authorName when the session has no displayName", async () => {
+    const { cookie } = await signedInCustomer('no-name@example.com', null);
+    const res = await anon.post(
+      SUBMIT,
+      submission({ authorName: 'Body Supplied Name' }),
+      withCookie(cookie),
+    );
+    expect(res.status).toBe(201);
+    const { reviewId } = (await res.json()) as { reviewId: string };
+
+    const admin = await owner.get(`${ADMIN}/${reviewId}`);
+    const { review } = (await admin.json()) as { review: { authorName: string } };
+    expect(review.authorName).toBe('Body Supplied Name');
+  });
+
+  it("falls back to the body's authorEmail when the customer row has no email", async () => {
+    // A guest row that never claimed an address — a signed-in guest must
+    // still be able to review.
+    const { id, cookie } = await signedInCustomer(null, null);
+    const res = await anon.post(
+      SUBMIT,
+      submission({ authorEmail: 'body-fallback@example.com' }),
+      withCookie(cookie),
+    );
+    expect(res.status).toBe(201);
+    const { reviewId } = (await res.json()) as { reviewId: string };
+
+    const admin = await owner.get(`${ADMIN}/${reviewId}`);
+    const { review } = (await admin.json()) as {
+      review: { customerId: string | null; authorEmail: string };
+    };
+    expect(review.customerId).toBe(id);
+    expect(review.authorEmail).toBe('body-fallback@example.com');
+  });
+
+  it('keys the per-email rate budget on the RESOLVED email, not the body one', async () => {
+    const { cookie } = await signedInCustomer('budget-session@example.com', 'Budgeted');
+    const opts = withCookie(cookie);
+    for (let i = 0; i < 3; i += 1) {
+      const res = await anon.post(
+        SUBMIT,
+        submission({ authorEmail: `varying-${i}@example.com` }),
+        opts,
+      );
+      expect(res.status).toBe(201);
+    }
+    const fourth = await anon.post(
+      SUBMIT,
+      submission({ authorEmail: 'yet-another@example.com' }),
+      opts,
+    );
+    expect(fourth.status).toBe(429);
   });
 });
 
