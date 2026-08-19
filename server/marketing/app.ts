@@ -1,10 +1,13 @@
 import { Hono } from 'hono';
+import type { MiddlewareHandler } from 'hono';
 import { toResponse } from '../middleware/errors';
 import { renderMarketingError } from './wire';
 import { routes as areaRoutes } from './areas/routes';
 import { routes as bannerRoutes } from './banners/routes';
 import { routes as discountRoutes } from './discounts/routes';
 import { routes as ledgerRoutes } from './ledger/routes';
+import { createCustomerPointsRoutes } from './ledger/customer';
+import type { PointsCustomerResolver } from './ledger/customer';
 import { createNotifyRoutes } from './notify/routes';
 import { routes as programRoutes } from './programs/routes';
 import { routes as returnRoutes } from './returns/routes';
@@ -53,6 +56,31 @@ export interface MarketingAppDeps {
    * a return and award the points — it just has mail waiting.
    */
   mailer?: Mailer;
+
+  /**
+   * Who is signed in as a SHOPPER, for `/me/points` (admin#2).
+   *
+   * A PORT, NOT AN IMPORT. `shop_customers`, `shop_customer_sessions` and the
+   * `__Host-shop_session` cookie are Cart's, and spec D9 forbids this subsystem
+   * reaching into `server/shop/**` for them. `server/index.ts` hands in Cart's
+   * `resolveShopCustomer`, which satisfies the narrow shape
+   * `./ledger/customer.ts` declares.
+   *
+   * Absent means every `/me/*` route answers 401 — honest, and the same
+   * discipline `NO_CUSTOMER` set for Orders.
+   */
+  customer?: PointsCustomerResolver;
+
+  /**
+   * The response-side CORS middleware for the `/me/*` routes, and nothing else.
+   *
+   * Also Cart's, also injected rather than imported, and deliberately NOT
+   * applied at this app's root: `marketingApp()` is almost entirely operator
+   * routes, and handing them a credentialed cross-origin surface as a side
+   * effect of adding two customer ones is exactly the widening
+   * `server/shop/orders/routes.ts` refused to make. See `CustomerPointsDeps`.
+   */
+  cors?: MiddlewareHandler<AppEnv>;
 }
 
 export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
@@ -179,6 +207,28 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
    * swallowed by a parameterised one.
    */
   marketing.route('/', ledgerRoutes);
+
+  /*
+   * A CUSTOMER READING THEIR OWN POINTS — `/me/points` and `/me/points/ledger`
+   * (admin#2).
+   *
+   * MOUNTED AFTER `ledgerRoutes` AND DISJOINT FROM IT. Those are the operator
+   * routes: `auth`-gated and keyed by an email in the PATH. These are the same
+   * two reads with the address taken from the `__Host-shop_session` instead, so
+   * a shopper can see their own balance and history and nobody else's. `/me/*`
+   * shares no prefix with `/customers*` or `/adjustments`, so ordering is not
+   * load-bearing here either.
+   *
+   * BOTH DEPENDENCIES ARE PORTS, AND THAT IS SPEC D9. The session cookie and the
+   * CORS middleware both belong to Cart, which this subsystem may not import —
+   * so `server/index.ts`, the one file allowed to know both halves, hands them
+   * in. Absent, the routes answer 401 to everybody and carry no CORS header,
+   * which is honest rather than a deployment that invents an identity.
+   */
+  marketing.route(
+    '/',
+    createCustomerPointsRoutes({ customer: deps.customer, cors: deps.cors }),
+  );
 
   /*
    * NOTIFY — contract #27. The outbox's only caller: the sweep the admin's own

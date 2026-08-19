@@ -632,3 +632,163 @@ describe('the scheduled sweep recovers a payment the webhook stored but never pr
     expect(read?.order.grandTotal).toBe(SWEEP_AMOUNT);
   });
 });
+
+// ============================================================================
+// admin#2 — A CUSTOMER READING THEIR OWN SPOOLPOINTS
+// ============================================================================
+
+/**
+ * THE TWO WAYS THIS FEATURE FAILS SILENTLY, AND BOTH ARE INVISIBLE ELSEWHERE.
+ *
+ * `/me/points` lives in `marketingApp()`, but the session it reads and the CORS
+ * header it needs both belong to Cart — spec D9 forbids marketing importing
+ * either, so both arrive by injection from `server/index.ts` and from nowhere
+ * else. Marketing's own suites build marketing's own app and can pass their own
+ * fakes, exactly as Orders' suites do, so every one of them proves the ROUTE and
+ * nothing about the REGISTRATION.
+ *
+ * Which is precisely how `GET /api/shop/orders` came to 401 every caller in
+ * production while its suite was green.
+ *
+ * So these drive the real `createApp()` and let its own composition be the only
+ * thing that fills the seams:
+ *
+ *  1. A DROPPED `customer` — every shopper gets 401 forever. The feature does
+ *     not error, it simply never works for anyone.
+ *  2. A DROPPED `cors` — the response is a perfectly good 200 that the browser
+ *     then refuses to hand to the storefront's JavaScript. This has happened
+ *     three times in this codebase (reviews, payments, orders) and the suite
+ *     passed every time, because a server-side request never enforces CORS.
+ *     **That is why the assertions below are on HEADERS, not on behaviour.**
+ */
+describe('admin#2 — the customer points seam', () => {
+  const WALLET = 'points.reader@example.test';
+
+  /** Give the wallet something to report, through marketing's own writer. */
+  async function grant(email: string, points: number): Promise<void> {
+    await ctx.db.execute(sql`
+      INSERT INTO marketing_balances (customer_email, balance, lifetime_earned, updated_at)
+      VALUES (${email}, ${points}, ${points}, ${NOW})
+      ON CONFLICT (customer_email) DO UPDATE
+        SET balance = EXCLUDED.balance, lifetime_earned = EXCLUDED.lifetime_earned`);
+  }
+
+  it('resolves the balance from the session, not from a path email', async () => {
+    const customer = await signedInCustomer(WALLET);
+    await grant(WALLET, 250);
+
+    const res = await client.app.request('/api/marketing/me/points', {
+      headers: { cookie: customer.cookie, origin: TEST_ORIGIN },
+    });
+    expect(res.status).toBe(200);
+
+    const body = await json<{ points: number; lifetimeEarned: number }>(res);
+    expect(body.points).toBe(250);
+    expect(body.lifetimeEarned).toBe(250);
+  });
+
+  it('401s a caller with no session — it does NOT fall back to the writer', async () => {
+    // The alternative would show a shop owner browsing their own store somebody
+    // else's balance, under a URL the storefront calls.
+    const res = await client.app.request('/api/marketing/me/points', {
+      headers: { origin: TEST_ORIGIN },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('reports ZEROS for a customer who has never earned a point, never a 404', async () => {
+    // The most ordinary case there is. A 404 would make the storefront render an
+    // error state for every new customer.
+    const customer = await signedInCustomer('brand.new@example.test');
+    const res = await client.app.request('/api/marketing/me/points', {
+      headers: { cookie: customer.cookie, origin: TEST_ORIGIN },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await json<{ points: number }>(res)).points).toBe(0);
+  });
+
+  it('carries the programme words, so the storefront never spells them itself', async () => {
+    const customer = await signedInCustomer(WALLET);
+    const res = await client.app.request('/api/marketing/me/points', {
+      headers: { cookie: customer.cookie, origin: TEST_ORIGIN },
+    });
+
+    const body = await json<{ pointsLabelSingular: string | null }>(res);
+    // Seeded by migration 0011; the value is configuration, so this asserts that
+    // SOMETHING came from the database rather than asserting a noun in source —
+    // which is the one thing spec D2 makes impossible everywhere else.
+    expect(body.pointsLabelSingular).toBeTruthy();
+  });
+
+  it('returns one customer their own history and nobody else in it', async () => {
+    const customer = await signedInCustomer(WALLET);
+    await grant(WALLET, 100);
+    await ctx.db.execute(sql`
+      INSERT INTO marketing_ledger
+        (id, customer_email, kind, delta, balance_after, reason, actor_type, created_at)
+      VALUES ('mlg_own_0001', ${WALLET}, 'manual', 100, 100, 'Seeded', 'system', ${NOW}),
+             ('mlg_other_001', 'someone.else@example.test', 'manual', 500, 500, 'Theirs',
+              'system', ${NOW})`);
+
+    const res = await client.app.request('/api/marketing/me/points/ledger', {
+      headers: { cookie: customer.cookie, origin: TEST_ORIGIN },
+    });
+    expect(res.status).toBe(200);
+
+    const body = await json<{ items: Array<{ id: string }> }>(res);
+    expect(body.items.map((entry) => entry.id)).toEqual(['mlg_own_0001']);
+  });
+
+  /**
+   * THE CORS ASSERTIONS. On headers, deliberately — the three previous outages
+   * all had working behaviour and a missing header.
+   */
+  it('SETS access-control-allow-credentials on the balance response', async () => {
+    const customer = await signedInCustomer(WALLET);
+    const res = await client.app.request('/api/marketing/me/points', {
+      headers: { cookie: customer.cookie, origin: TEST_ORIGIN },
+    });
+
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    expect(res.headers.get('access-control-allow-origin')).toBe(TEST_ORIGIN);
+  });
+
+  it('SETS them on the ledger response too', async () => {
+    const customer = await signedInCustomer(WALLET);
+    const res = await client.app.request('/api/marketing/me/points/ledger', {
+      headers: { cookie: customer.cookie, origin: TEST_ORIGIN },
+    });
+
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    expect(res.headers.get('access-control-allow-origin')).toBe(TEST_ORIGIN);
+  });
+
+  it('SETS them on the 401 as well, or the browser hides the reason', async () => {
+    /*
+     * A 401 without the credentials header is not "unauthorised" to the calling
+     * JavaScript — it is a network error with no status at all, so the storefront
+     * cannot tell "sign in" from "the server is down".
+     */
+    const res = await client.app.request('/api/marketing/me/points', {
+      headers: { origin: TEST_ORIGIN },
+    });
+
+    expect(res.status).toBe(401);
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+  });
+
+  it('does NOT hand a credentialed cross-origin surface to the operator routes', async () => {
+    /*
+     * The widening this mount deliberately refused. `shopCors()` is scoped to
+     * `/me/points/*` by the receiving router; applying it at `marketingApp()`'s
+     * root would have been the smaller diff and would have quietly opened every
+     * `auth`-gated marketing route to credentialed cross-origin reads.
+     */
+    const res = await client.app.request('/api/marketing/customers', {
+      headers: { origin: TEST_ORIGIN },
+    });
+
+    expect(res.headers.get('access-control-allow-credentials')).toBeNull();
+  });
+});
