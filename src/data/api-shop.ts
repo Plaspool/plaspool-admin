@@ -351,6 +351,12 @@ export interface ShopVariant {
    * swatch the rail draws while a variant has no photograph yet.
    */
   colorHex: string | null;
+  /**
+   * Whether any order has ever been placed for this variant (issue #18). Drives
+   * whether the panel offers Delete at all — a variant that has sold can only
+   * be archived, and the control does not appear to answer 409 about it.
+   */
+  everOrdered: boolean;
 }
 
 export interface ShopProductDetail extends ShopProduct {
@@ -836,6 +842,21 @@ export const shopApi = {
     const res = await shopFetch<{ variant: ShopVariant }>(`${BASE}/variants/${seg(id)}`, {
       method: 'PATCH',
       body,
+      id,
+      subject: 'Variant',
+    });
+    return res.variant;
+  },
+
+  /**
+   * HARD delete (issue #18) — unlike `trashProduct`, this one really removes
+   * the row. Only reachable for a variant that has never been ordered; the
+   * server answers 409 (`precondition_failed`) otherwise, which the panel
+   * avoids by hiding the control rather than by catching this.
+   */
+  async deleteVariant(id: string): Promise<ShopVariant> {
+    const res = await shopFetch<{ variant: ShopVariant }>(`${BASE}/variants/${seg(id)}`, {
+      method: 'DELETE',
       id,
       subject: 'Variant',
     });

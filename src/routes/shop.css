@@ -1059,6 +1059,14 @@
   background: var(--accent-soft);
   border-color: var(--accent);
 }
+/* A discontinued row reads as put-away, not merely different — the list is
+   where somebody scans for "what is still real" (issue #18). */
+.vlist__item.is-discontinued {
+  opacity: 0.6;
+}
+.vlist__item.is-discontinued.is-active {
+  opacity: 1;
+}
 .vlist__thumb {
   display: grid;
   place-items: center;
@@ -1082,11 +1090,19 @@
   min-width: 0;
 }
 .vlist__name {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
   font-weight: 600;
   font-size: var(--step--1);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.vlist__badge {
+  flex: none;
+  font-size: var(--step--3);
+  padding: 0.05rem var(--s1);
 }
 .vlist__meta {
   font-size: var(--step--2);
@@ -1403,6 +1419,14 @@
   display: flex;
   gap: var(--s2);
   flex-wrap: wrap;
+}
+/* Delete sits apart from the reversible controls above it (issue #18) — a
+   rule and a gap, so the one irreversible action in the group is not one
+   more button in the same row as Archive and Adjust price. */
+.vactions--danger {
+  margin-top: var(--s2);
+  padding-top: var(--s2);
+  border-top: 1px solid var(--rule);
 }
 
 /* One change per screenful: the number, the labelled why, the pair of

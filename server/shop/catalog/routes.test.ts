@@ -352,6 +352,130 @@ describe('variants, prices and inventory over HTTP', () => {
   });
 });
 
+/**
+ * `DELETE /admin/variants/:id` (issue #18).
+ *
+ * A DIRECT SQL INSERT INTO `shop_order_lines`, NOT A FULL CHECKOUT. Building a
+ * real order means driving Cart's checkout flow, which is a different
+ * subsystem's surface and not what this test is proving. What matters here is
+ * the one fact `deleteVariant` reads — "does a `shop_order_lines` row name this
+ * variant" — so the order and its line are minted with the columns their own
+ * `CHECK`s require and nothing more.
+ */
+async function insertOrderLineForVariant(
+  db: TestCtx['db'],
+  variantId: string,
+): Promise<{ orderId: string }> {
+  const orderId = `ord_${variantId}`;
+  const now = Date.now();
+  await db.execute(sql`
+    INSERT INTO shop_orders (id, order_number, email, currency, subtotal, shipping_total,
+                              tax_total, grand_total, status, shipping_address,
+                              billing_address, placed_at, revision, source_event_id, checkout_id)
+    VALUES (${orderId}, ${orderId}, 'buyer@test.local', 'GBP', 1999, 0, 0, 1999, 'paid',
+            '{}'::jsonb, '{}'::jsonb, ${now}, 1, ${orderId}, ${orderId})
+  `);
+  await db.execute(sql`
+    INSERT INTO shop_order_lines (id, order_id, line_no, variant_id, sku, title,
+                                   option_values, qty, unit_amount, line_total)
+    VALUES (${`${orderId}_l1`}, ${orderId}, 0, ${variantId}, 'SOLD-1', 'Sold Variant',
+            '{}'::jsonb, 1, 1999, 1999)
+  `);
+  return { orderId };
+}
+
+describe('deleting a variant (issue #18)', () => {
+  beforeAll(login);
+
+  it('deletes a never-ordered variant outright', async () => {
+    const created = await createProduct('Delete Me');
+    const variantRes = await http.post(`/api/shop/admin/products/${created.id}/variants`, {
+      sku: 'DELETE-1',
+    });
+    const { variant } = await json<{ variant: { id: string } }>(variantRes);
+
+    const res = await http.del(`/api/shop/admin/variants/${variant.id}`);
+    expect(res.status).toBe(200);
+
+    const detail = await http.get(`/api/shop/admin/products/${created.id}`);
+    const body = await json<{ product: { variants: unknown[] } }>(detail);
+    expect(body.product.variants).toHaveLength(0);
+  });
+
+  it('cascades a never-ordered variant out of an open cart line', async () => {
+    const created = await createProduct('Delete With Cart');
+    const variantRes = await http.post(`/api/shop/admin/products/${created.id}/variants`, {
+      sku: 'DELETE-CART-1',
+    });
+    const { variant } = await json<{ variant: { id: string } }>(variantRes);
+
+    const now = Date.now();
+    const cartId = `cart_${variant.id}`;
+    await ctx.db.execute(sql`
+      INSERT INTO shop_carts (id, currency, status, created_at, updated_at, expires_at, revision)
+      VALUES (${cartId}, 'GBP', 'open', ${now}, ${now}, ${now + 86_400_000}, 1)
+    `);
+    await ctx.db.execute(sql`
+      INSERT INTO shop_cart_lines (id, cart_id, variant_id, qty, added_at)
+      VALUES (${`${cartId}_l1`}, ${cartId}, ${variant.id}, 1, ${now})
+    `);
+
+    expect((await http.del(`/api/shop/admin/variants/${variant.id}`)).status).toBe(200);
+
+    const remaining = await ctx.db.execute(sql`
+      SELECT 1 FROM shop_cart_lines WHERE variant_id = ${variant.id}`);
+    expect(remaining.rows).toHaveLength(0);
+  });
+
+  it('refuses to delete a variant that has ever been ordered — 409, and the control is not "try again"', async () => {
+    const created = await createProduct('Sold Product');
+    const variantRes = await http.post(`/api/shop/admin/products/${created.id}/variants`, {
+      sku: 'SOLD-1',
+    });
+    const { variant } = await json<{ variant: { id: string } }>(variantRes);
+    const { orderId } = await insertOrderLineForVariant(ctx.db, variant.id);
+
+    const res = await http.del(`/api/shop/admin/variants/${variant.id}`);
+    expect(res.status).toBe(409);
+    const body = await json<{ error: string; operation: string; variant: { id: string } }>(res);
+    expect(body).toMatchObject({
+      error: 'precondition_failed',
+      operation: 'delete',
+      variant: { id: variant.id },
+    });
+
+    // Order history is intact: the order and its line still exist afterwards,
+    // and still name this variant — the whole point of refusing the delete.
+    const lines = await ctx.db.execute(sql`
+      SELECT variant_id FROM shop_order_lines WHERE order_id = ${orderId}`);
+    expect(lines.rows).toMatchObject([{ variant_id: variant.id }]);
+
+    // The variant itself is untouched, so the admin read still shows it.
+    const detail = await http.get(`/api/shop/admin/products/${created.id}`);
+    const body2 = await json<{ product: { variants: { id: string; everOrdered: boolean }[] } }>(
+      detail,
+    );
+    expect(body2.product.variants).toMatchObject([{ id: variant.id, everOrdered: true }]);
+  });
+
+  it('a nonexistent variant is a 404', async () => {
+    expect((await http.del('/api/shop/admin/variants/var_nope')).status).toBe(404);
+  });
+
+  it('the API refuses the delete with a 409 even called directly, independent of any UI hiding the control', async () => {
+    const created = await createProduct('Direct Call Sold');
+    const variantRes = await http.post(`/api/shop/admin/products/${created.id}/variants`, {
+      sku: 'DIRECT-SOLD-1',
+    });
+    const { variant } = await json<{ variant: { id: string } }>(variantRes);
+    await insertOrderLineForVariant(ctx.db, variant.id);
+
+    // Straight to the route, no client-side gate involved.
+    const res = await http.del(`/api/shop/admin/variants/${variant.id}`);
+    expect(res.status).toBe(409);
+  });
+});
+
 describe('NUL bytes and malformed input are 400s, never 500s', () => {
   beforeAll(login);
 

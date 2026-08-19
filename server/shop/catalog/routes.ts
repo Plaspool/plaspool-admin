@@ -23,6 +23,7 @@ import { listProducts } from './query';
 import { toStorefrontProduct } from './mapping';
 import {
   createVariant,
+  deleteVariant,
   getVariant,
   listVariantsForProducts,
   listVariantsWithPrices,
@@ -557,6 +558,20 @@ routes.patch('/admin/variants/:id', auth, async (c) => {
   const body = await readJson(c, UpdateVariantBody);
   return c.json({ variant: await updateVariant(currentDb(c), pathParam(c, 'id'), body) });
 });
+
+/**
+ * HARD DELETE — unlike `DELETE /admin/products/:id`, this one really removes
+ * the row (issue #18). A product always has the trash to fall back to; a
+ * variant that has never been ordered has no history to protect, and archive
+ * (`PATCH .../status`) already covers the reversible case.
+ *
+ * `deleteVariant` throws `VariantPreconditionFailedError` — rendered as a 409
+ * by `server/shop/app.ts`'s `onError`, the same conflict-error vocabulary as
+ * the product/category routes — when the variant has ever been ordered.
+ */
+routes.delete('/admin/variants/:id', auth, async (c) =>
+  c.json({ variant: await deleteVariant(currentDb(c), pathParam(c, 'id')) }),
+);
 
 /**
  * `PUT`, not `POST`: setting the price is idempotent in intent — "the price is

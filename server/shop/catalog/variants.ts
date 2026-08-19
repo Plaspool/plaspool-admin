@@ -7,6 +7,7 @@ import { committedImageIds } from '../../repo/images';
 import { generateSku } from './sku';
 import { canonicalizeOptions, foldedTupleKey } from './fold';
 import { normalizeBlobId } from '../../repo/public-projection';
+import { VariantPreconditionFailedError } from './errors';
 import type { AuthUser } from '../../../shared/types';
 import type { VariantStatus } from '../../../shared/commerce/catalog-port';
 import { VARIANT_COLUMNS, newCatalogId, rowToVariant, rowToVariantWithPrice } from './mapping';
@@ -214,10 +215,15 @@ export async function listVariantsWithPrices(
   const res = await db.execute(sql`
     SELECT ${sql.raw(VARIANT_COLUMNS.map((c) => `v.${c}`).join(', '))},
            pr.amount AS price_amount, pr.currency AS price_currency,
-           i.on_hand - i.reserved AS available, i.backorderable
+           i.on_hand - i.reserved AS available, i.backorderable,
+           eo.ever_ordered
       FROM shop_variants v
       LEFT JOIN shop_prices pr ON pr.variant_id = v.id AND pr.effective_to IS NULL
       LEFT JOIN shop_inventory i ON i.variant_id = v.id
+      LEFT JOIN LATERAL (
+        SELECT true AS ever_ordered FROM shop_order_lines ol
+         WHERE ol.variant_id = v.id LIMIT 1
+      ) eo ON true
      WHERE v.product_id = ${productId}
      ORDER BY v.position ASC, v.id ASC`);
   return res.rows.map(rowToVariantWithPrice);
@@ -258,10 +264,15 @@ export async function listVariantsForProducts(
   const res = await db.execute(sql`
     SELECT ${sql.raw(VARIANT_COLUMNS.map((c) => `v.${c}`).join(', '))},
            pr.amount AS price_amount, pr.currency AS price_currency,
-           i.on_hand - i.reserved AS available, i.backorderable
+           i.on_hand - i.reserved AS available, i.backorderable,
+           eo.ever_ordered
       FROM shop_variants v
       LEFT JOIN shop_prices pr ON pr.variant_id = v.id AND pr.effective_to IS NULL
       LEFT JOIN shop_inventory i ON i.variant_id = v.id
+      LEFT JOIN LATERAL (
+        SELECT true AS ever_ordered FROM shop_order_lines ol
+         WHERE ol.variant_id = v.id LIMIT 1
+      ) eo ON true
      WHERE v.product_id = ANY(${sql.param(productIds)}::text[])
      ORDER BY v.product_id ASC, v.position ASC, v.id ASC`);
 
@@ -452,4 +463,74 @@ export async function updateVariant(
 
   if (!row) throw new NotFoundError(id);
   return rowToVariant(row);
+}
+
+/**
+ * Hard-delete a variant that has never been ordered (issue #18).
+ *
+ * WHY THIS EXISTS ALONGSIDE `updateVariant`'S `status`, NOT INSTEAD OF IT. A
+ * variant a customer has bought must survive as `discontinued` — an order line
+ * snapshots its own sku/title/price, but it still names a `variantId`, and a
+ * report or a future feature that resolves that id back to "what was this"
+ * needs the row to still exist. A variant nobody has ever bought carries no
+ * such obligation: it is `shop_prices` and `shop_inventory` rows and, if it is
+ * unlucky, a line in someone's open cart, none of which is history.
+ *
+ * NO `db.transaction` — the Neon HTTP driver throws on it (contract note this
+ * repo lives under). The guard against the "ordered after the check, before
+ * the delete" race is therefore folded INTO the delete statement itself rather
+ * than wrapped around it: `ord` is read once and every deleting CTE is gated on
+ * `NOT EXISTS (SELECT 1 FROM ord)`, so if an order line lands in the gap the
+ * whole statement deletes nothing rather than deleting half of a variant that
+ * just got itself an order.
+ *
+ * CART LINES CASCADE, PRICES AND INVENTORY GO WITH THEM. This is the
+ * deliberate decision from issue #18's open question: a cart line pointing at
+ * a deleted variant would break every subsequent cart read for that customer,
+ * and the variant is by definition never-sold and no longer for sale, so the
+ * honest outcome is that it silently leaves the basket. A cart is a basket,
+ * not a record — unlike an order line, which is exactly why an order line
+ * blocks the delete instead of cascading the same way.
+ *
+ * RETURNS THE DELETED VARIANT (for the caller's response / audit use), or
+ * throws `VariantPreconditionFailedError` carrying the still-live variant when
+ * it has been ordered, or `NotFoundError` when there is no such row at all.
+ */
+export async function deleteVariant(db: Db, id: string): Promise<Variant> {
+  const res = await db.execute(sql`
+    WITH ord AS (
+      SELECT 1 FROM shop_order_lines WHERE variant_id = ${id} LIMIT 1
+    ), del_cart AS (
+      DELETE FROM shop_cart_lines
+       WHERE variant_id = ${id} AND NOT EXISTS (SELECT 1 FROM ord)
+    ), del_price AS (
+      DELETE FROM shop_prices
+       WHERE variant_id = ${id} AND NOT EXISTS (SELECT 1 FROM ord)
+    ), del_inv AS (
+      DELETE FROM shop_inventory
+       WHERE variant_id = ${id} AND NOT EXISTS (SELECT 1 FROM ord)
+    ), del_var AS (
+      DELETE FROM shop_variants
+       WHERE id = ${id} AND NOT EXISTS (SELECT 1 FROM ord)
+      RETURNING ${sql.raw(VARIANT_COLUMNS.join(', '))}
+    )
+    SELECT (SELECT 1 FROM ord) AS blocked,
+           ${sql.raw(VARIANT_COLUMNS.map((c) => `del_var.${c}`).join(', '))}
+      FROM del_var`);
+
+  const row = res.rows[0];
+  if (row) return rowToVariant(row);
+
+  // Nothing came back from `del_var`: either the row was never there, or the
+  // delete was blocked by `ord`. The two need a second, cheap read to tell
+  // apart — the write statement above deliberately returns no row either way,
+  // so this is not a race, it is disambiguating what already happened.
+  const blocked = await db.execute(sql`
+    SELECT 1 FROM shop_order_lines WHERE variant_id = ${id} LIMIT 1`);
+  if (blocked.rows[0]) {
+    const variant = await getVariant(db, id);
+    if (!variant) throw new NotFoundError(id);
+    throw new VariantPreconditionFailedError('delete', variant);
+  }
+  throw new NotFoundError(id);
 }

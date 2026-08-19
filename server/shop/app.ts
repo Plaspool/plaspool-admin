@@ -5,6 +5,7 @@ import { toResponse } from '../middleware/errors';
 import {
   ProductPreconditionFailedError,
   StaleProductWriteError,
+  VariantPreconditionFailedError,
 } from './catalog/errors';
 import { ShopCategoryPreconditionFailedError } from './catalog/categories';
 import { DuplicateOptionsError, DuplicateSkuError } from './catalog/variants';
@@ -76,6 +77,19 @@ export function shopApp(): Hono<AppEnv> {
               product: err.product,
             }
           : /*
+             * A VARIANT DELETE REFUSED BECAUSE IT HAS BEEN ORDERED (issue #18).
+             * Same shape as the product branch above, `variant` in place of
+             * `product` — the UI's one job here is "this has been sold —
+             * archive it instead", which needs the variant that refused, not a
+             * fresh read of anything else.
+             */
+            err instanceof VariantPreconditionFailedError
+            ? {
+                error: 'precondition_failed',
+                operation: err.operation,
+                variant: err.variant,
+              }
+            : /*
              * A CATEGORY CONFLICT CARRIES THE CATEGORY, for the reason the
              * product branch above carries the product: "someone else got there
              * first, here is theirs" is only actionable if the client is told
