@@ -265,6 +265,96 @@ describe('a lost provider response is recoverable, and never a second charge', (
   });
 });
 
+describe('a provider rejection (admin#30) is a 4xx and never leaves the intent looking payable', () => {
+  it('turns invalid_request into BadRequestError naming the email field, and marks the intent failed', async () => {
+    provider.program('createIntent', { kind: 'fail', code: 'invalid_request' });
+
+    // A BadRequestError, not the raw ProviderError — the route layer maps this
+    // to 400 { error: 'bad_request', detail: 'email' }, never the provider's
+    // own wording (issue: production returned a bare 500 for exactly this).
+    await expect(createIntent(db, provider, checkout, input(), now)).rejects.toMatchObject(
+      new BadRequestError('email'),
+    );
+
+    const rows = await db.execute(
+      sql`SELECT provider_intent_id, authorization_url, status, last_error
+            FROM shop_payment_intents`,
+    );
+    expect(rows.rows).toHaveLength(1);
+    const row = rows.rows[0];
+    // Terminal, not `requires_payment` — it has no `authorization_url` and
+    // never will for this attempt, so it must not look payable.
+    expect(row.status).toBe('failed');
+    expect(row.provider_intent_id).toBeNull();
+    expect(row.authorization_url).toBeNull();
+    // The diagnosis, enumerated — never provider prose.
+    expect(row.last_error).toBe('invalid_request');
+  });
+
+  it('lets a corrected retry with the SAME idempotency key succeed', async () => {
+    /*
+     * RETRY-AFTER-REJECTION, DECIDED: the same idempotency key resumes the
+     * failed attempt rather than being permanently wedged behind it.
+     * `readThrough` already re-drives `attachProvider` for any row whose
+     * `provider_intent_id` is NULL, and that check does not look at `status` —
+     * so a `failed` row with no provider reference is exactly as retryable as
+     * a `requires_payment` one was before this fix. A customer who mistyped
+     * their email and fixes it can press pay again with the same key and it
+     * goes through; no new idempotency key is required.
+     */
+    provider.program('createIntent', { kind: 'fail', code: 'invalid_request' });
+    await expect(createIntent(db, provider, checkout, input(), now)).rejects.toBeInstanceOf(
+      BadRequestError,
+    );
+
+    const retry = await createIntent(
+      db,
+      provider,
+      checkout,
+      input({ email: 'buyer-corrected@example.com' }),
+      now,
+    );
+    expect(retry.intent.status).toBe('requires_payment');
+    expect(retry.intent.providerIntentId).toBe(providerReferenceFor(retry.intent.id));
+    expect(retry.intent.authorizationUrl).not.toBeNull();
+    expect(retry.intent.lastError).toBeNull();
+    expect(provider.countOf('createIntent')).toBe(2);
+  });
+
+  it('leaves a genuine internal fault (auth) at 500-shape — not every provider error becomes a 4xx', async () => {
+    provider.program('createIntent', { kind: 'fail', code: 'auth' });
+
+    const err = await createIntent(db, provider, checkout, input(), now).catch((e) => e);
+    // Not a BadRequestError: a bad secret key is OUR fault, not the caller's,
+    // and the route layer has no mapping for a raw ProviderError — it falls
+    // through to the generic 500, same as today.
+    expect(err).not.toBeInstanceOf(BadRequestError);
+    expect(err).toMatchObject({ code: 'auth' });
+
+    const rows = await db.execute(
+      sql`SELECT status, last_error FROM shop_payment_intents`,
+    );
+    // Still terminal — `auth` is not retryable either, and the row must not
+    // sit at `requires_payment` claiming to be payable when it never will be
+    // until an operator fixes the key.
+    expect(rows.rows[0].status).toBe('failed');
+    expect(rows.rows[0].last_error).toBe('auth');
+  });
+
+  it('leaves a retryable/indeterminate rejection (timeout) at requires_payment, unmarked as failed', async () => {
+    provider.program('createIntent', { kind: 'fail', code: 'timeout' });
+    await expect(createIntent(db, provider, checkout, input(), now)).rejects.toMatchObject({
+      code: 'timeout',
+    });
+
+    const rows = await db.execute(sql`SELECT status FROM shop_payment_intents`);
+    // A timeout might still succeed on the provider's side — see the
+    // duplicate-reference test above — so it stays `requires_payment` rather
+    // than being marked `failed` out from under a transaction that may land.
+    expect(rows.rows[0].status).toBe('requires_payment');
+  });
+});
+
 describe('the status ladder tolerates out-of-order arrival', () => {
   async function captured() {
     const { intent } = await createIntent(db, provider, checkout, input(), now);
