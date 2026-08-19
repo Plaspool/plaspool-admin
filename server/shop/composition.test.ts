@@ -23,7 +23,7 @@
  * would have caught it the first time.
  */
 import { createHmac } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { freshDb } from '../test/harness';
 import type { TestCtx } from '../test/harness';
@@ -38,6 +38,7 @@ import { checkoutCompleted, insertEvents, CHECKOUT } from './orders/test/fixture
 import { sweepCommerceEvents, type ConsumerDeps } from './orders/repo/consumer';
 import { markOrderPaid, readOrderByCheckout } from './orders/repo/orders';
 import { paymentPort } from './payments/port';
+import { storeEvent } from './payments/webhook';
 
 let ctx: TestCtx;
 let client: HttpClient;
@@ -457,5 +458,153 @@ describe('a paid checkout becomes an order, through the real composition root', 
     const intent = await ctx.db.execute(sql`
       SELECT status FROM shop_payment_intents WHERE id = ${PIPE_INTENT}`);
     expect(intent.rows[0]?.status).toBe('captured');
+  });
+});
+
+/**
+ * THE GAP THIS BRANCH EXISTS TO CLOSE, DRIVEN THROUGH THE REAL SCHEDULED PATH.
+ *
+ * A real Paystack payment was made in production. The webhook arrived, was
+ * verified, and `storeEvent` wrote it — durably — to `shop_payment_events` with
+ * `processed_at = NULL`. Then nothing else happened: Vercel froze the function
+ * the instant the acknowledgement was sent, before `afterResponse`'s
+ * `processEvent` call ever ran. No error, no anomaly — the row just sat there.
+ *
+ * The test above this one (`a paid checkout becomes an order…`) drives
+ * `POST /shop/payments/webhook` end to end and would NOT have caught this: it
+ * exercises the post-response path directly, which is exactly the path that
+ * froze in production. This block instead reproduces the frozen state BY HAND —
+ * `storeEvent` and nothing else — and then drives only the SCHEDULED recovery
+ * path, `GET /admin/sweep`, the one thing an external cron actually calls. If
+ * `runSweep` ever again forgets to drain payments first, this is what fails.
+ */
+describe('the scheduled sweep recovers a payment the webhook stored but never processed', () => {
+  const CRON_SECRET = 'a-test-cron-secret-at-least-16-chars-long';
+  const SWEEP_CART = 'crt_frozen_0001';
+  const SWEEP_REF = 'psref_frozen_0001';
+  const SWEEP_AMOUNT = 2_600;
+
+  beforeEach(() => {
+    process.env.CRON_SECRET = CRON_SECRET;
+  });
+  afterEach(() => {
+    delete process.env.CRON_SECRET;
+  });
+
+  /** The same frozen-cart-plus-unpaid-intent shape the pipeline block above uses. */
+  async function frozenCart(cartId: string, ref: string, amount: number): Promise<void> {
+    const totals = {
+      currency: 'USD',
+      lines: [
+        {
+          variantId: 'var_mug_navy',
+          qty: 1,
+          unit: { amount, currency: 'USD' },
+          lineTotal: { amount, currency: 'USD' },
+          taxable: true,
+          taxAmount: { amount: 0, currency: 'USD' },
+        },
+      ],
+      shipping: null,
+      tax: { zone: 'test', label: 'none', rateBps: 0 },
+      adjustments: [],
+      subtotal: { amount, currency: 'USD' },
+      adjustmentTotal: { amount: 0, currency: 'USD' },
+      shippingTotal: { amount: 0, currency: 'USD' },
+      taxTotal: { amount: 0, currency: 'USD' },
+      grandTotal: { amount, currency: 'USD' },
+      rounding: 'half-up',
+    };
+    const lines = [
+      {
+        variantId: 'var_mug_navy',
+        productId: 'prd_mug',
+        sku: 'MUG-NAVY',
+        title: 'Enamel Mug',
+        optionValues: { Colour: 'Navy' },
+        qty: 1,
+        unit: { amount, currency: 'USD' },
+        weightGrams: 400,
+      },
+    ];
+
+    await ctx.db.execute(sql`
+      INSERT INTO shop_carts
+        (id, customer_id, currency, status, email, tax_zone,
+         frozen_totals, frozen_lines, frozen_at,
+         created_at, updated_at, expires_at, revision)
+      VALUES (${cartId}, NULL, 'USD', 'converting', 'buyer@frozen.test', 'test',
+              ${JSON.stringify(totals)}::jsonb, ${JSON.stringify(lines)}::jsonb, ${NOW},
+              ${NOW}, ${NOW}, ${NOW + 900_000}, 1)`);
+
+    await ctx.db.execute(sql`
+      INSERT INTO shop_addresses
+        (id, cart_id, kind, name, line1, city, country_code)
+      VALUES (${`adr_${cartId}`}, ${cartId}, 'shipping', 'A Buyer', '1 Test Street',
+              'Abuja', 'NG')`);
+
+    await ctx.db.execute(sql`
+      INSERT INTO shop_payment_intents
+        (id, checkout_id, amount, currency, status, provider_intent_id,
+         idempotency_key, request_fingerprint, refunded_total,
+         created_at, updated_at, revision)
+      VALUES (${`pi_${cartId}`}, ${cartId}, ${amount}, 'USD', 'requires_payment', ${ref},
+              ${`idem_${cartId}`}, 'fp', 0, ${NOW}, ${NOW}, 1)`);
+  }
+
+  /**
+   * STORE ONLY — the exact half of the webhook route that actually completed in
+   * production. `processEvent`/`afterResponse` is never called, which is what
+   * makes this row indistinguishable from the one Vercel froze: durably stored,
+   * `processed_at = NULL`, no `last_error`, no `anomaly`.
+   */
+  async function storeUnprocessedCapture(ref: string, providerEventId: string): Promise<void> {
+    await storeEvent(ctx.db, {
+      providerEventId,
+      type: 'charge.success',
+      providerIntentId: ref,
+      providerRefundId: null,
+      intentStatus: 'captured',
+      refundStatus: null,
+      failureReason: null,
+      amount: SWEEP_AMOUNT,
+      currency: 'USD',
+      payload: { data: { reference: ref, amount: SWEEP_AMOUNT, currency: 'USD' } },
+    });
+  }
+
+  it('turns a stored-but-unprocessed webhook into a paid order through GET /admin/sweep alone', async () => {
+    await frozenCart(SWEEP_CART, SWEEP_REF, SWEEP_AMOUNT);
+    await storeUnprocessedCapture(SWEEP_REF, 'evt_frozen_0001');
+
+    // Reproduced, not assumed: the row really is stuck the way production's was.
+    const before = await ctx.db.execute(sql`
+      SELECT processed_at, last_error, anomaly FROM shop_payment_events
+       WHERE provider_event_id = 'evt_frozen_0001'`);
+    expect(before.rows[0]).toMatchObject({ processed_at: null, last_error: null, anomaly: null });
+    expect(await readOrderByCheckout(ctx.db, SWEEP_CART)).toBeNull();
+
+    // ONE call to the SCHEDULED path — the one a cron actually reaches, not the
+    // owner-gated manual drain and not the inline post-webhook path.
+    const res = await client.app.request('/api/shop/admin/sweep', {
+      method: 'GET',
+      headers: { authorization: `Bearer ${CRON_SECRET}` },
+    });
+    expect(res.status).toBe(200);
+    const body = await json<{
+      payments: { count: number };
+      events: { applied: number; passes: number };
+    }>(res);
+    expect(body.payments.count).toBeGreaterThanOrEqual(1);
+    expect(body.events.applied).toBeGreaterThanOrEqual(2); // checkout.completed + payment.captured
+
+    const after = await ctx.db.execute(sql`
+      SELECT processed_at FROM shop_payment_events WHERE provider_event_id = 'evt_frozen_0001'`);
+    expect(after.rows[0]?.processed_at).not.toBeNull();
+
+    const read = await readOrderByCheckout(ctx.db, SWEEP_CART);
+    expect(read).not.toBeNull();
+    expect(read?.order.status).toBe('paid');
+    expect(read?.order.grandTotal).toBe(SWEEP_AMOUNT);
   });
 });

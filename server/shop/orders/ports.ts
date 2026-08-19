@@ -54,11 +54,41 @@ export const NO_CUSTOMER: CustomerResolver = () => Promise.resolve(null);
  * "captured" without a second system of record, and for nothing else. `null` means the
  * page omits the panel.
  */
+/**
+ * Drain Payments' stored-but-unprocessed webhook events, THEN return however many
+ * were looked at. The shape is deliberately loose (`unknown[]`-ish count, not
+ * `ProcessResult[]`) so this file never needs to import a Payments type to declare
+ * it — contract §2 R3 forbids Orders importing Payments directly, and a type-only
+ * import is still an import.
+ *
+ * WHY THIS SEAM EXISTS AT ALL: `GET /admin/sweep` and `POST /admin/sweep` are
+ * Orders' routes, but the event webhook can freeze *after* acknowledging and
+ * *before* its post-response drain runs (`shop_payment_events.processed_at`
+ * stays null, `last_error` stays null — no anomaly, just nothing happened). The
+ * owner-gated `POST /shop/admin/payments/events/drain` is the manual safety net
+ * for that; this seam is what lets the CRON-gated `runSweep` reach the same
+ * safety net on a schedule, without Orders reaching into Payments' module to get
+ * it.
+ */
+export type PaymentDrain = (db: Db, now: number) => Promise<{ count: number }>;
+
+/** The default: nothing to drain, because nothing was wired. A deployment that
+ *  forgets to register `drainPayments` degrades to today's behaviour — the
+ *  commerce-event sweep still runs — rather than crashing. */
+export const NO_PAYMENT_DRAIN: PaymentDrain = () => Promise.resolve({ count: 0 });
+
 export interface OrdersDeps {
   customer?: CustomerResolver;
   payments?: PaymentPort<Db> | null;
   /** Injectable so route tests are deterministic. Defaults to the wall clock. */
   now?: () => number;
+  /**
+   * Drain Payments' stored-but-unprocessed webhook events. Defaults to
+   * {@link NO_PAYMENT_DRAIN}. Wired at the composition root
+   * (`server/index.ts`) to `drainPaymentEvents`, the same function
+   * `POST /shop/admin/payments/events/drain` calls by hand.
+   */
+  drainPayments?: PaymentDrain;
   /**
    * Where email actually goes.
    *
@@ -85,6 +115,7 @@ export interface ResolvedDeps {
   payments: PaymentPort<Db> | null;
   now: () => number;
   mailer: Mailer;
+  drainPayments: PaymentDrain;
 }
 
 /**
@@ -170,6 +201,7 @@ export function resolveDeps(deps: OrdersDeps = {}): ResolvedDeps {
     payments: merged.payments ?? null,
     now: merged.now ?? (() => Date.now()),
     mailer: merged.mailer ?? DEFAULT_MAILER,
+    drainPayments: merged.drainPayments ?? NO_PAYMENT_DRAIN,
   };
 }
 

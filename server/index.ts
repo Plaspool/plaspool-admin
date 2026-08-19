@@ -30,6 +30,7 @@ import { checkoutPort } from './shop/cart/port';
 import { drainCommerceEvents } from './shop/orders/repo/consumer';
 import { resolveShopCustomer } from './shop/cart/identity/customers';
 import { paymentPort } from './shop/payments/port';
+import { drainPaymentEvents } from './shop/payments/webhook';
 import type { Mailer } from './mail/port';
 import type { AppEnv } from './app-env';
 
@@ -158,10 +159,24 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * still boots on a deployment with no mail configured, and `paymentPort` is a
    * plain object that dials nothing until `status()` is called.
    */
+  /*
+   * THE FOURTH SEAM ON `OrdersDeps`, WIRED IN THE SAME CALL AND FOR THE SAME
+   * REASON: `GET /admin/sweep` and `POST /admin/sweep` (Orders' routes) must be
+   * able to drain Payments' stored-but-unprocessed webhook events before they
+   * sweep `commerce_events`, and contract §2 R3 forbids Orders importing
+   * Payments directly to do it. `drainPaymentEvents` is the exact function
+   * `POST /shop/admin/payments/events/drain` already calls by hand; `checkout:
+   * checkoutPort()` is the same Cart port `createPaymentRoutes` below is handed,
+   * so a completed checkout drained on the schedule sees the same Cart state a
+   * manual drain would.
+   */
   registerOrdersDefaults({
     mailer: portMailer(deps.mailer ?? resendMailer()),
     customer: resolveShopCustomer,
     payments: paymentPort,
+    drainPayments: async (db, now) => ({
+      count: (await drainPaymentEvents(db, 50, now, { checkout: checkoutPort() })).length,
+    }),
   });
 
   /*
