@@ -1,5 +1,5 @@
 import type { DocViolation } from '../../shared/validate';
-import type { Post } from '../../shared/types';
+import type { FeaturedItem, Post } from '../../shared/types';
 
 /**
  * The domain errors the write path raises, and the only ones a route has to map
@@ -103,5 +103,83 @@ export class InvalidDocumentError extends Error {
     this.name = 'InvalidDocumentError';
     this.path = violation.path;
     this.reason = violation.reason;
+  }
+}
+
+/**
+ * 422 `{ error: 'not_featurable', reason }`. The post cannot go on the curated
+ * rail because it is not publicly visible.
+ *
+ * A 422 AND NOT A 409, because nothing raced: the row is exactly as the caller
+ * left it, and the request is refused rather than lost. And not a 400, because
+ * the request was well-formed — the post named is real and the caller is
+ * allowed to touch it; the state is what refuses.
+ *
+ * `reason` NAMES THE STATE, so the admin can say "publish this first" rather
+ * than "no". A featured draft would be a post that holds one of four slots and
+ * is invisible to every reader, which is the failure this exists to prevent.
+ */
+export type NotFeaturableReason =
+  | 'draft'
+  | 'archived'
+  | 'trashed'
+  | 'no_slug'
+  | 'no_publish_date';
+
+export class NotFeaturableError extends Error {
+  readonly id: string;
+  readonly reason: NotFeaturableReason;
+
+  constructor(id: string, reason: NotFeaturableReason) {
+    super(`Post ${id} cannot be featured: ${reason}`);
+    this.name = 'NotFeaturableError';
+    this.id = id;
+    this.reason = reason;
+  }
+}
+
+/**
+ * 409 `{ error: reason, limit, items }`. The rail cannot take this change in
+ * the state it is actually in.
+ *
+ * IT CARRIES THE CURRENT RAIL, AND THAT IS THE WHOLE POINT. The storefront's
+ * contract asks for it by name: the 409 "should NAME the current four so the
+ * admin UI can offer 'unfeature one of these' instead of a dead error". An
+ * error the operator can only acknowledge is one they will work around by
+ * guessing.
+ *
+ * TWO REASONS, ONE ERROR, because they need the same body and differ only in
+ * the sentence above it:
+ *
+ * - `featured_full` — four are featured and a fifth was asked for. The offer is
+ *   a swap.
+ * - `featured_stale` — the rail moved between the render and the request: a
+ *   reorder that is not a permutation of what is featured now, or a swap naming
+ *   a post that has already left. The offer is to re-render from `items`.
+ *
+ * Separate from `PreconditionFailedError` and `StaleWriteError` despite sharing
+ * a status: those two are about ONE post's revision, carry `post`, and are
+ * rendered by the editor's conflict banner. This is about a collection, carries
+ * `items`, and is rendered by the featured manager.
+ */
+export class FeaturedConflictError extends Error {
+  readonly reason: 'featured_full' | 'featured_stale';
+  readonly items: FeaturedItem[];
+  readonly limit: number;
+
+  constructor(
+    reason: 'featured_full' | 'featured_stale',
+    items: FeaturedItem[],
+    limit: number,
+  ) {
+    super(
+      reason === 'featured_full'
+        ? `The featured rail is full (${limit})`
+        : 'The featured rail changed since it was read',
+    );
+    this.name = 'FeaturedConflictError';
+    this.reason = reason;
+    this.items = items;
+    this.limit = limit;
   }
 }

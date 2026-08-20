@@ -1,4 +1,4 @@
-import type { Post } from './types';
+import type { FeaturedItem, Post } from './types';
 
 /**
  * Spec §8's error table, as classes the client can branch on.
@@ -242,3 +242,93 @@ export class OfflineError extends ApiError {
     this.name = 'OfflineError';
   }
 }
+
+/**
+ * 409 `{ error: 'featured_full' | 'featured_stale', limit, items }` — the
+ * curated rail cannot take this change in the state it is actually in.
+ *
+ * A THIRD 409 CLASS, AND IT CARRIES A COLLECTION RATHER THAN A POST. The two
+ * above are about one post's revision and are drawn by the editor's conflict
+ * banner; this is about the rail and is drawn by the featured manager. Left as
+ * a bare `ApiError` the list would sit in `body` as `unknown`, and the one
+ * thing the storefront's contract asks of this refusal — that it NAME the
+ * current four so the admin can offer "unfeature one of these" instead of a
+ * dead error — would need a cast at every call site.
+ *
+ * ONE CLASS, TWO REASONS, unlike the split above. `featured_full` and
+ * `featured_stale` carry the identical body and differ only in the sentence
+ * printed over it, so a caller branches on `reason`. Splitting them into two
+ * classes would be ceremony over a distinction the renderer already makes.
+ */
+export class FeaturedConflictError extends ApiError {
+  readonly reason: 'featured_full' | 'featured_stale';
+  readonly items: FeaturedItem[];
+  readonly limit: number;
+
+  constructor(
+    reason: 'featured_full' | 'featured_stale',
+    items: FeaturedItem[],
+    limit: number,
+    init?: Partial<ApiErrorInit>,
+  ) {
+    super({
+      ...init,
+      status: 409,
+      code: reason,
+      message:
+        reason === 'featured_full'
+          ? `Only ${limit} posts can be featured at once`
+          : 'The featured posts changed while you were editing them',
+    });
+    this.name = 'FeaturedConflictError';
+    this.reason = reason;
+    this.items = items;
+    this.limit = limit;
+  }
+}
+
+/**
+ * 422 `{ error: 'not_featurable', reason }` — the post is not publicly visible,
+ * so it cannot go on the rail.
+ *
+ * `reason` IS WHAT THE MESSAGE IS WRITTEN FROM. "Publish this post first" and
+ * "this post is in the trash" are different things to tell a writer, and the
+ * toggle's tooltip is the place they get told. A generic `ApiError` would put
+ * the reason in `body` as `unknown` and leave the UI guessing from the status.
+ */
+export type NotFeaturableReason =
+  | 'draft'
+  | 'archived'
+  | 'trashed'
+  | 'no_slug'
+  | 'no_publish_date';
+
+export class NotFeaturableError extends ApiError {
+  readonly reason: NotFeaturableReason;
+
+  constructor(reason: NotFeaturableReason, init?: Partial<ApiErrorInit>) {
+    super({
+      ...init,
+      status: 422,
+      code: 'not_featurable',
+      message: NOT_FEATURABLE_MESSAGE[reason] ?? 'This post cannot be featured yet',
+    });
+    this.name = 'NotFeaturableError';
+    this.reason = reason;
+  }
+}
+
+/**
+ * One sentence per reason, HERE rather than in a component.
+ *
+ * The toggle's tooltip, the manager's toast and the swap dialog all have to say
+ * the same thing about the same state; three copies drift, and the one that
+ * drifts is the one nobody has looked at since.
+ */
+export const NOT_FEATURABLE_MESSAGE: Record<NotFeaturableReason, string> = {
+  draft: 'Publish this post before featuring it',
+  archived: 'Archived posts cannot be featured',
+  trashed: 'Posts in the trash cannot be featured',
+  no_slug: 'This post has no address yet — publish it to give it one',
+  no_publish_date: 'This post has no publish date, so it cannot be featured',
+};

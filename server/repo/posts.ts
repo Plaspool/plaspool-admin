@@ -547,13 +547,43 @@ const PUBLISH: Transition = {
     excerpt = ${publishExcerpt(p)}`,
 };
 
+/**
+ * INVARIANT 3 OF THE FEATURED CONTRACT, and the reason it is a fragment rather
+ * than three copies.
+ *
+ * A post that leaves the published set must leave the curated rail IN THE SAME
+ * STATEMENT. It is appended to the `SET` list of every transition that makes a
+ * post fail `PUBLIC_POST_PREDICATE`, so the clear either happens with the status
+ * change or neither happens — there is no window in which a draft is on a rail
+ * the storefront is serving.
+ *
+ * Without it the rail silently shrinks to three: the public query filters the
+ * post out, the flag says it is still there, and the admin's cap counts a slot
+ * that renders nothing. Nothing anywhere says why.
+ *
+ * ARCHIVE IS INCLUDED. An archived post fails the predicate exactly as an
+ * unpublished one does; leaving it out would be the same bug reached by a
+ * different button.
+ *
+ * PUBLISH, UNARCHIVE AND RESTORE ARE NOT. Coming back into the published set is
+ * not a reason to be featured again — curation is a deliberate act, and
+ * restoring it automatically would put a post back in front of every reader
+ * because somebody fixed a typo. Destroying a post needs nothing: the row goes.
+ *
+ * `featured_rank` GOES WITH THE FLAG, always. `posts_featured_rank_ck` refuses
+ * a rank on an unfeatured row, so clearing one without the other is not a
+ * degraded state — it is a rejected statement, which would turn every unpublish
+ * of a featured post into a 500.
+ */
+const LEAVES_RAIL = sql`featured = false, featured_rank = NULL`;
+
 const UNPUBLISH: Transition = {
   name: 'unpublish',
   holds: (p) => p.status === 'published',
   guard: sql`status = 'published'`,
   kind: 'status',
   note: 'Moved back to drafts',
-  set: () => sql`status = 'draft'`,
+  set: () => sql`status = 'draft', ${LEAVES_RAIL}`,
 };
 
 const ARCHIVE: Transition = {
@@ -562,7 +592,7 @@ const ARCHIVE: Transition = {
   guard: sql`status <> 'archived'`,
   kind: 'status',
   note: 'Archived',
-  set: () => sql`status = 'archived'`,
+  set: () => sql`status = 'archived', ${LEAVES_RAIL}`,
 };
 
 const UNARCHIVE: Transition = {
@@ -581,7 +611,7 @@ const TRASH: Transition = {
   guard: sql`deleted_at IS NULL`,
   kind: 'status',
   note: 'Moved to trash',
-  set: (_p, now) => sql`deleted_at = ${now}`,
+  set: (_p, now) => sql`deleted_at = ${now}, ${LEAVES_RAIL}`,
 };
 
 const RESTORE: Transition = {

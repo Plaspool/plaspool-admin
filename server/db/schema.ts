@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   bigint,
+  boolean,
   check,
   index,
   integer,
@@ -172,6 +173,23 @@ export const posts = pgTable(
      * which is precisely the guarantee a CAS predicate must not depend on.
      */
     lifecycleGeneration: integer('lifecycle_generation').notNull().default(0),
+    /**
+     * On the curated rail the storefront's `/posts` page leads with.
+     *
+     * NOT ON `Post`, and that is a decision rather than an omission. Curation
+     * is its own small aggregate — at most four rows — read through
+     * `GET /api/featured` and written only by the feature/unfeature/reorder
+     * statements in `server/repo/featured.ts`. Putting it on `Post` would put
+     * it in the local Dexie mirror, the export bundle and every fixture, for a
+     * field the editor reads once and never edits inline.
+     *
+     * `PublicPost` cannot leak it either way: the public projection is an
+     * allow-list built field by field, so a column it does not name has nowhere
+     * to appear.
+     */
+    featured: boolean('featured').notNull().default(false),
+    /** 1..4, the display order. Meaningful only while `featured`. */
+    featuredRank: integer('featured_rank'),
   },
   (t) => [
     check('posts_status_ck', sql`${t.status} IN ('draft', 'published', 'archived')`),
@@ -184,6 +202,32 @@ export const posts = pgTable(
       'posts_template_ck',
       sql`${t.template} IS NULL OR ${t.template} IN ('magazine', 'minimal', 'editorial', 'technical')`,
     ),
+    /**
+     * Both halves, in one CHECK — see `0280_featured_posts.sql`. The second is
+     * not decoration: an unfeature that cleared only the boolean would leave a
+     * rank behind, holding a slot no post appears in.
+     *
+     * The `IS NOT NULL` is not implied by the `BETWEEN`. A CHECK admits a NULL
+     * expression, so without it `featured = true, featured_rank = NULL` came
+     * out as `false OR NULL` = NULL and was accepted.
+     */
+    check(
+      'posts_featured_rank_ck',
+      sql`(NOT ${t.featured} AND ${t.featuredRank} IS NULL)
+       OR (${t.featured} AND ${t.featuredRank} IS NOT NULL
+                        AND ${t.featuredRank} BETWEEN 1 AND 4)`,
+    ),
+    /*
+     * `posts_featured_rank_uq` IS DELIBERATELY NOT MODELLED HERE.
+     *
+     * It is `UNIQUE (featured_rank) DEFERRABLE INITIALLY DEFERRED`, and Drizzle
+     * has no way to spell the deferral — `unique()` here would emit an IMMEDIATE
+     * constraint, which is precisely the one that refuses a rank swap and would
+     * make invariant 4 need a transaction the neon-http driver throws on. A
+     * model that quietly downgraded it would be worse than one that says so.
+     * The real constraint is in the migration; `schema.test.ts` proves the
+     * deferred behaviour against a live database.
+     */
     index('posts_status_updated_idx').on(t.status, t.updatedAt.desc()),
     index('posts_deleted_idx').on(t.deletedAt),
     index('posts_author_idx').on(t.authorId),

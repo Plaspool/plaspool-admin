@@ -1,0 +1,99 @@
+/* "Featured" in the editor's header bar, beside Publish.
+   ------------------------------------------------------------------------
+   IT HAS TO SURVIVE A CROWDED BAR. The header already carries History,
+   Details, Preview, Publish and Trash, and it collapses into a "More" menu on
+   narrow viewports (`.editor__secondary`). This sits in the same row and hides
+   its word — not the switch — first, because the switch is the state and the
+   word is only its name. */
+
+.feature-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  padding-right: var(--s2);
+  margin-right: var(--s1);
+  border-right: 1px solid var(--rule);
+}
+
+.feature-toggle__control {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.feature-toggle__label {
+  font-size: var(--step--1);
+  color: var(--ink-2);
+}
+
+/* Tabular figures: the count sits in a live region and changes on every
+   toggle, and a proportional "1" would shift the whole group sideways. */
+.feature-toggle__count {
+  font-size: var(--step--2);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-4);
+  white-space: nowrap;
+}
+
+/* The disabled state is a real state and has to LOOK unavailable, not merely
+   be unclickable — the tooltip explaining why only appears on hover, so the
+   dimming is what carries the message at a glance. */
+.feature-toggle .ui-switch[data-disabled],
+.feature-toggle .ui-switch:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.feature-toggle__swap {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--s2);
+}
+
+/* Each row is one button, so the whole card is the target rather than a small
+   "Replace" link at the end of it. */
+.feature-toggle__swap-item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--s3);
+  text-align: left;
+  height: auto;
+  padding: var(--s3);
+}
+
+.feature-toggle__swap-rank {
+  width: 1.5rem;
+  height: 1.5rem;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: var(--paper-sunken);
+  font-size: var(--step--2);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+
+.feature-toggle__swap-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feature-toggle__swap-action {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+}
+
+/* At the width where the header starts collapsing, the word goes and the
+   switch plus its count stay — the state remains readable in the space a
+   single control would take. */
+@media (max-width: 60rem) {
+  .feature-toggle__label {
+    display: none;
+  }
+}
