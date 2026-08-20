@@ -6,6 +6,7 @@ import {
   KeyboardSensor,
   PointerSensor,
   TouchSensor,
+  closestCenter,
   useDraggable,
   useDroppable,
   useSensor,
@@ -123,9 +124,54 @@ function DraggableCard({
   );
 }
 
-function DroppableColumn({ status }: { status: BoardColumn }): null {
-  useDroppable({ id: status });
-  return null;
+/**
+ * THE FOUR COLUMNS, REGISTERED AS DROP TARGETS.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * A DROPPABLE IS A REF ON A NODE, and there are two ways to end up with neither
+ * while the screen still looks entirely correct.
+ *
+ * THE REF HAS TO REACH AN ELEMENT. What stood here called `useDroppable` for
+ * each column and returned `null`, so dnd-kit held four drop targets whose node
+ * was never a node. It measures `node ? rect : null` and keeps only the rects
+ * it got, so all four were absent from the collision set: `event.over` was
+ * `null` on every release and `onDragEnd` returned on its first line. Cards
+ * lifted, columns lit up, and no drop ever landed — in production, silently.
+ *
+ * THE HOOK HAS TO RUN BELOW THE PROVIDER. Called from `ReturnsScreen`, which
+ * RENDERS the `<DndContext>`, `useDroppable` reads the context from ABOVE
+ * itself, finds the default and registers with nobody. Nothing warns, and the
+ * board is dead in the same way. Hence a child with a render prop: sitting
+ * below the provider is structural here rather than remembered.
+ *
+ * FOUR CALLS WRITTEN OUT rather than a loop over `BOARD_COLUMNS`, because a
+ * hook inside a `.map` callback is the thing `react/rules-of-hooks` forbids —
+ * and the columns are a fixed, ordered set precisely so this can be a list.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+function ColumnDropTargets({
+  children,
+}: {
+  children: (
+    columnRef: (status: BoardColumn) => (node: HTMLElement | null) => void,
+  ) => React.ReactNode;
+}) {
+  const requested = useDroppable({ id: 'requested' });
+  const scheduled = useDroppable({ id: 'scheduled' });
+  const collected = useDroppable({ id: 'collected' });
+  const received = useDroppable({ id: 'received' });
+
+  /* dnd-kit's `setNodeRef` is identity-stable, so handing the same function
+   * back on every render leaves React's ref attached — rather than detaching
+   * and reattaching a column while a card is over it. */
+  const setNodeRef: Record<BoardColumn, (node: HTMLElement | null) => void> = {
+    requested: requested.setNodeRef,
+    scheduled: scheduled.setNodeRef,
+    collected: collected.setNodeRef,
+    received: received.setNodeRef,
+  };
+
+  return <>{children((status) => setNodeRef[status])}</>;
 }
 
 export function ReturnsScreen() {
@@ -494,6 +540,21 @@ export function ReturnsScreen() {
       ) : (
         <DndContext
           sensors={sensors}
+          /*
+           * CLOSEST CENTRE, NOT THE DEFAULT INTERSECTION. `rectIntersection`
+           * answers with the column the dragged card OVERLAPS MOST — and a
+           * release that lands clear of all four (past the foot of the lists,
+           * in a gutter, back up on the desk) overlaps none of them. It answers
+           * with nothing, so the release does nothing AND SAYS NOTHING, which
+           * is the same dead board this screen has already shipped once.
+           *
+           * `closestCenter` always names a column, and an illegal one is then
+           * REFUSED OUT LOUD by `resolveDrop`. The cost is that a release far
+           * off the board resolves to the nearest column instead of being
+           * ignored — and a refusal somebody can read beats a silence they
+           * cannot.
+           */
+          collisionDetection={closestCenter}
           onDragStart={onDragStart}
           onDragOver={(event) => setOver(event.over === null ? null : (String(event.over.id) as BoardColumn))}
           onDragEnd={onDragEnd}
@@ -502,32 +563,34 @@ export function ReturnsScreen() {
             setOver(null);
           }}
         >
-          {BOARD_COLUMNS.map((column) => (
-            <DroppableColumn key={column} status={column} />
-          ))}
-          <ReturnsBoard
-            rows={rows}
-            now={now}
-            areaName={district === OUT_OF_AREA ? null : (area?.name ?? null)}
-            selection={picked}
-            onOpen={openCard}
-            onToggle={toggle}
-            onLog={() => setIntake((prev) => ({ open: true, seq: prev.seq + 1 }))}
-            columnState={(column) => {
-              if (held === null) return null;
-              if (over === column) return legal.includes(column) ? 'over' : 'illegal';
-              return legal.includes(column) ? 'legal' : 'illegal';
-            }}
-            renderCard={(row) => (
-              <DraggableCard
-                row={row}
+          <ColumnDropTargets>
+            {(columnRef) => (
+              <ReturnsBoard
+                rows={rows}
                 now={now}
+                areaName={district === OUT_OF_AREA ? null : (area?.name ?? null)}
                 selection={picked}
                 onOpen={openCard}
                 onToggle={toggle}
+                onLog={() => setIntake((prev) => ({ open: true, seq: prev.seq + 1 }))}
+                columnRef={columnRef}
+                columnState={(column) => {
+                  if (held === null) return null;
+                  if (over === column) return legal.includes(column) ? 'over' : 'illegal';
+                  return legal.includes(column) ? 'legal' : 'illegal';
+                }}
+                renderCard={(row) => (
+                  <DraggableCard
+                    row={row}
+                    now={now}
+                    selection={picked}
+                    onOpen={openCard}
+                    onToggle={toggle}
+                  />
+                )}
               />
             )}
-          />
+          </ColumnDropTargets>
           <DragOverlay>
             {held !== null && (
               <ReturnCard row={held} now={now} onOpen={() => {}} dragging />
