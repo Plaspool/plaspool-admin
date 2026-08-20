@@ -15,6 +15,7 @@ import {
   publicTags,
 } from '../repo/public';
 import type { PublicSitemapEntry, PublicTerm } from '../repo/public';
+import { listPublicFeatured } from '../repo/featured';
 import { getPublicImage } from '../repo/public-images';
 import { R2NotConfiguredError, presignGet } from '../storage/r2';
 import { currentDb } from '../app-env';
@@ -176,6 +177,17 @@ export const CACHE = {
    * typed, while also being the only rate-limited list path.
    */
   search: 'public, s-maxage=10',
+  /**
+   * ITS OWN ENTRY, NOT `list`, even though the numbers happen to match today.
+   *
+   * The storefront's contract asks for a separate cache identity for the rail
+   * — it already gives the fetch its own Next.js tag — because curation changes
+   * far less often than the post list, and sharing one means every publish
+   * blows away the rail's cache. Sharing the CONSTANT is the same mistake one
+   * level down: the first time either TTL should move, whoever moves it has to
+   * notice that two unrelated surfaces are reading it.
+   */
+  featured: 'public, s-maxage=60, stale-while-revalidate=300',
   detail: 'public, s-maxage=300, stale-while-revalidate=3600',
   /**
    * A POSITIVE TTL ON A 404, deliberately. Detail reads carry no limiter, so
@@ -537,6 +549,38 @@ export function createPublicRoutes(deps: PublicRouterDeps = {}): Hono<AppEnv> {
     return send(c, JSON.stringify(page), JSON_TYPE, searching ? CACHE.search : CACHE.list, {
       lastModified: newestUpdatedAt(page.items),
     });
+  });
+
+  /**
+   * The curated rail (storefront contract, `packages/blog/src/data/posts.ts`).
+   *
+   * ═══ REGISTERED BEFORE `/public/posts/:slug`, AND THAT IS NOT COSMETIC ═══
+   * Hono matches in registration order. Below the wildcard, every request for
+   * this path is a lookup for a post slugged `featured` — a 404 indistinguishable
+   * from the endpoint not existing, which is exactly the state the storefront
+   * has been coping with. `featured.test.ts` pins the order, because moving one
+   * of these two `routes.get` calls is a silent regression otherwise.
+   *
+   * THE COST, ACCEPTED: a post whose slug really is `featured` is unreachable at
+   * its own public address. The path is the contract the storefront already
+   * calls, so there is nothing to trade here.
+   *
+   * ═══ NO `Last-Modified` ═══
+   * The same reasoning the taxonomies state, for a different reason. Curation
+   * deliberately does not move `updated_at` (see `server/repo/featured.ts`), so
+   * the newest `updated_at` among the four does not describe when this body last
+   * changed. Emitting it would hand a client that sends only `If-Modified-Since`
+   * a 304 for a rail that had been reordered — `send()` consults the date only
+   * when `If-None-Match` is absent. The ETag is a hash of the bytes about to be
+   * sent, so it moves on a reorder and is the right validator here.
+   *
+   * NO LIMITER. Like the plain list, detail, feed and sitemap: this is one
+   * bounded, edge-cacheable query, and the limiter writes a Postgres row per
+   * call, which would make the cheap route the expensive one.
+   */
+  routes.get('/public/posts/featured', async (c) => {
+    const items = await listPublicFeatured(currentDb(c));
+    return send(c, JSON.stringify({ items }), JSON_TYPE, CACHE.featured);
   });
 
   routes.get('/public/posts/:slug', async (c) => {

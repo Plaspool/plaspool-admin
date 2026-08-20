@@ -9,6 +9,7 @@ import { sessionMiddleware } from './middleware/session';
 import { createAuthRoutes } from './routes/auth';
 import { routes as users } from './routes/users';
 import { routes as posts } from './routes/posts';
+import { routes as featured } from './routes/featured';
 import { routes as revisions } from './routes/revisions';
 import { routes as backup } from './routes/backup';
 import { routes as categories } from './routes/categories';
@@ -418,6 +419,19 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    */
   app.route(API_PREFIX, users);
   app.route(API_PREFIX, posts);
+  /*
+   * CURATION — the featured rail's admin side, mounted AFTER `posts` and it does
+   * not matter, because the two share no path: `posts` owns `/posts/:id/publish`
+   * and the rest of the lifecycle, this owns `/posts/:id/feature`, and Hono
+   * matches a literal segment before it would need to disambiguate them.
+   *
+   * A SEPARATE ROUTER RATHER THAN FOUR MORE ROUTES IN `posts`, because the
+   * permission rule is different and that difference is the whole design. Every
+   * route in `posts` authorizes against the post's AUTHOR; every mutation here
+   * is owner-only, because the rail is the front of the blog rather than
+   * anybody's post. Sharing a file would put both rules one copy-paste apart.
+   */
+  app.route(API_PREFIX, featured);
   app.route(API_PREFIX, revisions);
   app.route(API_PREFIX, backup);
   /*

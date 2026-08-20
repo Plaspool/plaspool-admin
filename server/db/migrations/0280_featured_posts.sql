@@ -1,0 +1,84 @@
+-- FEATURED POSTS — the curated rail the storefront's `/posts` page already
+-- calls for (range 0280-0299, blog).
+--
+-- The contract is written in the storefront repo, in the TODO block above
+-- `listFeaturedPosts()` in `packages/blog/src/data/posts.ts`. Today that call
+-- 404s, answers `null`, and the rail falls back to the four newest posts. These
+-- two columns and `GET /api/public/posts/featured` are what replace that
+-- fallback with real curation; no storefront change goes with it.
+--
+-- HAND-WRITTEN, like every migration here: `drizzle.config.ts` declares only
+-- `server/db/schema.ts`, and neither a DEFERRABLE constraint nor this CHECK is
+-- something `drizzle-kit generate` would produce. `server/db/schema.ts` carries
+-- the columns so the typed schema is honest, but this file is the DDL.
+--
+-- ═══ THE TWO CONSTRAINTS ARE THE ENFORCEMENT ═══
+--
+-- The contract lists four invariants. Two of them — "at most four featured" and
+-- "a reorder never leaves two posts sharing a rank" — are meant to be
+-- UNREPRESENTABLE rather than merely checked, because a rule that holds only
+-- when the application remembers it is one import, one backfill or one `psql`
+-- prompt away from a rail with five posts in it and two of them fighting over
+-- third place.
+--
+-- So the cap is not a counter anybody maintains. `featured_rank` is confined to
+-- 1..4 and is unique, and "at most four" follows by pigeonhole.
+--
+-- THE COST, ACCEPTED DELIBERATELY: changing the cap needs a migration. That is
+-- the right price. Four is the width of a rail in a design, not an operational
+-- tunable, and the alternative is an invariant that quietly stops holding.
+--
+-- ═══ WHY THE UNIQUE IS NOT PARTIAL ═══
+--
+-- `UNIQUE (featured_rank) WHERE featured` would be narrower — four index
+-- entries instead of one per post — but Postgres constraints do not take a
+-- `WHERE`, and only a CONSTRAINT can be deferred. A partial unique INDEX cannot
+-- be. Deferral is worth more than the index size on a blog's posts table, for
+-- the reason below.
+--
+-- Every unfeatured row holds `featured_rank IS NULL` (the CHECK guarantees it),
+-- and NULL never conflicts with NULL under a unique constraint, so however many
+-- unfeatured posts there are they all satisfy it trivially.
+--
+-- ═══ WHY IT IS DEFERRABLE, WHICH IS THE LOAD-BEARING WORD ═══
+--
+-- Postgres checks a unique constraint ROW BY ROW as a statement progresses —
+-- the same reason `UPDATE t SET id = id + 1` fails on a unique `id`. Reordering
+-- the rail swaps ranks, and a swap of 1<->2 transiently puts two rows at rank 1,
+-- so an IMMEDIATE constraint would refuse the one statement invariant 4 asks
+-- for.
+--
+-- The obvious escape — wrap the rewrite in a transaction — is closed here:
+-- `db.transaction` throws unconditionally on the neon-http driver while PGlite
+-- supports it, so it would pass every test in this repository and 500 in
+-- production (CLAUDE.md §3). DEFERRABLE INITIALLY DEFERRED moves the check to
+-- the end of the enclosing transaction, which for a single `db.execute` is the
+-- implicit one around that statement. One statement, whole or not at all.
+--
+-- ═══ NO INDEX FOR THE READ ═══
+--
+-- The public query is `featured` behind `PUBLIC_POST_PREDICATE`, bounded at four
+-- rows, and `posts_featured_rank_uq` already offers an ordered path. A partial
+-- index here would be a second piece of DDL that has to be kept in step with
+-- that predicate — the hazard `0005_public_reading.sql` documents at length —
+-- for no gain anyone can measure.
+ALTER TABLE "posts" ADD COLUMN "featured" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "posts" ADD COLUMN "featured_rank" integer;--> statement-breakpoint
+-- Both directions, in one CHECK. The second half is not decoration: an
+-- unfeature that cleared only the boolean would leave a rank behind, occupying
+-- a slot no post appears in — a rail that renders three cards and then refuses
+-- a fourth for no reason the admin could show.
+--
+-- `IS NOT NULL` IS LOAD-BEARING AND IS NOT IMPLIED BY THE `BETWEEN`. A CHECK
+-- passes when its expression is NULL, not only when it is true. Without the
+-- explicit test, `featured = true, featured_rank = NULL` evaluates the second
+-- half as `true AND NULL` = NULL, the first as false, and `false OR NULL` = NULL
+-- — so the constraint ADMITTED a featured post with no place in the order.
+-- Caught by `schema.test.ts`; it would otherwise have been a post that is
+-- featured, sorts by nothing, and appears or does not at the planner's whim.
+ALTER TABLE "posts" ADD CONSTRAINT "posts_featured_rank_ck"
+	CHECK ((NOT "featured" AND "featured_rank" IS NULL)
+	    OR ("featured" AND "featured_rank" IS NOT NULL
+	                   AND "featured_rank" BETWEEN 1 AND 4));--> statement-breakpoint
+ALTER TABLE "posts" ADD CONSTRAINT "posts_featured_rank_uq"
+	UNIQUE ("featured_rank") DEFERRABLE INITIALLY DEFERRED;

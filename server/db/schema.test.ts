@@ -4,7 +4,7 @@
  * runtime — a bug anywhere could otherwise persist `role = 'admin'`.
  */
 import { readFileSync } from 'node:fs';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { migratedDb } from '../test/harness';
 import type { Db } from './client';
@@ -407,5 +407,122 @@ describe('migration properties', () => {
     const def = String(res.rows[0].indexdef);
     expect(def).toMatch(/USING gin/i);
     expect(def).toMatch(/\btags\b/);
+  });
+});
+
+/**
+ * The curation invariants, at the storage layer.
+ *
+ * They live here rather than only in the repository suite because that is the
+ * whole claim being made: invariants 2 and 4 of the storefront's contract are
+ * meant to be UNREPRESENTABLE, not merely checked by whichever code path
+ * happens to run. A rule that only holds when the application remembers it is
+ * one `psql` prompt, one import and one backfill away from a rail with five
+ * posts in it and two of them fighting over third place.
+ */
+describe('featured curation constraints', () => {
+  /** Featured requires the post to be publishable; these tests only need a row. */
+  async function feature(id: string, rank: number | null): Promise<void> {
+    await db.execute(sql`
+      UPDATE posts SET featured = true, featured_rank = ${rank} WHERE id = ${id}`);
+  }
+
+  /*
+   * The database is per-SUITE, and there are only four ranks in the world. Every
+   * other block here can lean on fresh ids; this one cannot, because the thing
+   * under test is a constraint over the whole table. Without this the second
+   * test's `feature(…, 1)` collides with the FIRST test's rank 1 and fails on
+   * the wrong statement — which still looks like a pass-shaped failure.
+   */
+  beforeEach(async () => {
+    await db.execute(
+      sql`UPDATE posts SET featured = false, featured_rank = NULL WHERE featured`,
+    );
+  });
+
+  it('refuses a fifth featured post', async () => {
+    const author = await mkUser();
+    const ids = [
+      await mkPost(author),
+      await mkPost(author),
+      await mkPost(author),
+      await mkPost(author),
+    ];
+    for (const [i, id] of ids.entries()) await feature(id, i + 1);
+
+    // There is no fifth rank to put it at: the CHECK bounds the column to 1..4
+    // and the UNIQUE stops the newcomer from sharing one of the four. The cap
+    // is those two together and pigeonhole, not a counter anybody maintains.
+    const fifth = await mkPost(author);
+    expect(await rejection(feature(fifth, 5))).toMatch(/posts_featured_rank_ck/);
+    expect(await rejection(feature(fifth, 4))).toMatch(/posts_featured_rank_uq/);
+  });
+
+  it('refuses two featured posts at the same rank', async () => {
+    const author = await mkUser();
+    await feature(await mkPost(author), 1);
+    // Non-deterministic display order is the failure this prevents: two rows at
+    // rank 1 and the rail's first card is whichever the planner returned first.
+    expect(await rejection(feature(await mkPost(author), 1))).toMatch(
+      /posts_featured_rank_uq/,
+    );
+  });
+
+  it('refuses a featured post with no rank', async () => {
+    const author = await mkUser();
+    // `featured` without a rank has no place in the order, so it would either
+    // vanish from the rail or sort by whatever the query fell back to.
+    expect(await rejection(feature(await mkPost(author), null))).toMatch(
+      /posts_featured_rank_ck/,
+    );
+  });
+
+  it('refuses a rank on a post that is not featured', async () => {
+    const author = await mkUser();
+    const id = await mkPost(author);
+    // The other half of the same CHECK. Without it an unfeature that cleared
+    // only the boolean would leave a rank behind, occupying a slot no post
+    // appears in — a rail that renders three cards and refuses a fourth.
+    expect(
+      await rejection(
+        db.execute(sql`UPDATE posts SET featured_rank = 2 WHERE id = ${id}`),
+      ),
+    ).toMatch(/posts_featured_rank_ck/);
+  });
+
+  it('permits a whole-rail reorder in one statement, including a swap', async () => {
+    const author = await mkUser();
+    const a = await mkPost(author);
+    const b = await mkPost(author);
+    await feature(a, 1);
+    await feature(b, 2);
+
+    // THE REASON THE CONSTRAINT IS DEFERRABLE. Postgres checks a unique
+    // constraint per row as the statement progresses, so this swap transiently
+    // puts two rows at rank 1 and an IMMEDIATE constraint would refuse it —
+    // which would leave invariant 4 needing a transaction the neon-http driver
+    // throws on (CLAUDE.md §3).
+    await db.execute(sql`
+      UPDATE posts p SET featured_rank = v.rank
+        FROM (VALUES (${a}, 2), (${b}, 1)) AS v(id, rank)
+       WHERE p.id = v.id`);
+
+    const res = await db.execute(sql`
+      SELECT id, featured_rank FROM posts
+       WHERE featured AND author_id = ${author} ORDER BY featured_rank`);
+    expect(res.rows.map((r) => r.id)).toEqual([b, a]);
+  });
+
+  it('permits many posts that are not featured', async () => {
+    const author = await mkUser();
+    await mkPost(author);
+    await mkPost(author);
+    // The unique constraint spans the whole column rather than a partial index,
+    // so this is the case that has to keep working: every unfeatured row holds
+    // NULL, and NULL never conflicts with NULL.
+    const res = await db.execute(sql`
+      SELECT count(*)::int AS n FROM posts
+       WHERE author_id = ${author} AND NOT featured AND featured_rank IS NULL`);
+    expect(res.rows[0].n).toBe(2);
   });
 });

@@ -3,7 +3,9 @@ import type { ZodError, ZodType } from 'zod';
 import type { Context } from 'hono';
 import {
   BadRequestError,
+  FeaturedConflictError,
   InvalidDocumentError,
+  NotFeaturableError,
   NotFoundError,
   PreconditionFailedError,
   StaleWriteError,
@@ -26,6 +28,8 @@ import { MailNotConfiguredError } from '../mail/port';
  * | Post absent or destroyed        | 404    | `{ error: 'gone' }`                             |
  * | Malformed request               | 400    | `{ error: 'bad_request', detail }`              |
  * | Document fails validation       | 422    | `{ error: 'invalid_document', path }`           |
+ * | Post cannot be featured         | 422    | `{ error: 'not_featurable', reason }`           |
+ * | Featured rail full or moved     | 409    | `{ error: 'featured_full'\|'featured_stale', limit, items }` |
  * | CAS lost                        | 409    | `{ error: 'stale_write', expected, actual, post }` |
  * | Lifecycle op refused, no race   | 409    | `{ error: 'precondition_failed', operation, post }` |
  * | Rate limited                    | 429    | `{ error: 'rate_limited', retryAfter }`         |
@@ -138,6 +142,39 @@ function map(err: unknown): Mapped | null {
         operation: err.operation,
         post: err.post,
       },
+    };
+  }
+  if (err instanceof NotFeaturableError) {
+    /*
+     * A 422 BESIDE `invalid_document`, not a second 400. The request is
+     * well-formed and the caller is permitted; the post's STATE is what refuses,
+     * which is the same class of failure "this document is invalid" is. And a
+     * 4xx rather than a 5xx for the rule at the top of this file: a draft does
+     * not become published in the ~30 seconds the client would spend retrying.
+     *
+     * `reason` rides along so the admin can say "publish this first" instead of
+     * "no" — the same argument `invalid_document` makes for carrying `reason`
+     * beside `path`.
+     */
+    return {
+      status: 422,
+      body: { error: 'not_featurable', reason: err.reason },
+    };
+  }
+  if (err instanceof FeaturedConflictError) {
+    /*
+     * A THIRD 409, and it carries a COLLECTION rather than a post.
+     *
+     * `stale_write` and `precondition_failed` are both about one post's
+     * revision and are rendered by the editor's conflict banner. This is about
+     * the rail: the storefront's contract requires that a refused fifth feature
+     * NAME the current four, so the admin can offer "unfeature one of these"
+     * instead of a dead error. `items` is that list, and a stale reorder uses
+     * the same body to re-render from the truth.
+     */
+    return {
+      status: 409,
+      body: { error: err.reason, limit: err.limit, items: err.items },
     };
   }
   if (err instanceof RateLimitedError) {

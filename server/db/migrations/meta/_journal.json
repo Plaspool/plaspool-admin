@@ -169,6 +169,13 @@
                         "when":  1786600001600,
                         "tag":  "0260_shop_points_redemption",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  24,
+                        "version":  "7",
+                        "when":  1786600001700,
+                        "tag":  "0280_featured_posts",
+                        "breakpoints":  true
                     }
                 ]
 }

@@ -309,3 +309,45 @@ export interface PublicCoverImage {
   width: number;
   height: number;
 }
+
+/**
+ * How many posts the curated rail holds.
+ *
+ * HERE, WHERE BOTH SIDES CAN READ IT, because both need it and they must not
+ * disagree: the server assigns ranks against it and the admin draws an
+ * "n of 4" counter from it.
+ *
+ * THE REAL AUTHORITY IS NEITHER. `posts_featured_rank_ck` bounds the column to
+ * 1..4 and `posts_featured_rank_uq` makes it unique, so "at most four" holds
+ * against `psql`, an import and a backfill. Raising this number alone raises
+ * nothing — changing the cap needs a migration, which is the intended friction
+ * for a decision about the shape of a page.
+ */
+export const MAX_FEATURED = 4;
+
+/**
+ * One card on the curated rail, as the ADMIN sees it.
+ *
+ * Deliberately not `Post` and not `PublicPost`. It is the smallest shape that
+ * draws a card in the featured manager and names a post in a 409 body — an
+ * identity, a title, a cover and the position. `content` is the reason: the
+ * manager renders at most four cards and a list response ships no documents
+ * (ARCHITECTURE.md §6), and a 409 that carried four whole posts would be a
+ * refusal heavier than the request that caused it.
+ *
+ * `rank` RIDES ALONG rather than being implied by array position. The two agree
+ * today, and they must: a client that inferred rank from the index would
+ * silently renumber a rail that legitimately has gaps in it (unfeaturing the
+ * second of three leaves ranks 1 and 3), and would then post that renumbering
+ * back as a reorder nobody asked for.
+ */
+export interface FeaturedItem {
+  id: string;
+  /** Never null: only a publicly visible post can be featured. */
+  slug: string;
+  title: string;
+  coverImage: CoverImage | null;
+  publishedAt: number;
+  /** 1..4. Unique among featured posts; gaps are legal. */
+  rank: number;
+}

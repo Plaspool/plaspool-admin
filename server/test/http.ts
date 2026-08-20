@@ -34,6 +34,7 @@ export interface HttpClient {
   get(path: string, init?: RequestInit): Promise<Response>;
   post(path: string, body?: unknown, init?: RequestInit): Promise<Response>;
   patch(path: string, body?: unknown, init?: RequestInit): Promise<Response>;
+  put(path: string, body?: unknown, init?: RequestInit): Promise<Response>;
   del(path: string, init?: RequestInit): Promise<Response>;
   /** Everything currently in the jar, as it would be sent. */
   cookies(): Map<string, string>;
@@ -111,6 +112,7 @@ export function httpClient(db: Db, deps: Partial<AppDeps> = {}): HttpClient {
     get: (path, init = {}) => request(path, { ...init, method: 'GET' }),
     post: withBody('POST'),
     patch: withBody('PATCH'),
+    put: withBody('PUT'),
     del: (path, init = {}) => request(path, { ...init, method: 'DELETE' }),
     cookies: () => new Map(jar),
     clearCookies: () => jar.clear(),
