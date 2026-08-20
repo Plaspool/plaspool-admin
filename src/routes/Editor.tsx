@@ -22,6 +22,10 @@ import { SaveIndicator } from '../editor/SaveIndicator';
 import { RevisionPanel } from '../editor/RevisionPanel';
 import { useToast } from '../components/Toast';
 import { ConfirmDialog } from '../components/Dialog';
+import { FeatureToggle } from '../components/FeatureToggle';
+import { UnpublishButton } from '../components/UnpublishButton';
+import { useSession } from '../components/RequireAuth';
+import { useFeatured } from '../data/useFeatured';
 import {
   createPost,
   discardIfBlank,
@@ -341,6 +345,18 @@ export default function EditorRoute() {
   const isPublished = post?.status === 'published';
 
   /**
+   * The signed-in user and whether THIS post is on the featured rail.
+   *
+   * Read here rather than only inside `FeatureToggle` because unpublishing has
+   * to know as well — the warning below is the one thing in this file that
+   * depends on a fact about a different page.
+   */
+  const session = useSession();
+  const sessionUser = session.status === 'authed' ? session.user : null;
+  const { isFeatured, reload: reloadFeatured } = useFeatured(sessionUser?.id ?? '');
+  const wasFeatured = isFeatured(id);
+
+  /**
    * Status changes bump the post's revision. The editor MUST adopt that new
    * revision, or its next autosave is based on a stale one and gets refused as
    * a conflict — against itself. That bug silently dropped every keystroke
@@ -388,11 +404,23 @@ export default function EditorRoute() {
     await publishNow();
   };
 
-  const doUnpublish = async () => {
+  const doUnpublish = useCallback(async () => {
     await flush();
     adopt(await unpublishPost(id));
-    notify('Moved back to drafts');
-  };
+    /*
+     * The rail is re-read rather than assumed. `unpublishPost` clears
+     * `featured` and `featured_rank` in the SAME statement as the status change
+     * (invariant 3, `server/repo/posts.ts`), so the store this editor's counter
+     * reads is now stale by exactly one post — and the featured manager may be
+     * one navigation away.
+     */
+    if (wasFeatured) reloadFeatured();
+    notify(
+      wasFeatured
+        ? 'Moved back to drafts, and removed from the featured posts'
+        : 'Moved back to drafts',
+    );
+  }, [adopt, flush, id, notify, reloadFeatured, wasFeatured]);
 
   const readingLabel = useMemo(
     () =>
@@ -479,10 +507,19 @@ export default function EditorRoute() {
           >
             Preview
           </button>
+          {/*
+            * BESIDE PUBLISH, AND ONLY ONCE THE POST IS PUBLISHED — or once it is
+            * featured, which is the case where it must stay reachable so the
+            * post can be taken back off the rail.
+            */}
+          {(isPublished || wasFeatured) && (
+            <FeatureToggle post={post ?? null} user={sessionUser} />
+          )}
           {isPublished ? (
-            <button className="btn btn--outline btn--sm" onClick={doUnpublish}>
-              Unpublish
-            </button>
+            // It asks first when the post is featured — unpublishing takes it
+            // off the blog's front page too, which is a consequence on a page
+            // the writer is not looking at. See the component's own header.
+            <UnpublishButton featured={wasFeatured} onUnpublish={doUnpublish} />
           ) : (
             <button
               className="btn btn--primary btn--sm"
@@ -742,6 +779,7 @@ export default function EditorRoute() {
           leaveEditor();
         }}
       />
+
     </div>
   );
 }

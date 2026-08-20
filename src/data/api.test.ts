@@ -3,7 +3,9 @@ import { AUTH_EXPIRED_EVENT, api, apiFetch } from './api';
 import {
   ApiError,
   AuthExpiredError,
+  FeaturedConflictError,
   ForbiddenError,
+  NotFeaturableError,
   NotFoundError,
   OfflineError,
   PreconditionFailedError,
@@ -171,6 +173,10 @@ const ROUTES: [string, () => Promise<unknown>, string, string][] = [
     'POST',
     '/api/images/collect-orphans',
   ],
+  ['listFeatured', () => api.listFeatured(), 'GET', '/api/featured'],
+  ['featurePost', () => api.featurePost('p_1'), 'POST', '/api/posts/p_1/feature'],
+  ['unfeaturePost', () => api.unfeaturePost('p_1'), 'POST', '/api/posts/p_1/unfeature'],
+  ['reorderFeatured', () => api.reorderFeatured(['p_1']), 'PUT', '/api/featured'],
 ];
 
 describe('routes', () => {
@@ -528,5 +534,74 @@ describe('wiring', () => {
     serve(200, { ok: true });
     await expect(apiFetch<{ ok: boolean }>('/health')).resolves.toEqual({ ok: true });
     expect(lastCall()[0]).toBe('/api/health');
+  });
+});
+
+/**
+ * The curated rail's two refusals.
+ *
+ * BOTH ARE ABOUT A COLLECTION, WHICH IS WHY THEY NEED THEIR OWN CLASSES. The
+ * two 409s already here carry a `post` and are drawn by the editor's conflict
+ * banner; these carry the RAIL and are drawn by the featured manager. Mapped to
+ * a bare `ApiError` they would arrive with `items` buried in `body` as
+ * `unknown`, and the one thing the storefront's contract asks for — that a
+ * refused fifth feature names the current four so a swap can be offered — would
+ * be unreachable without a cast at every call site.
+ */
+describe('featured refusals', () => {
+  const item = (id: string, rank: number) => ({
+    id,
+    slug: id,
+    title: id.toUpperCase(),
+    coverImage: null,
+    publishedAt: 1,
+    rank,
+  });
+
+  it('maps a 409 featured_full to an error carrying the current rail', async () => {
+    const items = [item('p_a', 1), item('p_b', 2), item('p_c', 3), item('p_d', 4)];
+    serve(409, { error: 'featured_full', limit: 4, items });
+
+    const err = (await refused(() => api.featurePost('p_e'))) as FeaturedConflictError;
+    expect(err).toBeInstanceOf(FeaturedConflictError);
+    expect(err.reason).toBe('featured_full');
+    expect(err.limit).toBe(4);
+    expect(err.items.map((i) => i.id)).toEqual(['p_a', 'p_b', 'p_c', 'p_d']);
+  });
+
+  it('maps a 409 featured_stale to the same class, with the other reason', async () => {
+    serve(409, { error: 'featured_stale', limit: 4, items: [item('p_a', 1)] });
+    const err = (await refused(() =>
+      api.reorderFeatured(['p_a', 'p_b']),
+    )) as FeaturedConflictError;
+    expect(err).toBeInstanceOf(FeaturedConflictError);
+    // ONE CLASS, TWO REASONS: the body is identical and only the sentence above
+    // it differs, so a caller branches on `reason` rather than on the class.
+    expect(err.reason).toBe('featured_stale');
+  });
+
+  it('does not mistake a featured 409 for a stale write', async () => {
+    serve(409, { error: 'featured_full', limit: 4, items: [] });
+    const err = await refused(() => api.featurePost('p_e'));
+    // The editor's banner reads `expected`/`actual` off a `StaleWriteError`;
+    // handed this it would draw a conflict between two undefined revisions.
+    expect(err).not.toBeInstanceOf(StaleWriteError);
+    expect(err).not.toBeInstanceOf(PreconditionFailedError);
+  });
+
+  it('maps a 422 not_featurable, keeping the reason', async () => {
+    serve(422, { error: 'not_featurable', reason: 'draft' });
+    const err = (await refused(() => api.featurePost('p_a'))) as NotFeaturableError;
+    expect(err).toBeInstanceOf(NotFeaturableError);
+    // What the toggle's message is written from: "Publish this post first" is a
+    // different sentence from "this post is in the trash".
+    expect(err.reason).toBe('draft');
+  });
+
+  it('classes both as permanent, so nothing retries them', async () => {
+    serve(409, { error: 'featured_full', limit: 4, items: [] });
+    expect(((await refused(() => api.featurePost('p_e'))) as ApiError).transient).toBe(false);
+    serve(422, { error: 'not_featurable', reason: 'draft' });
+    expect(((await refused(() => api.featurePost('p_a'))) as ApiError).transient).toBe(false);
   });
 });

@@ -170,6 +170,14 @@ const SECTION_PAGES: Partial<Record<SectionId, SectionPage[]>> = {
     { key: 'draft', label: 'Drafts', to: `${DASHBOARD}?status=draft`, status: 'draft', icon: PencilLine },
     { key: 'archived', label: 'Archived', to: `${DASHBOARD}?status=archived`, status: 'archived', icon: Archive },
     { key: 'trash', label: 'Trash', to: `${DASHBOARD}?status=trash`, status: 'trash', icon: Trash2 },
+    /*
+     * NOT A STATUS, and it carries no `status` for that reason: the four above
+     * filter one list, this is a different page about a different thing. It
+     * sits with them because curation is what an editor does to posts, and the
+     * alternative — a top-level section for four rows — would be a section for
+     * one screen. `Star` is the same symbol the screen titles itself with.
+     */
+    { key: 'featured', label: 'Featured', to: '/featured', icon: Star },
   ],
   shop: [
     { key: 'overview', label: 'Overview', to: '/shop', icon: LayoutDashboard },

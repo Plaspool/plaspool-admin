@@ -7,10 +7,19 @@ export function Switch({
   checked,
   onChange,
   label,
+  disabled = false,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label: string;
+  /**
+   * Draws AND announces the refusal — Radix sets `disabled` and
+   * `data-disabled`, so a screen reader says "dimmed" rather than offering a
+   * switch that will not move. Pair it with a `Tooltip` giving the reason: a
+   * dimmed control with no explanation is the same dead end as one that fails
+   * on click, arrived at more quietly.
+   */
+  disabled?: boolean;
 }) {
   return (
     <RSw.Root
@@ -18,6 +27,7 @@ export function Switch({
       checked={checked}
       onCheckedChange={onChange}
       aria-label={label}
+      disabled={disabled}
     >
       <RSw.Thumb className="ui-switch__thumb" />
     </RSw.Root>

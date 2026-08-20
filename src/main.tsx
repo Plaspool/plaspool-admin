@@ -18,6 +18,7 @@ import { startSplash } from './components/splash';
 import Boot from './routes/Boot';
 import Login from './routes/Login';
 import Dashboard from './routes/Dashboard';
+import Featured from './routes/Featured';
 import EditorRoute from './routes/Editor';
 import Reader from './routes/Reader';
 import SettingsRoute from './routes/Settings';
@@ -182,6 +183,13 @@ const router = createHashRouter([
        * closed a post.
        */
       { path: '/dashboard', element: <Dashboard />, errorElement: <RouteError /> },
+      /*
+       * The curated rail. Inside `AppShell` like every other authenticated
+       * screen, and NOT behind an owner gate here — the screen renders read-only
+       * for a writer, which is what makes the disabled toggle in their editor
+       * legible. The enforcement is `requireOwner()` on the server.
+       */
+      { path: '/featured', element: <Featured />, errorElement: <RouteError /> },
       {
         path: '/edit/:id',
         // The gate decides what may be rendered for this id BEFORE the frozen

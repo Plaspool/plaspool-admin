@@ -1,15 +1,19 @@
 import {
   ApiError,
   AuthExpiredError,
+  FeaturedConflictError,
   ForbiddenError,
+  NotFeaturableError,
   NotFoundError,
   OfflineError,
   PreconditionFailedError,
   StaleWriteError,
 } from './errors';
+import type { NotFeaturableReason } from './errors';
 import type {
   AuthUser,
   Bundle,
+  FeaturedItem,
   ListPost,
   Post,
   PostPatch,
@@ -73,7 +77,7 @@ function announceAuthExpired(): void {
 // ------------------------------------------------------------------- request
 
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
   /** Serialised as JSON, with the `content-type` the server's `readJson` demands. */
   body?: unknown;
   /** Empty and nullish values are omitted, because every query schema is `.strict()`. */
@@ -136,7 +140,28 @@ function toError(res: Response, body: unknown, opts: RequestOptions): ApiError {
   if (res.status === 403) return new ForbiddenError(init);
   if (res.status === 404) return new NotFoundError(opts.id ?? '', opts.subject ?? 'Post', init);
 
+  if (res.status === 422 && code === 'not_featurable') {
+    // Beside `invalid_document` on the same status, and never collapsed into
+    // it: one is about a document the writer typed, the other about a post's
+    // lifecycle state, and the sentences they produce share nothing.
+    return new NotFeaturableError(rec.reason as NotFeaturableReason, init);
+  }
+
   if (res.status === 409) {
+    /*
+     * THE RAIL'S TWO REFUSALS, CHECKED BEFORE THE POST'S TWO. All four share
+     * this status, and these carry `items` where those carry `post` — mapped to
+     * a bare `ApiError` the list the contract requires would be unreachable
+     * without a cast at every call site.
+     */
+    if (code === 'featured_full' || code === 'featured_stale') {
+      return new FeaturedConflictError(
+        code,
+        Array.isArray(rec.items) ? (rec.items as FeaturedItem[]) : [],
+        Number(rec.limit),
+        init,
+      );
+    }
     /*
      * TWO DIFFERENT ERRORS SHARE THIS STATUS AND THEY ARE NEVER THE SAME CLASS.
      * `precondition_failed` is "the post is already published"; `stale_write` is
@@ -535,6 +560,74 @@ export const api = {
       method: 'POST',
       query: { dryRun: dryRun ? '1' : undefined },
     });
+  },
+
+  // -------------------------------------------------------------- featured
+  /*
+   * THE CURATED RAIL, AND NONE OF IT IS QUEUED OFFLINE.
+   *
+   * Everything else about a post goes through `src/data/posts.ts`, which writes
+   * to Dexie and leaves a `pending` row when the network refuses. Curation
+   * deliberately does not, and the reason is the cap: "at most four featured" is
+   * a global server invariant that cannot be evaluated against a local mirror,
+   * so two tabs offline would each queue a feature and both believe they fit.
+   * The 409 would then surface hours later with no editor open and nobody to
+   * resolve it — which is the failure `pending` exists to prevent, reproduced.
+   *
+   * Curation is a deliberate, rare act. Offline the toggle is disabled and says
+   * so, and nothing is lost.
+   *
+   * EVERY MUTATION ANSWERS WITH THE WHOLE RAIL, so a caller re-renders the
+   * manager and the "n of 4" counter from the response — the same reason the
+   * lifecycle routes each answer with the new post.
+   */
+
+  /** The rail in rank order. At most `MAX_FEATURED` items; never a document. */
+  async listFeatured(): Promise<FeaturedItem[]> {
+    return (await apiFetch<{ items: FeaturedItem[] }>('/featured')).items;
+  },
+
+  /**
+   * Put a post on the rail. Owner-only; 422 `NotFeaturableError` while it is
+   * not publicly visible, 409 `FeaturedConflictError` when the rail is full.
+   *
+   * `replace` names a post to take the slot OF, and the newcomer inherits its
+   * RANK — which is what makes the swap land where the operator pointed instead
+   * of at the end. Doing it as unfeature-then-feature would leave the live rail
+   * three posts long in between, and would lose the position.
+   */
+  async featurePost(id: string, replace?: string): Promise<FeaturedItem[]> {
+    const res = await apiFetch<{ items: FeaturedItem[] }>(`/posts/${seg(id)}/feature`, {
+      method: 'POST',
+      body: replace === undefined ? {} : { replace },
+      id,
+    });
+    return res.items;
+  },
+
+  async unfeaturePost(id: string): Promise<FeaturedItem[]> {
+    const res = await apiFetch<{ items: FeaturedItem[] }>(`/posts/${seg(id)}/unfeature`, {
+      method: 'POST',
+      body: {},
+      id,
+    });
+    return res.items;
+  },
+
+  /**
+   * The WHOLE order, never one row — invariant 4 of the storefront's contract.
+   *
+   * `ids` must be exactly what is featured now. Anything else is a 409
+   * `featured_stale` carrying the truth, because a rail that moved between the
+   * render and the drop cannot be partially reordered without dropping a post
+   * nobody chose to remove.
+   */
+  async reorderFeatured(ids: string[]): Promise<FeaturedItem[]> {
+    const res = await apiFetch<{ items: FeaturedItem[] }>('/featured', {
+      method: 'PUT',
+      body: { ids },
+    });
+    return res.items;
   },
 };
 
