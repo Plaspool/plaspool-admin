@@ -6,8 +6,10 @@ import {
   moneyRefusalMessage,
   parseMajor,
   parseRefund,
+  safeFormatMinor,
   shopApi,
 } from './api-shop';
+import { UNRENDERABLE } from './when';
 
 /**
  * The shop client, pinned on the two things that are silent when wrong.
@@ -109,6 +111,61 @@ describe('formatMinor', () => {
     // A float here is a defect upstream, and rounding it would be this module
     // deciding a price on somebody's behalf.
     expect(() => formatMinor(19.99, 'GBP', GB)).toThrow(MoneyShapeError);
+  });
+});
+
+/**
+ * THE DISPLAY TWIN, AND THE CONTRAST IS THE TEST.
+ *
+ * Two formatters exist because a broken amount has two right answers depending
+ * on which way it is travelling: on a cell, a placeholder and four other orders
+ * the operator can still read; on a refund form, a refusal, because a write path
+ * that renders a placeholder and submits anyway reaches somebody's card. So
+ * every case below asserts BOTH halves — what `safeFormatMinor` returns and that
+ * `formatMinor` still refuses the same input. Either half passing alone is the
+ * state this pair was built to leave behind.
+ */
+describe('safeFormatMinor', () => {
+  it('formats a good amount exactly as the throwing one does', () => {
+    // Total does not mean lenient: nothing about a renderable value changes.
+    expect(safeFormatMinor(1990, 'GBP', GB)).toBe(formatMinor(1990, 'GBP', GB));
+    expect(safeFormatMinor(-50, 'GBP', GB)).toBe(formatMinor(-50, 'GBP', GB));
+    expect(safeFormatMinor(0, 'GBP', GB)).toBe(formatMinor(0, 'GBP', GB));
+  });
+
+  it.each([
+    ['undefined', undefined],
+    ['null', null],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['a float', 19.99],
+    ['a numeric string', '1990'],
+    ['beyond the safe integer range', Number.MAX_SAFE_INTEGER + 2],
+  ])('downgrades %s to the placeholder while `formatMinor` throws', (_label, amount) => {
+    expect(safeFormatMinor(amount, 'GBP', GB)).toBe(UNRENDERABLE);
+    expect(() => formatMinor(amount as number, 'GBP', GB)).toThrow(MoneyShapeError);
+  });
+
+  it.each([
+    ['undefined', undefined],
+    ['null', null],
+    ['an empty string', ''],
+    ['four letters', 'GBPX'],
+    ['digits', '826'],
+  ])('downgrades a currency of %s, which `Intl` would throw on', (_label, currency) => {
+    /*
+     * THE HALF A NUMERIC GUARD ALONE WOULD MISS. The amount here is perfect.
+     * `currencyDigits` swallows a code `Intl` refuses and answers 2, so the
+     * failure surfaces one line later, out of the `style: 'currency'` formatter,
+     * as a `RangeError` rather than a `MoneyShapeError` — a different exception
+     * from a different constructor, and the same dead screen.
+     */
+    expect(safeFormatMinor(1990, currency, GB)).toBe(UNRENDERABLE);
+    expect(() => formatMinor(1990, currency as string, GB)).toThrow();
+  });
+
+  it('accepts a lower-case code, because a payload is not a style guide', () => {
+    expect(safeFormatMinor(1990, 'gbp', GB)).toBe(formatMinor(1990, 'gbp', GB));
   });
 });
 

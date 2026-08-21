@@ -261,22 +261,44 @@ const VARIANT = {
   colorHex: null as string | null,
 };
 
+const ORDER_LINES = [
+  {
+    id: 'ol_1',
+    lineNo: 1,
+    variantId: 'v_1',
+    sku: 'MUG-BLUE',
+    title: 'Enamel mug',
+    optionValues: { Colour: 'Blue' },
+    qty: 1,
+    unitAmount: 1990,
+    lineTotal: 1990,
+    fulfilledQty: 0,
+  },
+];
+
+/**
+ * ONE ROW OF `GET /shop/admin/orders`, AND IT IS THE WRAPPER THE SERVER SENDS.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THIS CONSTANT IS THE WHOLE POINT. Until it existed the list was mocked as
+ * `{ items: [ORDER] }` — a FLAT order — while `listOrders` in
+ * `server/shop/orders/repo/orders.ts` has always returned
+ * `{ items: [{ order, lines }] }`. Eleven tests in this file passed against
+ * that fixture while the real screen threw `RangeError: Invalid time value` on
+ * every load in production, because every field it read was `undefined`.
+ *
+ * The fixture, not the code, was the defect that hid the defect. So the list
+ * row is now DERIVED from the same `order` and `lines` the detail uses, and
+ * `ORDER_DETAIL` is spread from it — one object, and the two endpoints cannot
+ * drift apart in this file again. `orders-live.json` (captured from the
+ * deployed API) is asserted against this shape in `ShopOrders.test.tsx`, so a
+ * server that changes shape breaks a test rather than a screen.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+const ORDER_ROW = { order: ORDER, lines: ORDER_LINES };
+
 const ORDER_DETAIL = {
-  order: ORDER,
-  lines: [
-    {
-      id: 'ol_1',
-      lineNo: 1,
-      variantId: 'v_1',
-      sku: 'MUG-BLUE',
-      title: 'Enamel mug',
-      optionValues: { Colour: 'Blue' },
-      qty: 1,
-      unitAmount: 1990,
-      lineTotal: 1990,
-      fulfilledQty: 0,
-    },
-  ],
+  ...ORDER_ROW,
   fulfillments: [],
   timeline: [
     { id: 't_1', type: 'order.placed', message: 'Order placed', occurredAt: 1_786_600_000_000, actorId: null },
@@ -680,8 +702,8 @@ describe('the catalogue', () => {
 
 describe('the order list', () => {
   it('reads its status from the URL and sends it as a filter', async () => {
-    when('/api/shop/admin/orders', { items: [ORDER], nextCursor: null });
-    mount(<ShopOrders />, '/shop/orders?status=paid');
+    when('/api/shop/admin/orders', { items: [ORDER_ROW], nextCursor: null });
+    mount(<ShopOrders />, '/shop/orders?view=table&status=paid');
 
     await waitFor(() => expect(screen.getByText('PS-4821-K')).toBeTruthy());
     expect(asked('/api/shop/admin/orders?status=paid')).toBeTruthy();
@@ -700,7 +722,7 @@ describe('the order list', () => {
      */
     const user = userEvent.setup();
     when('/api/shop/admin/orders', { items: [], nextCursor: null });
-    mount(<ShopOrders />, '/shop/orders?q=someone%40test.local');
+    mount(<ShopOrders />, '/shop/orders?view=table&q=someone%40test.local');
 
     await user.click(await screen.findByRole('combobox', { name: 'Status' }));
     await user.click(await screen.findByRole('option', { name: 'Fulfilled' }));
@@ -719,8 +741,8 @@ describe('the order list', () => {
   });
 
   it('drops the page cursor whenever the filter changes', async () => {
-    when('/api/shop/admin/orders', { items: [ORDER], nextCursor: 'cur_2' });
-    mount(<ShopOrders />, '/shop/orders?cursor=cur_9');
+    when('/api/shop/admin/orders', { items: [ORDER_ROW], nextCursor: 'cur_2' });
+    mount(<ShopOrders />, '/shop/orders?view=table&cursor=cur_9');
 
     // A keyset cursor is a position in ONE ordering of ONE filter. Carried
     // across a new search it means page two of the old list, which reads as a
@@ -737,7 +759,7 @@ describe('the order list', () => {
   });
 
   it('pages forward through the URL', async () => {
-    when('/api/shop/admin/orders', { items: [ORDER], nextCursor: 'cur_2' });
+    when('/api/shop/admin/orders', { items: [ORDER_ROW], nextCursor: 'cur_2' });
     mount(<ShopOrders />, '/shop/orders');
 
     await waitFor(() => expect(screen.getByText('PS-4821-K')).toBeTruthy());

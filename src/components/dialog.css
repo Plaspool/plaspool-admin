@@ -73,6 +73,22 @@
   flex-wrap: wrap;
 }
 
+/* A SUBMIT THAT IS REFUSING, WHICH IS NOT THE SAME THING AS ONE THAT IS GONE.
+
+   `base.css` greys `.btn:disabled`, and inside a dialog that attribute is the
+   wrong tool: `disabled` takes the control out of the tab order, so the one
+   button a keyboard operator is trying to reach becomes the one they cannot
+   land on, and the sentence explaining why it will not fire — the thing they
+   actually need — is attached to a node they can never focus. `aria-disabled`
+   keeps it reachable and readable and still refuses the click, which is what
+   the shipment form uses. The cost is that `:disabled` no longer matches, so
+   the greying has to follow the ARIA state instead; these are `base.css`'s own
+   two declarations, said again about the attribute that is actually set. */
+.dialog .btn[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* --------------------------------------------------------------- sheet
 
    A dialog that rises from the bottom edge on a phone, opted into per call
