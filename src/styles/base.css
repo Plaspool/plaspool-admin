@@ -315,7 +315,18 @@ a {
   justify-content: space-between;
   gap: var(--s4);
   flex-wrap: wrap;
-  margin: var(--s4) auto 0;
+  /*
+   * SYMMETRIC BLOCK MARGIN. This was `var(--s4) auto 0` — air above the notice
+   * and none below it — so every notice on every screen welded itself to
+   * whatever followed. It reads as one block with the content it is warning
+   * ABOUT, which is the opposite of what a notice is for. Same defect, and the
+   * same fix, as the rule under `.mktscr__head`.
+   *
+   * `var(--s4)` RATHER THAN A HAND-MEASURED `20px`: the scale is 16/24, 20 is
+   * not on it, and matching the margin already above the notice is what makes
+   * it read as a band rather than as something nudged.
+   */
+  margin: var(--s4) auto;
   max-width: var(--shell-max);
   padding: var(--s3) var(--s4);
   border-radius: var(--radius-m);
