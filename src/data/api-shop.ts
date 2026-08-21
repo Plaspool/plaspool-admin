@@ -17,6 +17,7 @@
  * is a plain fetch into component state.
  */
 import { apiFetch, type RequestOptions } from './api';
+import { UNRENDERABLE } from './when';
 
 /**
  * `apiFetch` with the one method the blog's own API never uses.
@@ -148,6 +149,60 @@ export function formatMinor(amount: number, currency: string, locale?: string): 
    */
   if (negative && !parts.some((p) => p.type === 'minusSign')) return `-${rendered}`;
   return rendered;
+}
+
+/**
+ * `formatMinor` MADE TOTAL, FOR DISPLAY AND FOR NOTHING ELSE. Never throws; a
+ * value it cannot render comes back as `UNRENDERABLE`.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * WHY THERE ARE TWO OF THESE, AND WHY THE THROWING ONE STAYS.
+ *
+ * `when.ts` makes a promise on behalf of the whole app — a value this app cannot
+ * render becomes one odd-looking cell, never an error screen — and until this
+ * function existed that promise covered dates and nothing else. The order list
+ * renders `order.grandTotal` on every row; `formatMinor` throws
+ * `MoneyShapeError` on anything that is not a safe integer; React escalates a
+ * throw during render to the route's error boundary. So ONE broken total was
+ * still the whole of `/shop/orders` gone — the same outage `when.ts` was written
+ * after, one column across, and reachable the same way: an unchecked
+ * `shopFetch<T>` naming a shape the server does not send.
+ *
+ * SO WHY NOT SIMPLY MAKE `formatMinor` TOTAL AND HAVE ONE FUNCTION? Because it
+ * is not only a display function, and on its other callers a placeholder is the
+ * worst answer available rather than the safe one. `refundPayment` and
+ * `setVariantPrice` re-check with `MoneyShapeError` on the way OUT to the
+ * server, and `majorPlaceholder` in `ShopOrders.tsx` seeds a refund box from
+ * this formatter's own digits — a write path that quietly renders "––" instead
+ * of refusing is a bug that reaches somebody's card rather than a bug that
+ * reaches a screen, and the operator would have no signal either way. Total is
+ * right for a cell and wrong for a form, so the two behaviours have two names
+ * and every call site says which one it meant.
+ *
+ * BOTH GUARDS ARE LOAD-BEARING, not just the amount. `currencyDigits` already
+ * swallows a code `Intl` refuses — but `formatMinor` then builds a SECOND
+ * `Intl.NumberFormat`, this one with `style: 'currency'`, and THAT constructor
+ * throws `RangeError: Invalid currency code` on the same value. Guarding the
+ * amount alone would therefore have left the screen exactly as reachable, by a
+ * row whose `currency` came back `undefined` rather than by one whose total did
+ * — a repair that looks finished and is not, which is the most expensive kind.
+ *
+ * `locale` is NOT guarded, and does not need to be: it is this app's own literal
+ * at every call site rather than a field off a payload, so there is no untrusted
+ * value there to downgrade.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+export function safeFormatMinor(amount: unknown, currency: unknown, locale?: string): string {
+  // `unknown` rather than `number`/`string` ON PURPOSE. Everything this guards
+  // against is a field whose DECLARED type was already `number` and `string` —
+  // taking them as declared here would make the guards unreachable to the type
+  // checker and tempt the next reader to delete them as impossible.
+  if (typeof amount !== 'number' || !Number.isSafeInteger(amount)) return UNRENDERABLE;
+  // Three letters is what ISO 4217 allows and what `Intl` accepts; anything else
+  // is a server bug, and this is the cell that reports it rather than the throw
+  // that hides it.
+  if (typeof currency !== 'string' || !/^[A-Za-z]{3}$/.test(currency)) return UNRENDERABLE;
+  return formatMinor(amount, currency, locale);
 }
 
 /**
@@ -323,7 +378,38 @@ export interface AuditEntry {
   currency: string | null;
 }
 
-export interface ShopVariant {
+/**
+ * WHAT A VARIANT WRITE ANSWERS WITH, WHICH IS LESS THAN WHAT A VARIANT READ DOES.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE SPLIT IS THE SERVER'S, AND WIDENING IT BACK IS THE BUG.
+ *
+ * `server/shop/catalog/types.ts` declares `Variant` and `VariantWithPrice` as
+ * two types on purpose, and `mapping.ts` has two mappers to match: `rowToVariant`
+ * builds the eleven fields below, `rowToVariantWithPrice` spreads it and adds the
+ * four `ShopVariant` adds. Which one a route uses is not a detail — the extra
+ * four come from LEFT JOINs onto `shop_prices` and `shop_inventory` and from an
+ * EXISTS over `shop_order_lines`, none of which a write statement performs.
+ * `POST /products/:id/variants`, `PATCH /variants/:id` and `DELETE /variants/:id`
+ * all answer with `rowToVariant`.
+ *
+ * Declaring those three `Promise<ShopVariant>` was therefore a claim nothing
+ * checks and nothing warns about: `shopFetch<T>` is an unchecked assertion, so
+ * `everOrdered` off a freshly-patched variant is `undefined` — falsy — and
+ * `everOrdered` is precisely the field that decides whether the panel offers
+ * Delete at all. A caller that adopted a PATCH response into the row it was
+ * already showing would turn "this has sold, archive only" into a Delete button
+ * that answers 409, silently, on the variant it is least safe to be wrong about.
+ *
+ * IF A CALLER NEEDS THE PRICED SHAPE AFTER A WRITE IT MUST RE-READ. There is no
+ * honest way to synthesise `price`, `available` or `everOrdered` from a write
+ * response, and "carry the old ones over" is the same lie with more steps — a
+ * write that changed nothing about stock still leaves the client asserting a
+ * stock figure it was told at some earlier time. `listVariantsWithPrices` is the
+ * one call that produces `ShopVariant`, because it is the one query that asks.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+export interface ShopVariantBase {
   id: string;
   productId: string;
   sku: string;
@@ -333,11 +419,6 @@ export interface ShopVariant {
   status: VariantStatus;
   createdAt: number;
   updatedAt: number;
-  /** `null` is "created but never priced", which is a real state, not an error. */
-  price: { amount: number; currency: string } | null;
-  /** `null` is "no inventory row", which is not the same as "none left". */
-  available: number | null;
-  backorderable: boolean;
   /**
    * The photograph of THIS option (migration 0009). `null` until one is set.
    *
@@ -351,6 +432,21 @@ export interface ShopVariant {
    * swatch the rail draws while a variant has no photograph yet.
    */
   colorHex: string | null;
+}
+
+/**
+ * A variant AS THE LIST ROUTE SENDS IT — the row above plus the three joins and
+ * the one EXISTS that only `rowToVariantWithPrice` performs.
+ *
+ * `extends` rather than a second field list, so the eleven shared members cannot
+ * drift apart the way two copies of a shape in one file always eventually do.
+ */
+export interface ShopVariant extends ShopVariantBase {
+  /** `null` is "created but never priced", which is a real state, not an error. */
+  price: { amount: number; currency: string } | null;
+  /** `null` is "no inventory row", which is not the same as "none left". */
+  available: number | null;
+  backorderable: boolean;
   /**
    * Whether any order has ever been placed for this variant (issue #18). Drives
    * whether the panel offers Delete at all — a variant that has sold can only
@@ -494,6 +590,38 @@ export interface ShopPayment {
   refundedTotal: number;
   createdAt: number;
   updatedAt: number;
+}
+
+/**
+ * ONE ROW OF THE ORDER LIST, AND IT IS A WRAPPER RATHER THAN AN ORDER.
+ *
+ * `listOrders` in `server/shop/orders/repo/orders.ts` returns
+ * `{ items: { order, lines }[] }` — the SAME shape as the detail endpoint minus
+ * the fulfilments, timeline, emails and payment — because the list aggregates
+ * the lines in the one statement that fetches the page (`LINE_AGG`), and the one
+ * `rowToRead` projection maps both.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THIS TYPE EXISTS BECAUSE THE CLIENT USED TO SAY `Page<ShopOrder>` HERE.
+ *
+ * `shopFetch<T>` is an UNCHECKED ASSERTION — it parses JSON and names the
+ * result. Nothing at runtime compares the name to the payload, so a wrong `T`
+ * is not a type error anywhere; it is a screen reading fields off the wrong
+ * object. Every field came back `undefined`, and the first one to be handed to
+ * `Intl.DateTimeFormat.format` — `placedAt` — threw `RangeError: Invalid time
+ * value` and took the whole route to its error boundary. Live, for every
+ * operator, while ELEVEN unit tests passed: the list fixture in
+ * `Shop.test.tsx` was flat, so the suite proved the screen worked against a
+ * payload the server has never sent (CLAUDE.md §2).
+ *
+ * The lines are not decoration on this surface — `fulfilledQty` is what tells
+ * the board whether a paid order has been packed, and it is the only fulfilment
+ * signal the list carries.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+export interface ShopOrderRow {
+  order: ShopOrder;
+  lines: ShopOrderLine[];
 }
 
 export interface ShopOrderDetail {
@@ -858,7 +986,16 @@ export const shopApi = {
     return res.product;
   },
 
-  /** 201. `optionValues` is the variant's own axis map (`{ Size: 'M' }`). */
+  /**
+   * 201. `optionValues` is the variant's own axis map (`{ Size: 'M' }`).
+   *
+   * `ShopVariantBase`, NOT `ShopVariant`, and see that type for why: this route
+   * answers with `rowToVariant`, which knows nothing about price, stock or
+   * whether anything has ever been ordered. A brand-new variant has no price row
+   * and no inventory row, so even the values a widened type would imply
+   * (`price: null`, `available: null`) would be assertions this response never
+   * made — the panel re-reads instead.
+   */
   async createVariant(
     productId: string,
     body: {
@@ -873,14 +1010,15 @@ export const shopApi = {
       /** The colour code of this option. The server lowercases it. */
       colorHex?: string | null;
     },
-  ): Promise<ShopVariant> {
-    const res = await shopFetch<{ variant: ShopVariant }>(
+  ): Promise<ShopVariantBase> {
+    const res = await shopFetch<{ variant: ShopVariantBase }>(
       `${BASE}/products/${seg(productId)}/variants`,
       { method: 'POST', body, id: productId, subject: 'Product' },
     );
     return res.variant;
   },
 
+  /** `ShopVariantBase` for the reason `createVariant` gives — `rowToVariant` again. */
   async updateVariant(
     id: string,
     body: {
@@ -894,8 +1032,8 @@ export const shopApi = {
       /** `null` clears the colour code; `#rrggbb` sets it. */
       colorHex?: string | null;
     },
-  ): Promise<ShopVariant> {
-    const res = await shopFetch<{ variant: ShopVariant }>(`${BASE}/variants/${seg(id)}`, {
+  ): Promise<ShopVariantBase> {
+    const res = await shopFetch<{ variant: ShopVariantBase }>(`${BASE}/variants/${seg(id)}`, {
       method: 'PATCH',
       body,
       id,
@@ -909,9 +1047,13 @@ export const shopApi = {
    * the row. Only reachable for a variant that has never been ordered; the
    * server answers 409 (`precondition_failed`) otherwise, which the panel
    * avoids by hiding the control rather than by catching this.
+   *
+   * The returned row is the DELETED one, and `ShopVariantBase` again: reading
+   * `everOrdered` off it would be doubly wrong, since the route only ever
+   * answers at all when that field would have been `false`.
    */
-  async deleteVariant(id: string): Promise<ShopVariant> {
-    const res = await shopFetch<{ variant: ShopVariant }>(`${BASE}/variants/${seg(id)}`, {
+  async deleteVariant(id: string): Promise<ShopVariantBase> {
+    const res = await shopFetch<{ variant: ShopVariantBase }>(`${BASE}/variants/${seg(id)}`, {
       method: 'DELETE',
       id,
       subject: 'Variant',
@@ -1146,8 +1288,8 @@ export const shopApi = {
   async listOrders(
     query: { status?: OrderStatus; search?: string; cursor?: string; limit?: number } = {},
     signal?: AbortSignal,
-  ): Promise<Page<ShopOrder>> {
-    return shopFetch<Page<ShopOrder>>(`${BASE}/orders`, { query: { ...query }, signal });
+  ): Promise<Page<ShopOrderRow>> {
+    return shopFetch<Page<ShopOrderRow>>(`${BASE}/orders`, { query: { ...query }, signal });
   },
 
   async getOrder(id: string, signal?: AbortSignal): Promise<ShopOrderDetail> {
@@ -1184,15 +1326,37 @@ export const shopApi = {
   },
 
   /**
-   * Advance a fulfilment. `shipped` also attempts the ORDER's own `fulfilled`
-   * transition, which ordinarily answers "not yet, two parcels to go" — so
-   * `order` in the response is optional and its absence is not a failure.
+   * Advance a fulfilment.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * `order` HAS THREE STATES AND THIS TYPE NAMES ALL THREE. It used to say
+   * `order?: ShopOrder`, which names two and gets one of them wrong.
+   *
+   * `PATCH /admin/fulfillments/:id` is three routes wearing one path.
+   * `delivered` and `cancelled` return `{ fulfillment }` and stop — there is no
+   * order-level transition to attempt, so the key is genuinely ABSENT. `shipped`
+   * returns `{ fulfillment, order: settled }`, where `settled` is
+   * `settleOrderFulfilled(…): Promise<Order | null>` and `null` is its ORDINARY
+   * answer: settling is the one lifecycle move nobody asked for, so "not yet,
+   * there are two parcels left" is a partial shipment reported rather than an
+   * error raised. So `null` here means "this shipment did not complete the
+   * order" — information, and a different fact from "this call could not have
+   * completed one".
+   *
+   * WHY NOT `order: ShopOrder | null`, WHICH IS WHAT THE SHIPPED BRANCH SENDS?
+   * Because the other two branches send no key, and a type that promises one
+   * would move the same defect one step sideways rather than fix it: the guard
+   * `if (res.order === null)` would then look exhaustive and let `undefined`
+   * through to the property read. Optional AND nullable is the shape that makes
+   * the compiler insist on a plain truthiness check, which is the only check
+   * correct for all three.
+   * ═══════════════════════════════════════════════════════════════════════════
    */
   async setFulfillmentStatus(
     id: string,
     status: 'shipped' | 'delivered' | 'cancelled',
-  ): Promise<{ fulfillment: ShopFulfillment; order?: ShopOrder }> {
-    return shopFetch<{ fulfillment: ShopFulfillment; order?: ShopOrder }>(
+  ): Promise<{ fulfillment: ShopFulfillment; order?: ShopOrder | null }> {
+    return shopFetch<{ fulfillment: ShopFulfillment; order?: ShopOrder | null }>(
       `${BASE}/fulfillments/${seg(id)}`,
       { method: 'PATCH', body: { status }, id, subject: 'Fulfilment' },
     );

@@ -725,9 +725,9 @@ function ProductForm({ id }: { id: string }) {
       : product
         ? title !== product.title ||
           category !== product.category ||
-          tags.join(' ') !== product.tags.join(' ') ||
+          tags.join('\0') !== product.tags.join('\0') ||
           coverImageId !== product.coverImageId ||
-          imageIds.join(' ') !== product.imageIds.join(' ')
+          imageIds.join('\0') !== product.imageIds.join('\0')
         : false);
 
   const imageCount = (coverImageId ? 1 : 0) + imageIds.length;

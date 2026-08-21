@@ -334,6 +334,32 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+/*
+ * THE HEADING OVER A COLUMN OF FIGURES, AND IT IS A SPECIFICITY FIX RATHER THAN
+ * A NEW STYLE.
+ *
+ * `.dtable th` above sets `text-align: left` and scores (0,1,1) — one class and
+ * one element. `.dtable__num` scores (0,1,0). So on a `<th class="dtable__num">`
+ * the LEFT wins and the right-alignment never applies, while the `<td>` beneath
+ * it — where `.dtable td` sets no alignment at all — goes right as intended.
+ * The result is a heading sitting over the left edge of a column whose numbers
+ * are all flushed to the right edge, which reads as a broken table and is what
+ * the money column of every shop table has looked like.
+ *
+ * THIRTEEN HEADINGS ACROSS SIX SCREENS were wearing the class and getting
+ * nothing from it — `Shop.tsx`, `ShopOrders.tsx`, `ShopCustomers.tsx`,
+ * `orders/BoardScreen.tsx`, `orders/GeographyPanel.tsx`. Fixed here, once,
+ * rather than by adding an inline alignment at each call site: the class already
+ * says "this column is figures", and a heading that does not follow its own
+ * column is the class failing to mean that.
+ *
+ * `th.dtable__num` scores (0,2,1) and beats `.dtable th` on its own terms — no
+ * `!important`, and the ordinary `th` rule is left saying what it should say for
+ * every other column.
+ */
+.dtable th.dtable__num {
+  text-align: right;
+}
 .dtable__strong {
   color: var(--ink);
   font-weight: 500;
@@ -796,6 +822,73 @@
   font-size: var(--step--2);
   color: var(--danger);
   overflow-wrap: anywhere;
+}
+
+/* --------------------------------------------------- the two order views */
+
+/* Board or table, as two links rather than a control with a state. FLUSH,
+   with one rule between them, because the pair is one choice: a gap would
+   read as two separate buttons that happen to sit together. The height is
+   `--ctl-h` so it lines up with the Status select and the search box beside
+   it in `.shopfilters`. */
+.oview {
+  display: inline-flex;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+  overflow: hidden;
+}
+.oview__opt {
+  display: inline-flex;
+  align-items: center;
+  height: var(--ctl-h);
+  padding: 0 var(--ctl-pad-x);
+  color: var(--ink-3);
+  font-size: var(--step--1);
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.oview__opt + .oview__opt {
+  border-left: 1px solid var(--rule);
+}
+.oview__opt:hover {
+  background: var(--paper-sunken);
+  color: var(--ink);
+}
+/* NEVER COLOUR ALONE — `aria-current` is the state a screen reader gets, and
+   this is the same fact drawn for everybody else. `.shoptabs__tab.is-active`
+   is the shop's existing selected-thing treatment; this borrows it rather
+   than inventing a second one. */
+.oview__opt[aria-current] {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* The terms the board is drawn under. Sunken rather than a `.notice`: it is
+   not a warning and must not be dismissed as one. */
+.oscope {
+  display: grid;
+  gap: var(--s2);
+  margin-top: var(--s5);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-l);
+  background: var(--paper-sunken);
+}
+.oscope__line {
+  font-size: var(--step--1);
+  line-height: 1.5;
+  color: var(--ink-3);
+  text-wrap: pretty;
+}
+.oscope__line strong {
+  color: var(--ink-2);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 /* -------------------------------------------------------------- pager */

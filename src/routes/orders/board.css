@@ -1,0 +1,1034 @@
+/* ---------------------------------------------------------------
+   THE ORDERS BOARD AND ITS DESTINATION PANEL.
+
+   A `shop`-PREFIXED COPY, NOT A SHARED CLASS. Everything below that
+   is a board — `.shopboard`, `.shoplist`, `.shopcard` and their
+   drag states — is a copy of the pattern `marketing.css` already
+   draws for the returns board (`.mktboard`, `.mktlist`,
+   `.mktcard`). The copying is deliberate and it is the house rule
+   that file states at the top of itself.
+
+   WHY COPY INSTEAD OF IMPORT. `marketing.css` belongs to another
+   section, worked by another session on this repository. A shared
+   class is a shared edit, and a shared edit is a merge conflict in
+   the one file both sections render through — on a screen that
+   takes money. The duplication is inert: nothing here changes when
+   the marketing board's does, and nothing there breaks when this
+   one is retuned. Two hundred duplicated lines are cheaper than one
+   contested file, and the two boards are answering different
+   questions anyway (four stages of a pickup; six lanes of a
+   parcel, five of which the marketing board has no idea exist).
+
+   BORROWED RATHER THAN COPIED, because these are the shop's own or
+   the app's own: `.panel`, `.panel__head/__title/__sub/__heading/
+   __body/__note`, `.dtable` and its `__scroll/__num/__sub/__strong/
+   __empty`, `.shopform` and its `__field/__split/__hint/__error/
+   __actions`, `.chip`, `.num` from `shop.css`, which
+   `ShopOrders.tsx` imports beside this file; `.btn`, `.input`,
+   `.label`, `.visually-hidden` and the `:focus-visible` ring from
+   `base.css`, which `main.tsx` loads before anything renders. The
+   orders board IS the shop section, so reaching for the shop's own
+   panel is reuse rather than coupling — the argument above is about
+   another section's file, not about this one's neighbours.
+
+   TOKENS ONLY. Not one literal colour anywhere in this file: every
+   value comes from `tokens.css`, which is what makes both themes
+   free rather than a second palette somebody has to maintain. The
+   type ramp is `--step-*` for the same reason — `marketing.css`'s
+   board went out with `0.78rem`, `0.85rem` and `0.8rem` hard-coded,
+   which is a ramp nobody can retune.
+
+   THE ONLY LITERAL LENGTHS ARE HAIRLINES: `1px` borders and the
+   `3px` waiting band on a card. Both are physical sizes rather than
+   steps on a scale — a 1px rule is a drawn line at any type size,
+   and a band that scaled with the spacing tokens would be a stripe.
+   `marketing.css` makes the same two exceptions in the same two
+   places.
+
+   MONEY AND QUANTITIES ARE `font-variant-numeric: tabular-nums`
+   EVERYWHERE THEY APPEAR, per `shop.css`: a column of figures that
+   does not line up at the decimal point is a column an operator
+   reads digit by digit.
+----------------------------------------------------------------- */
+
+/* ============================================================================
+ * THE BOARD — one page of orders, six lists on a canvas
+ * ==========================================================================*/
+
+/*
+ * ONE COLUMN, AND IT IS `minmax(0, 1fr)` RATHER THAN THE DEFAULT `auto`.
+ *
+ * A grid's automatic column sizes to its widest item, and the rail below breaks
+ * out of the shell with `margin-inline: calc(50% - 50vw + …)` — a percentage,
+ * which resolves against this track. Left as `auto` those two definitions are
+ * circular: the track is sized from the item's outer width, the item's margins
+ * are sized from the track, and a wide-enough margin makes both bigger. Measured
+ * at a 380px viewport, Chrome settled on the wrong fixed point — the track came
+ * out 784px inside a 348px board, the margin resolved to +218px instead of 0, and
+ * the whole rail sat off the right of the screen. `minmax(0, 1fr)` makes the
+ * track the container's width whatever the items say, which breaks the loop and
+ * also stops one unbreakable string in one card widening the entire board.
+ */
+.shopboard {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s4);
+  margin-top: var(--s5);
+}
+
+.shopboard__how {
+  display: grid;
+  gap: var(--s2);
+}
+
+.shopboard__note {
+  max-width: 68ch;
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--step--1);
+  line-height: 1.55;
+}
+
+.shopboard__note--quiet {
+  color: var(--ink-4);
+}
+
+.shopkbd {
+  display: inline-block;
+  padding: 0 var(--s1);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-s);
+  background: var(--paper-sunken);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: var(--step--2);
+}
+
+/*
+ * THE LISTS FLOAT ON A CANVAS rather than sitting on the page, and the
+ * separation is what makes a lane read as a container you can drop INTO. A flat
+ * list on the page background is a heading with rows under it.
+ *
+ * THE RAIL SCROLLS AND SNAPS rather than reflowing into a stack at a
+ * breakpoint: a stacked board is a list, and the one property a board sells is
+ * that things stay where you put them.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE RAIL BREAKS OUT OF `--shell-max`, AND IT IS THE ONLY THING ON THIS SCREEN
+ * THAT DOES.
+ *
+ * THE ARITHMETIC IS THE ARGUMENT, and it was measured rather than reasoned. Six
+ * lanes at 19rem, five gutters and the canvas padding want 1908px. `.shopscr`
+ * caps the page at `--shell-max` (76rem) and spends `--s5` a side, so the canvas
+ * measured clientWidth 1168 against scrollWidth 1908 — at a 1280px viewport AND
+ * at a 2200px one, IDENTICALLY, because the shell caps before the window does.
+ * `Closed` and `Needs a look` were past the right-hand edge at every desktop
+ * width this shop is run at. Mid-drag that is not cosmetic: a card whose legal
+ * targets were `packing` and `closed` lit ONE lane, because the other was off
+ * screen, and a board that understates where a card may go is worse than a board
+ * that scrolls.
+ *
+ * WHY BREAK OUT RATHER THAN NARROW THE LANES ALONE. Narrowing alone cannot get
+ * there: 76rem over six lanes is 12.7rem each BEFORE a gutter is paid for, the
+ * shell's own padding takes it to 11.6rem, and the floor below is 15rem —
+ * measured, at the width where a card stops breaking its order number across two
+ * lines. Inside the cap this board is not six lanes wide at any window size, on
+ * any monitor. The cap is right for the prose above the board and wrong for the
+ * board itself: `--shell-max` exists so a paragraph does not run to 2000px, and a
+ * dispatch surface is not a paragraph. So the RAIL leaves the measure and
+ * everything else on the screen — the heading, the notes, the geography panel —
+ * stays inside it. Full bleed is what turns a board that was three lanes wide at
+ * EVERY desktop size into one that is five at 1280px and all six from 1556px.
+ *
+ * WHY NOT A PLAIN `100vw` FULL BLEED. `100vw` counts the classic scrollbar (12px
+ * on the machine this was measured on), so a canvas that wide overflows the
+ * document and the PAGE grows a horizontal scrollbar — a second scroller beside
+ * the rail's own, which is a worse bug than the one being fixed. `--s4` a side is
+ * subtracted instead: it is wider than any classic scrollbar, it leaves the
+ * negative margin symmetric about the DOCUMENT rather than about the viewport,
+ * and a canvas with an edge reads as a canvas rather than as one cropped by the
+ * window.
+ *
+ * IT IS THE RAIL AND NOT THE CANVAS that carries the breakout, so the canvas
+ * keeps a normal `100%` width — which is what the lane basis below divides — and
+ * `Board.tsx` gets a positioned box to hang the off-screen lane markers in.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+.shopboard__rail {
+  position: relative;
+  margin-inline: calc(50% - 50vw + var(--s4));
+}
+
+.shopboard__canvas {
+  display: flex;
+  gap: var(--s3);
+  padding: var(--s3);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  border-radius: var(--radius-l);
+  background: var(--paper-sunken);
+  /*
+   * `safe center`, NEVER A BARE `center`. Past ~1810px the lanes stop growing and
+   * the canvas has slack; centring keeps the board off the left wall of a very
+   * wide window. `safe` is what makes that legal on a scroller — plain `center`
+   * overflows in BOTH directions the moment the lanes are wider than the canvas,
+   * and the first lane then sits at a negative offset no scroll position can
+   * reach. `safe` falls back to `start` in exactly that case.
+   */
+  justify-content: safe center;
+}
+
+/*
+ * FIXED WIDTH, AND THAT IS THE WHOLE VALUE OF A BOARD. A lane that grew as cards
+ * arrived would move every other lane under the pointer mid-drag — things staying
+ * where you put them is the property being bought. Fixed against the CARDS, note,
+ * not against the window: the basis is a share of the canvas, and the canvas does
+ * not resize while a card is in hand.
+ *
+ * SIX ACROSS WHEREVER SIX FIT. The middle arm divides the canvas's own content
+ * box — `100%` in a flex basis is the flex container's inner main size, which is
+ * the box the lanes actually sit in, scrollbar and padding already taken off — by
+ * six lanes and five gutters, so the rail fills the window exactly and nothing is
+ * past the edge. That happens from 1556px up; at 1940px the 19rem cap takes over
+ * and the slack goes to `safe center`.
+ *
+ * THE 15rem FLOOR IS MEASURED AND IT IS NOT NEGOTIABLE, which is the half of this
+ * that fitting six lanes into 1280px had to give way to. A lane spends 40px on
+ * its own padding, the card's, and the lane's scrollbar, so the card's text box is
+ * `lane − 40`, and the top line of a card is the order NUMBER beside the age with
+ * `space-between` between them. Rendered and measured, one width at a time:
+ *
+ *   19rem  304px lane, 252px text   number one line, footer one line
+ *   17rem  272px       220px        number one line, footer one line
+ *   15rem  240px       188px        number one line, footer one line   <- floor
+ *   14rem  224px       172px        number one line UNTIL the age reads
+ *                                   "waiting 59 minutes", then two
+ *   12rem  192px       140px        number on TWO lines at every age, three at
+ *                                   the long ones, footer on two
+ *
+ * A wrapped order number is the failure that matters: it is the handle an
+ * operator reads back over the phone, it is set in mono precisely so a mistyped
+ * digit shows, and broken across two lines mid-token it is neither. So 12.7rem —
+ * what six lanes inside `--shell-max` would have allowed — was never available,
+ * and neither is the 12.1rem the full-bleed canvas offers at 1280px.
+ *
+ * WHAT 1280px GETS INSTEAD: five lanes at a readable width and a marker at the
+ * right-hand edge counting the ones past it — and, while a card is in hand, that
+ * marker names the lanes past the edge that will TAKE the card. `Board.tsx`
+ * measures and argues it. A lane the operator does not know about is the defect;
+ * a lane they are told to scroll to is not.
+ *
+ * `min-width: 0` SO THE BASIS IS THE LAST WORD. A flex item's automatic minimum
+ * is its content, and one long unbreakable line in one card would otherwise widen
+ * its own lane and push every lane right of it off the canvas — the exact failure
+ * this block exists to end, arriving through the back door.
+ */
+.shoplist {
+  display: flex;
+  flex: 0 0 clamp(15rem, (100% - 5 * var(--s3)) / 6, 19rem);
+  flex-direction: column;
+  gap: var(--s2);
+  min-width: 0;
+  max-height: 70vh;
+  padding: var(--s2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+  scroll-snap-align: start;
+  transition:
+    border-color var(--dur-1) var(--ease),
+    background-color var(--dur-1) var(--ease),
+    opacity var(--dur-1) var(--ease);
+}
+
+/*
+ * THREE DECLARED ROWS, AND THE SECOND AND THIRD EXIST WHETHER OR NOT THIS LANE
+ * FILLS THEM.
+ *
+ * A head is one, two or three rows deep depending on whether its lane has money
+ * and ageing tallies to report, and a flex row of lanes gives each head its own
+ * height — so the cards in a lane with money started 21px lower than the cards
+ * beside them (measured at 1280px: 451 against 430), and an empty lane's
+ * "Nothing here." floated above the first card of the lane next to it. Rows on a
+ * board are a reading order; two lanes whose first cards are not on the same line
+ * are two lanes the eye has to re-find.
+ *
+ * DECLARED TRACKS RATHER THAN A `min-height`, because a `min-height` is a number
+ * somebody has to keep in step with the type ramp. An explicit track exists even
+ * when nothing is placed in it, so the empty lane reserves exactly the line the
+ * full one spends — `line-height` is pinned on both rows below so the reserved
+ * minimum and the rendered line are the same length rather than nearly.
+ *
+ * AND THE RESERVATION IS CONDITIONAL ON THE BOARD, not on the lane: the tracks
+ * only appear under the modifier `Board.tsx` puts on the canvas when SOME lane
+ * has that row. A shop with nothing overdue pays nothing for the ageing row, and
+ * a board with no money on it pays nothing for either. Alignment is only owed
+ * between lanes that are on screen together.
+ */
+.shoplist__head {
+  display: grid;
+  gap: var(--s1);
+  padding: var(--s2);
+  border-bottom: 1px solid var(--rule);
+}
+
+.shopboard__canvas--money .shoplist__head {
+  grid-template-rows: auto minmax(calc(var(--step--1) * 1.45), auto) auto;
+}
+
+.shopboard__canvas--ages .shoplist__head {
+  grid-template-rows: auto auto minmax(calc(var(--step--2) * 1.45), auto);
+}
+
+.shopboard__canvas--money.shopboard__canvas--ages .shoplist__head {
+  grid-template-rows:
+    auto
+    minmax(calc(var(--step--1) * 1.45), auto)
+    minmax(calc(var(--step--2) * 1.45), auto);
+}
+
+/* Placed rather than flowed. Auto-placement would drop the ageing tallies into
+   the money row in any lane that has no money, which is the misalignment back
+   again with the tracks paid for. */
+.shoplist__title {
+  display: flex;
+  grid-row: 1;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+
+/* NO COLOURED DOT HERE, and none is coming: urgency belongs on the card,
+   because every card in a lane has a different age. */
+.shoplist__name {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--step--2);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.shoplist__count {
+  color: var(--ink-4);
+  font-size: var(--step--1);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ONE LINE PER CURRENCY, NEVER A SUM — the markup refuses to add two codes and
+   this refuses to make two lines look like one number.
+
+   `line-height` IS DECLARED HERE so the reserved track above is exact. Left at
+   `normal` the rendered line is whatever the font's metrics make it, and the
+   reservation would have been a guess that misses by a pixel or two in one
+   direction — which is the misalignment this is fixing, smaller. */
+.shoplist__money {
+  display: flex;
+  flex-wrap: wrap;
+  grid-row: 2;
+  gap: var(--s1) var(--s3);
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--step--1);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
+}
+
+.shoplist__ages {
+  display: flex;
+  flex-wrap: wrap;
+  grid-row: 3;
+  gap: var(--s1) var(--s3);
+  margin: 0;
+  font-size: var(--step--2);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
+}
+
+.shoplist__age--overdue {
+  color: var(--danger);
+}
+
+.shoplist__age--ageing {
+  color: var(--warn);
+}
+
+.shoplist__cards {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+/*
+ * The copy under the pointer is a one-item list so the card inside keeps the
+ * exact box it has in a lane; without a width it would shrink to its text.
+ *
+ * `100%` OF THE DRAG LAYER'S OWN WRAPPER, NOT A SECOND OPINION ABOUT THE LANE
+ * WIDTH. The overlay is a fixed-position box the drag layer sizes from the rect
+ * it measured on the node it picked up — `.shopcard__face`, so 188px at a 15rem
+ * lane — and a width written independently here can only agree with that by luck.
+ * It did not: `min(19rem, 84vw)` drew the lifted copy 309px wide over the 210px
+ * hole it came out of (both measured), and once the lane became a clamp against
+ * the canvas there was no window size at which the two would have matched. `100%`
+ * tracks the wrapper, which puts the lifted card within its own padding of the
+ * card it left — "this is the thing you picked up" is the whole claim the tilt is
+ * making, and it cannot be made by a box half again as wide.
+ */
+.shoplist__cards--overlay {
+  width: 100%;
+  overflow: visible;
+}
+
+.shoplist__empty {
+  margin: 0;
+  padding: var(--s4) var(--s2);
+  color: var(--ink-4);
+  font-size: var(--step--1);
+  line-height: 1.5;
+  text-align: center;
+}
+
+/* ------------------------------------------------------- drag affordances */
+
+/*
+ * LEGAL TARGETS OUTLINED, ILLEGAL ONES FLATTENED — while the card is in hand,
+ * so a refusal is visible BEFORE the release rather than explained after it.
+ * Three states rather than a boolean, because "dimmed" and "outlined" are two
+ * different messages and the operator needs both at once across six lanes.
+ * The lane the card came from is given none of them: putting a card back is the
+ * one move a drag must always allow, and dimming home would say otherwise.
+ */
+.shoplist--legal {
+  border-color: var(--accent-line);
+}
+
+.shoplist--over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.shoplist--illegal {
+  opacity: 0.45;
+}
+
+/*
+ * ═══════════════════════════════════════════════════════════════════════════
+ * WHAT IS PAST THE EDGE — the other half of the outline above, and the half the
+ * board used to lose.
+ *
+ * An outline only says anything about a lane that is on screen. Wherever the rail
+ * still scrolls — under 1556px, and on every phone, where one lane is most of the
+ * canvas — a card can be in hand with two legal targets and one of them past an
+ * edge, and the board announces "one lane will take this" by drawing one outline.
+ * Measured on the shipped board: `legalTargets(row, 'owner', now)` was
+ * `['packing', 'closed']` and exactly one lane lit, because `closed` was off the
+ * right-hand side. That is the same lie as a card that vanishes, one level down.
+ *
+ * TWO MODES, AND THE WORDS CARRY BOTH — colour is never the claim here, same rule
+ * as the cards.
+ *
+ *   at rest      "2 more lanes ▸"   — a count, because at rest the question is
+ *                                     only whether the board ends here, and on a
+ *                                     phone five lane names in a pill would cover
+ *                                     the card underneath it.
+ *   card in hand "drop in Closed ▸" — a name and an instruction, because now the
+ *                                     question is which of them will take THIS
+ *                                     card. `legalTargets` is at most two or
+ *                                     three lanes, so the pill stays short.
+ *
+ * IT DOES NOT SCROLL THE LANE INTO VIEW, which was the alternative. Moving the
+ * board under a card already in hand is the one thing a board must not do — every
+ * other lane shifts under the pointer at the moment the operator is aiming, which
+ * is what `.shoplist`'s fixed width exists to prevent, arriving on a timer.
+ *
+ * `pointer-events: none` BECAUSE IT SITS OVER THE CANVAS. It hangs off the RAIL,
+ * outside the scroller, so it stays put while the lanes move under it — which
+ * puts it over the clipped lane it is talking about, and a marker that could eat
+ * a release near the edge would have built a dead zone exactly where the operator
+ * is heading. `aria-hidden` is set in the markup for the matching reason: the
+ * drag layer's live region already reads every legal lane by name at pick-up, and
+ * two voices saying one thing is one voice too many.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+.shopboard__beyond {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  max-width: 14rem;
+  padding: var(--s1) var(--s2);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-full);
+  background: var(--paper-raised);
+  box-shadow: var(--shadow-2);
+  color: var(--ink-3);
+  font-size: var(--step--2);
+  font-weight: 600;
+  line-height: 1.4;
+  translate: 0 -50%;
+  pointer-events: none;
+}
+
+/* Lit while a card is in hand, in the two tokens `.shoplist--legal` and
+   `.shoplist--over` already use — so the marker reads as the lane it stands for
+   rather than as a second vocabulary the operator has to learn. */
+.shopboard__beyond--drop {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.shopboard__beyond--start {
+  inset-inline-start: var(--s2);
+}
+
+.shopboard__beyond--end {
+  inset-inline-end: var(--s2);
+}
+
+/* ============================================================================
+ * THE CARD — one order
+ * ==========================================================================*/
+
+.shopcard__slot {
+  list-style: none;
+}
+
+.shopcard {
+  position: relative;
+  display: grid;
+  gap: var(--s1);
+  padding: var(--s2) var(--s2) var(--s2) var(--s3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-s);
+  background: var(--paper-raised);
+  box-shadow: var(--shadow-1);
+}
+
+.shopcard:hover,
+.shopcard:focus-within {
+  border-color: var(--rule-strong);
+}
+
+/*
+ * THE WAITING BAND — Trello's coloured strip doing real work. It is absent when
+ * nothing is wrong: an always-present bar would be decoration, and this one is a
+ * claim. It is what makes a late card findable from the far side of the board,
+ * and the card says the same thing in words beside it for a reader the colour
+ * does not reach.
+ */
+.shopcard__band {
+  position: absolute;
+  inset: var(--s2) auto var(--s2) 0;
+  width: 3px;
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
+}
+
+.shopcard--ageing .shopcard__band {
+  background: var(--warn);
+}
+
+.shopcard--overdue .shopcard__band {
+  background: var(--danger);
+}
+
+/* The hole the card left while it is in hand. Flat and faint — it is a place,
+   not a thing. */
+.shopcard--ghost {
+  opacity: 0.4;
+  box-shadow: none;
+}
+
+/* The copy under the pointer. The tilt is what makes it read as picked up
+   rather than as a second card that appeared. */
+.shopcard--lifted {
+  rotate: 2deg;
+  border-color: var(--accent);
+  box-shadow: var(--shadow-2);
+}
+
+/* The browser-local marker. A quiet tick in the margin, never a status. */
+.shopcard--seen {
+  border-color: var(--accent-line);
+}
+
+.shopcard--busy {
+  opacity: 0.75;
+}
+
+.shopcard__face {
+  display: grid;
+  gap: var(--s1);
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: grab;
+  touch-action: manipulation;
+}
+
+.shopcard__face:active {
+  cursor: grabbing;
+}
+
+.shopcard__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+
+/* The handle, not the headline: mono so a mistyped digit is visible, and
+   tabular so a column of them lines up. */
+.shopcard__number {
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: var(--step--2);
+  font-variant-numeric: tabular-nums;
+}
+
+.shopcard__age {
+  font-size: var(--step--2);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.shopcard__age--ageing {
+  color: var(--warn);
+}
+
+.shopcard__age--overdue {
+  color: var(--danger);
+}
+
+/* The two lines a box gets addressed with, and the only thing on the card at
+   the base step. */
+.shopcard__who {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--step-0);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shopcard__where {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s1) var(--s2);
+  color: var(--ink-2);
+  font-size: var(--step--1);
+}
+
+.shopcard__place {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Words, never colour alone: the region was worked out from a town name and the
+   card says so rather than tinting the label. */
+.shopcard__guess {
+  padding: 0 var(--s1);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-full);
+  color: var(--ink-4);
+  font-size: var(--step--2);
+}
+
+.shopcard__what {
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: var(--step--1);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shopcard__more {
+  color: var(--ink-4);
+}
+
+.shopcard__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  padding-top: var(--s1);
+  border-top: 1px solid var(--rule);
+}
+
+.shopcard__total {
+  flex: 1;
+  color: var(--ink-2);
+  font-size: var(--step--1);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.shopcard__seen {
+  padding: 0 var(--s2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-full);
+  background: none;
+  color: var(--ink-4);
+  font: inherit;
+  font-size: var(--step--2);
+  cursor: pointer;
+}
+
+.shopcard__seen:hover {
+  border-color: var(--rule-strong);
+  color: var(--ink-2);
+}
+
+.shopcard__seen[aria-pressed='true'] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.shopcard__busy {
+  margin: 0;
+  color: var(--ink-4);
+  font-size: var(--step--2);
+  line-height: 1.5;
+}
+
+/* ------------------------------------------------------------- the moves */
+
+.shopcard__moves {
+  display: grid;
+  gap: var(--s1);
+  padding-top: var(--s1);
+  border-top: 1px solid var(--rule);
+}
+
+.shopcard__moves--shut {
+  display: none;
+}
+
+.shopcard__move {
+  display: grid;
+  gap: var(--s1);
+  padding: var(--s2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-s);
+  background: var(--paper-sunken);
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.shopcard__move:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.shopcard__move:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.shopcard__move--danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.shopcard__movehead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s1) var(--s2);
+}
+
+.shopcard__movelabel {
+  color: var(--ink);
+  font-size: var(--step--1);
+  font-weight: 600;
+}
+
+/* Where it lands, said before the click rather than discovered after it. */
+.shopcard__movedest {
+  color: var(--ink-4);
+  font-size: var(--step--2);
+}
+
+.shopcard__movehint {
+  color: var(--ink-3);
+  font-size: var(--step--2);
+  line-height: 1.5;
+}
+
+.shopcard__nomoves {
+  margin: 0;
+  padding: var(--s2);
+  color: var(--ink-4);
+  font-size: var(--step--2);
+  line-height: 1.5;
+}
+
+/* ============================================================================
+ * THE SHIPMENT FORM — the thing a gesture cannot fill in
+ * ==========================================================================*/
+
+.shopform__lines {
+  font-size: var(--step--1);
+}
+
+.shopform__ceiling {
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+
+.shopform__qty {
+  width: 5rem;
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================================
+ * WHERE THESE ARE GOING — the destination panel
+ * ==========================================================================*/
+
+/* The shop's own tiles, tightened: `.stattiles` is sized for four across a
+   dashboard, and these three sit INSIDE a panel with a table under them. */
+.shopgeo__head {
+  border-bottom: 1px solid var(--rule);
+}
+
+.shopgeo__stats {
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: var(--s3);
+}
+
+.shopgeo__stats .stat {
+  padding: var(--s3);
+}
+
+.shopgeo__stats .stat__value {
+  font-size: var(--step-2);
+}
+
+.shopgeo__table {
+  font-size: var(--step--1);
+}
+
+.shopgeo__place {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s1) var(--s2);
+}
+
+/*
+ * Words, never colour alone — every flag on this panel reads as a sentence
+ * fragment with the colour agreeing with it rather than carrying it.
+ *
+ * `justify-self` IS LOAD-BEARING HERE, NOT TIDINESS. This one class renders in
+ * two different boxes: inside `.shopgeo__place`, a flex row, where a badge is
+ * content-width like every other badge in the app (`.chip`, `.shopcard__guess`);
+ * and inside `.shopgeo__zone`, which is a GRID, where an item stretches to the
+ * column by default. So the same class drew a 531px outlined box down the zone
+ * column — measured, against 82px and 23px for the same class one column to the
+ * left — and the panel's loudest warning ("the spellings here are priced
+ * differently from each other") read as an empty text input with a caption stuck
+ * to its left edge. A pill is a pill because it fits its words; one stretched to
+ * a column is a field.
+ *
+ * `justify-self` AND NOT `width: max-content`, because `justify-self` is ignored
+ * on a flex item — so one declaration fixes the grid case and cannot disturb the
+ * flex one — and because `max-content` would also override the `max-width` any
+ * future narrow column wants to impose.
+ */
+.shopgeo__flag {
+  justify-self: start;
+  padding: 0 var(--s1);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-full);
+  color: var(--ink-4);
+  font-size: var(--step--2);
+  white-space: nowrap;
+}
+
+.shopgeo__flag--warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.shopgeo__collapse {
+  margin-top: var(--s1);
+  font-size: var(--step--2);
+}
+
+.shopgeo__collapse > summary {
+  color: var(--ink-4);
+  cursor: pointer;
+}
+
+.shopgeo__collapse > summary:hover {
+  color: var(--accent);
+}
+
+.shopgeo__variants {
+  display: grid;
+  gap: var(--s1);
+  margin: var(--s1) 0 0;
+  padding: 0 0 0 var(--s3);
+  list-style: none;
+}
+
+.shopgeo__variants li {
+  display: flex;
+  gap: var(--s2);
+  color: var(--ink-3);
+}
+
+.shopgeo__variants .num {
+  font-variant-numeric: tabular-nums;
+}
+
+.shopgeo__variant {
+  overflow-wrap: anywhere;
+}
+
+/*
+ * LENGTH IS THE ENCODING, NOT COLOUR. Every bar is the same accent, so a reader
+ * who cannot separate hues loses nothing, and the count and the percentage are
+ * printed beside it for the reader a bar does not serve at all.
+ */
+.shopgeo__share {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 9rem;
+}
+
+.shopgeo__bar {
+  flex: 1;
+  min-width: 3rem;
+  height: var(--s2);
+  border-radius: var(--radius-full);
+  background: var(--paper-inset);
+}
+
+.shopgeo__fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+
+.shopgeo__pct {
+  color: var(--ink-3);
+  font-size: var(--step--2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.shopgeo__money {
+  display: block;
+  font-variant-numeric: tabular-nums;
+}
+
+.shopgeo__none {
+  color: var(--ink-4);
+}
+
+.shopgeo__note {
+  display: block;
+  color: var(--ink-4);
+  font-size: var(--step--2);
+  line-height: 1.5;
+}
+
+.shopgeo__caveat {
+  display: block;
+  color: var(--ink-4);
+  font-size: var(--step--2);
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.shopgeo__zone {
+  display: grid;
+  gap: var(--s1);
+}
+
+/* Hatched AS WELL AS labelled: an address this module could not place is a row
+   the eye should skip past when planning a run, and the words above it say why. */
+.shopgeo__row--unplaced {
+  background: repeating-linear-gradient(
+    135deg,
+    transparent,
+    transparent var(--s2),
+    var(--paper-sunken) var(--s2),
+    var(--paper-sunken) var(--s4)
+  );
+}
+
+.shopgeo__foot {
+  display: grid;
+  gap: var(--s2);
+  border-top: 1px solid var(--rule);
+}
+
+/* ============================================================================
+ * NARROW
+ * ==========================================================================*/
+
+/*
+ * A PHONE GETS ONE LANE AND A SLICE OF THE NEXT, and the slice is the whole
+ * point: a board whose edge falls exactly on a lane boundary is a board whose
+ * other five lanes nobody finds.
+ *
+ * THE OLD RULE SAID `min(19rem, 84vw)` AND THE COMMENT ABOVE IT SAID "at 380px a
+ * lane is 84vw, so the next one always peeks". Measured, that was false: at 380px
+ * `min(19rem, 84vw)` is `min(304px, 319px)` — the 19rem arm — and the `84vw` arm
+ * only won under about 362px. The peek happened for a different reason than the
+ * one written down, which is a comment that will mislead the next person to
+ * retune it.
+ *
+ * SO THE SHARE IS OF THE CANVAS, NOT OF THE WINDOW. The lane sits inside the
+ * canvas's padding inside the rail's `--s4` margins; `vw` measures none of that
+ * and drifts further from the truth every time either changes. 82% leaves a
+ * gutter and the rest of the next lane in view at every width this query covers —
+ * measured at a 380px viewport: a 272px lane and a 64px slice of the one after it
+ * — and the 19rem cap still wins on a wide phone, where 82% would have made a
+ * lane wider than a card has any use for.
+ */
+@media (max-width: 640px) {
+  .shopboard__canvas {
+    padding: var(--s2);
+  }
+
+  .shoplist {
+    flex-basis: min(19rem, 82%);
+    max-height: none;
+  }
+}
+
+/* A coarse pointer gets a real hit area on the two controls a thumb reaches
+   for, without changing the card's visual box. */
+@media (pointer: coarse) {
+  .shopcard__face {
+    min-height: var(--tap-min);
+  }
+
+  .shopcard__seen,
+  .shopcard__move {
+    min-height: var(--ctl-h-lg);
+  }
+}
