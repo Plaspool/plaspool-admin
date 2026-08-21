@@ -1,33 +1,78 @@
 /**
- * Transactional email (brief §5): four messages, an interface, and a rendering
- * step that has nothing to do with delivery.
+ * Transactional email: the messages an order sends as it moves through its life,
+ * an interface, and a rendering step that has nothing to do with delivery.
  *
  * ⚠️  **`LoggingMailer` STILL DOES NOT SEND EMAIL, AND IS STILL THE DEFAULT.** It
- *     records the fully rendered message and returns. What HAS changed is that
- *     `portMailer` at the bottom of this file adapts this subsystem's `Mailer` to
- *     `server/mail/port.ts`'s, and `server/index.ts` registers a real transport
- *     through it at the composition root — so a deployment with `RESEND_API_KEY`
- *     set now delivers order mail, while a test that registers nothing still gets
- *     the honest logger. The name stays `LoggingMailer` for exactly the reason
- *     given below.
+ *     records the fully rendered message and returns. `portMailer` at the bottom
+ *     of this file adapts this subsystem's `Mailer` to `server/mail/port.ts`'s,
+ *     and `server/index.ts` registers a real transport through it at the
+ *     composition root — so a deployment with `RESEND_API_KEY` set delivers order
+ *     mail, while a test that registers nothing still gets the honest logger. The
+ *     name stays `LoggingMailer` for exactly the reason given below.
  *
- * FOUR MESSAGES IN v1 AND NO MORE (brief §5): confirmation on `paid`, shipment on
- * `shipped` with tracking, cancellation, refund.
+ * ═══════════════════ SIX MESSAGES, NOT FOUR ═══════════════════
+ * The brief specified four — confirmation, shipment, cancellation, refund — and
+ * that left two holes a customer actually falls into:
  *
- * DELIVERY IS NOT IN THIS FILE'S CONTROL FLOW. The intent row is written in the
- * same statement as the state change that caused it and the sweeper delivers it
- * later (`repo/emails.ts`). That ordering is the whole design: a send failure must
- * not roll back an order that is genuinely paid, and an order that is paid must not
- * depend on an email provider being up.
+ *   * **`placed`.** Between pressing pay and the payment settling, this shop can
+ *     take a full minute, because the outbox sweep does the work rather than the
+ *     webhook (see the cron note in CLAUDE.md). Four messages meant sixty seconds
+ *     of silence immediately after somebody spent money — the single worst moment
+ *     to say nothing.
+ *   * **`delivered`.** With four messages the last thing a customer ever heard was
+ *     "on its way", so an order that arrived and an order lost in transit looked
+ *     identical from their inbox.
+ *
+ * Migration 0320 widened `shop_order_email_intents_kind_ck` to admit both.
+ *
+ * ═══════════════════ THE HTML IS NO LONGER DERIVED FROM THE TEXT ═══════════════
+ * It used to be: `textToHtml` wrapped the plain-text body in bare `<p>` elements
+ * at DELIVERY time, which is why every order email this shop has sent looks like
+ * a 1997 mailing-list digest. Both parts are now authored — the text part from
+ * the template's `text` body, the HTML part from its `html` body, each rendered
+ * against the same values — and BOTH are stored on the intent row
+ * (`body` and the new `html` column) in the same statement as the state change.
+ *
+ * That keeps the property the old design was protecting: the intent row remains
+ * the complete record of what a customer was told. It just records both parts
+ * now instead of one and a recipe for the other. `textToHtml` survives at the
+ * bottom of this file for rows written before 0320, which have no HTML part and
+ * are history rather than a gap to backfill.
+ *
+ * DELIVERY IS STILL NOT IN THIS FILE'S CONTROL FLOW, and that is unchanged and
+ * non-negotiable: the intent row is written with the state change and the sweeper
+ * delivers it later (`repo/emails.ts`). A send failure must not roll back an order
+ * that is genuinely paid, and an order that is paid must not depend on an email
+ * provider being up.
  */
 
-/** The kinds, matching `shop_order_email_intents_kind_ck`. */
-export type EmailKind = 'confirmation' | 'shipment' | 'cancellation' | 'refund';
+import { facts, lineTable, timeline } from '../../mail/brand';
+import { normalizeBlobId, publicImageUrl } from '../../repo/public-projection';
+import { BUILT_IN } from '../../email/system-templates';
+import { render, textLines, textTimeline } from '../../mail/transactional';
+import type { TemplateSet } from '../../email/system-templates';
+import type { Step } from '../../mail/brand';
+import type { SystemKey } from '../../mail/defaults';
+import type { RenderedMessage, TemplateValues } from '../../mail/transactional';
 
+/** The kinds, matching `shop_order_email_intents_kind_ck` after migration 0320. */
+export type EmailKind =
+  | 'placed'
+  | 'confirmation'
+  | 'shipment'
+  | 'delivered'
+  | 'cancellation'
+  | 'refund';
+
+/**
+ * A rendered message. `html` is nullable ONLY because rows written before
+ * migration 0320 have none — every render in this file produces both parts.
+ */
 export interface RenderedEmail {
   to: string;
   subject: string;
   body: string;
+  html?: string | null;
 }
 
 /**
@@ -38,18 +83,12 @@ export interface RenderedEmail {
  * failure and leave the intent unsent, so the failure has to be expressible.
  *
  * ═══ THIS IS NOT `server/mail/port.ts`'S `Mailer`, AND IT STAYS THAT WAY ═══
- * The port takes `{ to, subject, text, html }`; this takes `{ to, subject, body }`,
- * because `body` is a COLUMN. Every message this subsystem sends was rendered and
- * stored in `shop_order_email_intents.body` in the same statement as the state
- * change that owed it (`repo/orders.ts`, `repo/fulfillments.ts`) — that is the
- * whole design, and a two-part interface here would mean either a second column on
- * a table with rows in it or an HTML part invented at delivery time and therefore
- * absent from the record of what was sent.
- *
- * So the two shapes are reconciled by an ADAPTER (`portMailer`, at the foot of
- * this file) rather than by making one of them the other. The intent row stays the
- * single source of truth for what a customer was told; the port stays the one
- * interface a transport implements.
+ * The port takes `{ to, subject, text, html }`; this takes `{ to, subject, body,
+ * html }`, because `body` is a COLUMN and renaming it here would only move the
+ * mismatch into the SQL. The two shapes are reconciled by an ADAPTER
+ * (`portMailer`, at the foot of this file) rather than by making one of them the
+ * other: the intent row stays the single source of truth for what a customer was
+ * told, and the port stays the one interface a transport implements.
  */
 export interface Mailer {
   send(message: RenderedEmail): Promise<void>;
@@ -58,11 +97,9 @@ export interface Mailer {
 /**
  * Records what would have been sent. **It sends nothing.**
  *
- * `sent` is kept in memory so a test can assert on the rendered text, and one line
- * per message goes to the log so the same is true of a deployment. The name is
- * `LoggingMailer` and not `DefaultMailer` on purpose: a name that did not say
- * "logging" would be read as "the mailer", and somebody would deploy believing
- * customers were being emailed.
+ * The name is `LoggingMailer` and not `DefaultMailer` on purpose: a name that did
+ * not say "logging" would be read as "the mailer", and somebody would deploy
+ * believing customers were being emailed.
  */
 export class LoggingMailer implements Mailer {
   readonly sent: RenderedEmail[] = [];
@@ -91,7 +128,19 @@ export interface OrderMailView {
   email: string;
   currency: string;
   grandTotal: number;
-  lines: { title: string; sku: string; qty: number; lineTotal: number }[];
+  lines: {
+    title: string;
+    sku: string;
+    qty: number;
+    lineTotal: number;
+    /** The photograph snapshotted onto the order line (migration 0340).
+     * Absent or `null` for a variant with no picture, and for the `placed`
+     * message, whose view is built from the checkout event. */
+    imageId?: string | null;
+  }[];
+  /** When the order was placed, epoch-ms. Optional so existing callers compile;
+   * absent renders as an empty date rather than as "Invalid Date". */
+  placedAt?: number | null;
 }
 
 export interface ShipmentMailView extends OrderMailView {
@@ -104,6 +153,11 @@ export interface RefundMailView extends OrderMailView {
   refundedAmount: number;
   /** Cumulative, so the message can say whether anything is still outstanding. */
   refundedTotal: number;
+}
+
+export interface CancelMailView extends OrderMailView {
+  /** Why, in the operator's own words. Optional; a generic line stands in. */
+  reason?: string | null;
 }
 
 /**
@@ -130,85 +184,299 @@ export function formatAmount(minorUnits: number, currency: string): string {
   return `${negative ? '-' : ''}${whole}.${fraction} ${currency}`;
 }
 
-function lineTable(view: OrderMailView): string {
-  return view.lines
-    .map((line) => `  ${line.qty} × ${line.title} (${line.sku}) — ${formatAmount(line.lineTotal, view.currency)}`)
-    .join('\n');
-}
-
 /**
  * The guest access link, if one was minted.
  *
- * `origin` is passed in from the request's own allow-list (`AppEnv.origins`) and
- * never built from a `Host` header — the same rule `server/routes/auth.ts` follows
- * for invite URLs, and for the same reason: a link built from an attacker-supplied
- * header is a phishing link the application sent itself.
+ * `origin` IS THE STOREFRONT'S, NOT THIS APPLICATION'S — see
+ * `server/shop/storefront-url.ts`, which carries the full account of the bug this
+ * caused. It is still never built from a `Host` header, for the reason
+ * `server/routes/auth.ts` gives: a link built from an attacker-supplied header is
+ * a phishing link the application sent itself.
  */
 export interface AccessLink {
   origin: string;
   token: string;
 }
 
-function accessFooter(view: OrderMailView, link: AccessLink | null): string {
+function accessUrl(view: OrderMailView, link: AccessLink | null): string {
   if (!link) return '';
-  const url = `${link.origin}/shop/orders/${encodeURIComponent(view.orderNumber)}?token=${encodeURIComponent(link.token)}`;
-  return `\n\nView your order: ${url}\n(The link expires; the order number alone will not open it.)`;
+  return (
+    `${link.origin}/shop/orders/${encodeURIComponent(view.orderNumber)}` +
+    `?token=${encodeURIComponent(link.token)}`
+  );
 }
 
-export function renderConfirmation(view: OrderMailView, link: AccessLink | null): RenderedEmail {
+/**
+ * What `{{customer_name}}` becomes.
+ *
+ * THE LOCAL PART OF THE ADDRESS, and the same decision `server/email/render.ts`
+ * documents at length for `greetingName`: an order carries an address and, often,
+ * no name at all. "there" and "friend" are canned English chosen by a server for a
+ * message an operator wrote and cannot see; the local part is the only thing about
+ * the person this system actually knows, and it is what they chose themselves.
+ */
+/**
+ * The snapshotted image id as an ABSOLUTE url, or `null`.
+ *
+ * ABSOLUTE, BECAUSE THIS IS AN EMAIL. `publicImageUrl` returns a ROOT-RELATIVE
+ * path, which is exactly right in a browser on the site and meaningless in a
+ * mail client — there is no document origin to resolve it against, so a relative
+ * `src` is a broken image in every one of them.
+ *
+ * THE SAME ORIGIN THE LOGO USES, and for the same reason: `/api/public/images/`
+ * is served by this deployment, without authentication, and the storefront is a
+ * separate Worker that does not carry these routes.
+ *
+ * `normalizeBlobId` IS NOT OPTIONAL. `server/repo/public-projection.ts` records
+ * that the id is stored both bare and `asset:`/`idb:`-prefixed depending on when
+ * it was written — and building the URL without stripping that prefix produces
+ * `/api/public/images/asset:img_x`, which 404s. It is the same one-line trap the
+ * storefront projection already fell into once.
+ */
+function imageUrlFor(imageId: string | null | undefined): string | null {
+  if (imageId == null) return null;
+  const id = normalizeBlobId(imageId);
+  if (id === '') return null;
+  return `${storefrontAssetOrigin()}${publicImageUrl(id)}`;
+}
+
+/**
+ * Where `/api/public/images/…` is served from.
+ *
+ * A SECOND COPY of `brand.ts`'s `assetOrigin`, kept private there because it is
+ * about the masthead and this one is about product photographs — but they must
+ * resolve identically, and `BRAND_ASSET_ORIGIN` is what makes that true with one
+ * variable rather than two.
+ */
+function storefrontAssetOrigin(): string {
+  const configured = process.env.BRAND_ASSET_ORIGIN?.trim();
+  return (configured || 'https://blog-admin-app-gold.vercel.app').replace(/\/+$/, '');
+}
+
+function greeting(email: string): string {
+  const at = email.indexOf('@');
+  return at > 0 ? email.slice(0, at) : email;
+}
+
+/**
+ * The support address shown in every footer.
+ *
+ * FALLS BACK TO `MAIL_FROM`, then to a literal, and never to the empty string. A
+ * footer reading "write to us at" with nothing after it is worse than a wrong
+ * address, because the reader cannot tell it is broken — they conclude the shop
+ * has no support and do not write.
+ */
+function supportEmail(): string {
+  const explicit = process.env.SHOP_SUPPORT_EMAIL?.trim();
+  if (explicit) return explicit;
+  const from = process.env.MAIL_FROM?.trim();
+  // `MAIL_FROM` is routinely `PlaSpool <noreply@…>`; take the address out of it.
+  const angled = from?.match(/<([^>]+)>/);
+  if (angled) return angled[1];
+  if (from) return from;
+  return 'support@plaspool.com';
+}
+
+/** `2026-08-21` rather than a locale-formatted date, for `formatAmount`'s reason:
+ * ICU data differs across Node builds, and an unambiguous date beats a pretty one
+ * that reads as a different day in another country. */
+function formatDate(ms: number | null | undefined): string {
+  if (ms == null) return '';
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/* ------------------------------------------------------------------ timeline */
+
+/**
+ * Where this message sits in the order's life.
+ *
+ * THE HAPPY PATH IS FOUR STEPS AND THE TERMINAL STATES ARE THREE, rather than one
+ * six-step strip with two of them crossed out. A cancelled order never had a
+ * "shipped" step to fail — showing one greyed out invites the reader to wonder
+ * whether it might still happen. `brand.ts` documents why `stopped` is a state of
+ * its own and not a variety of `done`.
+ */
+function stepsFor(kind: EmailKind): Step[] {
+  const path = (at: number): Step[] =>
+    ['Placed', 'Paid', 'Shipped', 'Delivered'].map((label, i) => ({
+      label,
+      state: i < at ? 'done' : i === at ? 'now' : 'next',
+    }));
+
+  switch (kind) {
+    case 'placed':
+      return path(0);
+    case 'confirmation':
+      return path(1);
+    case 'shipment':
+      return path(2);
+    case 'delivered':
+      return path(3);
+    case 'cancellation':
+      return [
+        { label: 'Placed', state: 'done' },
+        { label: 'Cancelled', state: 'stopped' },
+      ];
+    case 'refund':
+      return [
+        { label: 'Placed', state: 'done' },
+        { label: 'Paid', state: 'done' },
+        { label: 'Refunded', state: 'stopped' },
+      ];
+  }
+}
+
+/* -------------------------------------------------------------------- values */
+
+/** The scalars and blocks every order message shares. */
+function baseValues(
+  view: OrderMailView,
+  link: AccessLink | null,
+  kind: EmailKind,
+): TemplateValues {
+  const rows = view.lines.map((l) => ({
+    title: l.title,
+    sku: l.sku,
+    qty: l.qty,
+    amount: formatAmount(l.lineTotal, view.currency),
+    imageUrl: imageUrlFor(l.imageId),
+  }));
+  const total = formatAmount(view.grandTotal, view.currency);
+  const steps = stepsFor(kind);
+
   return {
-    to: view.email,
-    subject: `Order ${view.orderNumber} confirmed`,
-    body:
-      `Thank you — we have your payment for order ${view.orderNumber}.\n\n` +
-      `${lineTable(view)}\n\n` +
-      `Total: ${formatAmount(view.grandTotal, view.currency)}` +
-      accessFooter(view, link),
+    scalars: {
+      order_number: view.orderNumber,
+      customer_name: greeting(view.email),
+      order_total: total,
+      order_date: formatDate(view.placedAt),
+      order_url: accessUrl(view, link),
+      support_email: supportEmail(),
+    },
+    blocks: {
+      order_lines: {
+        html: lineTable(rows, [{ label: 'Total', amount: total, strong: true }]),
+        text: textLines(rows),
+      },
+      order_timeline: {
+        html: timeline(steps),
+        text: textTimeline(steps),
+      },
+    },
   };
 }
 
-export function renderShipment(view: ShipmentMailView, link: AccessLink | null): RenderedEmail {
-  const tracking =
-    view.trackingNumber === null
-      ? 'Your parcel is on its way.'
-      : `Tracking: ${view.trackingNumber}${view.carrier === null ? '' : ` (${view.carrier})`}`;
+/**
+ * Render one message from the template set.
+ *
+ * `templates` DEFAULTS TO THE BUILT-INS so every existing caller and every test
+ * compiles unchanged and still gets a correct message. That default is also the
+ * belt to `system-templates.ts`'s braces: even a caller that forgets to thread the
+ * set through sends a properly branded email rather than nothing.
+ */
+function renderKind(
+  key: SystemKey,
+  view: OrderMailView,
+  values: TemplateValues,
+  templates: TemplateSet,
+): RenderedEmail {
+  const message: RenderedMessage = render(templates.get(key), view.email, values);
   return {
-    to: view.email,
-    subject: `Order ${view.orderNumber} has shipped`,
-    body:
-      `Order ${view.orderNumber} is on its way.\n\n${tracking}\n\n` +
-      `${lineTable(view)}` +
-      accessFooter(view, link),
+    to: message.to,
+    subject: message.subject,
+    body: message.body,
+    html: message.html,
   };
 }
 
-export function renderCancellation(view: OrderMailView, link: AccessLink | null): RenderedEmail {
-  return {
-    to: view.email,
-    subject: `Order ${view.orderNumber} cancelled`,
-    body:
-      `Order ${view.orderNumber} has been cancelled and will not ship.\n\n` +
-      `${lineTable(view)}\n\n` +
-      `Nothing further is owed. Any payment taken is refunded separately.` +
-      accessFooter(view, link),
-  };
+export function renderPlaced(
+  view: OrderMailView,
+  link: AccessLink | null,
+  templates: TemplateSet = BUILT_IN,
+): RenderedEmail {
+  return renderKind('order.placed', view, baseValues(view, link, 'placed'), templates);
 }
 
-export function renderRefund(view: RefundMailView, link: AccessLink | null): RenderedEmail {
+export function renderConfirmation(
+  view: OrderMailView,
+  link: AccessLink | null,
+  templates: TemplateSet = BUILT_IN,
+): RenderedEmail {
+  return renderKind('order.confirmation', view, baseValues(view, link, 'confirmation'), templates);
+}
+
+export function renderShipment(
+  view: ShipmentMailView,
+  link: AccessLink | null,
+  templates: TemplateSet = BUILT_IN,
+): RenderedEmail {
+  const values = baseValues(view, link, 'shipment');
+  values.scalars.carrier = view.carrier ?? '';
+  values.scalars.tracking_number = view.trackingNumber ?? '';
+
+  /*
+   * THE PANEL IS OMITTED ENTIRELY WHEN THERE IS NO TRACKING, rather than rendered
+   * with blanks in it. `shop_fulfillments.tracking_number` is nullable and a
+   * hand-delivered order never gets one; a panel reading "Tracking: —" looks like
+   * the email broke. `defaults.ts` explains why this is a block and not two
+   * scalars dropped into a sentence.
+   */
+  const rows = [
+    ...(view.carrier === null ? [] : [{ label: 'Carrier', value: view.carrier }]),
+    ...(view.trackingNumber === null
+      ? []
+      : [{ label: 'Tracking', value: view.trackingNumber, mono: true }]),
+  ];
+  values.blocks.tracking_panel =
+    rows.length === 0
+      ? { html: '', text: 'Your parcel is on its way.' }
+      : {
+          html: facts(rows, 'accent'),
+          text: rows.map((r) => `  ${r.label}: ${r.value}`).join('\n'),
+        };
+
+  return renderKind('order.shipment', view, values, templates);
+}
+
+export function renderDelivered(
+  view: OrderMailView,
+  link: AccessLink | null,
+  templates: TemplateSet = BUILT_IN,
+): RenderedEmail {
+  return renderKind('order.delivered', view, baseValues(view, link, 'delivered'), templates);
+}
+
+export function renderCancellation(
+  view: CancelMailView,
+  link: AccessLink | null,
+  templates: TemplateSet = BUILT_IN,
+): RenderedEmail {
+  const values = baseValues(view, link, 'cancellation');
+  const reason = (view.reason ?? '').trim();
+  values.scalars.cancel_reason = reason === '' ? 'Cancelled by the shop' : reason;
+  return renderKind('order.cancellation', view, values, templates);
+}
+
+export function renderRefund(
+  view: RefundMailView,
+  link: AccessLink | null,
+  templates: TemplateSet = BUILT_IN,
+): RenderedEmail {
+  const values = baseValues(view, link, 'refund');
   const outstanding = view.grandTotal - view.refundedTotal;
-  return {
-    to: view.email,
-    subject: `Refund for order ${view.orderNumber}`,
-    body:
-      `We have refunded ${formatAmount(view.refundedAmount, view.currency)} ` +
-      `against order ${view.orderNumber}.\n\n` +
-      `Refunded so far: ${formatAmount(view.refundedTotal, view.currency)} of ` +
-      `${formatAmount(view.grandTotal, view.currency)}.\n` +
-      (outstanding > 0
-        ? `Still charged: ${formatAmount(outstanding, view.currency)}.`
-        : `The order is refunded in full.`) +
-      accessFooter(view, link),
-  };
+  values.scalars.refund_amount = formatAmount(view.refundedAmount, view.currency);
+  values.scalars.refunded_total = formatAmount(view.refundedTotal, view.currency);
+  /*
+   * ONE SENTENCE RATHER THAN AN AMOUNT, because the two cases need different
+   * words and not a different number. "Still charged: 0.00 NGN" is technically
+   * true of a fully refunded order and reads as though something went wrong.
+   */
+  values.scalars.outstanding_note =
+    outstanding > 0
+      ? `You are still charged ${formatAmount(outstanding, view.currency)} for the ` +
+        `rest of this order.`
+      : 'This order is now refunded in full. Nothing is still charged.';
+  return renderKind('order.refund', view, values, templates);
 }
 
 // -------------------------------------------------------------- the adapter
@@ -216,24 +484,24 @@ export function renderRefund(view: RefundMailView, link: AccessLink | null): Ren
 /**
  * A `server/mail/port.ts` transport, seen as one of this subsystem's `Mailer`s.
  *
- * THIS IS THE OBJECT HANDOFF §1.11 SAYS IS MISSING. Two `Mailer` interfaces existed
- * in this repository — `{ to, subject, body }` here, `{ to, subject, text, html }`
- * there — and nothing adapted them, so a complete transactional outbox with dedupe
- * keys and eight-attempt retries delivered precisely nothing, while a single
- * password-reset route was the only real email the application sent. One function
- * closes that, and `server/index.ts` registers it at the composition root.
+ * THIS IS THE OBJECT HANDOFF §1.11 SAID WAS MISSING. Two `Mailer` interfaces
+ * existed in this repository and nothing adapted them, so a complete transactional
+ * outbox with dedupe keys and eight-attempt retries delivered precisely nothing.
+ * One function closes that, and `server/index.ts` registers it at the composition
+ * root.
  *
- * THE PLAIN-TEXT BODY IS THE ORIGINAL AND THE HTML IS DERIVED, NEVER THE OTHER WAY
- * ROUND. `body` is what is stored in the intent row, what the admin order view
- * shows and what a test asserts on; deriving text FROM html would make the record
- * of what a customer was told a lossy round trip through a tag stripper.
+ * THE STORED HTML IS PREFERRED AND `textToHtml` IS THE FALLBACK. Since migration
+ * 0320 both parts are authored and stored on the intent row, so `message.html` is
+ * present for anything rendered by this build. A row written BEFORE 0320 has none,
+ * and deriving one from its text is exactly what the old code did — so those rows
+ * deliver today as they always would have, rather than failing or being silently
+ * skipped.
  *
  * `assertConfigured` IS NOT FORWARDED, DELIBERATELY. This subsystem's `Mailer` has
  * no such method and the sweeper has no use for one: it never asks "could this
  * possibly work" ahead of time, because there is no caller to answer 501 to — the
  * intent is already committed and a configuration failure is recorded on the row
- * like any other refusal. The parameter type accepts a transport that has one so a
- * `resendMailer()` can be passed straight in.
+ * like any other refusal.
  */
 export function portMailer(transport: {
   send(msg: { to: string; subject: string; text: string; html: string }): Promise<void>;
@@ -245,7 +513,10 @@ export function portMailer(transport: {
         to: message.to,
         subject: message.subject,
         text: message.body,
-        html: textToHtml(message.body),
+        html:
+          message.html != null && message.html !== ''
+            ? message.html
+            : textToHtml(message.body),
       }),
   };
 }
@@ -253,23 +524,19 @@ export function portMailer(transport: {
 /**
  * Plain text to the simplest HTML that renders it faithfully.
  *
- * ESCAPE FIRST, THEN LINKIFY, AND THE ORDER IS THE WHOLE CORRECTNESS ARGUMENT. The
- * bodies passed through here are rendered from order snapshots, and a product title
- * is a string somebody typed — `Mug <3` reaches this function verbatim. Escaping
- * after linkifying would either double-escape the `&` in a URL or leave a title's
- * `<` as markup; escaping first means the linkifier only ever sees text it produced
- * itself, and `&amp;` inside an `href` is what HTML requires anyway.
+ * ⚠️  THIS IS NO LONGER THE RENDERER — it is the fallback for intent rows written
+ *     before migration 0320, which have no `html` column value. Do not reach for
+ *     it when adding a message; add a template to `server/mail/defaults.ts`.
  *
- * NO `<html>`, NO `<head>`, NO STYLE. Every mail client rewrites the document
- * wrapper and most strip a `<style>` block, so anything beyond paragraphs and links
- * is work discarded in transit. The one thing this must get right is that the guest
- * access link is CLICKABLE: a bare URL in an HTML part is not a link in several
- * clients, and an order confirmation whose "view your order" link is dead is a
- * support ticket per order.
+ * ESCAPE FIRST, THEN LINKIFY, AND THE ORDER IS THE WHOLE CORRECTNESS ARGUMENT. A
+ * product title is a string somebody typed — `Mug <3` reaches this function
+ * verbatim. Escaping after linkifying would either double-escape the `&` in a URL
+ * or leave a title's `<` as markup; escaping first means the linkifier only ever
+ * sees text it produced itself.
  *
- * DELIBERATELY LOCAL RATHER THAN SHARED WITH `server/email/render.ts`. That module
- * belongs to the marketing subsystem; importing it here would couple Orders to a
- * feature it has no business knowing about, for eight lines.
+ * The one thing this must get right is that the guest access link is CLICKABLE: a
+ * bare URL in an HTML part is not a link in several clients, and an order
+ * confirmation whose "view your order" link is dead is a support ticket per order.
  */
 function textToHtml(body: string): string {
   const escaped = body

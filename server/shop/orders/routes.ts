@@ -22,6 +22,8 @@ import { requireOrderNumber } from './order-number';
 import { mintGuestToken, verifyGuestToken } from './tokens';
 import { resolveDeps, type OrdersDeps, type ResolvedDeps } from './ports';
 import type { AccessLink } from './mailer';
+import { storefrontOrigin } from '../storefront-url';
+import { ensureSystemTemplates, loadTemplates } from '../../email/system-templates';
 import {
   cancelOrder,
   getOrderForCustomer,
@@ -409,14 +411,37 @@ function registerAdminRoutes(
     const now = deps().now();
 
     if (body.status === 'delivered') {
-      return c.json({ fulfillment: await deliverFulfillment(db, id, now, actorId) });
+      /*
+       * THE LINK AND THE TEMPLATES ARE NEW HERE because delivery now mails the
+       * customer (migration 0320). The order is read before the transition
+       * because the link is an HMAC over the order NUMBER, which this route has
+       * only the fulfilment id for.
+       */
+      const delivering = await requireOrder(db, existing.fulfillment.orderId);
+      return c.json({
+        fulfillment: await deliverFulfillment(
+          db,
+          id,
+          now,
+          actorId,
+          linkFor(c, delivering, deps()),
+          await loadTemplates(db),
+        ),
+      });
     }
     if (body.status === 'cancelled') {
       return c.json({ fulfillment: await cancelFulfillment(db, id, now, actorId) });
     }
 
     const order = await requireOrder(db, existing.fulfillment.orderId);
-    const fulfillment = await shipFulfillment(db, id, now, linkFor(c, order, deps()), actorId);
+    const fulfillment = await shipFulfillment(
+      db,
+      id,
+      now,
+      linkFor(c, order, deps()),
+      actorId,
+      await loadTemplates(db),
+    );
     const settled = await settleOrderFulfilled(
       db,
       order.order.id,
@@ -543,7 +568,12 @@ function registerAdminRoutes(
     const order = await cancelOrder(
       db,
       read.order.id,
-      { reason: 'admin', actorId: currentUser(c).id, link: linkFor(c, read, deps()) },
+      {
+        reason: 'admin',
+        actorId: currentUser(c).id,
+        link: linkFor(c, read, deps()),
+        templates: await loadTemplates(db),
+      },
       deps().now(),
       null,
     );
@@ -635,13 +665,49 @@ async function runSweep(c: Context<AppEnv>, d: ResolvedDeps) {
   const db = currentDb(c);
   const now = d.now();
   const payments = await d.drainPayments(db, now);
+  /*
+   * THE SYSTEM TEMPLATES, LOADED ONCE PER SWEEP AND PASSED DOWN AS DATA.
+   *
+   * Here rather than per event because the render happens inside a statement
+   * builder that composes SQL synchronously — it cannot await — and a sweep
+   * draining forty events would otherwise issue forty identical reads of a
+   * nine-row table.
+   *
+   * `loadTemplates` NEVER THROWS: a failed read returns the built-in defaults, so
+   * a database hiccup here degrades the wording of an email and cannot stop a
+   * sweep that is also settling payments. `server/email/system-templates.ts`
+   * carries the full argument.
+   */
+  const templates = await loadTemplates(db);
   const events = await drainCommerceEvents(
     db,
-    { origin: c.get('origins')?.[0] ?? null, redemption: d.redemption },
+    /*
+     * THE STOREFRONT'S ORIGIN, NOT THIS APP'S. `c.get('origins')[0]` is the ADMIN
+     * allow-list, and building the customer's "view your order" link from it sent
+     * every buyer to the dashboard — see `server/shop/storefront-url.ts`.
+     */
+    { origin: storefrontOrigin(), redemption: d.redemption, templates },
     { now, limit: SWEEP_BATCH, passes: RUN_SWEEP_COMMERCE_PASS_CEILING },
   );
   const emails = await sweepEmailIntents(db, d.mailer, now);
-  return { payments, events, emails, passes: events.passes };
+  /*
+   * SEED ANY SYSTEM TEMPLATE THAT IS NOT IN THE TABLE YET, LAST.
+   *
+   * Last because it is the only step here that nothing depends on: this pass
+   * already rendered from whatever was in the table, and a row created now takes
+   * effect on the next one. Putting it first would add nine writes to the front of
+   * the work that actually settles payments, inside a function `vercel.json` caps
+   * at `maxDuration: 30`.
+   *
+   * IN THE SWEEP AT ALL because the admin templates screen is the other seeder,
+   * and a deployment nobody has opened that screen on would otherwise never seed —
+   * which is fine for rendering (the built-ins cover it) and not fine for the
+   * promise that an owner can find and edit these messages.
+   *
+   * `ensureSystemTemplates` never throws and never overwrites an edited row.
+   */
+  const seeded = await ensureSystemTemplates(db, now);
+  return { payments, events, emails, seeded, passes: events.passes };
 }
 
 /**
@@ -716,13 +782,24 @@ async function orderDetail(db: Db, read: OrderRead, deps: ResolvedDeps) {
 /**
  * The guest access link for an email sent from a REQUEST.
  *
- * `c.get('origins')[0]`, NEVER A `Host` HEADER. `originGuard` publishes the allow-list this
- * request was judged against, and `server/routes/auth.ts` builds invite URLs from the same
- * place for the same reason: a link built from an attacker-supplied header is a phishing
- * link the application sent itself.
+ * WARNING: THE STOREFRONT'S ORIGIN, NOT `c.get('origins')[0]`. This function used
+ * the latter, and it is the second half of the bug `server/shop/storefront-url.ts`
+ * describes: `origins` is the ADMIN app's allow-list, so a shipment mail sent by
+ * an operator pressing "ship" told the customer to view their order on the admin
+ * dashboard. It was invisible in every test, because on a dev box the two are the
+ * same localhost.
+ *
+ * STILL NEVER A `Host` HEADER, which is what the old comment was really about, and
+ * that reasoning stands: a link built from an attacker-supplied header is a
+ * phishing link the application sent itself. `storefrontOrigin()` reads a constant
+ * or an environment variable and never touches the request.
+ *
+ * `c` IS NO LONGER READ. The parameter is kept so the origin fix is not tangled up
+ * with churn at every call site; it is the next thing to remove.
  */
 function linkFor(c: Context<AppEnv>, read: OrderRead, deps: ResolvedDeps): AccessLink | null {
-  const origin = c.get('origins')?.[0];
+  void c;
+  const origin = storefrontOrigin();
   if (!origin) return null;
   return {
     origin,

@@ -17,6 +17,7 @@ import { SEED_PASSWORD, freshDb } from '../../test/harness';
 import type { TestCtx } from '../../test/harness';
 import { json } from '../../test/http';
 import { TEST_ORIGIN } from '../../test/http';
+import { DEFAULT_STOREFRONT_ORIGIN } from '../storefront-url';
 import { CUSTOMER_HEADER, ordersClient, resetOrdersDeps, type OrdersClient } from './test/app';
 import { resetOrderTables } from './test/harness';
 import {
@@ -556,8 +557,8 @@ describe('the admin surface', () => {
      * exactly the state an operator needs to be able to see, and exactly what a design that
      * sent inline could never show.
      */
-    expect(body.emails).toHaveLength(1);
-    expect(body.emails[0]).toMatchObject({ kind: 'confirmation', sentAt: null });
+    expect(body.emails.map((e) => e.kind)).toEqual(['placed', 'confirmation']);
+    for (const email of body.emails) expect(email.sentAt).toBeNull();
     // No `PaymentPort` injected, so no panel — rather than a fabricated status.
     expect(body.payment).toBeNull();
   });
@@ -948,7 +949,7 @@ describe('GET /admin/orders/by-number/:orderNumber', () => {
 
     expect(byNumber.order.id).toBe(read.order.id);
     expect(byNumber).toEqual(byId);
-    expect(byNumber.emails).toHaveLength(1);
+    expect(byNumber.emails).toHaveLength(2);
     expect(byNumber.payment).toBeNull();
   });
 
@@ -1005,10 +1006,15 @@ describe('POST /admin/sweep is the caller both sweepers otherwise lack', () => {
     }>(await owner.post('/api/shop/admin/sweep'));
 
     expect(body.events.applied).toBe(2);
-    // The confirmation the capture wrote, delivered in the SAME sweep.
-    expect(body.emails.sent).toBe(1);
-    expect(sent).toHaveLength(1);
-    expect(sent[0].subject).toContain('confirmed');
+    /*
+     * BOTH messages the two events wrote, delivered in the SAME sweep — which is
+     * the ordering under test: the commerce drain writes the intents, so sweeping
+     * mail first would always leave this sweep's own new mail for the next one.
+     */
+    expect(body.emails.sent).toBe(2);
+    expect(sent).toHaveLength(2);
+    expect(sent.map((m) => m.subject).join(' ')).toContain('We have your order');
+    expect(sent.map((m) => m.subject).join(' ')).toContain('confirmed');
 
     const read = await readOrderByCheckout(ctx.db, CHECKOUT);
     expect(read?.order.status).toBe('paid');
@@ -1020,6 +1026,48 @@ describe('POST /admin/sweep is the caller both sweepers otherwise lack', () => {
     expect((await client().post('/api/shop/admin/sweep')).status).toBe(401);
   });
 
+  it('THE CUSTOMER LINK POINTS AT THE STOREFRONT, NEVER AT THIS ADMIN APP', async () => {
+    /*
+     * THE REGRESSION TEST FOR THE BUG THAT PROMPTED ALL OF THIS.
+     *
+     * A shipment notice delivered on 2026-08-21 told the buyer to view their order
+     * at `https://blog-admin-app-gold.vercel.app/shop/orders/…` — the admin
+     * dashboard, where they have no account. Every customer link was being built
+     * from `c.get('origins')[0]`, which is THIS application's CORS allow-list.
+     *
+     * WHY THE OLD SUITE COULD NOT CATCH IT, and why this test is shaped the way it
+     * is: `TEST_ORIGIN` is the app's own origin here, so a test asserting merely
+     * that the mail contains a link, or that the link contains the order number,
+     * passed happily throughout the bug's entire life. The assertion has to be
+     * that the host is the STOREFRONT'S and explicitly NOT the app's own.
+     *
+     * It drives `POST /admin/sweep` — the real route, through the real app — for
+     * the reason CLAUDE.md §2 gives: the composition root is where this wiring
+     * lives, and a test that called `renderConfirmation` directly would be testing
+     * a function that was never wrong.
+     */
+    const sent: RenderedEmail[] = [];
+    const mailer: Mailer = {
+      send: (message) => {
+        sent.push(message);
+        return Promise.resolve();
+      },
+    };
+    const owner = await login(ctx.users.owner, { mailer });
+    await insertEvents(ctx.db, [checkoutCompleted(), paymentCaptured()]);
+    await owner.post('/api/shop/admin/sweep');
+
+    expect(sent.length).toBeGreaterThan(0);
+    for (const message of sent) {
+      const link = /https?:\/\/[^\s"<]*\/shop\/orders\/[^\s"<]+/.exec(message.body);
+      expect(link, `${message.subject} carries no order link`).not.toBeNull();
+      expect(link![0]).toContain(DEFAULT_STOREFRONT_ORIGIN);
+      // The assertion the old suite was missing.
+      expect(link![0]).not.toContain(TEST_ORIGIN);
+      expect(link![0]).not.toContain('blog-admin');
+    }
+  });
+
   it('a broken mailer leaves the order paid and the sweep reporting the failure', async () => {
     const mailer: Mailer = { send: () => Promise.reject(new Error('provider down')) };
     const owner = await login(ctx.users.owner, { mailer });
@@ -1028,7 +1076,8 @@ describe('POST /admin/sweep is the caller both sweepers otherwise lack', () => {
     const body = await json<{ emails: { sent: number; failed: number } }>(
       await owner.post('/api/shop/admin/sweep'),
     );
-    expect(body.emails).toMatchObject({ sent: 0, failed: 1 });
+    /* Both messages the two events wrote, both refused, both recorded. */
+    expect(body.emails).toMatchObject({ sent: 0, failed: 2 });
     // The whole point of brief §5: the money is recorded whatever the mail provider does.
     expect((await readOrderByCheckout(ctx.db, CHECKOUT))?.order.status).toBe('paid');
   });

@@ -46,6 +46,10 @@ export interface EmailIntent {
   to: string;
   subject: string;
   body: string;
+  /** The designed HTML part (migration 0320). `null` on rows written before it,
+   * which the sweeper delivers by deriving one from `body` exactly as the old
+   * code always did — see `portMailer` in `../mailer.ts`. */
+  html: string | null;
   createdAt: number;
   sentAt: number | null;
   attempts: number;
@@ -60,6 +64,7 @@ function rowToIntent(row: Record<string, unknown>): EmailIntent {
     to: String(row.to_email),
     subject: String(row.subject),
     body: String(row.body),
+    html: row.html == null ? null : String(row.html),
     createdAt: toEpochMs(row.created_at),
     sentAt: toEpochMsOrNull(row.sent_at),
     attempts: Number(row.attempts),
@@ -68,7 +73,7 @@ function rowToIntent(row: Record<string, unknown>): EmailIntent {
 }
 
 const INTENT_COLUMNS = sql.raw(
-  'id, order_id, kind, to_email, subject, body, created_at, sent_at, attempts, last_error',
+  'id, order_id, kind, to_email, subject, body, html, created_at, sent_at, attempts, last_error',
 );
 
 /** Every intent for one order, newest last. For the admin order view and for tests. */
@@ -132,7 +137,12 @@ export async function sweepEmailIntents(
     }
 
     try {
-      await mailer.send({ to: intent.to, subject: intent.subject, body: intent.body });
+      await mailer.send({
+        to: intent.to,
+        subject: intent.subject,
+        body: intent.body,
+        html: intent.html,
+      });
       await db.execute(sql`
         UPDATE shop_order_email_intents
            SET sent_at = ${now}, last_error = NULL

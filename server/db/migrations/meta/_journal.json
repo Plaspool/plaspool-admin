@@ -183,6 +183,20 @@
                         "when":  1786600001800,
                         "tag":  "0300_shop_delivery_areas",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  26,
+                        "version":  "7",
+                        "when":  1786600001900,
+                        "tag":  "0320_system_email_templates",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  27,
+                        "version":  "7",
+                        "when":  1786600002000,
+                        "tag":  "0340_order_line_images",
+                        "breakpoints":  true
                     }
                 ]
 }

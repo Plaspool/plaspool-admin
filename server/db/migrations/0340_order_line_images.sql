@@ -1,0 +1,60 @@
+-- A PHOTOGRAPH ON THE ORDER LINE (range 0340-0359).
+--
+-- HAND-WRITTEN IN FULL, for the reason every migration in this range is:
+-- `drizzle.config.ts` declares only `server/db/schema.ts`, so drizzle-kit has
+-- never seen `shop_order_lines` and can neither generate nor undo this DDL.
+--
+-- ═══════════════════════════════════════════════════════════════════════════
+-- WHY A COLUMN AND NOT A JOIN AT RENDER TIME.
+--
+-- `0160_orders_fulfillment.sql` says it in capitals over this very table:
+-- "EVERY FIELD HERE IS A SNAPSHOT… Rendering an order by joining
+-- `shop_variants` silently rewrites history the first time somebody renames a
+-- product, and it does it without an error anywhere."
+--
+-- An image is that rule's most literal case. Joining `shop_variants` when the
+-- email is rendered means a customer who re-reads their confirmation after the
+-- shop re-photographs a product sees a picture of something they did not buy —
+-- and the shop has no record that it ever showed them anything else. A snapshot
+-- taken at order creation is the same discipline `title` and `unit_amount`
+-- already follow.
+--
+-- IT IS `image_id`, NOT A URL. The id is what `shop_variants` stores and what
+-- `server/repo/public-projection.ts#publicImageUrl` turns into a path. Freezing
+-- a URL instead would freeze the ROUTE — so moving `/api/public/images/` would
+-- silently break every order ever placed, rather than being a one-line change
+-- in the projection. Ids are stable; routes are not.
+--
+-- NULLABLE, AND IT STAYS NULLABLE. Two distinct reasons, both permanent:
+--   * every order placed before this migration has no image, and there is no
+--     honest value to backfill — the variant's picture TODAY is exactly the
+--     thing this column exists to avoid showing;
+--   * `shop_variants.image_id` is itself nullable (migration 0009: "NULL until
+--     somebody uploads a photograph of this colour"), so a line for a variant
+--     with no photograph has nothing to snapshot.
+-- The email omits the thumbnail when it is NULL rather than drawing a
+-- placeholder — a broken-image box is worse than a tidy row of text.
+--
+-- NO FOREIGN KEY, deliberately, and this is the same call the `variant_id`
+-- column two lines above it already made (contract §2 R3: `shop_variants` is
+-- Catalog's, `images` is the blog's). It is also what
+-- `0009_variant_images_and_reasons.sql` decided for `shop_variants.image_id`
+-- itself, and for the additional reason it records there: an image referenced
+-- only from here must not become undeletable, and `REFERENCE_SET` in
+-- `server/repo/images.ts` is what decides that question — not a constraint.
+--
+-- ⚠️  THE WRITE PATH READS `shop_variants` ONCE, AT ORDER CREATION.
+--     `createOrderFromCheckout` resolves this with a LEFT JOIN inside the same
+--     statement that inserts the line. That is a cross-module read, which R3
+--     discourages — but it happens exactly once per line, at the one moment the
+--     snapshot is defined, rather than on every render. The alternative is
+--     carrying an image through `checkout.completed`, which means changing a
+--     shared event contract on a live money path for a thumbnail; that is the
+--     bigger risk, and it can still be done later without touching this column.
+-- ═══════════════════════════════════════════════════════════════════════════
+ALTER TABLE shop_order_lines
+  ADD COLUMN image_id text;--> statement-breakpoint
+
+-- NO INDEX. Nothing selects lines BY image; the column is read only as part of
+-- a row already being fetched by `order_id`. An index here would be written on
+-- every order and read never.

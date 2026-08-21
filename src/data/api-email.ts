@@ -37,6 +37,43 @@ export interface EmailTemplate {
   text: string;
   updatedAt: number;
   updatedBy: string;
+  /**
+   * Which system message this row IS, or `null` for one somebody wrote here.
+   *
+   * A row with a key is a DEFAULT: the application renders customer mail from it,
+   * it cannot be deleted, and it cannot be renamed. It can be edited, and it can
+   * be duplicated into an ordinary template that has none of those restrictions.
+   *
+   * Optional on the type because a server older than migration 0320 does not send
+   * the field, and a screen that crashed on an older backend would be a worse
+   * failure than one that shows a default as an ordinary template.
+   */
+  systemKey?: string | null;
+}
+
+/**
+ * A friendly label for a system key.
+ *
+ * MAPPED HERE RATHER THAN SHOWN RAW. `order.confirmation` is a machine name, and
+ * the row already carries a human `name` beside it — what this adds is the LIFECYCLE
+ * POSITION, which is the thing an operator scanning nine defaults actually wants:
+ * which of these fires first, and what has already happened when it does.
+ */
+export const SYSTEM_TEMPLATE_STAGES: Record<string, string> = {
+  'order.placed': 'Step 1 — order received',
+  'order.confirmation': 'Step 2 — payment confirmed',
+  'order.shipment': 'Step 3 — parcel shipped',
+  'order.delivered': 'Step 4 — parcel delivered',
+  'order.cancellation': 'Ends the order — cancelled',
+  'order.refund': 'Ends the order — refunded',
+  'account.welcome': 'Account — new subscriber',
+  'account.invite': 'Account — writer invited',
+  'account.password_reset': 'Account — password reset',
+};
+
+/** True for a template the application itself sends from. */
+export function isSystemTemplate(t: { systemKey?: string | null }): boolean {
+  return typeof t.systemKey === 'string' && t.systemKey !== '';
 }
 
 /** What a create/update sends. Every field, because a partial template cannot
@@ -70,7 +107,27 @@ export const EMAIL_VARIABLES = [NAME_VAR, UNSUBSCRIBE_VAR] as const;
  * 409s. If the two ever disagree the server wins — this one only decides what
  * the screen says.
  */
-export function missingUnsubscribe(body: { html: string; text: string }): boolean {
+export function missingUnsubscribe(body: {
+  html: string;
+  text: string;
+  systemKey?: string | null;
+}): boolean {
+  /*
+   * A TRANSACTIONAL SYSTEM TEMPLATE IS EXEMPT, AND THAT IS NOT A LOOPHOLE.
+   *
+   * An order confirmation is not marketing: it is a message about a contract the
+   * reader entered by paying, and offering to stop sending it would be offering
+   * to stop telling them where their parcel is. Flagging all nine defaults with
+   * "no unsubscribe link" would put a permanent red warning on the screen that an
+   * operator has no way to clear and would quickly learn to ignore — which is how
+   * the warning stops working for the templates that DO need it.
+   *
+   * `account.welcome` is deliberately NOT exempt: it is the one system template
+   * that is genuinely a subscription, it ships with the link in both bodies, and
+   * an owner who edits it out should see the warning.
+   */
+  const key = body.systemKey;
+  if (typeof key === 'string' && key !== '' && key !== 'account.welcome') return false;
   return !body.html.includes(UNSUBSCRIBE_VAR) || !body.text.includes(UNSUBSCRIBE_VAR);
 }
 
@@ -215,6 +272,22 @@ export const emailApi = {
     return res.template;
   },
 
+  /**
+   * Copy a template into a new, ordinary one.
+   *
+   * The copy is never a system template — the server drops `system_key` — so this
+   * is how an owner experiments with the confirmation wording without touching
+   * the row the order pipeline actually renders from. The server names it
+   * "<name> copy", disambiguating against the unique-name index.
+   */
+  async duplicateTemplate(id: string): Promise<EmailTemplate> {
+    const res = await apiFetch<{ template: EmailTemplate }>(
+      `/admin/email/templates/${seg(id)}/duplicate`,
+      { method: 'POST', id, subject: 'Template' },
+    );
+    return res.template;
+  },
+
   async deleteTemplate(id: string): Promise<void> {
     await apiFetch<{ ok: true }>(`/admin/email/templates/${seg(id)}`, {
       method: 'DELETE',
@@ -241,10 +314,19 @@ export const emailApi = {
   },
 
   /** 201. `source: 'manual'` is set server-side; the client cannot claim one. */
-  async addSubscriber(email: string): Promise<EmailSubscriber> {
+  /**
+   * `welcome` SENDS A REAL MESSAGE TO A REAL PERSON, so it is opt-in and the
+   * screen asks. Most manual adds are not new subscribers — they are a list being
+   * migrated a row at a time, or somebody checking whether an address is already
+   * there — and welcoming those is mail nobody asked for.
+   *
+   * It is also ignored server-side when the address was already on the list, so
+   * checking twice cannot mail the same person twice.
+   */
+  async addSubscriber(email: string, welcome = false): Promise<EmailSubscriber> {
     const res = await apiFetch<{ subscriber: EmailSubscriber }>('/admin/email/subscribers', {
       method: 'POST',
-      body: { email },
+      body: welcome ? { email, welcome: true } : { email },
       subject: 'Subscriber',
     });
     return res.subscriber;

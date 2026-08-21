@@ -8,7 +8,9 @@ import {
   StaleWriteError,
 } from '../../../repo/errors';
 import { ID, newId } from '../ids';
-import { renderShipment, type AccessLink } from '../mailer';
+import { renderDelivered, renderShipment, type AccessLink } from '../mailer';
+import { BUILT_IN } from '../../../email/system-templates';
+import type { TemplateSet } from '../../../email/system-templates';
 import {
   LIFECYCLE_ATTEMPTS,
   asErrorSubject,
@@ -294,12 +296,29 @@ interface FulfillmentTransition {
   guard: SQL;
   set(now: number): SQL;
   timeline: { type: 'shipped' | 'delivered' | 'fulfillment_cancelled'; message: string };
-  /** Only shipment mails a customer. */
-  mail?(order: OrderRead, fulfillment: Fulfillment, link: AccessLink | null): {
+  /**
+   * SHIPMENT AND DELIVERY BOTH MAIL A CUSTOMER — `kind` is what tells them apart
+   * in `shop_order_email_intents`, and it is required rather than defaulted
+   * because a message filed under the wrong kind is invisible to the dedupe key
+   * that is supposed to stop it sending twice.
+   *
+   * Cancelling a fulfilment still mails NOTHING, and that is deliberate: a
+   * cancelled parcel is an internal re-plan (the stock is released and the lines
+   * become fulfillable again), not a fact about the customer's order. If it is
+   * the whole order being cancelled, `orders.ts`'s CANCEL sends that message.
+   */
+  mail?(
+    order: OrderRead,
+    fulfillment: Fulfillment,
+    link: AccessLink | null,
+    templates: TemplateSet,
+  ): {
+    kind: 'shipment' | 'delivered';
     dedupeKey: string;
     to: string;
     subject: string;
     body: string;
+    html?: string | null;
   };
 }
 
@@ -320,6 +339,7 @@ async function fulfillmentTransition(
   now: number,
   link: AccessLink | null,
   actorId: string | null,
+  templates: TemplateSet = BUILT_IN,
 ): Promise<Fulfillment> {
   let read = await readFulfillment(db, fulfillmentId);
   if (!read) throw new NotFoundError(fulfillmentId);
@@ -331,7 +351,7 @@ async function fulfillmentTransition(
 
   for (let i = 0; i < LIFECYCLE_ATTEMPTS; i += 1) {
     const base = read.fulfillment.revision;
-    const mail = t.mail?.(order, read.fulfillment, link);
+    const mail = t.mail?.(order, read.fulfillment, link, templates);
 
     const ctes: SQL[] = [
       sql`ful AS (
@@ -355,9 +375,10 @@ async function fulfillmentTransition(
     if (mail) {
       ctes.push(sql`mail AS (
         INSERT INTO shop_order_email_intents (id, order_id, kind, to_email, subject, body,
-                                              created_at, dedupe_key)
-        SELECT ${newId(ID.emailIntent)}, ful.order_id, 'shipment', ${mail.to},
-               ${mail.subject}, ${mail.body}, ${now}, ${mail.dedupeKey}
+                                              html, created_at, dedupe_key)
+        SELECT ${newId(ID.emailIntent)}, ful.order_id, ${mail.kind ?? 'shipment'}, ${mail.to},
+               ${mail.subject}, ${mail.body}, ${mail.html ?? null}::text,
+               ${now}, ${mail.dedupeKey}
           FROM ful
         ON CONFLICT (dedupe_key) DO NOTHING
         RETURNING 1
@@ -393,7 +414,8 @@ const SHIP: FulfillmentTransition = {
   guard: sql`status = 'pending'`,
   set: (now) => sql`status = 'shipped', shipped_at = ${now}`,
   timeline: { type: 'shipped', message: 'Shipped' },
-  mail: (order, fulfillment, link) => ({
+  mail: (order, fulfillment, link, templates) => ({
+    kind: 'shipment',
     /* One shipment mail PER FULFILMENT — a three-parcel order sends three. */
     dedupeKey: `shipment:${fulfillment.id}`,
     ...renderShipment(
@@ -402,26 +424,14 @@ const SHIP: FulfillmentTransition = {
         email: order.order.email,
         currency: order.order.currency,
         grandTotal: order.order.grandTotal,
-        /*
-         * ONLY THE LINES THIS PARCEL CONTAINS, from the order's own snapshot. A
-         * shipment mail listing the whole order would tell a customer their second
-         * parcel contains items that are still in the warehouse.
-         */
-        lines: order.lines
-          .filter((line) => fulfillment.lines.some((fl) => fl.orderLineId === line.id))
-          .map((line) => {
-            const covered = fulfillment.lines.find((fl) => fl.orderLineId === line.id);
-            return {
-              title: line.title,
-              sku: line.sku,
-              qty: covered?.qty ?? line.qty,
-              lineTotal: line.lineTotal,
-            };
-          }),
+        placedAt: order.order.placedAt,
+        /* Only the lines THIS parcel contains — see `parcelLines`. */
+        lines: parcelLines(order, fulfillment),
         carrier: fulfillment.carrier,
         trackingNumber: fulfillment.trackingNumber,
       },
       link,
+      templates,
     ),
   }),
 };
@@ -432,7 +442,61 @@ const DELIVER: FulfillmentTransition = {
   guard: sql`status = 'shipped'`,
   set: (now) => sql`status = 'delivered', delivered_at = ${now}`,
   timeline: { type: 'delivered', message: 'Delivered' },
+  /*
+   * THE END OF THE TIMELINE, AND UNTIL MIGRATION 0320 IT SENT NOTHING. The last
+   * thing a customer heard was "on its way", which makes a parcel that arrived
+   * and a parcel lost in transit identical from their inbox — and it is the
+   * moment a shop most wants to be in front of somebody, because it is when a
+   * problem is still cheap to fix and a review is still worth asking for.
+   *
+   * PER FULFILMENT, exactly like SHIP: a three-parcel order sends three, each
+   * listing only what was in that parcel, and the dedupe key carries the
+   * fulfilment id for the same reason.
+   */
+  mail: (order, fulfillment, link, templates) => ({
+    kind: 'delivered',
+    dedupeKey: `delivered:${fulfillment.id}`,
+    ...renderDelivered(
+      {
+        orderNumber: order.order.orderNumber,
+        email: order.order.email,
+        currency: order.order.currency,
+        grandTotal: order.order.grandTotal,
+        placedAt: order.order.placedAt,
+        lines: parcelLines(order, fulfillment),
+      },
+      link,
+      templates,
+    ),
+  }),
 };
+
+/**
+ * The order lines this parcel actually contains, from the ORDER's own snapshot.
+ *
+ * Lifted out of SHIP when DELIVER needed the identical thing. A mail listing the
+ * whole order would tell a customer their second parcel contains items that are
+ * still in the warehouse — and getting that subtly different between the two
+ * messages would be worse than either version alone, because the shipment and the
+ * delivery notice for the same parcel would disagree.
+ */
+function parcelLines(
+  order: OrderRead,
+  fulfillment: Fulfillment,
+): { title: string; sku: string; qty: number; lineTotal: number }[] {
+  return order.lines
+    .filter((line) => fulfillment.lines.some((fl) => fl.orderLineId === line.id))
+    .map((line) => {
+      const covered = fulfillment.lines.find((fl) => fl.orderLineId === line.id);
+      return {
+        title: line.title,
+        sku: line.sku,
+        qty: covered?.qty ?? line.qty,
+        lineTotal: line.lineTotal,
+        imageId: line.imageId,
+      };
+    });
+}
 
 /**
  * Cancelling releases the quantity, via `shop_fulfillments_release`.
@@ -457,14 +521,21 @@ export const shipFulfillment = (
   now: number,
   link: AccessLink | null,
   actorId: string | null,
-): Promise<Fulfillment> => fulfillmentTransition(db, id, SHIP, now, link, actorId);
+  templates: TemplateSet = BUILT_IN,
+): Promise<Fulfillment> =>
+  fulfillmentTransition(db, id, SHIP, now, link, actorId, templates);
 
 export const deliverFulfillment = (
   db: Db,
   id: string,
   now: number,
   actorId: string | null,
-): Promise<Fulfillment> => fulfillmentTransition(db, id, DELIVER, now, null, actorId);
+  /* Both trailing and defaulted, so every existing caller and test compiles
+   * unchanged and gets a correct message with no link -- see `markOrderPaid`. */
+  link: AccessLink | null = null,
+  templates: TemplateSet = BUILT_IN,
+): Promise<Fulfillment> =>
+  fulfillmentTransition(db, id, DELIVER, now, link, actorId, templates);
 
 export const cancelFulfillment = (
   db: Db,

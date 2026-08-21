@@ -203,6 +203,18 @@ export const shopOrderLines = pgTable(
     unitAmount: integer('unit_amount').notNull(),
     lineTotal: integer('line_total').notNull(),
     /**
+     * The variant's photograph AS IT WAS AT ORDER TIME (migration 0340).
+     *
+     * Not an FK, exactly like `variant_id` above and for the same reason plus
+     * one of its own: `images` is the blog's table, and an image referenced only
+     * from here must not become undeletable by constraint — `REFERENCE_SET` in
+     * `server/repo/images.ts` is what decides that question.
+     *
+     * Nullable permanently: every order placed before 0340 has none, and a
+     * variant with no photograph has nothing to snapshot.
+     */
+    imageId: text('image_id'),
+    /**
      * The over-fulfilment bound, materialised so it can be DECLARATIVE.
      *
      * A `CHECK` cannot aggregate across rows, and a trigger running
@@ -319,10 +331,16 @@ export const shopOrderEmailIntents = pgTable(
     orderId: text('order_id')
       .notNull()
       .references(() => shopOrders.id, { onDelete: 'restrict' }),
-    kind: text('kind').$type<'confirmation' | 'shipment' | 'cancellation' | 'refund'>().notNull(),
+    kind: text('kind')
+      .$type<'placed' | 'confirmation' | 'shipment' | 'delivered' | 'cancellation' | 'refund'>()
+      .notNull(),
     toEmail: text('to_email').notNull(),
     subject: text('subject').notNull(),
+    /** The plain-text part, and the RECORD of what a customer was told. */
     body: text('body').notNull(),
+    /** The designed HTML part (migration 0320). Nullable because rows written
+     * before it have none and are history, not a gap to backfill. */
+    html: text('html'),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
     sentAt: bigint('sent_at', { mode: 'number' }),
     attempts: integer('attempts').notNull().default(0),
@@ -334,7 +352,7 @@ export const shopOrderEmailIntents = pgTable(
     uniqueIndex('shop_order_email_intents_dedupe_uq').on(t.dedupeKey),
     check(
       'shop_order_email_intents_kind_ck',
-      sql`${t.kind} IN ('confirmation', 'shipment', 'cancellation', 'refund')`,
+      sql`${t.kind} IN ('placed', 'confirmation', 'shipment', 'delivered', 'cancellation', 'refund')`,
     ),
   ],
 );

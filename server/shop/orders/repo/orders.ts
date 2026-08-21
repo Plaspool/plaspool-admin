@@ -13,8 +13,16 @@ import { formatOrderNumber } from '../order-number';
 import type { CheckoutCompletedInput } from '../inbound';
 import type { OrderCancelReason, OrderLineRef } from '../../../../shared/commerce/events';
 import type { Post } from '../../../../shared/types';
+import { mintGuestToken } from '../tokens';
 import type { AccessLink } from '../mailer';
-import { renderCancellation, renderConfirmation, renderRefund } from '../mailer';
+import {
+  renderCancellation,
+  renderConfirmation,
+  renderPlaced,
+  renderRefund,
+} from '../mailer';
+import { BUILT_IN } from '../../../email/system-templates';
+import type { TemplateSet } from '../../../email/system-templates';
 
 /**
  * The order write path (brief `04` §1–§4).
@@ -110,6 +118,16 @@ export interface OrderLine {
   lineTotal: number;
   /** How much of this line is covered by non-cancelled fulfilments. */
   fulfilledQty: number;
+  /**
+   * The variant's photograph AS IT WAS WHEN THE ORDER WAS PLACED (migration
+   * 0340), or `null` — for a variant with no photograph, or for any order
+   * placed before that migration.
+   *
+   * A SNAPSHOT LIKE EVERY OTHER FIELD HERE. Resolving it from `shop_variants`
+   * at render time would show a customer re-reading their confirmation a
+   * picture of whatever the product looks like now.
+   */
+  imageId: string | null;
 }
 
 export interface OrderTimelineEntry {
@@ -184,6 +202,7 @@ function rowToLine(row: Record<string, unknown>): OrderLine {
     unitAmount: Number(row.unit_amount),
     lineTotal: Number(row.line_total),
     fulfilledQty: Number(row.fulfilled_qty),
+    imageId: row.image_id == null ? null : String(row.image_id),
   };
 }
 
@@ -541,6 +560,17 @@ export async function createOrderFromCheckout(
   event: { id: string; occurredAt: number },
   input: CheckoutCompletedInput,
   now: number,
+  /*
+   * THE ORIGIN, NOT AN `AccessLink`, and the difference is that the token cannot
+   * be minted before this function runs: it is an HMAC over the ORDER NUMBER, and
+   * the order number is minted inside the retry loop below. A caller handing in a
+   * finished link would be handing in one for an order that does not exist yet.
+   *
+   * `null` means the message carries no link — degraded but honest, exactly as
+   * `ConsumerDeps.origin` documents.
+   */
+  origin: string | null = null,
+  templates: TemplateSet = BUILT_IN,
 ): Promise<CreateOutcome> {
   const year = new Date(now).getUTCFullYear();
 
@@ -555,6 +585,56 @@ export async function createOrderFromCheckout(
      */
     const seq = await db.execute(sql`SELECT nextval('shop_order_number_seq') AS n`);
     const orderNumber = formatOrderNumber(year, Number(seq.rows[0].n));
+
+    /*
+     * THE "WE HAVE YOUR ORDER" MESSAGE, WRITTEN IN THE SAME STATEMENT AS THE ORDER
+     * (migration 0320 added the `placed` kind).
+     *
+     * WHY IT IS WORTH A MESSAGE AT ALL, given the confirmation follows within the
+     * minute: on this deployment it does not reliably follow within the minute.
+     * The sweep does the post-payment work rather than the webhook, and CLAUDE.md
+     * records that the storefront's confirmation page gives up after sixty
+     * seconds. Sending nothing here means the customer's only feedback in that
+     * window is a page that eventually says it cannot confirm — and their
+     * conclusion is that the payment failed, so they pay again.
+     *
+     * IT DOES NOT CLAIM THE MONEY ARRIVED, and the wording in
+     * `server/mail/defaults.ts` is careful about that: the order is `pending` at
+     * this point and the capture may yet fail, in which case the next message is
+     * a cancellation. Saying "payment received" here and cancelling an hour later
+     * is worse than saying nothing.
+     */
+    const placed = renderPlaced(
+      {
+        orderNumber,
+        email: input.email,
+        currency: input.currency,
+        grandTotal: input.grandTotal,
+        placedAt: event.occurredAt,
+        /*
+         * NO `imageId` HERE, AND THAT IS NOT AN OVERSIGHT. This view is built
+         * from the CHECKOUT EVENT's payload, which carries no image — the
+         * snapshot is resolved by the LEFT JOIN in the statement below, which
+         * has not run yet at this point in the function. So the "we have your
+         * order" mail is the one message in the lifecycle with no thumbnails;
+         * every later one reads the stored line and has them.
+         *
+         * Fixable only by carrying an image through `checkout.completed`, i.e.
+         * by changing a shared event contract on a live money path. Not worth
+         * it for the first of six messages.
+         */
+        lines: input.lines.map((line) => ({
+          title: line.title,
+          sku: line.sku,
+          qty: line.qty,
+          lineTotal: line.lineTotal,
+        })),
+      },
+      origin === null
+        ? null
+        : { origin, token: mintGuestToken({ orderNumber, email: input.email }, now) },
+      templates,
+    );
 
     const lines = input.lines.map((line, index) => ({
       id: newId(ID.orderLine),
@@ -587,19 +667,43 @@ export async function createOrderFromCheckout(
           RETURNING ${sql.raw(ORDER_COLUMNS.join(', '))}
         ), ins_lines AS (
           INSERT INTO shop_order_lines (id, order_id, line_no, variant_id, sku, title,
-                                        option_values, qty, unit_amount, line_total)
+                                        option_values, qty, unit_amount, line_total,
+                                        image_id)
           SELECT l.id, ord.id, l.line_no, l.variant_id, l.sku, l.title,
-                 l.option_values, l.qty, l.unit_amount, l.line_total
+                 l.option_values, l.qty, l.unit_amount, l.line_total,
+                 /*
+                  * THE PHOTOGRAPH, SNAPSHOTTED HERE AND NEVER READ AGAIN
+                  * (migration 0340, which carries the full argument).
+                  *
+                  * LEFT, not INNER: a variant with no photograph, or one the
+                  * catalogue has since removed, must still produce an order
+                  * line. An INNER JOIN here would make a missing picture drop
+                  * a paid item from the order, which is the worst possible
+                  * failure for the least important column on the row.
+                  */
+                 v.image_id
             FROM ord, jsonb_to_recordset(${jsonb(lines)}) AS l(
                    id text, line_no integer, variant_id text, sku text, title text,
                    option_values jsonb, qty integer, unit_amount integer, line_total integer)
+            LEFT JOIN shop_variants v ON v.id = l.variant_id
           RETURNING id, line_no, variant_id, sku, title, option_values, qty,
-                    unit_amount, line_total, fulfilled_qty
+                    unit_amount, line_total, fulfilled_qty, image_id
         ), timeline AS (
           INSERT INTO shop_order_events (id, order_id, type, message, occurred_at, actor_id)
           SELECT ${newId(ID.timeline)}, ord.id, 'placed',
                  'Order placed', ${event.occurredAt}, NULL
             FROM ord
+          RETURNING 1
+        ), mail AS (
+          /* One per ORDER, as a constraint rather than a promise: a redelivered
+             checkout.completed that somehow reached here twice writes one row. */
+          INSERT INTO shop_order_email_intents (id, order_id, kind, to_email, subject,
+                                                body, html, created_at, dedupe_key)
+          SELECT ${newId(ID.emailIntent)}, ord.id, 'placed', ${placed.to},
+                 ${placed.subject}, ${placed.body}, ${placed.html ?? null}::text,
+                 ${now}, 'placed:' || ord.id
+            FROM ord
+          ON CONFLICT (dedupe_key) DO NOTHING
           RETURNING 1
         ), claim AS (
           INSERT INTO shop_order_event_consumptions (consumer, event_id, handled_at, outcome, detail)
@@ -670,7 +774,21 @@ export async function createOrderFromCheckout(
 interface Effects {
   timeline: { type: OrderTimelineType; message: string; actorId: string | null };
   emit?: { type: 'order.created' | 'order.fulfilled' | 'order.cancelled'; payload: unknown };
-  mail?: { kind: 'confirmation' | 'cancellation' | 'refund'; dedupeKey: string; to: string; subject: string; body: string };
+  /**
+   * `html` RIDES ALONG WITH `body` and is stored beside it (migration 0320).
+   * Optional in the type only so a caller mid-refactor still compiles; every
+   * render in `../mailer.ts` produces both parts, and a message stored with no
+   * HTML falls back to `textToHtml` at delivery — which is what every row
+   * written before 0320 does.
+   */
+  mail?: {
+    kind: 'confirmation' | 'cancellation' | 'refund';
+    dedupeKey: string;
+    to: string;
+    subject: string;
+    body: string;
+    html?: string | null;
+  };
 }
 
 interface Transition<A> {
@@ -776,9 +894,10 @@ async function transition<A>(
     if (effects.mail) {
       ctes.push(sql`mail AS (
         INSERT INTO shop_order_email_intents (id, order_id, kind, to_email, subject, body,
-                                              created_at, dedupe_key)
+                                              html, created_at, dedupe_key)
         SELECT ${newId(ID.emailIntent)}, upd.id, ${effects.mail.kind}, ${effects.mail.to},
-               ${effects.mail.subject}, ${effects.mail.body}, ${now}, ${effects.mail.dedupeKey}
+               ${effects.mail.subject}, ${effects.mail.body},
+               ${effects.mail.html ?? null}::text, ${now}, ${effects.mail.dedupeKey}
           FROM upd
         ON CONFLICT (dedupe_key) DO NOTHING
         RETURNING 1
@@ -875,7 +994,11 @@ function rememberIntent(intentId: string | null | undefined): SQL {
 
 // ------------------------------------------------------------ the transitions
 
-const MARK_PAID: Transition<{ link: AccessLink | null; intentId: string | null }> = {
+const MARK_PAID: Transition<{
+  link: AccessLink | null;
+  intentId: string | null;
+  templates: TemplateSet;
+}> = {
   name: 'pay',
   holds: (o) => o.status === 'pending',
   guard: sql`status = 'pending'`,
@@ -910,7 +1033,7 @@ const MARK_PAID: Transition<{ link: AccessLink | null; intentId: string | null }
       /* `renderConfirmation` addresses it from the ORDER's email snapshot, not from
        * anything a request supplied — the address a confirmation goes to is the one
        * the customer bought with. */
-      ...renderConfirmation(mailView(read), arg.link),
+      ...renderConfirmation(mailView(read), arg.link, arg.templates),
     },
   }),
 };
@@ -920,6 +1043,7 @@ const CANCEL: Transition<{
   actorId: string | null;
   link: AccessLink | null;
   intentId?: string | null;
+  templates?: TemplateSet;
 }> = {
   name: 'cancel',
   /*
@@ -970,7 +1094,11 @@ const CANCEL: Transition<{
         : {
             kind: 'cancellation',
             dedupeKey: `cancellation:${read.order.id}`,
-            ...renderCancellation(mailView(read), arg.link),
+            ...renderCancellation(
+              { ...mailView(read), reason: cancelReasonText(arg.reason) },
+              arg.link,
+              arg.templates ?? BUILT_IN,
+            ),
           },
   }),
 };
@@ -981,6 +1109,7 @@ const APPLY_REFUND: Transition<{
   link: AccessLink | null;
   eventId: string;
   intentId?: string | null;
+  templates?: TemplateSet;
 }> = {
   name: 'refund',
   holds: (o) =>
@@ -1016,10 +1145,34 @@ const APPLY_REFUND: Transition<{
       ...renderRefund(
         { ...mailView(read), refundedAmount: arg.refundedAmount, refundedTotal: arg.refundedTotal },
         arg.link,
+        arg.templates ?? BUILT_IN,
       ),
     },
   }),
 };
+
+/**
+ * `{{cancel_reason}}` — the stored enum as a sentence a customer can read.
+ *
+ * NOT `arg.reason` RAW. `payment_failed` in an email reads as a system error the
+ * reader is somehow responsible for, and `admin` reads as nothing at all.
+ *
+ * `OrderCancelReason` admits exactly two values today, so this switch is total
+ * and the `default` is unreachable. It is there for the third: a reason added to
+ * the shared type should degrade to a vague sentence in a customer's inbox rather
+ * than leak a bare identifier, and TypeScript cannot warn about this file when
+ * the union widens in `shared/commerce/events.ts`.
+ */
+function cancelReasonText(reason: OrderCancelReason): string {
+  switch (reason) {
+    case 'payment_failed':
+      return 'The payment did not go through';
+    case 'admin':
+      return 'Cancelled by the shop';
+    default:
+      return 'Cancelled by the shop';
+  }
+}
 
 function mailView(read: OrderRead) {
   return {
@@ -1027,17 +1180,30 @@ function mailView(read: OrderRead) {
     email: read.order.email,
     currency: read.order.currency,
     grandTotal: read.order.grandTotal,
+    /* `{{order_date}}`. From the ORDER's own column and never `Date.now()`: a
+     * confirmation rendered by a sweep that ran an hour late must still say the
+     * day the customer actually bought. */
+    placedAt: read.order.placedAt,
     lines: read.lines.map((line) => ({
       title: line.title,
       sku: line.sku,
       qty: line.qty,
       lineTotal: line.lineTotal,
+      imageId: line.imageId,
     })),
   };
 }
 
 // ----------------------------------------------------------------- operations
 
+/**
+ * `templates` IS TRAILING AND DEFAULTED, and that is what makes this change safe
+ * to land on a live pipeline: every existing caller and every existing test
+ * compiles untouched and gets the built-in wording, while the sweep — the one
+ * caller that has a database handle to read overrides with — passes the set it
+ * loaded. See `server/email/system-templates.ts` for why a failed load is not an
+ * error but simply this default.
+ */
 export const markOrderPaid = (
   db: Db,
   orderId: string,
@@ -1045,7 +1211,9 @@ export const markOrderPaid = (
   link: AccessLink | null,
   claim: EventClaim | null,
   intentId: string | null = null,
-): Promise<Order> => transition(db, orderId, MARK_PAID, { link, intentId }, now, claim);
+  templates: TemplateSet = BUILT_IN,
+): Promise<Order> =>
+  transition(db, orderId, MARK_PAID, { link, intentId, templates }, now, claim);
 
 export const cancelOrder = (
   db: Db,
@@ -1055,6 +1223,7 @@ export const cancelOrder = (
     actorId: string | null;
     link: AccessLink | null;
     intentId?: string | null;
+    templates?: TemplateSet;
   },
   now: number,
   claim: EventClaim | null,
@@ -1069,6 +1238,7 @@ export const refundOrder = (
     link: AccessLink | null;
     eventId: string;
     intentId?: string | null;
+    templates?: TemplateSet;
   },
   now: number,
   claim: EventClaim | null,

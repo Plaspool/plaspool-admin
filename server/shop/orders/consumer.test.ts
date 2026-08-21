@@ -175,13 +175,32 @@ describe('checkout.completed creates the order', () => {
     expect(await emittedEvents(ctx.db)).toEqual([]);
   });
 
-  it('writes one timeline entry and no email', async () => {
+  it('writes one timeline entry and the "we have your order" email', async () => {
+    /*
+     * THE EMAIL IS NEW HERE (migration 0320) AND IT IS SAFE BECAUSE OF WHEN THIS
+     * EVENT FIRES. `checkout.completed` is emitted by `CheckoutPort.complete`,
+     * which is called from the CAPTURE path — so it exists only for a customer
+     * whose charge already succeeded at Paystack. A declined card never produces
+     * this event and therefore never produces this message, which was the concern
+     * that kept the create path silent until now.
+     *
+     * What it buys: the order is still `pending` at this point and stays that way
+     * until `payment.captured` is applied by a later sweep — up to a minute on
+     * this deployment. Sending nothing left the customer with a confirmation page
+     * that times out and no mail, whose obvious reading is "it failed, pay again".
+     */
     await drive([checkoutCompleted()]);
     const read = await readOrderByCheckout(ctx.db, CHECKOUT);
     const timeline = await listTimeline(ctx.db, read!.order.id);
     expect(timeline).toHaveLength(1);
     expect(timeline[0]).toMatchObject({ type: 'placed', message: 'Order placed' });
-    expect(await listIntents(ctx.db, read!.order.id)).toEqual([]);
+
+    const intents = await listIntents(ctx.db, read!.order.id);
+    expect(intents.map((i) => i.kind)).toEqual(['placed']);
+    /* It must NOT claim the money has arrived — the capture can still fail, and
+     * "payment received" followed by a cancellation is worse than saying nothing. */
+    expect(intents[0].body).not.toContain('payment received');
+    expect(intents[0].subject).toContain('We have your order');
   });
 
   it('STORES TOTALS THAT DO NOT ADD UP, through the database, unchanged', async () => {
@@ -499,9 +518,13 @@ describe('payment.captured', () => {
     // The lines ride along so no consumer has to ask Catalog what was bought.
     expect((emitted[0].payload.lines as unknown[])).toHaveLength(2);
 
+    /* Two by this point: `placed` from `checkout.completed`, `confirmation` from
+     * the capture. Both unsent — the sweeper has not run. */
     const intents = await listIntents(ctx.db, read!.order.id);
-    expect(intents).toHaveLength(1);
-    expect(intents[0]).toMatchObject({ kind: 'confirmation', sentAt: null, attempts: 0 });
+    expect(intents.map((i) => i.kind)).toEqual(['placed', 'confirmation']);
+    const confirmation = intents.find((i) => i.kind === 'confirmation')!;
+    expect(confirmation).toMatchObject({ sentAt: null, attempts: 0 });
+    expect(confirmation.subject).toContain('confirmed');
   });
 
   it('a capture against a CANCELLED order is an anomaly, recorded and not applied', async () => {
@@ -558,7 +581,14 @@ describe('payment.failed', () => {
     // card decline into a message about an order they do not believe they placed.
     await drive([checkoutCompleted(), paymentFailed()]);
     const read = await readOrderByCheckout(ctx.db, CHECKOUT);
-    expect(await listIntents(ctx.db, read!.order.id)).toEqual([]);
+    /*
+     * The `placed` intent from `checkout.completed` is there and is expected; what
+     * this test is about is that NO CANCELLATION was added on top of it. The rule
+     * is unchanged by migration 0320 — only the baseline it is measured against.
+     */
+    const kinds = (await listIntents(ctx.db, read!.order.id)).map((i) => i.kind);
+    expect(kinds).toEqual(['placed']);
+    expect(kinds).not.toContain('cancellation');
   });
 
   it('but DOES mail when the order had been paid', async () => {
@@ -569,7 +599,7 @@ describe('payment.failed', () => {
     const read = await readOrderByCheckout(ctx.db, CHECKOUT);
     expect(read?.order.status).toBe('cancelled');
     const kinds = (await listIntents(ctx.db, read!.order.id)).map((i) => i.kind);
-    expect(kinds).toEqual(['confirmation', 'cancellation']);
+    expect(kinds).toEqual(['placed', 'confirmation', 'cancellation']);
   });
 });
 

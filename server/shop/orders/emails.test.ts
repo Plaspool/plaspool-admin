@@ -61,6 +61,25 @@ async function paidOrderWithLink(deps: ConsumerDeps = { origin: ORIGIN }) {
   return (await readOrderByCheckout(ctx.db, CHECKOUT))!;
 }
 
+/**
+ * A paid order owes TWO messages since migration 0320: `placed`, written with the
+ * order at `checkout.completed`, and `confirmation`, written with the capture.
+ *
+ * NAMED CONSTANTS RATHER THAN A LITERAL `2` SPRINKLED THROUGH THE FILE. Half the
+ * assertions here are about the SWEEPER — how many it sends, how many it fails,
+ * how it retries — and those numbers are only incidentally the number of
+ * lifecycle messages. Writing `PAID_ORDER_INTENTS` says which of the two a given
+ * assertion means, so the next message added to the lifecycle changes one line
+ * here rather than a dozen bare numbers whose meaning has to be re-derived.
+ */
+const PAID_ORDER_INTENTS = 2;
+
+/** Drop the `placed` intent, for a test that wants to reason about one message. */
+async function keepOnlyConfirmation(orderId: string) {
+  await ctx.db.execute(sql`
+    DELETE FROM shop_order_email_intents WHERE order_id = ${orderId} AND kind = 'placed'`);
+}
+
 // ------------------------------------------------------- written transactionally
 
 describe('the intent is written with the state change, not after it', () => {
@@ -68,14 +87,26 @@ describe('the intent is written with the state change, not after it', () => {
     const read = await paidOrderWithLink();
     const intents = await listIntents(ctx.db, read.order.id);
     expect(read.order.status).toBe('paid');
-    expect(intents).toHaveLength(1);
-    expect(intents[0]).toMatchObject({
-      kind: 'confirmation',
-      to: 'Buyer@Example.test',
-      sentAt: null,
-      attempts: 0,
-      lastError: null,
-    });
+
+    /*
+     * TWO, AND THE ORDER OF THEM IS THE LIFECYCLE. `placed` is written in the same
+     * statement as the order row at `checkout.completed`; `confirmation` in the
+     * same statement as the capture. Neither has been swept, which is the property
+     * under test: both exist before any mailer has run.
+     */
+    expect(intents).toHaveLength(PAID_ORDER_INTENTS);
+    expect(intents.map((i) => i.kind).sort()).toEqual(['confirmation', 'placed']);
+    for (const intent of intents) {
+      expect(intent).toMatchObject({
+        to: 'Buyer@Example.test',
+        sentAt: null,
+        attempts: 0,
+        lastError: null,
+      });
+      /* The designed HTML part is stored alongside the text, not derived at
+       * delivery — the whole point of the `html` column. */
+      expect(intent.html).toContain('<!doctype html>');
+    }
   });
 
   it('a REFUSED transition writes no intent at all', async () => {
@@ -144,20 +175,24 @@ describe('delivery is a sweeper', () => {
     const mailer = new LoggingMailer();
 
     expect(await sweepEmailIntents(ctx.db, mailer, NOW + 100)).toEqual({
-      sent: 1,
+      sent: PAID_ORDER_INTENTS,
       failed: 0,
       skipped: 0,
     });
-    expect(mailer.sent).toHaveLength(1);
-    expect(mailer.sent[0].to).toBe('Buyer@Example.test');
-    expect(mailer.sent[0].subject).toContain(read.order.orderNumber);
+    expect(mailer.sent).toHaveLength(PAID_ORDER_INTENTS);
+    for (const message of mailer.sent) {
+      expect(message.to).toBe('Buyer@Example.test');
+      expect(message.subject).toContain(read.order.orderNumber);
+    }
 
     const intents = await listIntents(ctx.db, read.order.id);
-    expect(intents[0]).toMatchObject({ sentAt: NOW + 100, attempts: 1, lastError: null });
+    for (const intent of intents) {
+      expect(intent).toMatchObject({ sentAt: NOW + 100, attempts: 1, lastError: null });
+    }
 
     // A second sweep has nothing to do.
     expect(await sweepEmailIntents(ctx.db, mailer, NOW + 200)).toMatchObject({ sent: 0 });
-    expect(mailer.sent).toHaveLength(1);
+    expect(mailer.sent).toHaveLength(PAID_ORDER_INTENTS);
   });
 
   it('A MAILER FAILURE NEVER ROLLS BACK A PAID ORDER', async () => {
@@ -168,6 +203,11 @@ describe('delivery is a sweeper', () => {
      * remove.
      */
     const read = await paidOrderWithLink();
+    /* Narrowed to ONE intent on purpose: this test is about the sweeper's
+     * mechanics, not about how many messages a paid order owes. Leaving the
+     * `placed` intent in would make every count here two, which says nothing
+     * extra and hides which number is the one under test. */
+    await keepOnlyConfirmation(read.order.id);
     const broken = new BrokenMailer();
 
     const summary = await sweepEmailIntents(ctx.db, broken, NOW + 100);
@@ -189,6 +229,11 @@ describe('delivery is a sweeper', () => {
 
   it('one bad address does not stop the rest of the queue', async () => {
     const read = await paidOrderWithLink();
+    /* Narrowed to ONE intent on purpose: this test is about the sweeper's
+     * mechanics, not about how many messages a paid order owes. Leaving the
+     * `placed` intent in would make every count here two, which says nothing
+     * extra and hides which number is the one under test. */
+    await keepOnlyConfirmation(read.order.id);
     // A second intent, to a different address.
     await ctx.db.execute(sql`
       INSERT INTO shop_order_email_intents (id, order_id, kind, to_email, subject, body,
@@ -210,6 +255,11 @@ describe('delivery is a sweeper', () => {
 
   it('retries a failure on the next sweep, then stops at the attempt limit', async () => {
     const read = await paidOrderWithLink();
+    /* Narrowed to ONE intent on purpose: this test is about the sweeper's
+     * mechanics, not about how many messages a paid order owes. Leaving the
+     * `placed` intent in would make every count here two, which says nothing
+     * extra and hides which number is the one under test. */
+    await keepOnlyConfirmation(read.order.id);
     const broken = new BrokenMailer();
 
     for (let i = 1; i <= EMAIL_ATTEMPT_LIMIT; i += 1) {
@@ -238,7 +288,10 @@ describe('delivery is a sweeper', () => {
      * matches. The loser skips WITHOUT SENDING. That is the property a `claimed_at` lease
      * column is usually added for, obtained from a column that had to exist anyway.
      */
-    await paidOrderWithLink();
+    const read = await paidOrderWithLink();
+    /* One intent, so "delivered once" is a statement about the CAS rather than
+     * about how many messages a paid order owes. */
+    await keepOnlyConfirmation(read.order.id);
     const mailer = new LoggingMailer();
 
     const [first, second] = await Promise.all([
@@ -259,7 +312,12 @@ describe('what the customer would read', () => {
     const read = await paidOrderWithLink();
     const mailer = new LoggingMailer();
     await sweepEmailIntents(ctx.db, mailer, NOW + 100);
-    const body = mailer.sent[0].body;
+    /* The CONFIRMATION specifically. Both messages carry the lines, but this test
+     * is about the confirmation's frozen total, and picking it by kind survives a
+     * future change to the order the sweeper drains in. */
+    const confirmation = mailer.sent.find((m) => m.subject.includes('confirmed'))!;
+    expect(confirmation).toBeDefined();
+    const body = confirmation.body;
 
     expect(body).toContain('2 × Enamel Mug (MUG-NAVY)');
     expect(body).toContain('1 × Logo T-Shirt (TEE-M)');
@@ -272,7 +330,7 @@ describe('what the customer would read', () => {
      */
     await ctx.db.execute(sql`
       UPDATE shop_order_lines SET fulfilled_qty = 0 WHERE order_id = ${read.order.id}`);
-    expect(mailer.sent[0].body).toContain('Enamel Mug');
+    expect(confirmation.body).toContain('Enamel Mug');
   });
 
   it('carries a guest access link whose token opens THAT order and no other', async () => {
@@ -320,7 +378,15 @@ describe('what the customer would read', () => {
     await sweepEmailIntents(ctx.db, mailer, NOW + 100);
     const shipment = mailer.sent.find((m) => m.subject.includes('has shipped'));
     expect(shipment).toBeDefined();
-    expect(shipment!.body).toContain('Tracking: TRACK-1 (DHL)');
+    /*
+     * THE TRACKING FORMAT CHANGED WITH THE DESIGNED TEMPLATES (migration 0320):
+     * carrier and tracking are a labelled panel in the HTML part and two labelled
+     * lines in the text part, rather than one parenthesised sentence. Asserted as
+     * two independent facts so the test says what a customer must be able to READ
+     * rather than pinning an exact punctuation the design may move again.
+     */
+    expect(shipment!.body).toContain('TRACK-1');
+    expect(shipment!.body).toContain('DHL');
     expect(shipment!.body).toContain('Logo T-Shirt');
     // The mug is still in the warehouse. Telling the customer otherwise is a support call.
     expect(shipment!.body).not.toContain('Enamel Mug');
@@ -346,7 +412,8 @@ describe('a paid order produces a REAL send, not a log line', () => {
      * subsystem's `Mailer` (`{ to, subject, body }`) and `server/mail/port.ts`'s
      * (`{ to, subject, text, html }`) were two interfaces with nothing between them.
      */
-    await paidOrderWithLink();
+    const read = await paidOrderWithLink();
+    await keepOnlyConfirmation(read.order.id);
     const recorder = new PortRecorder();
 
     const summary = await sweepEmailIntents(ctx.db, portMailer(recorder), NOW + 100);
@@ -359,11 +426,17 @@ describe('a paid order produces a REAL send, not a log line', () => {
     // make the record of what a customer was told a lossy round trip.
     expect(message.text).toContain('2 × Enamel Mug (MUG-NAVY)');
     expect(message.text).toContain('Total: 54.00 USD');
-    // And the html is derived from it, with the access link made clickable: a bare
-    // URL in an HTML part is not a link in several clients, and a dead "view your
-    // order" link is a support ticket per order.
-    expect(message.html).toContain('<p>');
+    /*
+     * THE HTML IS NOW AUTHORED AND STORED, NOT DERIVED FROM THE TEXT (migration
+     * 0320). It is a full branded document rather than a stack of bare `<p>`s, and
+     * the "view your order" button is a real anchor — a bare URL in an HTML part is
+     * not a link in several clients, and a dead link there is a support ticket per
+     * order.
+     */
+    expect(message.html).toContain('<!doctype html>');
     expect(message.html).toContain(`<a href="${ORIGIN}/shop/orders/`);
+    // The line table is a table, not a paragraph of run-together text.
+    expect(message.html).toContain('Enamel Mug');
   });
 
   it('escapes a product title before it becomes markup', async () => {
@@ -373,9 +446,17 @@ describe('a paid order produces a REAL send, not a log line', () => {
      * ever sees text it produced itself.
      */
     const read = await paidOrderWithLink();
+    await keepOnlyConfirmation(read.order.id);
+    /*
+     * `html = NULL` IS THE POINT OF THIS TEST NOW. Since migration 0320 both parts
+     * are authored and stored, and `portMailer` prefers the stored HTML — so the
+     * `textToHtml` fallback is only reachable for rows written BEFORE 0320, which
+     * have no HTML part. Those rows still exist in production and must still
+     * deliver, so this pins the legacy path deliberately rather than by accident.
+     */
     await ctx.db.execute(sql`
       UPDATE shop_order_email_intents
-         SET body = 'Mug <3 & "quoted" https://shop.test/x'
+         SET body = 'Mug <3 & "quoted" https://shop.test/x', html = NULL
        WHERE order_id = ${read.order.id}`);
 
     const recorder = new PortRecorder();
@@ -386,10 +467,47 @@ describe('a paid order produces a REAL send, not a log line', () => {
     expect(html).not.toContain('<3');
   });
 
+  it('a title with markup in it is escaped into the DESIGNED html too', async () => {
+    /*
+     * The same hazard on the path that actually runs now. A line title is a string
+     * somebody typed into the catalogue, and `brand.ts`'s `lineTable` puts it
+     * inside a table cell — so the escaping has to happen at render time, in the
+     * same statement as the order, rather than at delivery.
+     */
+    await insertEvents(ctx.db, [
+      checkoutCompleted({
+        lines: [
+          {
+            variantId: 'var_mug_navy',
+            sku: 'MUG-NAVY',
+            title: 'Mug <3 & "quoted"',
+            optionValues: { Colour: 'Navy' },
+            qty: 2,
+            unitAmount: 1500,
+            lineTotal: 3000,
+          },
+        ],
+      }),
+      paymentCaptured(),
+    ]);
+    await sweepCommerceEvents(ctx.db, { origin: ORIGIN }, NOW);
+
+    const recorder = new PortRecorder();
+    await sweepEmailIntents(ctx.db, portMailer(recorder), NOW + 100);
+    for (const message of recorder.sent) {
+      expect(message.html).toContain('Mug &lt;3 &amp; &quot;quoted&quot;');
+      expect(message.html).not.toContain('Mug <3');
+      // The text part is NOT escaped: there is no markup to escape into, and
+      // `&amp;` in a plain-text mail is a bug the reader sees.
+      expect(message.text).toContain('Mug <3 & "quoted"');
+    }
+  });
+
   it('a transport that rejects is still recorded on the row, never thrown', async () => {
     // The adapter must not swallow a rejection: the sweeper's whole job is to
     // record the failure and leave the intent unsent.
     const read = await paidOrderWithLink();
+    await keepOnlyConfirmation(read.order.id);
     const broken: PortMailer = { send: () => Promise.reject(new Error('resend refused: HTTP 429')) };
 
     expect(await sweepEmailIntents(ctx.db, portMailer(broken), NOW + 100)).toEqual({
@@ -421,7 +539,8 @@ describe('a paid order produces a REAL send, not a log line', () => {
       httpClient(ctx.db, { mailer: recorder });
       expect(resolveDeps().mailer).not.toBeInstanceOf(LoggingMailer);
 
-      await paidOrderWithLink();
+      const placed = await paidOrderWithLink();
+      await keepOnlyConfirmation(placed.order.id);
       const summary = await sweepEmailIntents(ctx.db, resolveDeps().mailer, NOW + 100);
       expect(summary.sent).toBe(1);
       expect(recorder.sent.map((m) => m.to)).toEqual(['Buyer@Example.test']);

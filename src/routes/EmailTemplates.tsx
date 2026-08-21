@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { LayoutTemplate, Plus, Trash2 } from 'lucide-react';
+import { Copy, LayoutTemplate, Lock, Plus, Trash2 } from 'lucide-react';
 import { ConfirmDialog } from '../components/Dialog';
 import { Spinner } from '../components/ui/Feedback';
 import {
   EMAIL_VARIABLES,
   emailApi,
+  isSystemTemplate,
   missingUnsubscribe,
+  SYSTEM_TEMPLATE_STAGES,
   UNSUBSCRIBE_VAR,
   type EmailTemplate,
   type TemplateDraft,
@@ -102,7 +104,36 @@ export default function EmailTemplates() {
       setItems((list) => (list ?? []).filter((t) => t.id !== template.id));
       if (editing?.id === template.id) setEditing(null);
     } catch (err) {
+      /*
+       * A 409 HERE IS ALMOST ALWAYS THE SYSTEM-TEMPLATE GUARD, and the generic
+       * "something went wrong" would send an operator looking for a bug. The
+       * button is disabled for these rows, so reaching this branch means the
+       * request was made some other way — a stale list, or two tabs.
+       */
+      if (err instanceof ApiError && err.status === 409) {
+        setError(
+          `${template.name} is a default template. It cannot be deleted, because the ` +
+            'system sends from it. Duplicate it instead.',
+        );
+        return;
+      }
       setError(messageFor(err, 'the template is still there'));
+    }
+  }
+
+  async function duplicate(template: EmailTemplate) {
+    setError('');
+    try {
+      const copy = await emailApi.duplicateTemplate(template.id);
+      setItems((list) => [copy, ...(list ?? [])]);
+      /* Straight into the editor: duplicating is never the goal in itself, it is
+       * the first half of "let me change this without breaking the real one". */
+      setEditing({
+        id: copy.id,
+        draft: { name: copy.name, subject: copy.subject, html: copy.html, text: copy.text },
+      });
+    } catch (err) {
+      setError(messageFor(err, 'nothing was copied'));
     }
   }
 
@@ -111,9 +142,10 @@ export default function EmailTemplates() {
       <header className="mailscr__head">
         <h1 className="mailscr__title">Templates</h1>
         <p className="mailscr__lede">
-          The HTML and plain-text bodies a broadcast is sent from, with <code>{'{{name}}'}</code> and{' '}
-          <code>{'{{unsubscribe_url}}'}</code> substituted on the server. A template without an
-          unsubscribe link can be saved but never sent.
+          The HTML and plain-text bodies mail is sent from, with placeholders substituted on the
+          server. <strong>Default</strong> templates are the messages PlaSpool sends by itself —
+          every step of an order, plus account mail. Edit them freely; they cannot be deleted or
+          renamed, because the system needs them to run. Duplicate one to experiment safely.
         </p>
       </header>
 
@@ -130,6 +162,7 @@ export default function EmailTemplates() {
             key={editing.id ?? 'new'}
             id={editing.id}
             initial={editing.draft}
+            systemKey={items?.find((t) => t.id === editing.id)?.systemKey}
             onDone={(saved) => {
               setItems((list) => {
                 const rest = (list ?? []).filter((t) => t.id !== saved.id);
@@ -167,39 +200,84 @@ export default function EmailTemplates() {
               </div>
             ) : (
               <ul className="maillist">
-                {items.map((t) => (
-                  <li className="maillist__row" key={t.id}>
-                    <div className="maillist__main">
-                      <p className="maillist__name">{t.name}</p>
-                      <p className="maillist__meta">
-                        {t.subject || 'No subject'} · edited {dateOf(t.updatedAt)}
-                      </p>
-                    </div>
-                    {missingUnsubscribe(t) && (
-                      <span className="chip chip--draft">no unsubscribe link</span>
-                    )}
-                    <div className="maillist__acts">
-                      <button
-                        className="btn btn--outline btn--sm"
-                        onClick={() =>
-                          setEditing({
-                            id: t.id,
-                            draft: { name: t.name, subject: t.subject, html: t.html, text: t.text },
-                          })
-                        }
-                      >
-                        Edit
-                      </button>
-                      <button
-                        className="btn btn--danger btn--sm"
-                        onClick={() => setDeleting(t)}
-                        aria-label={`Delete ${t.name}`}
-                      >
-                        <Trash2 className="ui-ic" aria-hidden="true" />
-                      </button>
-                    </div>
-                  </li>
-                ))}
+                {items.map((t) => {
+                  const system = isSystemTemplate(t);
+                  const stage = t.systemKey ? SYSTEM_TEMPLATE_STAGES[t.systemKey] : undefined;
+                  return (
+                    <li className="maillist__row" key={t.id}>
+                      <div className="maillist__main">
+                        <p className="maillist__name">
+                          {t.name}
+                          {system && (
+                            <span className="chip chip--system" title={t.systemKey ?? undefined}>
+                              <Lock className="ui-ic" aria-hidden="true" />
+                              Default
+                            </span>
+                          )}
+                        </p>
+                        <p className="maillist__meta">
+                          {/*
+                            THE LIFECYCLE STAGE REPLACES THE SUBJECT for a default,
+                            deliberately. Nine rows whose subjects all begin "Order
+                            {'{{order_number}}'}" are nine rows that read identically at
+                            a glance; "Step 3 — parcel shipped" is the thing an
+                            operator is actually scanning for.
+                          */}
+                          {stage ?? t.subject ?? 'No subject'} · edited {dateOf(t.updatedAt)}
+                        </p>
+                      </div>
+                      {missingUnsubscribe(t) && (
+                        <span className="chip chip--draft">no unsubscribe link</span>
+                      )}
+                      <div className="maillist__acts">
+                        <button
+                          className="btn btn--outline btn--sm"
+                          onClick={() =>
+                            setEditing({
+                              id: t.id,
+                              draft: {
+                                name: t.name,
+                                subject: t.subject,
+                                html: t.html,
+                                text: t.text,
+                              },
+                            })
+                          }
+                        >
+                          Edit
+                        </button>
+                        <button
+                          className="btn btn--outline btn--sm"
+                          onClick={() => void duplicate(t)}
+                          aria-label={`Duplicate ${t.name}`}
+                          title="Make an editable copy"
+                        >
+                          <Copy className="ui-ic" aria-hidden="true" />
+                        </button>
+                        {/*
+                          DISABLED RATHER THAN ABSENT for a default. A missing button
+                          reads as a rendering bug and invites somebody to go looking
+                          for the delete elsewhere; a disabled one with a title says
+                          the rule out loud. The server refuses it either way, and so
+                          does a trigger under that.
+                        */}
+                        <button
+                          className="btn btn--danger btn--sm"
+                          onClick={() => setDeleting(t)}
+                          disabled={system}
+                          aria-label={`Delete ${t.name}`}
+                          title={
+                            system
+                              ? 'Default templates cannot be deleted — the system sends from them'
+                              : `Delete ${t.name}`
+                          }
+                        >
+                          <Trash2 className="ui-ic" aria-hidden="true" />
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </>
@@ -236,11 +314,14 @@ export default function EmailTemplates() {
 function TemplateEditor({
   id,
   initial,
+  systemKey,
   onDone,
   onCancel,
 }: {
   id: string | null;
   initial: TemplateDraft;
+  /** Set when this is one of the messages the application sends by itself. */
+  systemKey?: string | null;
   onDone: (saved: EmailTemplate) => void;
   onCancel: () => void;
 }) {
@@ -297,7 +378,8 @@ function TemplateEditor({
     }
   }
 
-  const incomplete = missingUnsubscribe(draft);
+  const isSystem = typeof systemKey === 'string' && systemKey !== '';
+  const incomplete = missingUnsubscribe({ ...draft, systemKey });
 
   return (
     <section className="mailtpl">
@@ -306,12 +388,26 @@ function TemplateEditor({
           <label className="label" htmlFor={`${fieldId}-name`}>
             Name
           </label>
+          {/*
+            THE NAME IS READ-ONLY FOR A DEFAULT and the server refuses a rename
+            too. Sending is keyed on `system_key`, not on the name — so a rename
+            does not break delivery, it breaks the operator's ability to FIND the
+            message that is being delivered, which is worse because nothing
+            complains.
+          */}
           <input
             id={`${fieldId}-name`}
             className="input"
             value={draft.name}
+            readOnly={isSystem}
+            aria-describedby={isSystem ? `${fieldId}-namenote` : undefined}
             onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
           />
+          {isSystem && (
+            <p className="mailtpl__note" id={`${fieldId}-namenote`}>
+              A default template keeps its name so it can be found. Duplicate it to rename.
+            </p>
+          )}
         </div>
         <div className="mailtpl__field">
           <label className="label" htmlFor={`${fieldId}-subject`}>
@@ -333,6 +429,15 @@ function TemplateEditor({
         somewhere else. The send is where it bites — `emailApi.sendBroadcast` is
         unreachable for a template in this state, on both sides.
       */}
+      {isSystem && (
+        <p className="notice notice--info" role="status">
+          <strong>{SYSTEM_TEMPLATE_STAGES[systemKey] ?? 'System message'}.</strong> PlaSpool sends
+          this one automatically. Your edits go out to real customers on the next send; the
+          placeholders below are filled in per order. If a saved body is left empty, the built-in
+          version is sent instead, so a customer is never emailed a blank page.
+        </p>
+      )}
+
       {incomplete && (
         <p className="notice notice--warn" role="status">
           Both bodies need <code>{UNSUBSCRIBE_VAR}</code> before this template can be broadcast.
