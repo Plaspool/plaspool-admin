@@ -114,49 +114,45 @@
  * that things stay where you put them.
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * THE RAIL BREAKS OUT OF `--shell-max`, AND IT IS THE ONLY THING ON THIS SCREEN
- * THAT DOES.
+ * THE RAIL STAYS INSIDE `--shell-max`, LIKE EVERYTHING ELSE ON THE SCREEN.
  *
- * THE ARITHMETIC IS THE ARGUMENT, and it was measured rather than reasoned. Six
- * lanes at 19rem, five gutters and the canvas padding want 1908px. `.shopscr`
- * caps the page at `--shell-max` (76rem) and spends `--s5` a side, so the canvas
- * measured clientWidth 1168 against scrollWidth 1908 — at a 1280px viewport AND
- * at a 2200px one, IDENTICALLY, because the shell caps before the window does.
- * `Closed` and `Needs a look` were past the right-hand edge at every desktop
- * width this shop is run at. Mid-drag that is not cosmetic: a card whose legal
- * targets were `packing` and `closed` lit ONE lane, because the other was off
- * screen, and a board that understates where a card may go is worse than a board
- * that scrolls.
+ * IT USED TO BREAK OUT — `margin-inline: calc(50% - 50vw + var(--s4))` — and the
+ * arithmetic for that was real and is still true: six lanes at 19rem, five
+ * gutters and the canvas padding want 1908px, while `.shopscr` caps the page at
+ * 76rem and spends `--s5` a side, leaving the canvas 1168px. Full bleed bought
+ * five lanes at 1280px and all six from 1556px. Measured, not reasoned.
  *
- * WHY BREAK OUT RATHER THAN NARROW THE LANES ALONE. Narrowing alone cannot get
- * there: 76rem over six lanes is 12.7rem each BEFORE a gutter is paid for, the
- * shell's own padding takes it to 11.6rem, and the floor below is 15rem —
- * measured, at the width where a card stops breaking its order number across two
- * lines. Inside the cap this board is not six lanes wide at any window size, on
- * any monitor. The cap is right for the prose above the board and wrong for the
- * board itself: `--shell-max` exists so a paragraph does not run to 2000px, and a
- * dispatch surface is not a paragraph. So the RAIL leaves the measure and
- * everything else on the screen — the heading, the notes, the geography panel —
- * stays inside it. Full bleed is what turns a board that was three lanes wide at
- * EVERY desktop size into one that is five at 1280px and all six from 1556px.
+ * IT WAS TRADED AWAY ON PURPOSE. The orders console is read beside the returns
+ * board, and a dispatch surface that runs edge-to-edge while every other screen
+ * in the admin stops at 76rem does not read as "more room" — it reads as a
+ * different application. Consistency of measure across the two boards an
+ * operator alternates between was worth more than the two lanes.
  *
- * WHY NOT A PLAIN `100vw` FULL BLEED. `100vw` counts the classic scrollbar (12px
- * on the machine this was measured on), so a canvas that wide overflows the
- * document and the PAGE grows a horizontal scrollbar — a second scroller beside
- * the rail's own, which is a worse bug than the one being fixed. `--s4` a side is
- * subtracted instead: it is wider than any classic scrollbar, it leaves the
- * negative margin symmetric about the DOCUMENT rather than about the viewport,
- * and a canvas with an edge reads as a canvas rather than as one cropped by the
- * window.
+ * WHAT IT COSTS, SAID PLAINLY: at 1280px the canvas is ~1168px and the lane
+ * floor below is 15rem (240px, measured — the width at which a card stops
+ * breaking its order number across two lines), so FOUR lanes are on screen and
+ * two are past the right-hand edge at every desktop width. That is a real
+ * regression against full bleed and it is not hidden: `Board.tsx` measures the
+ * overflow and draws a marker at the edge counting the lanes past it — and,
+ * while a card is in hand, NAMING the ones that will take it. The bug the
+ * breakout originally fixed (a card lighting one legal lane because the other
+ * was off screen) is answered by that marker, not by the width.
  *
- * IT IS THE RAIL AND NOT THE CANVAS that carries the breakout, so the canvas
- * keeps a normal `100%` width — which is what the lane basis below divides — and
- * `Board.tsx` gets a positioned box to hang the off-screen lane markers in.
+ * THE FLOOR IS WHAT MUST NOT MOVE. The tempting fix is to shrink lanes until six
+ * fit: 76rem over six is 12.7rem before a gutter, 11.6rem after the shell's
+ * padding, and at 12rem an order number wraps at every age. A wrapped order
+ * number is the handle an operator reads back over the phone, set in mono
+ * precisely so a mistyped digit shows. Six lanes inside the cap is not
+ * available at any window size — so the board scrolls instead, and the clamp
+ * below pins to 15rem rather than dividing its way under it.
+ *
+ * `position: relative` STAYS regardless of the margin: `Board.tsx` hangs the
+ * off-screen lane markers in this box, and they are now load-bearing rather
+ * than a nicety.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 .shopboard__rail {
   position: relative;
-  margin-inline: calc(50% - 50vw + var(--s4));
 }
 
 .shopboard__canvas {

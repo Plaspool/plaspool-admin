@@ -1289,23 +1289,20 @@ export function BoardScreen({ rows, now, onMoved, onReload }: BoardScreenProps) 
         {live}
       </p>
 
-      <div className="shopboard__how">
-        <p className="shopboard__note">
-          Drag a card to another lane, or focus one and press{' '}
-          <kbd className="shopkbd">space</kbd> to pick it up, the arrow keys to choose a lane and{' '}
-          <kbd className="shopkbd">enter</kbd> to drop it. A drop never moves the order on its own —
-          it opens the shipment form, or asks — so nothing is sent until you say so.{' '}
-          <kbd className="shopkbd">enter</kbd> on a card lists everything that can be done to it,
-          including the moves that do not change lane, like marking a parcel delivered.
-        </p>
-        <p className="shopboard__note shopboard__note--quiet">
-          <strong>Seen</strong> is a private note kept in this browser
-          {triage.persists
-            ? ''
-            : ' — and this browser has refused to keep it, so it lasts until you reload'}
-          . The shop is never told, and nobody on another device or another machine sees it.
-        </p>
-      </div>
+      {/*
+        THE VISIBLE "HOW TO DRIVE THIS BOARD" PROSE IS GONE, DELIBERATELY, and
+        the keyboard affordance it described is NOT. Every sentence it carried
+        is still reachable where the act happens: `announcements` (above) narrates
+        pick-up, lane choice and drop to a screen reader the moment a card is
+        focused, and `enter` on a card still opens the menu that lists every move.
+        What was removed is a paragraph an operator reads once and then scrolls
+        past forever — on the one screen where the rows below it are the job.
+
+        The one fact with nowhere else to live is the localStorage warning: when
+        `triage.persists` is false, "Seen" lasts until reload. That now rides on
+        the card's own control (`seenPersists`, passed at the BoardCard below)
+        rather than in a header nobody re-reads.
+      */}
 
       <DndContext
         sensors={sensors}

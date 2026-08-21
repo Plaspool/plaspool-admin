@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Receipt, Search, X } from 'lucide-react';
+import { ArrowLeft, MapPin, Receipt, Search, X } from 'lucide-react';
 import {
   shopApi,
   formatMinor,
@@ -21,9 +21,16 @@ import { ConfirmDialog } from '../components/Dialog';
 import { Skeleton } from '../components/ui/Feedback';
 import { Select } from '../components/ui/Select';
 import { useDelayed } from '../components/ui/useDelayed';
+import { Picker } from '../components/ui/Picker';
 import { Board, awaitingPayment } from './orders/Board';
-import { GeographyPanel } from './orders/GeographyPanel';
-import { deliveryZoneTableFrom, type DeliveryZoneTable } from './orders/geography';
+import {
+  deliveryZoneOf,
+  deliveryZoneTableFrom,
+  normaliseRegion,
+  NO_REGION_LABEL,
+  DELIVERY_RATE_CURRENCY,
+  type DeliveryZoneTable,
+} from './orders/geography';
 import './shop.css';
 
 /**
@@ -198,10 +205,16 @@ export default function ShopOrders() {
             <div className="shopscr__headrow">
               <div>
                 <h1 className="shopscr__title">Orders</h1>
+                {/*
+                  ONE LINE, MATCHING `Returns`. The three-sentence version that
+                  stood here explained that cancelling and refunding are
+                  owner-only and both confirm — true, and already enforced where
+                  it matters: those buttons are absent for a writer and the
+                  confirm step is in the act itself. A lede is read once; a
+                  disabled control is read every time.
+                */}
                 <p className="shopscr__lede">
-                  What was bought, what has shipped, and what the store has tried to
-                  email about it. Cancelling and refunding are owner-only, and both ask
-                  before they act.
+                  What was bought, what has shipped, and what has been paid.
                 </p>
               </div>
             </div>
@@ -349,7 +362,10 @@ function OrderList() {
   const zonesAsked = useRef(false);
 
   useEffect(() => {
-    if (view !== 'board' || zonesAsked.current) return;
+    /* NO LONGER GATED ON `view === 'board'`. The destination picker carries the
+     * rates now and it sits above BOTH shapes of the list, so a table-view
+     * operator would otherwise get a picker with the counts and no prices. */
+    if (zonesAsked.current) return;
     const ac = new AbortController();
     void shopApi
       .listShippingZones(ac.signal)
@@ -363,9 +379,90 @@ function OrderList() {
         zonesAsked.current = true;
       });
     return () => ac.abort();
-  }, [view]);
+  }, []);
 
-  const items = page?.items ?? [];
+  /* MEMOISED, NOT `page?.items ?? []` INLINE. A fresh `[]` every render makes
+   * every `useMemo` below it a no-op — the destination tallies and the filtered
+   * list would be recomputed on every keystroke in the search box, over a page
+   * of up to 50 orders, each one normalising an address. Keyed on `page` so the
+   * identity only changes when a real response does. */
+  const allItems = useMemo(() => page?.items ?? [], [page]);
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * WHERE THE PARCELS ARE GOING, AS A CONTROL RATHER THAN AS A PANEL.
+   *
+   * This replaces `GeographyPanel` — three KPI tiles and a share-of-orders table
+   * under the board. That panel answered a question nobody was asking twice: an
+   * operator working a dispatch queue does not need "1 destination, 100%, 0 not
+   * placed" restated under every page, and the tiles pushed the board itself off
+   * the first screen. What was genuinely load-bearing in it was smaller than the
+   * panel: WHICH places are on this page, HOW MANY orders each holds, and WHAT
+   * the shop charges to reach them. All three fit in a picker row.
+   *
+   * SO THE DESTINATIONS BECOME THE FILTER. Same shape as the returns board's
+   * district picker — one control, top right, that scopes the board underneath.
+   *
+   * IT DEFAULTS TO ALL, AND THAT DIFFERS FROM RETURNS ON PURPOSE. A return
+   * belongs to the district that collects it, so that board is always scoped to
+   * one. An order is worked whatever its destination — packing is packing — so
+   * opening this screen already filtered would HIDE paid orders behind a control
+   * the operator never touched. `all` is the honest default; the picker narrows.
+   *
+   * NORMALISED, NOT GROUPED RAW. `normaliseRegion` is what folds "Abuja" and
+   * "Federal Capital Territory" into one row — the live data holds both spellings
+   * for the same place, and grouping the raw strings would offer two destinations
+   * for one city. That module's header is the full argument.
+   *
+   * ⚠️  THE RATE BESIDE A ROW IS THE TABLE'S, NOT THE ORDER'S. `deliveryZoneOf`
+   *     reads today's zone list; what a customer actually paid is their own
+   *     frozen `shippingTotal` and is never recomputed (CLAUDE.md §6). The note
+   *     says what the shop charges to reach that place NOW, which is the number
+   *     an operator planning a run wants — and it is absent entirely when the
+   *     zone table did not load, rather than falling back to the seeded values.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  const destination = params.get('to') ?? 'all';
+
+  const destinations = useMemo(() => {
+    const byLabel = new Map<string, { count: number; note?: string }>();
+    for (const order of allItems) {
+      const region = normaliseRegion(order.order.shippingAddress);
+      const label = region.label || NO_REGION_LABEL;
+      const seen = byLabel.get(label);
+      if (seen !== undefined) {
+        seen.count += 1;
+        continue;
+      }
+      const reading = deliveryZoneOf(region, zones);
+      /* `amountMinor` is `null` whenever the zone quotes no single price — two
+       * options, or an unusable amount — so there is nothing honest to print. */
+      const rate =
+        reading.known && reading.zone !== null && reading.zone.amountMinor !== null
+          ? safeFormatMinor(reading.zone.amountMinor, DELIVERY_RATE_CURRENCY)
+          : undefined;
+      byLabel.set(label, { count: 1, note: rate });
+    }
+    return [...byLabel.entries()]
+      .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))
+      .map(([label, { count, note }]) => ({ value: label, label, badge: count, note }));
+  }, [allItems, zones]);
+
+  /*
+   * The filter is applied HERE, above everything that reads `items` — the board,
+   * the table, the pager note and the stalled-payment accounting all count the
+   * same rows the operator is looking at. Filtering only the board would leave
+   * the pager saying "5 on this page" under four cards.
+   */
+  const items = useMemo(
+    () =>
+      destination === 'all'
+        ? allItems
+        : allItems.filter(
+            (order) => (normaliseRegion(order.order.shippingAddress).label || NO_REGION_LABEL) === destination,
+          ),
+    [allItems, destination],
+  );
 
   /**
    * THE ORDERS THE BOARD DOES NOT DRAW, AND WHICH OF THEM MEAN SOMETHING.
@@ -471,6 +568,36 @@ function OrderList() {
             options={STATUS_TABS.map((t) => ({ value: t.key, label: t.label }))}
           />
         )}
+        {/*
+          THE DESTINATION PICKER — the returns board's district control, doing
+          the same job on this screen. Rendered only when the page actually holds
+          more than one destination: a picker offering one choice is furniture,
+          and on a shop selling into a single city that is the normal case.
+
+          `setParams` RATHER THAN `navigate`, matching `ReturnsScreen`. This
+          narrows rows already on screen; it does not fetch. Pushing a history
+          entry per glance would make Back walk a trail of filter states instead
+          of leaving the list the operator came from.
+        */}
+        {destinations.length > 1 && (
+          <Picker
+            label="Destination"
+            value={destination}
+            onChange={(next) => setParams((prev) => withParams(prev, { to: next === 'all' ? null : next }))}
+            items={[
+              {
+                value: 'all',
+                label: 'All destinations',
+                badge: allItems.length,
+              },
+              ...destinations,
+            ]}
+            icon={<MapPin className="ui-ic" aria-hidden="true" />}
+            searchPlaceholder="Search destinations…"
+            emptyText="No destination matches that."
+          />
+        )}
+
         <div className="searchbox">
           <Search className="ui-ic" aria-hidden="true" />
           <input
@@ -637,12 +764,12 @@ function OrderList() {
           />
 
           {/*
-            The same rows, no second request — the panel's own contract. `zones`
-            is `null` until the rate table lands and stays `null` if it never
-            does, which is a mode the panel is built for rather than a failure
-            it has to survive.
+            `GeographyPanel` STOOD HERE and is now unrendered — see the
+            destination picker's own note above for what replaced it and why.
+            The module and its tests are left in the tree untouched: it is a
+            pure, well-covered breakdown of the same rows, and the KPIs were
+            asked to be hidden rather than deleted.
           */}
-          <GeographyPanel rows={items} now={readAt} zones={zones} />
         </>
       ) : (
         <section className="panel" style={{ marginTop: 'var(--s5)' }}>
