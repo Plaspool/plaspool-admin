@@ -46,6 +46,7 @@ vi.mock('../data/api-reviews', () => api);
 
 import ShopReviews from './ShopReviews';
 import type { AdminReview } from '../data/api-reviews';
+import { UNRENDERABLE } from '../data/when';
 
 const NOW = 1_780_000_000_000;
 
@@ -191,5 +192,78 @@ describe('delete', () => {
     expect(screen.queryByRole('button', { name: /Delete/ })).toBeNull();
     // A writer can still do the job the queue exists for.
     expect(screen.getByRole('button', { name: 'Approved' })).toBeTruthy();
+  });
+});
+
+/**
+ * THE QUEUE SURVIVES A DATE IT CANNOT READ.
+ *
+ * `createdAt` is NOT NULL in the schema, so nothing below is a live bug today —
+ * which is exactly the state `/shop/orders` was in the week before it went
+ * down. The field that killed that screen was NOT NULL too; what reached the
+ * formatter was a client type asserting a shape the server does not send, and
+ * no column constraint has anything to say about that. These cases pin the
+ * DOWNGRADE rather than the column: whatever arrives, a moderator keeps the
+ * queue.
+ */
+describe('a review whose timestamps are broken', () => {
+  it('costs the date and not the screen', async () => {
+    api.listReviews.mockResolvedValue({
+      items: [review({ createdAt: undefined as unknown as number })],
+      nextCursor: null,
+    });
+
+    mount();
+
+    // The review is still readable and still moderatable, which is the point:
+    // the decision this screen exists for does not depend on the date.
+    await screen.findByText('Solid everyday spool');
+    expect(screen.getByText('Prints clean with no stringing. Layer adhesion is strong.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Approved' })).toBeTruthy();
+
+    expect(screen.getByText(UNRENDERABLE)).toBeTruthy();
+  });
+
+  /*
+   * `datetime=""` IS NOT THE SAME REPAIR AS `––`, AND BOTH ARE NEEDED.
+   * `new Date(undefined).toISOString()` throws the same `RangeError` the visible
+   * formatter does, so a screen that downgraded only the text would still have
+   * died on the attribute beside it — the "repair that looks finished and is
+   * not" that `api-shop.ts` warns about one value across. `isoAttr` returns
+   * `undefined` so React omits the attribute entirely: an empty `datetime` is a
+   * machine-readable claim that parses to nothing, and `<time>` with no
+   * `datetime` is HTML's own way of saying the text is all there is.
+   */
+  it('omits the datetime attribute rather than writing an empty one', async () => {
+    api.listReviews.mockResolvedValue({
+      items: [review({ createdAt: Number.NaN })],
+      nextCursor: null,
+    });
+
+    mount();
+    await screen.findByText('Solid everyday spool');
+
+    const time = document.querySelector('time');
+    expect(time).toBeTruthy();
+    expect(time?.hasAttribute('datetime')).toBe(false);
+  });
+
+  it('keeps a good date good while the broken one beside it downgrades', async () => {
+    // The downgrade is PER VALUE. A screen that blanked every date on one bad
+    // row would be a different bug wearing the same placeholder.
+    api.listReviews.mockResolvedValue({
+      items: [
+        review({ status: 'approved', moderatedAt: undefined as unknown as number }),
+      ],
+      nextCursor: null,
+    });
+
+    mount('/shop/reviews?status=approved');
+    await screen.findByText('Solid everyday spool');
+
+    const times = [...document.querySelectorAll('time')];
+    expect(times).toHaveLength(2); // written, and the decision
+    expect(times.filter((t) => t.textContent === UNRENDERABLE)).toHaveLength(1);
+    expect(times.filter((t) => t.hasAttribute('datetime'))).toHaveLength(1);
   });
 });

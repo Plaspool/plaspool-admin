@@ -54,14 +54,102 @@ export type Db = PgDatabase<DbQueryResultHKT, typeof schema>;
  * through here, and `server/test/harness.ts` configures PGlite to return int8
  * as a string so the test driver behaves like production instead of hiding the
  * divergence (spec §9).
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * IT REFUSES, RATHER THAN RETURNING `NaN`, AND THAT IS THE OPPOSITE CHOICE FROM
+ * `src/data/when.ts` ON PURPOSE.
+ *
+ * A bare `Number(value)` is total, which sounds like the safe property and here
+ * is the dangerous one: `Number(undefined)` is `NaN`, and `NaN` is a `number`,
+ * so a column dropped from a SELECT — renamed, aliased, or simply forgotten in
+ * a hand-written `sql` fragment — produces a row that satisfies every type in
+ * this codebase and is wrong. It then serialises to `null` through
+ * `JSON.stringify` and arrives at the client as an absent field, which is to
+ * say it arrives looking exactly like the legitimately-absent value that
+ * `toEpochMsOrNull` exists to express. The query bug becomes indistinguishable
+ * from data.
+ *
+ * `when.ts` DOWNGRADES a broken timestamp because it is the last thing standing
+ * between a bad value and an operator who still has parcels to pack — there is
+ * no one further down the line to tell. Here there is: this runs on the server,
+ * where a throw is a 500 with a stack and a log line naming the field, seen by
+ * the people who can fix the query. Swallowing it at this end and rendering
+ * `––` at the other would leave nobody holding the fault at all.
+ *
+ * So the two guards are complements. This one makes a dropped column say so;
+ * `safeFormat` makes the screen survive one that reaches it anyway — through a
+ * cache, a stale deploy, or a payload this function never touched.
+ * ═══════════════════════════════════════════════════════════════════════════
  */
 export function toEpochMs(value: unknown): number {
-  return Number(value);
+  /*
+   * THE SHAPE IS CHECKED BEFORE THE COERCION, AND THAT ORDER IS THE WHOLE GUARD.
+   * Checking `Number.isFinite` afterwards catches `undefined` and misses the two
+   * cases most worth catching: `Number(null)` and `Number('')` are both `0`,
+   * which is finite, is a valid timestamp, and renders as 1 January 1970. A NULL
+   * read through the NON-nullable reader would sail through a NaN check and
+   * surface as a date nobody can trace back to a query — strictly worse than the
+   * `NaN` this function was changed to stop returning.
+   *
+   * `bigint` is admitted alongside the two shapes named above because int8 is
+   * what these columns are: a driver that starts returning them natively is
+   * behaving correctly, and this is not the place to refuse it.
+   */
+  const shaped =
+    typeof value === 'number' ||
+    typeof value === 'bigint' ||
+    (typeof value === 'string' && value.trim() !== '');
+  if (!shaped) throw new EpochShapeError(value);
+
+  const n = Number(value);
+  // `Number.isFinite` and not `!Number.isNaN`: `Number('1e400')` is `Infinity`,
+  // which is neither `NaN` nor a timestamp, and `new Date()` of it is the same
+  // `RangeError` a missing column would have caused.
+  if (!Number.isFinite(n)) throw new EpochShapeError(value);
+  return n;
 }
 
-/** As `toEpochMs`, for the nullable timestamp columns. */
+/**
+ * As `toEpochMs`, for the nullable timestamp columns.
+ *
+ * `== null` catches `null` AND `undefined`, and only the first is a real NULL
+ * column: the second is the same dropped-field bug `toEpochMs` refuses. It is
+ * accepted here anyway, because a nullable column read off a row that does not
+ * carry it is indistinguishable from one that is NULL without knowing the
+ * SELECT — the information needed to tell them apart is not in this function.
+ * `toEpochMsOrNull(undefined) === null` is asserted by `client.test.ts`.
+ */
 export function toEpochMsOrNull(value: unknown): number | null {
-  return value == null ? null : Number(value);
+  return value == null ? null : toEpochMs(value);
+}
+
+/**
+ * A timestamp column that came back as something `Date` cannot use — a bug.
+ *
+ * IT DESCRIBES THE VALUE AND DOES NOT QUOTE IT, for the reason the rest of this
+ * file exists. The way this error is reached is a SELECT whose columns do not
+ * line up with what the mapper reads — renamed, aliased, reordered — and the
+ * value that lands on a timestamp field in that situation is whatever was in
+ * the next column along. On `users` the next column along is `password_hash`.
+ * An error that interpolated it would put an offline-crackable hash in the log
+ * by exactly the route `guardDb` was written to close, and it would do it while
+ * reporting a bug about dates.
+ *
+ * A string's LENGTH is kept because it is what distinguishes the cases somebody
+ * debugging this needs to tell apart — an empty column, a short code, a blob of
+ * the wrong thing — and a length discloses nothing the type does not.
+ */
+export class EpochShapeError extends Error {
+  constructor(value: unknown) {
+    const shape =
+      typeof value === 'string'
+        ? `a string of length ${value.length}`
+        : value === null
+          ? 'null'
+          : typeof value;
+    super(`timestamp column must be an epoch in ms, got ${shape}`);
+    this.name = 'EpochShapeError';
+  }
 }
 
 // ------------------------------------------------------- error scrubbing

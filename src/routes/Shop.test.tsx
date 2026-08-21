@@ -58,6 +58,7 @@ vi.mock('../data/sync', () => ({ revalidate: vi.fn() }));
 
 import { ToastProvider } from '../components/Toast';
 import { formatMinor } from '../data/api-shop';
+import { UNRENDERABLE } from '../data/when';
 import Shop from './Shop';
 import ShopProducts from './ShopProducts';
 import ShopOrders from './ShopOrders';
@@ -1276,3 +1277,131 @@ describe('a variant carries its own picture', () => {
 function escape(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+// ------------------------------------------------- one broken value, one cell
+
+/**
+ * THE THREE SCREENS THAT READ THE SAME FIELDS `/shop/orders` DIED ON.
+ *
+ * The overview's recent-orders list renders `order.placedAt` and
+ * `order.grandTotal` — the very two values that took the orders screen to its
+ * error boundary — off a DIFFERENT endpoint (`/stats`, not `/orders`) with its
+ * own client type and its own chance of disagreeing with the server. The buyer
+ * list and the history read their own equivalents the same way.
+ *
+ * NONE OF THESE IS A LIVE BUG. Every column behind them is NOT NULL, and the
+ * audit at the time of this sweep confirmed it. That is not the reassurance it
+ * sounds like: `placedAt` was NOT NULL too. What reached the formatter was a
+ * `shopFetch<T>` naming a shape the server does not send — an assertion no
+ * column constraint is in a position to contradict. So what is pinned below is
+ * the DOWNGRADE, not the data: whatever arrives, the operator keeps the screen.
+ *
+ * Each case breaks ONE field of ONE row and then asserts the rest of the screen
+ * is untouched, because "renders a placeholder" and "renders placeholders
+ * everywhere" are different outcomes and only the first is the repair.
+ */
+describe('a value the screen cannot render', () => {
+  it('costs the overview one cell, not the dashboard', async () => {
+    when('/api/shop/admin/stats', {
+      ...STATS,
+      latestOrders: [{ ...STATS.latestOrders[0], placedAt: undefined }],
+    });
+    mount(<Shop />, '/shop');
+
+    // The order is still listed, still linked, and still shows its money.
+    await waitFor(() => expect(screen.getByText('PS-4821-K')).toBeTruthy());
+    expect(screen.getByText(formatMinor(2340, 'GBP'))).toBeTruthy();
+    expect(screen.getByText(UNRENDERABLE)).toBeTruthy();
+
+    // And the rest of the dashboard — the stats above the list — is intact.
+    expect(screen.getByText(formatMinor(25050, 'GBP'))).toBeTruthy();
+  });
+
+  /*
+   * A CURRENCY IS THE OTHER HALF OF AN AMOUNT. Guarding the number alone would
+   * leave the screen exactly as reachable, through `formatMinor`'s second
+   * `Intl.NumberFormat` — the one with `style: 'currency'`, which throws
+   * `RangeError: Invalid currency code` on its own.
+   */
+  it('costs the overview one total when the currency is the broken half', async () => {
+    when('/api/shop/admin/stats', {
+      ...STATS,
+      latestOrders: [{ ...STATS.latestOrders[0], currency: undefined }],
+    });
+    mount(<Shop />, '/shop');
+
+    await waitFor(() => expect(screen.getByText('PS-4821-K')).toBeTruthy());
+    expect(screen.getByText(UNRENDERABLE)).toBeTruthy();
+    // The revenue tiles carry their OWN currency and are unaffected by this row.
+    expect(screen.getByText(formatMinor(1990, 'GBP'))).toBeTruthy();
+  });
+
+  it('costs the buyer list the date and keeps the money beside it', async () => {
+    when('/api/shop/admin/customers', {
+      items: [
+        {
+          email: 'guest@test.local',
+          customerId: null,
+          displayName: null,
+          orderCount: 1,
+          paidCount: 1,
+          totalSpent: 2340,
+          currency: 'GBP',
+          lastOrderAt: Number.NaN,
+          lastOrderId: 'o_1',
+          lastOrderNumber: 'PS-4821-K',
+          lastOrderStatus: 'paid',
+        },
+      ],
+      nextCursor: null,
+    });
+    mount(<ShopCustomers />, '/shop/customers');
+
+    await waitFor(() => expect(screen.getByText('guest@test.local')).toBeTruthy());
+    // The link to the order is the row's whole reason for existing, and a
+    // broken date is not a reason to withhold it.
+    expect(screen.getByText('PS-4821-K')).toBeTruthy();
+    expect(screen.getByText(formatMinor(2340, 'GBP'))).toBeTruthy();
+    expect(screen.getByText(new RegExp(UNRENDERABLE))).toBeTruthy();
+  });
+
+  it('costs the history its timestamp and still says what changed', async () => {
+    when('/api/shop/admin/audit', {
+      items: [{ ...AUDIT_PRICE, occurredAt: undefined }],
+      nextCursor: null,
+    });
+    mount(<ShopAudit />, '/shop/audit');
+
+    // The price change — the old figure is the one that appears nowhere else
+    // in the app — survives the timestamp beside it. Compared on the digits,
+    // like every other money assertion here: the symbol and the amount are
+    // separate elements, so `getByText` on the whole string never matches.
+    const entry = (await screen.findByText(/Distributor raised the price/)).closest('li')!;
+    expect(entry.textContent).toContain('18,500.00');
+    expect(entry.textContent).toContain('22,000.00');
+
+    // `new Date(undefined).toISOString()` throws the same `RangeError` the
+    // visible formatter does, so the attribute had to be downgraded too — and
+    // omitted rather than emptied, since `datetime=""` parses to nothing.
+    const time = document.querySelector('time.auditrow__when');
+    expect(time?.textContent).toBe(UNRENDERABLE);
+    expect(time?.hasAttribute('datetime')).toBe(false);
+  });
+
+  it('costs the history one amount when a price row carries no currency', async () => {
+    when('/api/shop/admin/audit', {
+      items: [{ ...AUDIT_PRICE, currency: 'not-a-code' }],
+      nextCursor: null,
+    });
+    mount(<ShopAudit />, '/shop/audit');
+
+    // Both figures downgrade — they share the bad code — but the row still
+    // says which product changed and why, which is what sends somebody looking.
+    const entry = (await screen.findByText(/Distributor raised the price/)).closest('li')!;
+    expect(entry.textContent).toContain('Enamel mug');
+    expect(entry.textContent).toContain(UNRENDERABLE);
+    // The digits are GONE rather than shown against the wrong symbol, which
+    // would be the one outcome here worse than the placeholder.
+    expect(entry.textContent).not.toContain('18,500.00');
+  });
+});

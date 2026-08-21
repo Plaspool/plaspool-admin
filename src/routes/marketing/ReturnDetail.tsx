@@ -33,6 +33,7 @@ import {
   type ReturnRequest,
   type ReturnStatus,
 } from '../../data/api-marketing';
+import { safeFormat } from '../../data/when';
 import { ApiError, NotFoundError, StaleWriteError } from '../../data/errors';
 import { useToast } from '../../components/Toast';
 import { ConfirmDialog, Dialog } from '../../components/Dialog';
@@ -217,7 +218,16 @@ function eventLine(event: ReturnEvent, labels: ProgramLabels): string | null {
     const at = num(data.pickupAt);
     const driver = text(data.driverName);
     const parts = [
-      at === null ? null : WHEN.format(new Date(at)),
+      /*
+       * THE ONE `safeFormat` ON THESE SCREENS THAT IS NOT MERELY PRECAUTIONARY.
+       * Everywhere else in this sweep the value behind the formatter is a column
+       * the schema declares NOT NULL, so the downgrade is insurance against a
+       * client type that stops matching the server. Here it is not a column at
+       * all: `data` is an event's untyped JSON payload and `num` above is a bare
+       * `typeof v === 'number'`, which `NaN` satisfies. Nothing between the
+       * writer of that payload and this line rules one out.
+       */
+      at === null ? null : safeFormat(WHEN, at),
       driver === null ? null : `driver ${driver}`,
     ].filter((part): part is string => part !== null);
     return parts.length === 0 ? null : parts.join(' · ');
@@ -242,7 +252,7 @@ function eventLine(event: ReturnEvent, labels: ProgramLabels): string | null {
  */
 function mailLine(intent: EmailIntentState): string {
   if (intent.sentAt !== null) {
-    return `Handed to the mailer ${WHEN.format(new Date(intent.sentAt))}`;
+    return `Handed to the mailer ${safeFormat(WHEN, intent.sentAt)}`;
   }
   if (intent.attempts > 0) {
     return `${intent.attempts} failed ${intent.attempts === 1 ? 'attempt' : 'attempts'} — still queued`;
@@ -679,7 +689,7 @@ export function ReturnDetail({ id }: { id: string }) {
                 {request.customerEmail}
               </Link>{' '}
               · <span className="mktnum">{request.id}</span> · logged{' '}
-              {WHEN.format(new Date(request.createdAt))}
+              {safeFormat(WHEN, request.createdAt)}
             </p>
           </div>
           <span className={`chip mktchip--${status}`}>{STATUS_LABEL[status]}</span>
@@ -696,7 +706,7 @@ export function ReturnDetail({ id }: { id: string }) {
               <strong>{STATUS_LABEL[status]}</strong>
               {(request.rejectedReason ?? request.cancelReason) !== null &&
                 ` — ${request.rejectedReason ?? request.cancelReason}`}
-              {request.closedAt !== null && ` · ${WHEN.format(new Date(request.closedAt))}`}
+              {request.closedAt !== null && ` · ${safeFormat(WHEN, request.closedAt)}`}
             </div>
           </div>
         ) : (
@@ -781,7 +791,7 @@ export function ReturnDetail({ id }: { id: string }) {
                   <>
                     <span className="mktkv__k">Pickup booked</span>
                     <span className="mktkv__v">
-                      {WHEN.format(new Date(request.pickupScheduledAt))}
+                      {safeFormat(WHEN, request.pickupScheduledAt)}
                       {request.driverName !== null && ` · ${request.driverName}`}
                     </span>
                   </>
@@ -789,7 +799,7 @@ export function ReturnDetail({ id }: { id: string }) {
                 {request.receivedAt !== null && (
                   <>
                     <span className="mktkv__k">Received</span>
-                    <span className="mktkv__v">{WHEN.format(new Date(request.receivedAt))}</span>
+                    <span className="mktkv__v">{safeFormat(WHEN, request.receivedAt)}</span>
                   </>
                 )}
                 <span className="mktkv__rule" />
@@ -967,7 +977,7 @@ export function ReturnDetail({ id }: { id: string }) {
                         <span className="mkttimeline__note">{event.note}</span>
                       )}
                       <span className="mkttimeline__when">
-                        {WHEN.format(new Date(event.occurredAt))}
+                        {safeFormat(WHEN, event.occurredAt)}
                       </span>
                     </li>
                   );

@@ -10,6 +10,7 @@ import {
   type ReviewStatus,
   type SentimentLabel,
 } from '../data/api-reviews';
+import { isoAttr, safeFormat } from '../data/when';
 import './shop.css';
 import './reviews.css';
 
@@ -115,8 +116,8 @@ function ReviewCard({
         <div>
           <dt>Written</dt>
           <dd>
-            <time dateTime={new Date(review.createdAt).toISOString()}>
-              {WHEN.format(new Date(review.createdAt))}
+            <time dateTime={isoAttr(review.createdAt)}>
+              {safeFormat(WHEN, review.createdAt)}
             </time>
           </dd>
         </div>
@@ -124,8 +125,8 @@ function ReviewCard({
           <div>
             <dt>Last decision</dt>
             <dd>
-              <time dateTime={new Date(review.moderatedAt).toISOString()}>
-                {WHEN.format(new Date(review.moderatedAt))}
+              <time dateTime={isoAttr(review.moderatedAt)}>
+                {safeFormat(WHEN, review.moderatedAt)}
               </time>
             </dd>
           </div>

@@ -3,10 +3,11 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { ArrowDown, ArrowLeft, ArrowUp, History, Tag } from 'lucide-react';
 import {
   shopApi,
-  formatMinor,
+  safeFormatMinor,
   type AuditEntry,
   type AuditKind,
 } from '../data/api-shop';
+import { isoAttr, safeFormat } from '../data/when';
 import { ApiError, NotFoundError, OfflineError } from '../data/errors';
 import { Select } from '../components/ui/Select';
 import { Skeleton } from '../components/ui/Feedback';
@@ -253,7 +254,7 @@ function AuditRow({ entry, startsDay }: { entry: AuditEntry; startsDay: boolean 
     <>
       {startsDay && (
         <li className="auditday" aria-hidden="true">
-          {DAY.format(new Date(entry.occurredAt))}
+          {safeFormat(DAY, entry.occurredAt)}
         </li>
       )}
       <li className={`auditrow auditrow--${entry.kind}`}>
@@ -294,8 +295,8 @@ function AuditRow({ entry, startsDay }: { entry: AuditEntry; startsDay: boolean 
           </span>
         </span>
 
-        <time className="auditrow__when" dateTime={new Date(entry.occurredAt).toISOString()}>
-          {WHEN.format(new Date(entry.occurredAt))}
+        <time className="auditrow__when" dateTime={isoAttr(entry.occurredAt)}>
+          {safeFormat(WHEN, entry.occurredAt)}
         </time>
       </li>
     </>
@@ -304,7 +305,7 @@ function AuditRow({ entry, startsDay }: { entry: AuditEntry; startsDay: boolean 
 
 function PriceChange({ entry }: { entry: AuditEntry }) {
   const currency = entry.currency ?? 'NGN';
-  const now = entry.amount == null ? '—' : formatMinor(entry.amount, currency);
+  const now = entry.amount == null ? '—' : safeFormatMinor(entry.amount, currency);
   if (entry.previousAmount == null) {
     return (
       <>
@@ -312,7 +313,7 @@ function PriceChange({ entry }: { entry: AuditEntry }) {
       </>
     );
   }
-  const was = formatMinor(entry.previousAmount, currency);
+  const was = safeFormatMinor(entry.previousAmount, currency);
   const up = (entry.amount ?? 0) > entry.previousAmount;
   return (
     <>

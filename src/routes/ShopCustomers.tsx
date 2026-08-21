@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Users } from 'lucide-react';
-import { shopApi, formatMinor, type ShopBuyer } from '../data/api-shop';
+import { shopApi, safeFormatMinor, type ShopBuyer } from '../data/api-shop';
+import { safeFormat } from '../data/when';
 import { ApiError, NotFoundError, OfflineError } from '../data/errors';
 import { Skeleton } from '../components/ui/Feedback';
 import { useDelayed } from '../components/ui/useDelayed';
@@ -183,7 +184,7 @@ export default function ShopCustomers() {
                           )}
                         </td>
                         <td className="dtable__num" data-label="Kept">
-                          {formatMinor(buyer.totalSpent, buyer.currency)}
+                          {safeFormatMinor(buyer.totalSpent, buyer.currency)}
                           <span className="dtable__sub">after refunds</span>
                         </td>
                         <td data-label="Last order">
@@ -198,7 +199,7 @@ export default function ShopCustomers() {
                             {buyer.lastOrderNumber}
                           </Link>
                           <span className="dtable__sub">
-                            {WHEN.format(new Date(buyer.lastOrderAt))} ·{' '}
+                            {safeFormat(WHEN, buyer.lastOrderAt)} ·{' '}
                             {buyer.lastOrderStatus.replace('_', ' ')}
                           </span>
                         </td>

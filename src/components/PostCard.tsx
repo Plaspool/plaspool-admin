@@ -11,6 +11,7 @@ import {
 import { StoredImg } from './StoredImg';
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from './ui/Menu';
 import type { ListPost } from '../data/types';
+import { isoAttr } from '../data/when';
 
 export interface CardActions {
   edit: () => void;
@@ -143,7 +144,7 @@ export function PostCard({
           <span className="card__byline">
             <span className="card__author">{post.authorName || 'Unknown writer'}</span>
             <span className="card__when">
-              <time dateTime={new Date(post.updatedAt).toISOString()}>
+              <time dateTime={isoAttr(post.updatedAt)}>
                 {inTrash
                   ? `Trashed ${relative(post.deletedAt!)}`
                   : post.status === 'published' && post.publishedAt
