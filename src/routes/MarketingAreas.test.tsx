@@ -214,7 +214,7 @@ describe('the areas an owner manages', () => {
     loaded();
     mount();
     await screen.findByText(cabbageArea.name);
-    expect(within(row(cabbageArea.name)).getByText('Shipped')).toBeTruthy();
+    expect(within(row(cabbageArea.name)).getByText('Preset')).toBeTruthy();
   });
 
   it('warns about the returns that belong to no area at all', async () => {

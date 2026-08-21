@@ -79,6 +79,18 @@ export interface Order {
   placedAt: number;
   paidAt: number | null;
   fulfilledAt: number | null;
+  /**
+   * Every non-cancelled parcel on this order has been marked delivered, and this
+   * is when the last of them was. `null` while any is still in flight, and `null`
+   * when there are no parcels at all.
+   *
+   * DERIVED IN THE QUERY, NOT STORED. There is no `delivered` order status —
+   * `shop_orders.status` stops at `fulfilled` — and delivery lives on the
+   * FULFILMENT rows, which the list deliberately does not return. Without this
+   * the board could not tell a shipped order from a delivered one and left
+   * delivered parcels sitting in the Shipped lane forever.
+   */
+  deliveredAt: number | null;
   cancelledAt: number | null;
   revision: number;
   checkoutId: string;
@@ -152,6 +164,7 @@ function rowToOrder(row: Record<string, unknown>): Order {
     placedAt: toEpochMs(row.placed_at),
     paidAt: toEpochMsOrNull(row.paid_at),
     fulfilledAt: toEpochMsOrNull(row.fulfilled_at),
+    deliveredAt: toEpochMsOrNull(row.delivered_at),
     cancelledAt: toEpochMsOrNull(row.cancelled_at),
     revision: Number(row.revision),
     checkoutId: String(row.checkout_id),
@@ -207,6 +220,42 @@ export interface OrderRead {
   generation: number;
 }
 
+/**
+ * WHEN THE LAST PARCEL ARRIVED, or NULL while any is still out.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THERE IS NO `delivered` ORDER STATUS, AND THAT IS WHY THIS EXISTS.
+ *
+ * `shop_orders.status` stops at `fulfilled` — delivery is recorded on the
+ * FULFILMENT rows (`shop_fulfillments.status`, `delivered_at`), which the list
+ * deliberately does not return. So the board could not tell a shipped order
+ * from a delivered one, and a parcel marked delivered sat in the Shipped lane
+ * for ever: the operator did the work and the card did not move.
+ *
+ * ALL-OR-NOTHING, AND CANCELLED PARCELS DO NOT COUNT. An order is delivered
+ * only when EVERY parcel still standing has arrived — a two-box order with one
+ * delivered and one in transit is still in flight, and calling it delivered
+ * would take a live parcel off the board. A cancelled fulfilment is not a
+ * parcel any more, so it neither blocks the state nor satisfies it; an order
+ * whose only fulfilment was cancelled has no parcels at all and answers NULL,
+ * which puts it back in the lanes that count units rather than in a terminal
+ * one.
+ *
+ * `HAVING` WITH NO `GROUP BY` is what makes "no parcels" answer NULL rather
+ * than a row of nulls: the aggregate collapses to a single group, the HAVING
+ * rejects it, the correlated subquery yields no row, and the column is NULL.
+ * `MAX(delivered_at)` is the last arrival, which is the honest instant for an
+ * order that arrived in pieces.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+const DELIVERED_AT = sql`
+  (SELECT MAX(f.delivered_at)
+     FROM shop_fulfillments f
+    WHERE f.order_id = o.id AND f.status <> 'cancelled'
+   HAVING count(*) > 0
+      AND count(*) FILTER (WHERE f.status = 'delivered') = count(*)
+  ) AS delivered_at`;
+
 const LINE_AGG = sql`
   COALESCE((
     SELECT json_agg(to_jsonb(l) ORDER BY l.line_no)
@@ -224,7 +273,7 @@ function rowToRead(row: Record<string, unknown>): OrderRead {
 
 async function readByColumn(db: Db, column: SQL, value: string): Promise<OrderRead | null> {
   const res = await db.execute(sql`
-    SELECT ${sql.raw(orderColumns('o'))}, o.lifecycle_generation, ${LINE_AGG}
+    SELECT ${sql.raw(orderColumns('o'))}, o.lifecycle_generation, ${DELIVERED_AT}, ${LINE_AGG}
       FROM shop_orders o
      WHERE ${column} = ${value}`);
   const row = res.rows[0];
@@ -291,7 +340,7 @@ export async function getOrderForCustomer(
 ): Promise<OrderRead | null> {
   if (customerId.length === 0) throw new BadRequestError('customerId');
   const res = await db.execute(sql`
-    SELECT ${sql.raw(orderColumns('o'))}, o.lifecycle_generation, ${LINE_AGG}
+    SELECT ${sql.raw(orderColumns('o'))}, o.lifecycle_generation, ${DELIVERED_AT}, ${LINE_AGG}
       FROM shop_orders o
      WHERE o.order_number = ${orderNumber} AND o.customer_id = ${customerId}`);
   const row = res.rows[0];
@@ -315,7 +364,7 @@ export async function getOrderForGuest(
 ): Promise<OrderRead | null> {
   if (email.length === 0) throw new BadRequestError('email');
   const res = await db.execute(sql`
-    SELECT ${sql.raw(orderColumns('o'))}, o.lifecycle_generation, ${LINE_AGG}
+    SELECT ${sql.raw(orderColumns('o'))}, o.lifecycle_generation, ${DELIVERED_AT}, ${LINE_AGG}
       FROM shop_orders o
      WHERE o.order_number = ${orderNumber} AND lower(o.email) = lower(${email})`);
   const row = res.rows[0];
@@ -372,7 +421,7 @@ async function listOrders(db: Db, scope: SQL, q: ListQuery): Promise<OrderPage> 
   }
 
   const res = await db.execute(sql`
-    SELECT ${sql.raw(orderColumns('o'))}, o.lifecycle_generation, ${LINE_AGG}
+    SELECT ${sql.raw(orderColumns('o'))}, o.lifecycle_generation, ${DELIVERED_AT}, ${LINE_AGG}
       FROM shop_orders o
      WHERE ${sql.join(where, sql` AND `)}
      ORDER BY o.placed_at DESC, o.id ASC

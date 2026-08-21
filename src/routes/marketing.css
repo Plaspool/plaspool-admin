@@ -2716,6 +2716,38 @@ a.mktstat:focus-visible {
   gap: var(--s2);
 }
 
+/*
+ * THE BASE DEFINITION, WHICH THIS CLASS SPENT ITS WHOLE LIFE WITHOUT.
+ *
+ * `.mktform__input` had only contextual rules (`flex`, `min-width`) and no box
+ * of its own, so its background, border and text colour came from the user
+ * agent. That is invisible while the OS and the app agree on a theme and
+ * unreadable the moment they do not — see the `color-scheme` note in
+ * `tokens.css`. Painted from the same tokens as `.input` in `base.css` so a
+ * marketing field and a shop field are the same control, and so neither
+ * depends on what the browser feels like doing.
+ */
+.mktform__input {
+  background: var(--paper-raised);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  padding: 0 var(--ctl-pad-x);
+  height: var(--ctl-h-lg);
+  box-sizing: border-box;
+  font-size: var(--step-0);
+}
+
+.mktform__input::placeholder {
+  color: var(--ink-4);
+}
+
+.mktform__input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 .mktarea__rename .mktform__input {
   flex: 1;
   min-width: 10rem;
@@ -2723,4 +2755,19 @@ a.mktstat:focus-visible {
 
 .mktarea__add {
   padding: var(--s2) var(--s4) var(--s3);
+}
+
+/* The per-state master switch, on the Areas and Delivery section headers.
+   `auto` pushes it to the right of the tally; it wraps below on a phone rather
+   than squeezing the region name. */
+.mktarea__all {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-left: auto;
+}
+
+.mktarea__alllabel {
+  color: var(--ink-2);
+  font-size: var(--step--1);
 }

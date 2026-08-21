@@ -166,6 +166,71 @@ export default function MarketingAreas() {
     }
   }
 
+  const [switchingAll, setSwitchingAll] = useState<string | null>(null);
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * SWITCH A WHOLE STATE ON OR OFF.
+   *
+   * The shipped dataset is every local government area in the country, and a
+   * state has twenty or thirty of them. Opening a new city meant flipping every
+   * row by hand — the screen's own argument is that expanding is an owner
+   * flipping a switch, and that argument does not survive thirty switches.
+   *
+   * N REQUESTS, NOT ONE. There is no bulk route: `PATCH /areas/:id` is the only
+   * writer and it CASes on each row's own revision. They go out TOGETHER rather
+   * than in sequence — the rows are independent, so nothing races anything, and
+   * thirty sequential round trips is a control an owner would stop using.
+   *
+   * ⚠️  PARTIAL SUCCESS IS THE NORMAL CASE ON THE WAY OFF, and it is reported
+   *     rather than hidden. Switching off an area that still holds open returns
+   *     is REFUSED by the server (`area_in_use`) precisely so those returns are
+   *     not stranded off every board. So "switch the state off" genuinely means
+   *     "switch off the ones that can be", and the toast says how many could not
+   *     — a silent 27-of-30 would leave an owner believing they had closed a
+   *     city they had not.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  async function switchAll(group: { region: string; areas: ServiceArea[] }, next: boolean) {
+    const targets = group.areas.filter((area) => area.active !== next);
+    if (targets.length === 0) return;
+    setSwitchingAll(group.region);
+    try {
+      const results = await Promise.allSettled(
+        targets.map((area) =>
+          marketingApi.patchArea(area.id, { expectedRevision: area.revision, active: next }),
+        ),
+      );
+      await load();
+
+      const done = results.filter((r) => r.status === 'fulfilled').length;
+      /* The one refusal with a meaning worth naming. Anything else is counted
+       * but not diagnosed here — the per-row switch gives the full message. */
+      const held = results.filter(
+        (r) =>
+          r.status === 'rejected' &&
+          r.reason instanceof ApiError &&
+          r.reason.code === 'area_in_use',
+      ).length;
+      const failed = results.length - done;
+
+      if (failed === 0) {
+        notify(
+          `${done} ${done === 1 ? 'area' : 'areas'} in ${group.region} switched ${next ? 'on' : 'off'}`,
+        );
+      } else {
+        notify(
+          held === failed
+            ? `${done} switched off. ${held} still ${held === 1 ? 'has' : 'have'} open returns and ${held === 1 ? 'was' : 'were'} left on.`
+            : `${done} switched ${next ? 'on' : 'off'}, ${failed} could not be.`,
+          { tone: 'danger' },
+        );
+      }
+    } finally {
+      setSwitchingAll(null);
+    }
+  }
+
   const groups = useMemo(() => (view === null ? [] : byRegion(view.areas)), [view]);
 
   /*
@@ -267,6 +332,27 @@ export default function MarketingAreas() {
                       region we have promised to reach. */}
                   {group.served} of {group.areas.length} switched on
                 </p>
+
+                {/*
+                  THE MASTER SWITCH. Checked only when EVERY area is on, so a
+                  part-served state shows it off and one press means "serve all
+                  of this state" — the act an owner opening a city actually
+                  wants. The reverse press closes what it legally can; see
+                  `switchAll` on why that is partial and said out loud.
+                */}
+                {isOwner && group.areas.length > 0 && (
+                  <span className="mktarea__all">
+                    <span className="mktarea__alllabel">All of {group.region}</span>
+                    <Switch
+                      checked={group.served === group.areas.length}
+                      label={`Collect from every area in ${group.region}`}
+                      disabled={switchingAll !== null || busy !== null}
+                      onChange={(next) => {
+                        if (switchingAll === null && busy === null) void switchAll(group, next);
+                      }}
+                    />
+                  </span>
+                )}
               </header>
 
               <ul className="mktarea__list">
@@ -305,8 +391,21 @@ export default function MarketingAreas() {
                         <span className="mktarea__name">{area.name}</span>
                         {/* DERIVED FROM `seeded` AND NOTHING ELSE — never by
                             matching a key or a name, which the grep guards
-                            forbid. A rename keeps it true. */}
-                        {area.seeded && <span className="chip">Shipped</span>}
+                            forbid. A rename keeps it true.
+
+                            READS "PRESET", NOT "SHIPPED". `seeded` means the row
+                            arrived in the bundled dataset rather than being typed
+                            by a person — nothing to do with parcels. "Shipped"
+                            was a genuine collision: the same chip appears on the
+                            DELIVERY screen, where "Shipped" next to a delivery
+                            rate reads as a statement about a parcel. One word,
+                            two meanings, on two screens an owner alternates
+                            between. */}
+                        {area.seeded && (
+                          <span className="chip" title="Came with the bundled area list rather than being added here">
+                            Preset
+                          </span>
+                        )}
                         {area.open > 0 && (
                           <span className="mktarea__open">{area.open} open</span>
                         )}

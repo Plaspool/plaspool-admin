@@ -310,6 +310,41 @@ export default function ShopDeliveryAreas() {
     }
   }
 
+  /**
+   * SWITCH A WHOLE STATE'S DELIVERY ON OR OFF.
+   *
+   * ONE REQUEST, unlike the Areas screen's equivalent — the bulk route takes a
+   * list of area keys, so "stop delivering to this state" is a single write and
+   * cannot half-apply. That is the difference between having a bulk endpoint and
+   * fanning out over a per-row one.
+   *
+   * DOES NOT TOUCH THE RATES, the mirror of `applyBulk` not touching the
+   * switches. Switching a state back on later should find the prices the owner
+   * set before, not a table wiped by the act of pausing.
+   */
+  async function switchAll(next: boolean): Promise<void> {
+    if (shown === null) return;
+    setBulkBusy(true);
+    try {
+      const saved = await shopApi.saveDeliveryAreas({
+        areaKeys: shown.areas.map((area) => area.key),
+        delivers: next,
+      });
+      setOpinions((prev) => {
+        const map = new Map(prev);
+        for (const row of saved) map.set(row.areaKey, row);
+        return map;
+      });
+      notify(
+        `${shown.region} — ${saved.length} ${saved.length === 1 ? 'district' : 'districts'} ${next ? 'now delivering' : 'switched off'}`,
+      );
+    } catch (err) {
+      notify(explain(err, 'That change didn’t save.'), { tone: 'danger' });
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   async function applyBulk(): Promise<void> {
     if (shown === null) return;
     const minor = parseNaira(bulk);
@@ -396,6 +431,25 @@ export default function ShopDeliveryAreas() {
             <p className="mktarea__tally">
               {shown.on} of {shown.areas.length} delivering
             </p>
+
+            {/*
+              THE MASTER SWITCH, matching the Areas screen's. Checked only when
+              EVERY district is on, so a part-served state reads as off and one
+              press means "deliver to all of this state".
+            */}
+            {isOwner && shown.areas.length > 0 && (
+              <span className="mktarea__all">
+                <span className="mktarea__alllabel">All of {shown.region}</span>
+                <Switch
+                  checked={shown.on === shown.areas.length}
+                  label={`Deliver to every district in ${shown.region}`}
+                  disabled={bulkBusy || busy !== null}
+                  onChange={(next) => {
+                    if (!bulkBusy && busy === null) void switchAll(next);
+                  }}
+                />
+              </span>
+            )}
 
             {/*
               THE RATE THAT IS ACTUALLY CHARGED, edited in place. Everything
@@ -501,7 +555,16 @@ export default function ShopDeliveryAreas() {
               return (
                 <li className="mktarea__row" key={area.id}>
                   <span className="mktarea__name">{area.name}</span>
-                  {area.seeded && <span className="chip">Shipped</span>}
+                  {/*
+                    NO "PRESET"/"SHIPPED" CHIP HERE, deliberately. The Areas
+                    screen marks rows that came from the bundled dataset because
+                    an owner correcting a misspelt district wants to know which
+                    names they did not write. On THIS screen that provenance
+                    answers no question anybody is asking — the questions are "do
+                    we go there" and "what does it cost" — and the chip read
+                    "Shipped" beside a delivery rate, which looked like a claim
+                    about a parcel. Dropped rather than relabelled.
+                  */}
 
                   {editing?.key === area.key ? (
                     <form
