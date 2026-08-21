@@ -22,6 +22,7 @@ import { Skeleton } from '../components/ui/Feedback';
 import { Select } from '../components/ui/Select';
 import { useDelayed } from '../components/ui/useDelayed';
 import { Picker } from '../components/ui/Picker';
+import { Tabs, type TabItem } from '../components/ui/Tabs';
 import { Board, awaitingPayment } from './orders/Board';
 import {
   deliveryZoneOf,
@@ -156,6 +157,12 @@ function readStatus(params: URLSearchParams): OrderStatus | 'all' {
 }
 
 type View = 'board' | 'table';
+
+/** The two ways this list is drawn, in the order the control offers them. */
+const VIEW_TABS: readonly TabItem<View>[] = [
+  { value: 'board', label: 'Board', hint: 'Lanes you can drag a card between' },
+  { value: 'table', label: 'Table', hint: 'Every column, sortable and dense' },
+];
 
 /** `?view=bord` is the same typo as `?status=fulfille`, and gets the default. */
 function readView(params: URLSearchParams): View {
@@ -509,33 +516,14 @@ function OrderList() {
     <>
       <div className="shopfilters">
         {/*
-          TWO LINKS, NOT TWO BUTTONS, and `aria-current` rather than
-          `aria-pressed`.
+          LINKS, NOT BUTTONS, which is what handing `Tabs` a `to` chooses.
 
-          They are links because the view IS the address: `?view=table` is a
-          different URL for the same list, so the browser's own Back button is
-          the undo, a middle-click opens the other view in a tab, and the whole
-          thing keeps working with JavaScript's own history rather than beside
-          it. A pair of `aria-pressed` toggles would claim two independent
-          switches where there is one choice of two, and a `<div onClick>` would
-          claim neither and reach no keyboard at all.
+          The view IS the address: `?view=table` is a different URL for the same
+          list, so the browser's own Back button is the undo and a middle-click
+          opens the other view in a tab. `Tabs` argues the rest of it — why this
+          carries no `role="tab"`, and why the state is `aria-current`.
         */}
-        <div className="oview" role="group" aria-label="How the orders are shown">
-          <Link
-            className="oview__opt"
-            to={viewLink('board')}
-            aria-current={view === 'board' ? 'true' : undefined}
-          >
-            Board
-          </Link>
-          <Link
-            className="oview__opt"
-            to={viewLink('table')}
-            aria-current={view === 'table' ? 'true' : undefined}
-          >
-            Table
-          </Link>
-        </div>
+        <Tabs label="How the orders are shown" value={view} items={VIEW_TABS} to={viewLink} />
 
         {/*
           THE STATUS CONTROL IS NOT RENDERED ON THE BOARD. It is not disabled

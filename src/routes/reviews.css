@@ -16,12 +16,21 @@
   align-items: center;
   gap: var(--s2);
 }
-.rvfilters__select,
+/*
+ * ONE ROW, ONE HEIGHT.
+ *
+ * `Tabs` and `Picker` are both `--ctl-h`; a bare `.input` is `--ctl-h-lg`, so
+ * the slug field has to come down to meet the dropdown beside it. It used to
+ * line up by accident — it sat next to a native `<select>` wearing the same
+ * `.input` class — and the moment that select became a picker the accident
+ * stopped holding. Four pixels is small enough to read as a mistake rather
+ * than as a choice, which is exactly why it has to be said out loud.
+ */
 .rvfilters__product {
   width: auto;
-}
-.rvfilters__product {
   min-width: 12rem;
+  height: var(--ctl-h);
+  font-size: var(--step--1);
 }
 
 /* A single column, and a narrow one. A review is a paragraph of prose and the

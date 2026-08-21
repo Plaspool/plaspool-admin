@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { MessageSquareText, Star, Trash2 } from 'lucide-react';
+import { useSearchParams, type To } from 'react-router-dom';
+import { Gauge, MessageSquareText, Star, Trash2 } from 'lucide-react';
 import { useSession } from '../components/RequireAuth';
+import { Picker, type PickerItem } from '../components/ui/Picker';
+import { Tabs, type TabItem } from '../components/ui/Tabs';
 import {
   destroyReview,
   listReviews,
@@ -37,14 +39,34 @@ import './reviews.css';
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
-const STATUSES: { key: ReviewStatus; label: string; hint: string }[] = [
-  { key: 'pending', label: 'Pending', hint: 'Waiting on a decision' },
-  { key: 'approved', label: 'Approved', hint: 'Live on the product page' },
-  { key: 'flagged', label: 'Flagged', hint: 'Held back for a second look' },
-  { key: 'rejected', label: 'Rejected', hint: 'Never shown to customers' },
+/**
+ * The four states a review can be in, in the order the queue works them.
+ *
+ * ONE CONSTANT, TWO CONTROLS. It is the segmented strip at the top of the
+ * screen AND the set of moves offered under each card, and those two must
+ * never drift: a status reachable by filter but not by decision is a lane with
+ * nothing that can enter it. `TabItem`'s shape is what the strip needs, and
+ * the card takes the same rows minus the one it is already in.
+ */
+const STATUS_TABS: readonly TabItem<ReviewStatus>[] = [
+  { value: 'pending', label: 'Pending', hint: 'Waiting on a decision' },
+  { value: 'approved', label: 'Approved', hint: 'Live on the product page' },
+  { value: 'flagged', label: 'Flagged', hint: 'Held back for a second look' },
+  { value: 'rejected', label: 'Rejected', hint: 'Never shown to customers' },
 ];
 
-const SENTIMENTS: SentimentLabel[] = ['positive', 'neutral', 'negative'];
+/** `any` is the absent filter, not a sentiment — it is dropped from the URL
+ *  rather than written, so `?sentiment=any` never appears in a sendable link. */
+type SentimentFilter = SentimentLabel | 'any';
+
+/* Capitalised, because these are read as words on a control and not as the
+   enum values they happen to be underneath. */
+const SENTIMENT_OPTIONS: readonly PickerItem<SentimentFilter>[] = [
+  { value: 'any', label: 'Any sentiment' },
+  { value: 'positive', label: 'Positive' },
+  { value: 'neutral', label: 'Neutral' },
+  { value: 'negative', label: 'Negative' },
+];
 
 /** The API sends epoch ms; the admin is one timezone and reads plain dates. */
 const WHEN = new Intl.DateTimeFormat(undefined, {
@@ -80,7 +102,7 @@ function ReviewCard({
 }) {
   /* Every status except the one it already has. A button that sets a review
      to the state it is in is a button that looks broken when pressed. */
-  const moves = STATUSES.filter((s) => s.key !== review.status);
+  const moves = STATUS_TABS.filter((s) => s.value !== review.status);
 
   return (
     <article className={`rvcard rvcard--${review.status}`}>
@@ -136,14 +158,14 @@ function ReviewCard({
       <footer className="rvcard__actions">
         {moves.map((move) => (
           <button
-            key={move.key}
+            key={move.value}
             type="button"
-            className={`btn btn--sm${move.key === 'approved' ? ' btn--primary' : ' btn--outline'}`}
+            className={`btn btn--sm${move.value === 'approved' ? ' btn--primary' : ' btn--outline'}`}
             disabled={busy}
             title={move.hint}
-            onClick={() => onModerate(move.key)}
+            onClick={() => onModerate(move.value)}
           >
-            {move.key === 'pending' ? 'Return to pending' : move.label}
+            {move.value === 'pending' ? 'Return to pending' : move.label}
           </button>
         ))}
 
@@ -212,12 +234,30 @@ export default function ShopReviews() {
     void load();
   }, [load]);
 
-  function setFilter(key: string, value: string | null) {
+  /** The same params with one key changed — `null` drops it entirely. */
+  function withFilter(key: string, value: string | null): URLSearchParams {
     const next = new URLSearchParams(params);
     if (value === null) next.delete(key);
     else next.set(key, value);
-    setParams(next, { replace: true });
+    return next;
   }
+
+  function setFilter(key: string, value: string | null) {
+    setParams(withFilter(key, value), { replace: true });
+  }
+
+  /**
+   * The address this screen would have under a different status, for the strip
+   * to point at. It keeps `replace` because every other filter here does: a
+   * strip that pushed while the sentiment picker replaced would make Back walk
+   * a history only half this row wrote.
+   */
+  const statusLink = (next: ReviewStatus): To => {
+    const search = withFilter('status', next).toString();
+    /* Search only, no pathname — `To` without one keeps the current path, so
+       this never has to know the route it is mounted at. */
+    return { search: search === '' ? '' : `?${search}` };
+  };
 
   /**
    * A moderated review LEAVES THE LIST it was moderated in, because the list
@@ -271,39 +311,42 @@ export default function ShopReviews() {
 
       <div className="shopscr__body">
         <div className="rvfilters">
-          <div className="shoptabs" role="tablist" aria-label="Review status">
-            {STATUSES.map((s) => (
-              <button
-                key={s.key}
-                type="button"
-                role="tab"
-                aria-selected={status === s.key}
-                className={`shoptabs__tab${status === s.key ? ' is-active' : ''}`}
-                title={s.hint}
-                onClick={() => setFilter('status', s.key)}
-              >
-                {s.label}
-              </button>
-            ))}
-          </div>
+          {/*
+            THE SAME SEGMENTED CONTROL THE ORDERS SCREEN USES for board/table,
+            and links for the same reason: the status IS the address, so "the
+            flagged ones" stays something you can send a colleague. It dropped
+            `role="tab"` on the way — there is no `tabpanel` under it, only the
+            same list re-filtered, and `tab` without a panel is ARIA that reads
+            worse than none. `Tabs` argues the whole thing.
+          */}
+          <Tabs
+            label="Review status"
+            value={status}
+            items={STATUS_TABS}
+            to={statusLink}
+            replace
+          />
 
           <div className="rvfilters__right">
-            <label className="visually-hidden" htmlFor="rv-sentiment">
-              Filter by sentiment
-            </label>
-            <select
-              id="rv-sentiment"
-              className="input rvfilters__select"
-              value={sentiment ?? ''}
-              onChange={(e) => setFilter('sentiment', e.target.value || null)}
-            >
-              <option value="">Any sentiment</option>
-              {SENTIMENTS.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
+            {/*
+              THE RETURNS DESK'S DROPDOWN, with its search field turned off.
+              Three sentiments and an "any" cannot be narrowed by typing, so the
+              field would be furniture — but the rest of that control is exactly
+              right here: a leading icon naming what is being chosen, a tick on
+              the row in force, and one dropdown shape across the admin instead
+              of a native `<select>` the design system cannot reach into.
+            */}
+            <Picker
+              label="Sentiment"
+              value={sentiment ?? 'any'}
+              items={SENTIMENT_OPTIONS}
+              onChange={(next) => setFilter('sentiment', next === 'any' ? null : next)}
+              icon={<Gauge className="ui-ic" aria-hidden="true" />}
+              searchable={false}
+              /* End-aligned: this sits at the right edge of the filter row, and
+                 a popup hanging off its left would run off a narrow window. */
+              align="end"
+            />
 
             <label className="visually-hidden" htmlFor="rv-product">
               Filter by product slug

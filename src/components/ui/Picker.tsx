@@ -37,6 +37,22 @@ import './ui.css';
  *
  * WHAT IT IS NOT: a combobox that accepts free text. There is no value here
  * except one of the rows — the field filters, it never becomes the answer.
+ *
+ * ---------------------------------------------------------------------------
+ * `searchable={false}` DROPS THE FIELD AND KEEPS EVERYTHING ELSE, which is how
+ * a list of three uses this without a filing-cabinet index over it. A search
+ * box above four rows is furniture: it cannot narrow anything you cannot
+ * already see, and it makes a small menu look like a big one.
+ *
+ * The reason to reach for it here rather than for `Select` is that a picker
+ * carries what a Radix `Select` has no room for — a leading icon naming the
+ * KIND of thing being chosen, a count or a quiet note pinned to each row, and
+ * a footer for the option that is not one of the rows. A screen that already
+ * shows one of these (the returns desk's district switcher) should not sprout
+ * a second, differently-shaped dropdown beside it for its other filter.
+ *
+ * With the field gone the LIST itself takes focus and the keys: same handler,
+ * same `aria-activedescendant`, one less element between you and the rows.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
@@ -95,6 +111,7 @@ export function Picker<T extends string>({
   triggerLabel,
   icon,
   badge,
+  searchable = true,
   searchPlaceholder = 'Type to filter…',
   emptyText = 'Nothing matches that.',
   footer,
@@ -111,6 +128,12 @@ export function Picker<T extends string>({
   icon?: ReactNode;
   /** A count beside the trigger's own label. */
   badge?: number;
+  /**
+   * The filter field above the list. Leave it on for anything long enough to
+   * scroll; turn it OFF for a handful of fixed choices, where it narrows
+   * nothing and only makes a short menu look like a long one.
+   */
+  searchable?: boolean;
   searchPlaceholder?: string;
   emptyText?: string;
   /**
@@ -152,13 +175,15 @@ export function Picker<T extends string>({
 
   // Opening starts from a clean field and puts the caret in it. A menu that
   // reopens still filtered by what you typed last time is a menu that appears
-  // to have lost half its rows.
+  // to have lost half its rows. With no field, the list takes the focus and
+  // the keys instead — something inside the popup must hold them either way.
   useEffect(() => {
     if (!open) return;
     setQuery('');
     setActive(0);
-    field.current?.focus();
-  }, [open]);
+    if (searchable) field.current?.focus();
+    else list.current?.focus();
+  }, [open, searchable]);
 
   // Typing moves the highlight back to the top: the first row is what Enter
   // takes, and leaving it deep in a list that just changed underneath is how
@@ -189,7 +214,7 @@ export function Picker<T extends string>({
     onChange(next);
   };
 
-  const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (event.key === 'Escape') {
       event.preventDefault();
       setOpen(false);
@@ -257,25 +282,41 @@ export function Picker<T extends string>({
           className={`ui-picker__menu ui-picker__menu--${align}`}
           style={width === undefined ? undefined : { width }}
         >
-          <div className="ui-picker__search">
-            <Search className="ui-ic ui-picker__searchic" aria-hidden="true" />
-            <input
-              ref={field}
-              className="ui-picker__input"
-              type="text"
-              value={query}
-              placeholder={searchPlaceholder}
-              aria-label={`Filter ${label.toLowerCase()}`}
-              aria-controls={`${id}-list`}
-              aria-activedescendant={shown.length > 0 ? `${id}-opt-${active}` : undefined}
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={onKeyDown}
-            />
-          </div>
+          {searchable && (
+            <div className="ui-picker__search">
+              <Search className="ui-ic ui-picker__searchic" aria-hidden="true" />
+              <input
+                ref={field}
+                className="ui-picker__input"
+                type="text"
+                value={query}
+                placeholder={searchPlaceholder}
+                aria-label={`Filter ${label.toLowerCase()}`}
+                aria-controls={`${id}-list`}
+                aria-activedescendant={shown.length > 0 ? `${id}-opt-${active}` : undefined}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={onKeyDown}
+              />
+            </div>
+          )}
 
-          <div className="ui-picker__list" role="listbox" aria-label={label} id={`${id}-list`} ref={list}>
+          <div
+            className="ui-picker__list"
+            role="listbox"
+            aria-label={label}
+            id={`${id}-list`}
+            ref={list}
+            /* Focusable ONLY when there is no field to hold the keys — two
+               tab stops inside one popup is one too many, and the arrows
+               would be answered twice. */
+            tabIndex={searchable ? undefined : -1}
+            aria-activedescendant={
+              !searchable && shown.length > 0 ? `${id}-opt-${active}` : undefined
+            }
+            onKeyDown={searchable ? undefined : onKeyDown}
+          >
             {shown.length === 0 ? (
               <p className="ui-picker__empty">{emptyText}</p>
             ) : (

@@ -118,6 +118,111 @@
   color: var(--accent);
 }
 
+/* ----------------------------------------------------------------- tabs
+
+   The segmented control — see the essay at the top of `Tabs.tsx`. Lifted from
+   `.oview` on the orders screen, which is where this shape was designed.
+
+   FLUSH, with one rule between the options, because the pair is one choice: a
+   gap would read as two buttons that happen to sit together. The height is
+   `--ctl-h` so it lines up with `.ui-select` and a search box beside it in a
+   row of filters. */
+
+.ui-tabs {
+  display: inline-flex;
+  max-width: 100%;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper-raised);
+  overflow: hidden;
+  /* Four options at 375px is wider than the screen. Scroll inside the frame
+     rather than wrap: a segmented control that wraps stops reading as one
+     object, which is the only thing it had to say. */
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.ui-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.ui-tabs__opt {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  height: var(--ctl-h);
+  padding: 0 var(--ctl-pad-x);
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: var(--step--1);
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+.ui-tabs--lg .ui-tabs__opt {
+  height: var(--ctl-h-lg);
+}
+.ui-tabs__opt + .ui-tabs__opt {
+  border-left: 1px solid var(--rule);
+}
+.ui-tabs__opt:hover:not(:disabled):not(.is-disabled) {
+  background: var(--paper-sunken);
+  color: var(--ink);
+}
+/* Inset, because the option is flush with the frame and an outset ring would
+   be clipped by the parent's `overflow: hidden`. */
+.ui-tabs__opt:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/*
+ * NEVER COLOUR ALONE — `aria-current` (links) and `aria-checked` (radios) are
+ * the state a screen reader gets, and this is the same fact drawn for
+ * everybody else. Selecting on the ARIA rather than on a class is what keeps
+ * the two from ever disagreeing.
+ */
+.ui-tabs__opt[aria-current],
+.ui-tabs__opt[aria-checked='true'] {
+  background: var(--ink);
+  color: var(--paper);
+}
+.ui-tabs__opt:disabled,
+.ui-tabs__opt.is-disabled {
+  color: var(--ink-5);
+  cursor: not-allowed;
+}
+.ui-tabs__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Ink on paper, and inverted on the chosen option, which is ink itself. */
+.ui-tabs__badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: var(--paper-sunken);
+  color: var(--ink-3);
+  font-size: var(--step--2);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.ui-tabs__opt[aria-current] .ui-tabs__badge,
+.ui-tabs__opt[aria-checked='true'] .ui-tabs__badge {
+  background: var(--paper);
+  color: var(--ink);
+}
+
 /* --------------------------------------------------------------- picker
 
    The searchable dropdown — see the essay at the top of `Picker.tsx`. It is a
@@ -230,6 +335,12 @@
   color: var(--ink-5);
 }
 
+/* Focused in place of the field when `searchable` is off. The highlighted row
+   is what says where you are — a ring around the whole scrolling box would
+   frame the list rather than the choice inside it. */
+.ui-picker__list:focus {
+  outline: none;
+}
 .ui-picker__list {
   overflow-y: auto;
   /* Ten-ish rows. Long enough that filtering feels like it is revealing a list,
