@@ -9,6 +9,7 @@ import {
   type BannerPatch,
   type DerivedBannerStatus,
 } from '../data/api-marketing';
+import { safeFormat } from '../data/when';
 import { ApiError, NotFoundError, OfflineError, StaleWriteError } from '../data/errors';
 import { useToast } from '../components/Toast';
 import { ConfirmDialog } from '../components/Dialog';
@@ -295,10 +296,10 @@ function whyNotShowing(banner: Banner, all: Banner[], now: number): string | nul
   if (banner.status !== 'live') return null;
   const derived = deriveBannerStatus(banner, now);
   if (derived === 'scheduled' && banner.startsAt !== null) {
-    return `It is switched on, but its window doesn’t open until ${WHEN_AT.format(new Date(banner.startsAt))}.`;
+    return `It is switched on, but its window doesn’t open until ${safeFormat(WHEN_AT, banner.startsAt)}.`;
   }
   if (derived === 'ended' && banner.endsAt !== null) {
-    return `Its window closed on ${WHEN_AT.format(new Date(banner.endsAt))} — extend the end date to relaunch it.`;
+    return `Its window closed on ${safeFormat(WHEN_AT, banner.endsAt)} — extend the end date to relaunch it.`;
   }
   const winner = beatenBy(banner, all, now);
   if (winner !== null) {
@@ -309,8 +310,8 @@ function whyNotShowing(banner: Banner, all: Banner[], now: number): string | nul
 
 /** A window as a phrase. Both ends are optional and each absence means something. */
 function windowText(banner: { startsAt: number | null; endsAt: number | null }): string {
-  const from = banner.startsAt === null ? null : WHEN_DAY.format(new Date(banner.startsAt));
-  const to = banner.endsAt === null ? null : WHEN_DAY.format(new Date(banner.endsAt));
+  const from = banner.startsAt === null ? null : safeFormat(WHEN_DAY, banner.startsAt);
+  const to = banner.endsAt === null ? null : safeFormat(WHEN_DAY, banner.endsAt);
   if (from !== null && to !== null) return `${from} → ${to}`;
   if (from !== null) return `from ${from}`;
   if (to !== null) return `until ${to}`;
@@ -550,7 +551,7 @@ function BannerTable({ rows, all, now }: { rows: Banner[]; all: Banner[]; now: n
                   <td className="mkttable__num" data-label="Priority">
                     {banner.priority.toLocaleString()}
                     <span className="mkttable__sub">
-                      Changed {WHEN_DAY.format(new Date(banner.updatedAt))}
+                      Changed {safeFormat(WHEN_DAY, banner.updatedAt)}
                     </span>
                   </td>
                 </tr>
@@ -1349,13 +1350,13 @@ function sentenceFor(
     case 'scheduled':
       return schedule.startsAt === null
         ? 'Waiting for its window to open.'
-        : `Will start showing on ${WHEN_AT.format(new Date(schedule.startsAt))}.`;
+        : `Will start showing on ${safeFormat(WHEN_AT, schedule.startsAt)}.`;
     case 'live':
       return 'Will be Live the moment you save.';
     case 'ended':
       return schedule.endsAt === null
         ? 'Its window has closed — extend the end date to relaunch it.'
-        : `Ended ${WHEN_AT.format(new Date(schedule.endsAt))} — extend the end date to relaunch it.`;
+        : `Ended ${safeFormat(WHEN_AT, schedule.endsAt)} — extend the end date to relaunch it.`;
     case 'archived':
       return 'Archived — off the site and out of the way. Switching it on brings it back.';
   }

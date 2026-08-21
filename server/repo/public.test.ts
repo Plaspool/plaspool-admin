@@ -439,11 +439,29 @@ describe('cover images', () => {
     expect(publicImageUrl('img_x')).toBe('/api/public/images/img_x');
   });
 
+  /*
+   * THE ARCHIVED POST, NOT THE DRAFT, AND THE DIFFERENCE IS `published_at`.
+   *
+   * Both fixtures lack a cover, which is all this test is about — but
+   * `rowToPublicPost` documents that its callers select behind
+   * `PUBLIC_POST_PREDICATE`, and that predicate is the only reason it may treat
+   * `published_at` as non-null. A draft has never been published, so handing one
+   * to the mapper directly breaks that contract in the one place nothing else
+   * checks it.
+   *
+   * It used to pass anyway: `toEpochMs` was a bare `Number(value)`, `Number(null)`
+   * is `0`, and the draft mapped to a public post stamped 1 January 1970 that
+   * this test never looked at. `toEpochMs` now refuses instead, which is how the
+   * violation surfaced. The archived post was published once — it keeps its slug
+   * and its date, and only `status` excludes it — so it satisfies the contract
+   * while still carrying no cover.
+   */
   it('no cover is null, not a URL to nothing', async () => {
     const res = await ctx.db.execute(sql`
       SELECT p.*, u.display_name AS author_name
         FROM posts p JOIN users u ON u.id = p.author_id
-       WHERE p.id = ${corpus.draft.id}`);
+       WHERE p.id = ${corpus.archived.id}`);
+    expect(res.rows[0].published_at).not.toBeNull();
     expect(rowToPublicPost(res.rows[0], 'Owner').coverImage).toBeNull();
   });
 });

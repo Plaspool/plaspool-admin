@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ShoppingBag } from 'lucide-react';
-import { shopApi, formatMinor, type ShopStats } from '../data/api-shop';
+import { shopApi, safeFormatMinor, type ShopStats } from '../data/api-shop';
+import { safeFormat } from '../data/when';
 import { ApiError, NotFoundError, OfflineError } from '../data/errors';
 import { Skeleton } from '../components/ui/Feedback';
 import { useDelayed } from '../components/ui/useDelayed';
@@ -170,11 +171,11 @@ function Figures({ stats }: { stats: ShopStats }) {
               {/* "24 hours" and not "today": the window is measured back from
                   `generatedAt`, so at 9 a.m. it includes most of yesterday. */}
               <span className="stat__value">
-                {formatMinor(window.last24h, window.currency)}
+                {safeFormatMinor(window.last24h, window.currency)}
               </span>
               <span className="stat__note">
-                {formatMinor(window.last7d, window.currency)} over 7 days ·{' '}
-                {formatMinor(window.last30d, window.currency)} over 30. Net of refunds.
+                {safeFormatMinor(window.last7d, window.currency)} over 7 days ·{' '}
+                {safeFormatMinor(window.last30d, window.currency)} over 30. Net of refunds.
               </span>
             </div>
           ))
@@ -276,7 +277,7 @@ function Figures({ stats }: { stats: ShopStats }) {
                           has no header to say it, so `data-label` carries the
                           word rather than repeating the bare number. */}
                       <td className="dtable__num" data-label="Value, gross">
-                        {formatMinor(row.total, row.currency)}
+                        {safeFormatMinor(row.total, row.currency)}
                       </td>
                     </tr>
                   ))
@@ -397,7 +398,7 @@ function Figures({ stats }: { stats: ShopStats }) {
                         <span className="dtable__sub">{order.email}</span>
                       </td>
                       <td className="num" data-label="Placed">
-                        {WHEN.format(new Date(order.placedAt))}
+                        {safeFormat(WHEN, order.placedAt)}
                       </td>
                       <td data-label="Status">
                         <span className={`chip chip--${order.status}`}>
@@ -411,7 +412,7 @@ function Figures({ stats }: { stats: ShopStats }) {
                         precisely so nothing downstream assumes there is one.
                       */}
                       <td className="dtable__num" data-label="Total">
-                        {formatMinor(order.grandTotal, order.currency)}
+                        {safeFormatMinor(order.grandTotal, order.currency)}
                       </td>
                     </tr>
                   ))

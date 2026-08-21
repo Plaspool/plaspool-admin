@@ -27,6 +27,7 @@ import {
   type ReturnAction,
   type ReturnListItem,
 } from '../data/api-marketing';
+import { safeFormat } from '../data/when';
 import { ApiError, NotFoundError, OfflineError } from '../data/errors';
 import { Select } from '../components/ui/Select';
 import { Skeleton } from '../components/ui/Feedback';
@@ -436,7 +437,7 @@ function Tiles({
         note={
           outForPickup.nextPickupAt === null
             ? 'No pickup is booked.'
-            : `Next pickup ${WHEN.format(new Date(outForPickup.nextPickupAt))}.`
+            : `Next pickup ${safeFormat(WHEN, outForPickup.nextPickupAt)}.`
         }
         alert={false}
         icon={Truck}
@@ -897,7 +898,7 @@ function Ledger({
                     </span>
                     <span className="mktaudit__why">{entry.reason}</span>
                   </span>
-                  <span className="mktaudit__when">{WHEN.format(new Date(entry.createdAt))}</span>
+                  <span className="mktaudit__when">{safeFormat(WHEN, entry.createdAt)}</span>
                 </li>
               );
             })}

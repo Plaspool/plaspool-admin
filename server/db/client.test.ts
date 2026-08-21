@@ -17,7 +17,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { migratedDb } from '../test/harness';
-import { DbError, toEpochMs, toEpochMsOrNull, uniqueViolation } from './client';
+import { DbError, EpochShapeError, toEpochMs, toEpochMsOrNull, uniqueViolation } from './client';
 import type { Db } from './client';
 import { posts, users } from './schema';
 import {
@@ -472,5 +472,85 @@ describe('bigint parity between the test driver and production', () => {
     expect(toEpochMsOrNull(null)).toBeNull();
     expect(toEpochMsOrNull(undefined)).toBeNull();
     expect(toEpochMsOrNull('17')).toBe(17);
+  });
+
+  /*
+   * A DROPPED COLUMN USED TO BE INDISTINGUISHABLE FROM DATA.
+   *
+   * `Number(undefined)` is `NaN`, `NaN` is a `number`, and `JSON.stringify`
+   * turns it into `null` — so a column renamed, aliased, or forgotten in a
+   * hand-written `sql` fragment produced a row that satisfied every type in
+   * this codebase and arrived at the client looking exactly like a legitimately
+   * NULL timestamp. Nobody was holding the fault: the server had no complaint
+   * to make and the screen had nothing to distinguish.
+   *
+   * It refuses here, where a throw is a 500 with a stack seen by the people who
+   * can fix the query. `src/data/when.ts` makes the opposite choice for the
+   * opposite reason — on a screen there is no one further down the line to tell,
+   * so a broken timestamp is downgraded to a placeholder rather than an error
+   * page. The two guards are complements, not duplicates.
+   */
+  it('toEpochMs refuses a column that is not there, rather than returning NaN', () => {
+    expect(() => toEpochMs(undefined)).toThrow(EpochShapeError);
+    expect(() => toEpochMs('not-a-number')).toThrow(EpochShapeError);
+
+    // THE TWO THAT A `NaN` CHECK ALONE WOULD HAVE MISSED, and the reason the
+    // shape is tested before the coercion: `Number(null)` and `Number('')` are
+    // both `0` — finite, valid, and 1 January 1970 on somebody's screen.
+    expect(() => toEpochMs(null)).toThrow(EpochShapeError);
+    expect(() => toEpochMs('')).toThrow(EpochShapeError);
+    expect(() => toEpochMs('   ')).toThrow(EpochShapeError);
+    // Neither `NaN` nor a timestamp, and `new Date()` of it is the same
+    // `RangeError` a missing column would have caused downstream.
+    expect(() => toEpochMs('1e400')).toThrow(EpochShapeError);
+
+    // The message names the shape, because the row it came from will not be in
+    // the stack — the caller that logs this needs the query, not the value.
+    expect(() => toEpochMs(undefined)).toThrow(/epoch in ms/);
+  });
+
+  /*
+   * AND IT DESCRIBES THE VALUE WITHOUT QUOTING IT, which is this file's subject
+   * one function across. The way a timestamp field receives a string at all is a
+   * SELECT whose columns do not line up with what the mapper reads — and on
+   * `users` the column next to a timestamp is `password_hash`. An error that
+   * interpolated its input would put a crackable hash in the log by exactly the
+   * route every test above closes, while reporting a bug about dates.
+   */
+  it('the refusal describes the value without quoting it', () => {
+    const hash = 'scrypt$32768$8$1$deadbeefdeadbeefdeadbeefdeadbeef';
+    const err = (() => {
+      try {
+        toEpochMs(hash);
+        throw new Error('expected a hash-shaped column to be refused');
+      } catch (e: unknown) {
+        return e;
+      }
+    })();
+
+    expect(err).toBeInstanceOf(EpochShapeError);
+    const text = surface(err);
+    expect(text).not.toContain(hash);
+    expect(text).not.toMatch(HASH_PATTERN);
+    // Still diagnosable: the type and the length are what tell the cases apart.
+    expect((err as Error).message).toContain(`a string of length ${hash.length}`);
+  });
+
+  it('toEpochMs accepts epoch zero, which is falsy and is a real timestamp', () => {
+    expect(toEpochMs(0)).toBe(0);
+    expect(toEpochMs('0')).toBe(0);
+    expect(toEpochMsOrNull(0)).toBe(0);
+  });
+
+  /*
+   * `toEpochMsOrNull(undefined)` STAYS `null` AND IS NOT TIGHTENED TO MATCH.
+   * A nullable column read off a row that does not carry it is genuinely
+   * indistinguishable from one that is NULL without knowing the SELECT, and
+   * that information is not in this function. The line above pins the looser
+   * contract deliberately so nobody "fixes" it into a false positive.
+   */
+  it('the nullable form still refuses a value that is present and unusable', () => {
+    expect(() => toEpochMsOrNull('not-a-number')).toThrow(EpochShapeError);
+    expect(toEpochMsOrNull(undefined)).toBeNull();
   });
 });

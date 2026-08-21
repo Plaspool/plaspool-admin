@@ -13,6 +13,7 @@ import {
   type Program,
   type ProgramLabels,
 } from '../data/api-marketing';
+import { isoAttr, safeFormat } from '../data/when';
 import { ApiError, NotFoundError, OfflineError } from '../data/errors';
 import { useSession } from '../components/RequireAuth';
 import { useToast } from '../components/Toast';
@@ -611,7 +612,7 @@ function Directory({ points }: { points: ProgramLabels | null }) {
                           <td className="mkttable__num" data-label="When">
                             {row.lastEntryAt === null
                               ? '—'
-                              : WHEN_DAY.format(new Date(row.lastEntryAt))}
+                              : safeFormat(WHEN_DAY, row.lastEntryAt)}
                           </td>
                         </tr>
                       ))}
@@ -1037,7 +1038,7 @@ function LedgerRow({
       {/* Announced rather than `aria-hidden`, unlike the audit list this is a
           copy of: the row's own time is a clock time, so hiding the heading
           would leave a screen reader with entries that never say which day. */}
-      {startsDay && <li className="mktaudit__day">{DAY.format(new Date(entry.createdAt))}</li>}
+      {startsDay && <li className="mktaudit__day">{safeFormat(DAY, entry.createdAt)}</li>}
       <li className="mktaudit__row">
         <span className="mktaudit__icon" aria-hidden="true">
           <Icon className="ui-ic" />
@@ -1064,8 +1065,8 @@ function LedgerRow({
           */}
           <span className="mktaudit__why">{entry.reason}</span>
         </span>
-        <time className="mktaudit__when" dateTime={new Date(entry.createdAt).toISOString()}>
-          {WHEN.format(new Date(entry.createdAt))}
+        <time className="mktaudit__when" dateTime={isoAttr(entry.createdAt)}>
+          {safeFormat(WHEN, entry.createdAt)}
         </time>
       </li>
     </>

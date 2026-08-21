@@ -3,6 +3,7 @@ import { DocRenderer } from '../components/DocRenderer';
 import { StoredImg } from '../components/StoredImg';
 import type { Post, DocNode } from '../data/types';
 import type { ReadingTemplate, Settings } from '../data/settings';
+import { isoAttr } from '../data/when';
 import './templates.css';
 
 export interface TemplateProps {
@@ -184,7 +185,13 @@ function Technical({ post, doc, settings }: TemplateProps) {
             <div>
               <dt>Published</dt>
               <dd>
-                <time dateTime={new Date(post.publishedAt).toISOString()}>
+                {/* The truthiness guard above stops `undefined`, `null` and
+                    `NaN`, but not a number outside the ECMAScript time range or
+                    a string where a number was expected — both are truthy and
+                    both make `toISOString` throw the same `RangeError` that took
+                    `/shop/orders` down. `toLocaleDateString` below is already
+                    total; this is the half that was not. */}
+                <time dateTime={isoAttr(post.publishedAt)}>
                   {new Date(post.publishedAt).toLocaleDateString(undefined, {
                     year: 'numeric',
                     month: 'short',

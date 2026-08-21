@@ -17,6 +17,7 @@ import {
   shopApi,
   currencyDigits,
   formatMinor,
+  safeFormatMinor,
   moneyRefusalMessage,
   parseMajor,
   plainMajor,
@@ -1178,7 +1179,7 @@ function VariantCard({
           <p className="vdetail__facts">
             <strong className="num">
               {variant.price
-                ? formatMinor(variant.price.amount, variant.price.currency)
+                ? safeFormatMinor(variant.price.amount, variant.price.currency)
                 : 'Never priced'}
             </strong>
             {' · '}
@@ -1354,6 +1355,24 @@ function VariantCard({
             priceError ? (
               <p className="panel__note">{priceError}</p>
             ) : priceChanged && parsed?.ok && variant.price ? (
+              /*
+               * BARE `formatMinor` HERE, AND `safeFormatMinor` ON THE CARD AND
+               * IN THE LIST ABOVE. The rule is `ShopOrders.tsx`'s header, applied
+               * to a price instead of a refund: a figure the SERVER sent and this
+               * screen only displays downgrades to a placeholder, and a figure on
+               * its way BACK to the server throws.
+               *
+               * THIS PREVIEW is the second kind. `now` is `parsed.minor` — what the
+               * operator typed, about to be written — and `was` and the delta
+               * beneath it are the comparison they are approving it against. A
+               * confirmation reading "–– → ₦22,000.00" that still submits is the
+               * failure this distinction exists to prevent: the change lands,
+               * nobody saw what it changed FROM, and the audit row is the first
+               * anyone hears of it. All three throw together on purpose — making
+               * `was` total while the delta one line down still threw would be a
+               * repair that looks finished and is not, since the delta is
+               * arithmetic on the same amount.
+               */
               <Preview
                 was={formatMinor(variant.price.amount, variant.price.currency)}
                 now={formatMinor(parsed.minor, currency)}
@@ -1368,7 +1387,12 @@ function VariantCard({
             ) : (
               <p className="panel__note">
                 {variant.price
-                  ? `Now ${formatMinor(variant.price.amount, variant.price.currency)} · prices are appended, never overwritten`
+                  ? // NOT the confirmation: this is the note shown while nothing
+                    // has been typed, displaying the price the SERVER sent — the
+                    // same value, on the same screen, that the card above renders
+                    // through `safeFormatMinor`. Throwing here would kill the
+                    // panel on merely OPENING the price form.
+                    `Now ${safeFormatMinor(variant.price.amount, variant.price.currency)} · prices are appended, never overwritten`
                   : 'Never priced — this sets its first price.'}
               </p>
             )
@@ -1605,7 +1629,7 @@ export function VariantsPanel({
                       </span>
                       <span className="vlist__meta">
                         {v.price
-                          ? formatMinor(v.price.amount, v.price.currency)
+                          ? safeFormatMinor(v.price.amount, v.price.currency)
                           : 'No price'}
                         {' · '}
                         {v.available === null ? 'no stock record' : `${v.available} left`}

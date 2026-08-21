@@ -12,6 +12,7 @@ import {
   type ShopProductPatch,
   type ShopTag,
 } from '../data/api-shop';
+import { safeFormat } from '../data/when';
 import { api } from '../data/api';
 import { ApiError, NotFoundError, OfflineError, StaleWriteError } from '../data/errors';
 import { createEditorExtensions } from '../editor/extensions';
@@ -435,7 +436,7 @@ function ProductList() {
                         </span>
                       </td>
                       <td>{product.category || <span className="dtable__sub">None</span>}</td>
-                      <td className="num">{WHEN.format(new Date(product.updatedAt))}</td>
+                      <td className="num">{safeFormat(WHEN, product.updatedAt)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -753,7 +754,7 @@ function ProductForm({ id }: { id: string }) {
         <span className="prodbar__note">
           {isNew
             ? 'New products start as drafts and sell nothing until published.'
-            : `Revision ${product?.revision ?? 0} · updated ${WHEN.format(new Date(product!.updatedAt))}`}
+            : `Revision ${product?.revision ?? 0} · updated ${safeFormat(WHEN, product?.updatedAt)}`}
         </span>
         <span className="prodbar__grow" aria-hidden="true" />
         {dirty && <span className="prodbar__dirty">Unsaved changes</span>}

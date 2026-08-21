@@ -13,6 +13,7 @@ import {
   type ProgramPatch,
   type SettingsPatch,
 } from '../data/api-marketing';
+import { safeFormat } from '../data/when';
 import { ApiError, NotFoundError, OfflineError, StaleWriteError } from '../data/errors';
 import { useSession } from '../components/RequireAuth';
 import { useToast } from '../components/Toast';
@@ -461,7 +462,7 @@ function ProgramsTable({ programs }: { programs: Program[] }) {
                       {program.status === 'active' ? 'Active' : 'Paused'}
                     </span>
                     <span className="mkttable__sub">
-                      Changed {WHEN.format(new Date(program.updatedAt))}
+                      Changed {safeFormat(WHEN, program.updatedAt)}
                     </span>
                   </td>
                   <td className="mkttable__num" data-label="Lifetime awarded">

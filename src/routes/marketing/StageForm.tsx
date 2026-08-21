@@ -5,6 +5,7 @@ import {
   type ReturnRequest,
   type ReturnStatus,
 } from '../../data/api-marketing';
+import { safeFormat } from '../../data/when';
 import '../marketing.css';
 
 /**
@@ -404,7 +405,7 @@ export function StageForm({
           <span className="mktkv__v">
             {target.pickupScheduledAt === null
               ? 'No slot recorded'
-              : WHEN.format(new Date(target.pickupScheduledAt))}
+              : safeFormat(WHEN, target.pickupScheduledAt)}
           </span>
           <span className="mktkv__k">Address</span>
           <span className="mktkv__v">{target.pickupAddress ?? 'None on the request'}</span>

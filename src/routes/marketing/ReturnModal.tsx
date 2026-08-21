@@ -8,6 +8,7 @@ import {
   type ReturnDetail as ReturnDetailPayload,
   type ReturnListItem,
 } from '../../data/api-marketing';
+import { safeFormat } from '../../data/when';
 import { QtyStepper } from '../../components/QtyStepper';
 import { Skeleton } from '../../components/ui/Feedback';
 import { WHEN, explainLoad } from './queue-shared';
@@ -184,7 +185,7 @@ export function ReturnModal({
                   {row.program.unitLabelSingular ?? 'unit'}
                 </dd>
                 <dt>Requested</dt>
-                <dd>{WHEN.format(new Date(row.createdAt))}</dd>
+                <dd>{safeFormat(WHEN, row.createdAt)}</dd>
                 {row.pickupAddress !== null && (
                   <>
                     <dt>Address</dt>
@@ -304,7 +305,7 @@ export function ReturnModal({
                       {event.note ?? event.type}
                       <span className="mkttimeline__when">
                         {' '}
-                        {WHEN.format(new Date(event.occurredAt))}
+                        {safeFormat(WHEN, event.occurredAt)}
                       </span>
                     </p>
                   </li>
