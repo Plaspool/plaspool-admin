@@ -60,6 +60,17 @@ export const emailTemplates = pgTable(
     /** `ON DELETE SET NULL` in the migration: removing the writer who last edited
      * a template must not remove the template. */
     updatedBy: uuid('updated_by'),
+    /**
+     * Which system message this row IS, or `null` for one an operator wrote
+     * (migration 0320). `server/mail/defaults.ts` owns the vocabulary.
+     *
+     * NOTE: `email_templates_system_key_uq` is a PARTIAL unique index
+     * (`WHERE system_key IS NOT NULL`), which drizzle-kit cannot express any more
+     * than it can express the functional index above it. It lives only in
+     * migration 0320, and so does the trigger that refuses to delete a row with
+     * this column set.
+     */
+    systemKey: text('system_key'),
   },
   (t) => [
     check('email_templates_name_ck', sql`${t.name} <> '' AND ${t.name} = btrim(${t.name})`),

@@ -16,6 +16,7 @@ import { DEFAULT_PAYMENTS_CALLBACK_URL } from './utils/callback-url';
 import type { Db } from '../../db/client';
 import type { PaymentsCheckoutPort } from './checkout';
 import type { PaymentProvider } from './provider/types';
+import { storefrontOrigin } from '../storefront-url';
 
 /**
  * The HTTP surface (contract §10: everything under `/api/shop`, admin routes
@@ -252,7 +253,7 @@ export function createWebhookRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
        * silence is exactly what admin#27 was.
        */
       const captureDeps = { checkout: deps.checkout ?? unwiredCheckoutPort() };
-      const origin = c.get('origins')?.[0] ?? null;
+      const origin = storefrontOrigin();
       afterResponse(c, () =>
         processEvent(db, stored.rowId, Date.now(), captureDeps)
           .then(() => drainPaymentEvents(db, 5, Date.now(), captureDeps))
@@ -414,7 +415,7 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
       });
       // Best-effort, bounded, and never able to fail the confirm — see the
       // webhook route's note.
-      await deps.sweepEvents?.(db, c.get('origins')?.[0] ?? null).catch(() => undefined);
+      await deps.sweepEvents?.(db, storefrontOrigin()).catch(() => undefined);
     }
 
     const current = await getIntent(db, intent.id);

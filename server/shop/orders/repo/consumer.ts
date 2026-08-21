@@ -12,6 +12,8 @@ import {
 } from '../inbound';
 import { mintGuestToken } from '../tokens';
 import type { AccessLink } from '../mailer';
+import { BUILT_IN } from '../../../email/system-templates';
+import type { TemplateSet } from '../../../email/system-templates';
 import type { PointsRedemptionPort } from '../../../../shared/marketing/redemption';
 import {
   CONSUMER,
@@ -110,6 +112,20 @@ export interface ConsumerDeps {
    * `OrdersDeps.redemption`.
    */
   redemption?: (db: Db) => PointsRedemptionPort;
+
+  /**
+   * The system templates in force, loaded ONCE per sweep by the caller.
+   *
+   * LOADED BY THE CALLER AND PASSED AS DATA, rather than read here per event.
+   * The render happens inside a statement builder that composes SQL
+   * synchronously, so it cannot await; and a sweep draining forty events would
+   * otherwise issue forty identical reads of a nine-row table.
+   *
+   * Absent means the built-in defaults, which is a complete, correct, branded
+   * message — never a missing one. `server/email/system-templates.ts` carries the
+   * argument for why that fallback is the precondition for this feature existing.
+   */
+  templates?: TemplateSet;
 }
 
 // ------------------------------------------------------------------ dispatch
@@ -340,6 +356,8 @@ async function dispatch(
         { id: row.id, occurredAt: row.occurredAt },
         parsed.value,
         now,
+        deps.origin,
+        deps.templates ?? BUILT_IN,
       );
       if (outcome.kind === 'created') return { kind: 'applied' };
       if (outcome.kind === 'replayed') return { kind: 'ignored', detail: 'already consumed' };
@@ -398,6 +416,7 @@ async function dispatch(
         accessLink(read, deps, now),
         { eventId: row.id },
         parsed.value.intentId,
+        deps.templates ?? BUILT_IN,
       );
 
       /*
@@ -440,6 +459,7 @@ async function dispatch(
           actorId: null,
           link: accessLink(read, deps, now),
           intentId: parsed.value.intentId,
+          templates: deps.templates ?? BUILT_IN,
         },
         now,
         { eventId: row.id },
@@ -464,6 +484,7 @@ async function dispatch(
           link: accessLink(read, deps, now),
           eventId: row.id,
           intentId: parsed.value.intentId,
+          templates: deps.templates ?? BUILT_IN,
         },
         now,
         { eventId: row.id },

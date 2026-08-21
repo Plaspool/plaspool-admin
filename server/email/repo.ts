@@ -63,6 +63,16 @@ export interface EmailTemplate {
   text: string;
   updatedAt: number;
   updatedBy: string | null;
+  /**
+   * Which system message this row IS, or `null` for one an operator wrote.
+   *
+   * The admin surface reads it three ways: to badge the row as a default, to
+   * disable its delete button, and to offer "Duplicate" — which produces an
+   * ordinary row with `null` here, editable and deletable like anything else.
+   * `server/mail/defaults.ts` owns the vocabulary; migration 0320 deliberately
+   * does NOT constrain it, so adding a message is a deploy and not a migration.
+   */
+  systemKey: string | null;
 }
 
 /**
@@ -122,7 +132,9 @@ export interface ClaimedRecipient {
   unsubscribedAt: number | null;
 }
 
-const TEMPLATE_COLUMNS = sql.raw('id, name, subject, html, text, updated_at, updated_by');
+const TEMPLATE_COLUMNS = sql.raw(
+  'id, name, subject, html, text, updated_at, updated_by, system_key',
+);
 const SUBSCRIBER_COLUMNS = sql.raw(
   'id, email, name, source, consent_at, unsubscribed_at, created_at',
 );
@@ -150,6 +162,7 @@ function rowToTemplate(row: Record<string, unknown>): EmailTemplate {
     text: String(row.text),
     updatedAt: toEpochMs(row.updated_at),
     updatedBy: row.updated_by == null ? null : String(row.updated_by),
+    systemKey: row.system_key == null ? null : String(row.system_key),
   };
 }
 
@@ -195,11 +208,105 @@ function rowToBroadcast(row: Record<string, unknown>): EmailBroadcast {
 /** The index whose violation is a duplicate name rather than a bug. */
 const TEMPLATE_NAME_UQ = 'email_templates_name_lower_uq';
 
+/**
+ * Every template, SYSTEM ONES FIRST.
+ *
+ * The order changed with migration 0320 and the reason is the screen: the nine
+ * defaults are the ones an operator is looking for — they are the messages
+ * customers actually receive — and sorting purely by `updated_at` buried them
+ * under every draft as soon as somebody edited a broadcast template. Within each
+ * group the old ordering stands, so an operator's own list still reads
+ * most-recently-touched first.
+ */
 export async function listTemplates(db: Db): Promise<EmailTemplate[]> {
   const res = await db.execute(sql`
     SELECT ${TEMPLATE_COLUMNS} FROM email_templates
-     ORDER BY updated_at DESC, id DESC`);
+     ORDER BY (system_key IS NULL), system_key ASC, updated_at DESC, id DESC`);
   return res.rows.map(rowToTemplate);
+}
+
+/** One system template by its key, or `null`. The renderer's only read. */
+export async function getSystemTemplate(
+  db: Db,
+  key: string,
+): Promise<EmailTemplate | null> {
+  const res = await db.execute(sql`
+    SELECT ${TEMPLATE_COLUMNS} FROM email_templates WHERE system_key = ${key}`);
+  return res.rows[0] ? rowToTemplate(res.rows[0]) : null;
+}
+
+/** Every system template in one read, keyed. What the sweep loads once a pass. */
+export async function listSystemTemplates(db: Db): Promise<EmailTemplate[]> {
+  const res = await db.execute(sql`
+    SELECT ${TEMPLATE_COLUMNS} FROM email_templates
+     WHERE system_key IS NOT NULL ORDER BY system_key ASC`);
+  return res.rows.map(rowToTemplate);
+}
+
+/**
+ * Insert one system template if it is not already there. Idempotent.
+ *
+ * `ON CONFLICT DO NOTHING` ON BOTH INDEXES, and the second one is the subtle
+ * part. `system_key` conflicts are the ordinary case — the row is already
+ * seeded — but `email_templates_name_lower_uq` can also fire, because an
+ * operator may already have written their own template called "Welcome". A
+ * seeder that raised on that would make the templates screen 500 for exactly the
+ * operator who had used it most.
+ *
+ * The name is disambiguated instead: a system row whose preferred name is taken
+ * seeds as "Welcome (system)". Ugly, and correct — the alternative is either a
+ * crash or silently renaming somebody else's template out from under them.
+ */
+export async function seedSystemTemplate(
+  db: Db,
+  input: TemplateInput & { systemKey: string },
+  now: number,
+): Promise<EmailTemplate | null> {
+  const res = await db.execute(sql`
+    INSERT INTO email_templates (name, subject, html, text, updated_at, updated_by, system_key)
+    SELECT CASE WHEN EXISTS (SELECT 1 FROM email_templates t WHERE lower(t.name) = lower(${input.name}))
+                THEN ${input.name} || ' (system)' ELSE ${input.name} END,
+           ${input.subject}, ${input.html}, ${input.text}, ${now}, NULL, ${input.systemKey}
+     WHERE NOT EXISTS (SELECT 1 FROM email_templates s WHERE s.system_key = ${input.systemKey})
+    ON CONFLICT DO NOTHING
+    RETURNING ${TEMPLATE_COLUMNS}`);
+  return res.rows[0] ? rowToTemplate(res.rows[0]) : null;
+}
+
+/**
+ * Copy a template into a new, ordinary one.
+ *
+ * THE COPY IS NEVER A SYSTEM TEMPLATE — `system_key` is not carried over, and it
+ * could not be even if this wanted to, because the unique index allows one row
+ * per key. That is the point of the feature: duplicating `order.confirmation`
+ * gives an operator something they can edit freely and delete, without touching
+ * the row the order pipeline actually renders from.
+ *
+ * THE NAME IS DISAMBIGUATED HERE RATHER THAN BY THE CALLER, because "copy",
+ * "copy 2", "copy 3" is a loop and a loop belongs next to the constraint it is
+ * fighting. Bounded at 50: past that something is wrong with the caller, and a
+ * refusal an operator can read beats an unbounded scan.
+ */
+export async function duplicateTemplate(
+  db: Db,
+  id: string,
+  actorId: string,
+  now: number,
+): Promise<EmailTemplate | null> {
+  const source = await getTemplate(db, id);
+  if (source === null) return null;
+
+  for (let n = 1; n <= 50; n += 1) {
+    const name = n === 1 ? `${source.name} copy` : `${source.name} copy ${n}`;
+    const res = await db.execute(sql`
+      INSERT INTO email_templates (name, subject, html, text, updated_at, updated_by)
+      SELECT ${name}, ${source.subject}, ${source.html}, ${source.text}, ${now},
+             ${actorId}::uuid
+       WHERE NOT EXISTS (SELECT 1 FROM email_templates t WHERE lower(t.name) = lower(${name}))
+      RETURNING ${TEMPLATE_COLUMNS}`);
+    if (res.rows[0]) return rowToTemplate(res.rows[0]);
+  }
+  throw new EmailPreconditionFailedError('duplicate', 'template', source.name);
 }
 
 export async function getTemplate(db: Db, id: string): Promise<EmailTemplate | null> {
@@ -280,8 +387,28 @@ async function findTemplateByName(db: Db, name: string): Promise<EmailTemplate |
  * retired once it has been used once, which on this surface is "once ever".
  */
 export async function deleteTemplate(db: Db, id: string): Promise<boolean> {
+  /*
+   * A SYSTEM TEMPLATE IS REFUSED, AND IT IS REFUSED TWICE.
+   *
+   * This read is what produces a 409 the admin screen can render — "that is a
+   * default template" rather than a 500 with a Postgres trigger message in it.
+   * The trigger from migration 0320 is the one that actually holds, because it
+   * also holds for a caller that never comes through this function.
+   *
+   * The `WHERE system_key IS NULL` on the DELETE below is not redundant with
+   * either of them: it closes the window between this read and that statement,
+   * so a template that BECAME a system template in between is not deleted by a
+   * decision made against the older row.
+   */
+  const existing = await getTemplate(db, id);
+  if (existing === null) return false;
+  if (existing.systemKey !== null) {
+    throw new EmailPreconditionFailedError('delete', 'template', existing);
+  }
+
   const res = await db.execute(sql`
-    DELETE FROM email_templates WHERE id = ${id}::uuid RETURNING id`);
+    DELETE FROM email_templates
+     WHERE id = ${id}::uuid AND system_key IS NULL RETURNING id`);
   return res.rows.length > 0;
 }
 

@@ -495,3 +495,44 @@
     min-height: 16rem;
   }
 }
+
+/* The read-only hint under a locked field (a default template's name). */
+.mailtpl__note {
+  margin: var(--s2) 0 0;
+  font-size: var(--step--2);
+  line-height: 1.45;
+  color: var(--ink-4);
+}
+
+/* The Default chip sits on the same line as the name, so the name needs to be a
+   flex line rather than a plain paragraph. */
+.maillist__name {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+/* The "send the welcome email" opt-in under the add field. Laid out as a
+   checkbox beside a two-line label because the second line is the part that
+   stops somebody ticking it out of habit while migrating a list. */
+.mailadd__welcome {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  margin-top: var(--s3);
+  font-size: var(--step--1);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.mailadd__welcome input {
+  margin-top: 0.2em;
+  flex: none;
+}
+.mailadd__welcome em {
+  display: block;
+  font-style: normal;
+  font-size: var(--step--2);
+  line-height: 1.45;
+  color: var(--ink-4);
+}

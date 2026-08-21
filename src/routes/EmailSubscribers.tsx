@@ -218,6 +218,8 @@ export default function EmailSubscribers() {
   const [cursor, setCursor] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [adding, setAdding] = useState('');
+  /* Off by default and reset after every add — see `add()`. */
+  const [welcome, setWelcome] = useState(false);
   const [busy, setBusy] = useState(false);
   const fieldId = useId();
 
@@ -257,8 +259,15 @@ export default function EmailSubscribers() {
     setBusy(true);
     setError('');
     try {
-      const subscriber = await emailApi.addSubscriber(email);
+      const subscriber = await emailApi.addSubscriber(email, welcome);
       setAdding('');
+      /*
+       * RESET TO OFF AFTER EVERY ADD, deliberately. This checkbox sends a real
+       * message to a real person; leaving it ticked from a previous add would
+       * make the second, third and fourth address in a migration each get a
+       * welcome nobody chose to send.
+       */
+      setWelcome(false);
       // Prepended rather than re-fetched: a keyset list has no page this row
       // belongs to yet, and re-reading page one would throw away everything
       // already loaded below it.
@@ -317,6 +326,20 @@ export default function EmailSubscribers() {
               Add
             </button>
           </div>
+          <label className="mailadd__welcome">
+            <input
+              type="checkbox"
+              checked={welcome}
+              onChange={(e) => setWelcome(e.target.checked)}
+            />
+            <span>
+              Send the welcome email
+              <em>
+                Only for somebody genuinely new — an address already on the list is never
+                emailed twice.
+              </em>
+            </span>
+          </label>
         </div>
 
         {/* The list is re-read rather than patched: an import can add hundreds
@@ -344,7 +367,7 @@ export default function EmailSubscribers() {
             <p className="empty__body">
               {filter === 'unsubscribed'
                 ? 'Every address on the list still wants to hear from you.'
-                : 'Add an address above, or import a file. Nobody is emailed by adding them.'}
+                : 'Add an address above, or import a file. Adding sends nothing unless you tick the welcome box.'}
             </p>
           </div>
         ) : (

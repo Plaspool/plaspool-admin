@@ -39,6 +39,7 @@ import type { Mailer } from '../mail/port';
 import { BadRequestError, NotFoundError } from '../repo/errors';
 import { currentDb, currentUser } from '../app-env';
 import type { AppEnv } from '../app-env';
+import { renderSystem } from '../email/system-templates';
 
 /**
  * Auth, sessions and invites (spec §5.1, §6).
@@ -625,20 +626,31 @@ export function createAuthRoutes(deps: AuthRouteDeps = {}): Hono<AppEnv> {
 
     const days = Math.round(INVITE_TTL_MS / (24 * 60 * 60 * 1000));
     try {
-      await mailer.send({
-        to,
-        subject: 'You have been invited to write',
-        text:
-          `${inviterName} invited you to write on their blog.\n\n` +
-          `${url}\n\n` +
-          `The link works once and expires in ${days} days. If you were not ` +
-          `expecting this, you can ignore this message.`,
-        html:
-          `<p>${inviterName} invited you to write on their blog.</p>` +
-          `<p><a href="${url}">Set up your account</a></p>` +
-          `<p>The link works once and expires in ${days} days. If you were not ` +
-          `expecting this, you can ignore this message.</p>`,
-      });
+      /*
+       * RENDERED FROM THE `account.invite` SYSTEM TEMPLATE, so this message wears
+       * the same masthead, card and button as every order email instead of the
+       * three bare paragraphs it used to be — and so an owner can edit its wording
+       * on the templates screen without a deploy.
+       *
+       * NOTE THE ESCAPING CHANGE THIS QUIETLY FIXES. The old HTML above
+       * interpolated `inviterName` straight into markup: a writer whose display
+       * name contained `<` produced broken markup, and one who chose an `<a>` tag
+       * as their name produced a link in an email the application sent. The
+       * renderer escapes every scalar into the HTML part
+       * (`server/mail/transactional.ts`), so that is closed by construction now
+       * rather than by remembering.
+       *
+       * `renderSystem` never throws: an unreadable template falls back to the
+       * built-in, which matters here because this whole function answers `false`
+       * rather than raising and the caller has already committed the invite row.
+       */
+      await mailer.send(
+        await renderSystem(currentDb(c), 'account.invite', to, {
+          inviter_name: inviterName,
+          invite_url: url,
+          expiry_days: String(days),
+        }),
+      );
       return true;
     } catch (err) {
       /*
@@ -788,20 +800,16 @@ export function createAuthRoutes(deps: AuthRouteDeps = {}): Hono<AppEnv> {
        * the writer can ask again.
        */
       try {
-        await mailer.send({
-          to: issued.user.email,
-          subject: 'Reset your password',
-          text:
-            `Someone asked to reset the password for this account.\n\n` +
-            `${url}\n\n` +
-            `The link works once and expires in an hour. If this was not you, ` +
-            `nothing has changed and you can ignore this message.`,
-          html:
-            `<p>Someone asked to reset the password for this account.</p>` +
-            `<p><a href="${url}">Choose a new password</a></p>` +
-            `<p>The link works once and expires in an hour. If this was not you, ` +
-            `nothing has changed and you can ignore this message.</p>`,
-        });
+        /*
+         * From the `account.password_reset` system template — see the invite above
+         * for why. The URL is the only variable, and it carries the reset token, so
+         * it stays out of every log line in this block exactly as before.
+         */
+        await mailer.send(
+          await renderSystem(db, 'account.password_reset', issued.user.email, {
+            reset_url: url,
+          }),
+        );
       } catch (err) {
         // Name and message only. The message never carries the token — see the
         // status-only rule in `server/mail/resend.ts`.

@@ -272,6 +272,18 @@ a {
   background: var(--paper-inset);
   color: var(--ink-3);
 }
+/* A row the system owns: a default email template, and anything else that is
+   protected rather than merely published. Accent-tinted so it reads as a fact
+   about the row and not as a warning about it -- --chip--draft is the warning. */
+.chip--system {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  border-color: var(--accent-line);
+}
+.chip--system .ui-ic {
+  width: 0.85em;
+  height: 0.85em;
+}
 
 .label {
   display: block;
@@ -316,6 +328,15 @@ a {
   background: var(--warn-soft);
   border-color: color-mix(in srgb, var(--warn) 30%, transparent);
   color: var(--ink-2);
+}
+/* Neutral explanation, not a problem. Accent-tinted and deliberately quieter
+   than --warn: it appears every time a default template is opened, and a band
+   that shouts on every visit is a band that stops being read. */
+.notice--info {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--ink-2);
+  display: block;
 }
 .notice--danger {
   background: var(--danger-soft);

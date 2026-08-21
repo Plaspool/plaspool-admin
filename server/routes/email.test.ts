@@ -190,10 +190,24 @@ describe('templates', () => {
   it('creates, reads, patches partially and deletes', async () => {
     const created = await createTemplate();
 
-    const list = await json<{ items: { id: string }[] }>(
+    /*
+     * THE LIST ALSO CARRIES THE NINE SEEDED SYSTEM TEMPLATES (migration 0320) —
+     * `GET /templates` calls `ensureSystemTemplates` before reading, so the first
+     * request to this screen is what creates them.
+     *
+     * Asserted as "the operator's own template is in there, and the defaults are
+     * too" rather than as an exact list, because the exact list is
+     * `SYSTEM_KEYS.length + 1` and pinning that number here would make adding a
+     * tenth system message fail a test about CRUD.
+     */
+    const list = await json<{ items: { id: string; systemKey: string | null }[] }>(
       await owner.get('/api/admin/email/templates'),
     );
-    expect(list.items.map((t) => t.id)).toEqual([created.id]);
+    expect(list.items.map((t) => t.id)).toContain(created.id);
+    expect(list.items.find((t) => t.id === created.id)?.systemKey).toBeNull();
+    expect(list.items.filter((t) => t.systemKey !== null).length).toBeGreaterThan(0);
+    /* System templates sort first, so the defaults are what an owner sees. */
+    expect(list.items[0].systemKey).not.toBeNull();
 
     /*
      * A PARTIAL PATCH, which is the whole reason `PATCH` is not a full replace

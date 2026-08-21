@@ -24,6 +24,7 @@ import {
   createBroadcast,
   createTemplate,
   deleteTemplate,
+  duplicateTemplate,
   enqueueAudience,
   findSubscriberByToken,
   getBroadcast,
@@ -43,9 +44,19 @@ import type { EmailBroadcast } from '../email/repo';
 import {
   assertKnownVariables,
   escapeHtml,
+  greetingName,
   hasUnsubscribeVariable,
 } from '../email/render';
-import { BROADCAST_BATCH, drainAll, drainBroadcast, renderMessage } from '../email/send';
+import {
+  BROADCAST_BATCH,
+  drainAll,
+  drainBroadcast,
+  renderMessage,
+  unsubscribeUrl,
+} from '../email/send';
+import { ensureSystemTemplates, renderSystem } from '../email/system-templates';
+import { storefrontOrigin } from '../shop/storefront-url';
+import { baseUrl } from './public';
 import { currentDb, currentUser } from '../app-env';
 import type { AppEnv } from '../app-env';
 import type { Db } from '../db/client';
@@ -154,6 +165,25 @@ const SubscriberBody = z
   .object({
     email: str().min(1).max(320),
     name: str().max(200).nullable().optional(),
+    /**
+     * Send the `account.welcome` message to this address.
+     *
+     * ⚠️  OPT-IN, AND DEFAULTING IT TO `true` WOULD BE A BUG RATHER THAN A
+     *     FRIENDLIER DEFAULT.
+     *
+     * This route is not a public sign-up form — there is no public sign-up form
+     * on this deployment. It is an OWNER typing an address in, and the reasons
+     * they do that are mostly not "somebody just joined": migrating a list one
+     * row at a time, re-adding an address to check whether it is there, adding a
+     * customer who has been buying for a year. Welcoming all of those is mail
+     * nobody asked for, sent to real people, with no way to stop it once the
+     * request is in flight.
+     *
+     * So the screen asks, and the answer travels with the request. The one case
+     * where it is genuinely a new subscriber is exactly the case where the person
+     * pressing the button knows it.
+     */
+    welcome: z.boolean().optional(),
   })
   .strict();
 
@@ -328,9 +358,52 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
    * `GET /api/categories` makes for having no cursor: a page here would be a limit
    * the composer would immediately have to defeat.
    */
-  routes.get('/admin/email/templates', requireOwner(), async (c) =>
-    c.json({ items: await listTemplates(currentDb(c)) }),
-  );
+  routes.get('/admin/email/templates', requireOwner(), async (c) => {
+    const db = currentDb(c);
+    /*
+     * SEED THE SYSTEM TEMPLATES BEFORE LISTING, AND THIS IS THE MAIN SEEDER.
+     *
+     * The messages the application sends by itself only become editable once
+     * there are rows for them, and this is the first moment it can possibly
+     * matter: an owner has just opened the screen to look at them. Doing it at
+     * boot is not an option — this app has no boot, it is a lambda that starts on
+     * a request, so a nine-row write would land in front of whatever request
+     * happened to be first, which on a cold start is often a customer's checkout.
+     *
+     * IDEMPOTENT AND NEVER OVERWRITES: `ensureSystemTemplates` is
+     * `INSERT ... WHERE NOT EXISTS`, so an edited template is invisible to it and
+     * a deploy cannot silently revert an owner's wording. It also never throws —
+     * a seed failure must not turn this screen into a 500, because the screen is
+     * still perfectly useful for the operator's own templates.
+     *
+     * `runSweep` seeds too, so a deployment nobody opens this screen on still
+     * ends up with the rows.
+     */
+    await ensureSystemTemplates(db, Date.now());
+    return c.json({ items: await listTemplates(db) });
+  });
+
+  /**
+   * Copy a template, including a system one.
+   *
+   * THIS IS WHAT MAKES "SYSTEM TEMPLATES CANNOT BE DELETED" TOLERABLE. An owner
+   * who wants to experiment with the confirmation wording, or keep a seasonal
+   * variant, duplicates it and gets an ordinary row: `system_key` is NOT carried
+   * over (see `duplicateTemplate`), so the copy is editable, deletable, and
+   * sendable as a broadcast, while the row the order pipeline renders from is
+   * untouched.
+   *
+   * POST TO A SUB-PATH RATHER THAN A FLAG ON `POST /templates`. The body of a
+   * create is the template; a duplicate has no body at all, and expressing it as
+   * `{ duplicateOf: id }` on the create route would mean one handler where half
+   * the fields are mutually exclusive with the other half.
+   */
+  routes.post('/admin/email/templates/:id/duplicate', requireOwner(), async (c) => {
+    const id = emailId(c);
+    const template = await duplicateTemplate(currentDb(c), id, currentUser(c).id, Date.now());
+    if (!template) throw new NotFoundError(id);
+    return c.json({ template }, 201);
+  });
 
   routes.get('/admin/email/templates/:id', requireOwner(), async (c) => {
     const id = emailId(c);
@@ -357,6 +430,25 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
 
     const existing = await getTemplate(db, id);
     if (!existing) throw new NotFoundError(id);
+
+    /*
+     * A SYSTEM TEMPLATE MAY BE EDITED FREELY BUT NOT RENAMED.
+     *
+     * Editing is the whole point of seeding them. The NAME is different: it is
+     * what an operator finds the template by on this screen, and `system_key` is
+     * what the renderer finds it by — so a rename does not break sending, it
+     * breaks the human's ability to locate the message that is being sent. Worse,
+     * renaming `Order confirmed` to `Old confirmation` and then creating a new
+     * template called `Order confirmed` produces two rows where the one that
+     * LOOKS canonical is the one nothing renders from.
+     *
+     * Refused rather than silently ignored: a PATCH that reports success while
+     * discarding a field is how an operator concludes the screen is broken.
+     */
+    if (existing.systemKey !== null && patch.name !== undefined) {
+      const wanted = patch.name.trim();
+      if (wanted !== existing.name) throw new BadRequestError('name');
+    }
 
     const input = checkedTemplate({
       name: patch.name ?? existing.name,
@@ -412,11 +504,71 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
      * difference is exactly what a consent record is for, and manufacturing one
      * for the import case would produce evidence that is not evidence.
      */
+    const db = currentDb(c);
     const outcome = await addSubscriber(
-      currentDb(c),
+      db,
       { email, name: body.name ?? null, source: 'manual', consentAt: Date.now() },
       Date.now(),
     );
+
+    /*
+     * THE WELCOME MESSAGE, AND ONLY FOR A GENUINELY NEW MANUAL ADD.
+     *
+     * TWO GUARDS, AND BOTH ARE NECESSARY.
+     *
+     * `body.welcome` is the operator's intent — see `SubscriberBody`, which
+     * carries the argument for why this is opt-in.
+     *
+     * `outcome.created` is the correctness half. Re-adding an address that is
+     * already on the list is an ordinary thing to do — it is how you check
+     * whether somebody is on it — and welcoming them again every time would mail
+     * the same person on every check. `addSubscriber` answers `created:false` for
+     * that case, and it answers it from a UNIQUE INDEX rather than from a
+     * read-then-write, so two simultaneous adds still send exactly one welcome.
+     *
+     * ⚠️  DELIBERATELY NOT WIRED INTO THE CSV IMPORT, and that is the important
+     *     half of this decision. An import is up to `MAX_IMPORT_ROWS` addresses in
+     *     one request; welcoming them inline would be a bulk send with no
+     *     broadcast row, no queue, no per-recipient retry, no suppression check and
+     *     no way to stop it once the request is in flight — every property
+     *     `server/email/send.ts` exists to provide, discarded. A deliberate welcome
+     *     to an imported list is a BROADCAST, which is a thing an owner composes
+     *     and confirms.
+     *
+     * FAILURE IS SWALLOWED. The subscriber row is already committed; turning a
+     * mail outage into a 500 here would tell the owner the add failed when it
+     * did not, and they would add the address again. Logged with name and message
+     * only, the shape `server/middleware/errors.ts` requires.
+     */
+    if (outcome.created && body.welcome === true) {
+      try {
+        /* Asked BEFORE the token read, so an unconfigured deployment does no
+         * work at all here rather than discovering it one query later. */
+        mailer.assertConfigured?.();
+        const token = await tokenForEmail(db, email);
+        if (token !== null) {
+          await mailer.send(
+            await renderSystem(db, 'account.welcome', outcome.subscriber.email, {
+              name: greetingName(outcome.subscriber.email, body.name ?? null),
+              shop_url: storefrontOrigin(),
+              unsubscribe_url: unsubscribeUrl(baseUrl(c.get('origins') ?? []), token),
+            }),
+          );
+        }
+      } catch (err: unknown) {
+        // eslint-disable-next-line no-console -- the add succeeded; only the mail did not
+        console.error(
+          '[api]',
+          JSON.stringify({
+            requestId: c.get('requestId') ?? '',
+            name: err instanceof Error ? err.name : 'Error',
+            message: err instanceof Error ? err.message : 'welcome send failed',
+            route: 'POST /api/admin/email/subscribers',
+          }),
+        );
+      }
+    }
+
     return c.json(outcome, outcome.created ? 201 : 200);
   });
 
