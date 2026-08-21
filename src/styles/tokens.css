@@ -211,7 +211,28 @@
   }
 }
 
+/*
+ * ═══════════════════════════════════════════════════════════════════════════
+ * `color-scheme` MUST FOLLOW THE FORCED THEME, NOT THE OS.
+ *
+ * `:root` declares `light dark`, which lets the BROWSER pick how it paints
+ * native controls — an unstyled `<input>`, a scrollbar, a date picker — from
+ * `prefers-color-scheme`. That is right only while the app is following the OS
+ * too. The moment a person forces a theme with `data-theme`, the two disagree:
+ * OS-dark plus app-light gave a dark UA input on a white page, and because
+ * `base.css` sets `color: inherit` on inputs the TEXT stayed dark as well.
+ * Dark on dark, unreadable, in what the user had explicitly set to light mode.
+ *
+ * Pinning it here is the one-line systemic fix — every native control in the
+ * app inherits it, including the ones nobody has styled yet.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+
 :root[data-theme='dark'] {
+  color-scheme: dark;
   --paper: #14140f;
   --paper-raised: #1c1c16;
   --paper-sunken: #232219;

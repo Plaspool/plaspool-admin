@@ -507,6 +507,9 @@ export interface ShopOrder {
   placedAt: number;
   paidAt: number | null;
   fulfilledAt: number | null;
+  /** Every non-cancelled parcel delivered, and when the last one was. Derived
+   *  server-side from the fulfilment rows the list does not return. */
+  deliveredAt: number | null;
   cancelledAt: number | null;
   revision: number;
   checkoutId: string;

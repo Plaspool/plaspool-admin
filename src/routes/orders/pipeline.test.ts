@@ -141,13 +141,73 @@ describe('columnOf', () => {
     });
     expect(columnOf(shipped)).toBe('shipped');
     /*
-     * `delivered` is not on this payload at any price, so the board must not
-     * claim it — the only move out of `shipped` is the one that goes and looks.
-     * And `ship` is the ONE parcel move that is certainly refused anywhere:
-     * `fulfilled` is the server's own assertion that `NOTHING_UNSHIPPED` held,
-     * so no `pending` fulfilment exists for `SHIP.holds` to match.
+     * `ship` is the ONE parcel move that is certainly refused here: `fulfilled`
+     * is the server's own assertion that `NOTHING_UNSHIPPED` held, so no
+     * `pending` fulfilment exists for `SHIP.holds` to match.
+     *
+     * (This comment used to say `delivered` was "not on this payload at any
+     * price". It is now — `deliveredAt`, derived in the list query from the
+     * fulfilment rows — which is what lets the card LEAVE this lane. What stays
+     * true is that `status` alone cannot tell the two apart, which is why the
+     * row below still reads `fulfilled` and still sits under Shipped.)
      */
+    // `?? null` because the fixture omits the field entirely, where a real
+    // payload sends null. `isRenderable` treats both as "no delivery", which is
+    // the property that matters and is what the column assertion above proves.
+    expect(shipped.order.deliveredAt ?? null).toBeNull();
     expect(movesFor(shipped, 'owner').map((m) => m.key)).toEqual(['deliver']);
+  });
+
+  it('takes a DELIVERED order off the shipped pile and closes it', () => {
+    /*
+     * THE BUG THIS FIXES, AS SEEN IN PRODUCTION. An operator marks a parcel
+     * delivered; `shop_orders.status` stays `fulfilled` because there is no
+     * `delivered` order status; the card does not move. "Shipped" is supposed to
+     * mean "out there, not yet arrived", and it was quietly accumulating every
+     * order that had ever arrived.
+     */
+    const delivered = withOrder(withLines(PAID, [{ qty: 1, fulfilledQty: 1 }]), {
+      status: 'fulfilled',
+      fulfilledAt: NOW - 2 * DAY,
+      deliveredAt: NOW - DAY,
+    });
+    expect(columnOf(delivered)).toBe('closed');
+    // Terminal: there is nothing left to do to it.
+    expect(movesFor(delivered, 'owner')).toEqual([]);
+  });
+
+  it('keeps a DELIVERED order closed even after a partial refund', () => {
+    /*
+     * The mirror of the `shipped` + `partially_refunded` case below: the money
+     * state is a badge, never a column, in BOTH directions. A delivered order
+     * that is later part-refunded has still arrived — sending it back to a
+     * working lane would ask an operator to re-pack a parcel the customer has.
+     */
+    const deliveredThenRefunded = withOrder(withLines(PAID, [{ qty: 1, fulfilledQty: 1 }]), {
+      status: 'partially_refunded',
+      fulfilledAt: NOW - 3 * DAY,
+      deliveredAt: NOW - DAY,
+      refundedTotal: 500000,
+    });
+    expect(columnOf(deliveredThenRefunded)).toBe('closed');
+    expect(moneyStateOf(deliveredThenRefunded)).toBe('partly_refunded');
+  });
+
+  it('leaves a PART-delivered order alone — one box home is not the order home', () => {
+    /*
+     * `deliveredAt` is all-or-nothing by construction (`DELIVERED_AT`,
+     * `repo/orders.ts`): a two-parcel order with one still in transit does not
+     * carry it. Asserted here as a CLIENT expectation too, so a future change
+     * that starts sending "the latest delivery" instead of "the last one, once
+     * they are all in" fails here rather than silently taking live parcels off
+     * the board.
+     */
+    const halfHome = withOrder(withLines(PAID, [{ qty: 2, fulfilledQty: 2 }]), {
+      status: 'fulfilled',
+      fulfilledAt: NOW - DAY,
+      deliveredAt: null,
+    });
+    expect(columnOf(halfHome)).toBe('shipped');
   });
 
   it('keeps a SHIPPED order on the shipped pile after a partial refund', () => {

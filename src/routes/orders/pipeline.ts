@@ -471,6 +471,32 @@ export function columnOf(row: ShopOrderRow): ColumnKey {
   // and the server refuses every further transition on both.
   if (status === 'refunded' || status === 'cancelled') return 'closed';
 
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * DELIVERED IS TERMINAL, AND IT LEAVES THE SHIPPED LANE.
+   *
+   * Checked HERE — above `fulfilled`, above the quantities — because it outranks
+   * both. `status` stops at `fulfilled` whether a parcel is in a van or on a
+   * doorstep, so before `deliveredAt` existed a delivered order stayed under
+   * "Shipped" for ever: the operator marked it delivered, the card did not move,
+   * and the lane counted parcels that had arrived weeks ago. `Shipped` is meant
+   * to read as "out there, not yet arrived", and it could not.
+   *
+   * IT JOINS `cancelled` AND `refunded` IN `closed` RATHER THAN TAKING A LANE OF
+   * ITS OWN. `closed` is already the terminal column — the board's rule for it is
+   * "there is no next action", which is exactly true of a delivered order — and
+   * a seventh working lane would cost a visible column on a board that now sits
+   * inside `--shell-max`. The three are not the same OUTCOME, but they are the
+   * same STATE as far as an operator working a queue is concerned, and the card
+   * still carries its own money badge to tell them apart.
+   *
+   * `deliveredAt` IS ALL-OR-NOTHING (see `DELIVERED_AT`, `repo/orders.ts`): a
+   * multi-parcel order with one box still in transit does not have it, so a live
+   * parcel is never taken off the board by this branch.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  if (isRenderable(orderOf(row).deliveredAt)) return 'closed';
+
   // No money has arrived, so no goods are owed. Waiting on the customer, or on
   // the sweep that turns a capture into a paid order — never on the operator.
   if (status === 'pending') return 'awaiting_payment';
