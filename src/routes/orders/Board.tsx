@@ -413,17 +413,51 @@ export interface LaneCards {
   cards: ShopOrderRow[];
 }
 
-export function laneCardsOf(rows: readonly ShopOrderRow[], now: number): LaneCards[] {
-  /* Keyed on `ColumnKey` and seeded only with the LANES, so the `?.` below is
-   * the whole of the filter: a row whose column is not drawn — `awaiting_payment`
-   * and nothing else — finds no bucket and is left out. `awaitingPayment` is the
-   * other half of that sentence and must be rendered wherever this is. */
+/**
+ * `lanes` DEFAULTS TO EVERY LANE, so every existing caller is unchanged.
+ *
+ * It exists because the working board and the closed board are now two surfaces
+ * over one page of rows: the working one draws `MOTION_LANES` and drops the
+ * terminal orders on the floor, and the closed one picks them up. Seeding the
+ * map from the argument rather than from `BOARD_LANES` is the whole mechanism —
+ * a row whose column has no bucket is simply left out, which is the same filter
+ * `awaiting_payment` has always gone through.
+ */
+export function laneCardsOf(
+  rows: readonly ShopOrderRow[],
+  now: number,
+  lanes: readonly BoardLane[] = BOARD_LANES,
+): LaneCards[] {
+  /* Keyed on `ColumnKey` and seeded only with the LANES asked for, so the `?.`
+   * below is the whole of the filter: a row whose column is not drawn —
+   * `awaiting_payment`, and now the terminal ones on the working board — finds
+   * no bucket and is left out. `awaitingPayment` is the other half of that
+   * sentence and must be rendered wherever this is. */
   const out = new Map<ColumnKey, ShopOrderRow[]>();
-  for (const lane of BOARD_LANES) out.set(lane, []);
+  for (const lane of lanes) out.set(lane, []);
   for (const row of Array.isArray(rows) ? rows : []) out.get(columnOf(row))?.push(row);
   for (const cards of out.values()) cards.sort((a, b) => compareCards(a, b, now));
-  return BOARD_LANES.map((lane) => ({ lane, cards: out.get(lane) ?? [] }));
+  return lanes.map((lane) => ({ lane, cards: out.get(lane) ?? [] }));
 }
+
+/**
+ * THE WORKING BOARD'S LANES: everything with a next action.
+ *
+ * `closed` comes out because a terminal order is not work — it was accumulating
+ * at the right-hand edge of a board whose whole job is "what is waiting on you",
+ * and on a rail that only shows four or five lanes at a time it was pushing live
+ * ones off the edge. The closed orders get their own tab, split three ways by
+ * `terminalLaneOf`, where the ending is actually legible.
+ *
+ * ⚠️  DRAG-TO-CANCEL GOES WITH IT, and that is the cost. `closed` is still a
+ *     `BoardLane` and `resolveDrop` still answers for it, so nothing is broken —
+ *     there is simply no longer a Closed lane on screen to drop onto. Cancel is
+ *     still on the card's own menu, which is where every move that does not
+ *     change lane already lives.
+ */
+export const MOTION_LANES: readonly BoardLane[] = BOARD_LANES.filter(
+  (lane) => lane !== 'closed',
+);
 
 // ───────────────────────────────────────────────── the orders with no lane
 
@@ -536,6 +570,9 @@ export interface OrdersBoardProps {
   columnRef?: (lane: BoardLane) => ((node: HTMLElement | null) => void) | undefined;
   /** See `LaneState`. `null` means "nothing is in hand, or this is home". */
   columnState?: (lane: BoardLane) => LaneState | null;
+  /** Which lanes to draw. Defaults to all of them; the working board passes
+   *  `MOTION_LANES` so terminal orders fall through to their own tab. */
+  lanes?: readonly BoardLane[];
   /**
    * Wrap each card — the seam the drag layer attaches through.
    *
@@ -623,11 +660,12 @@ function sameEdges(a: BeyondEdges, b: BeyondEdges): boolean {
 export function edgesPastTheRail(
   canvas: HTMLElement,
   legal: readonly BoardLane[],
+  lanes: readonly BoardLane[] = BOARD_LANES,
 ): BeyondEdges {
   const box = canvas.getBoundingClientRect();
   const start: BoardLane[] = [];
   const end: BoardLane[] = [];
-  for (const lane of BOARD_LANES) {
+  for (const lane of lanes) {
     const node = canvas.querySelector(`[data-lane="${lane}"]`);
     if (node === null) continue;
     const rect = node.getBoundingClientRect();
@@ -653,13 +691,20 @@ export function edgesPastTheRail(
   return { start: startText, startDrop, end: endText, endDrop };
 }
 
-export function OrdersBoard({ rows, now, columnRef, columnState, renderCard }: OrdersBoardProps) {
+export function OrdersBoard({
+  rows,
+  now,
+  columnRef,
+  columnState,
+  renderCard,
+  lanes: laneSet = BOARD_LANES,
+}: OrdersBoardProps) {
   /* `summarise` is the one authority for the counts, the money and the ageing
    * tallies, and it reports every COLUMN in board order — empty ones included. A
    * heading that counted its own children would disagree with the header the
    * first time a row landed somewhere this component did not expect. */
   const summary = summarise(rows, now);
-  const lanes = laneCardsOf(rows, now);
+  const lanes = laneCardsOf(rows, now, laneSet);
 
   /* BY KEY, NEVER BY POSITION — the lookup below used to be `columns[index]`,
    * which the moment `BOARD_LANES` stopped being `BOARD_COLUMNS` became an
@@ -710,7 +755,7 @@ export function OrdersBoard({ rows, now, columnRef, columnState, renderCard }: O
     if (canvas === null) return;
     const lanesLegal = legalKey === '' ? [] : (legalKey.split(',') as BoardLane[]);
     const measure = (): void => {
-      const next = edgesPastTheRail(canvas, lanesLegal);
+      const next = edgesPastTheRail(canvas, lanesLegal, laneSet);
       /* Compared before it is stored. `scroll` fires many times a second while
        * the drag layer auto-scrolls the rail, and a fresh object every time would
        * re-render the whole board under a card in hand. */
@@ -767,7 +812,12 @@ export function OrdersBoard({ rows, now, columnRef, columnState, renderCard }: O
       observer?.disconnect();
       window.removeEventListener('resize', measure);
     };
-  }, [legalKey]);
+    /* `laneSet` joins `legalKey` in the deps: which lanes are DRAWN decides which
+     * can be past an edge, so a board that switched lane sets without re-measuring
+     * would keep the old board's marker. It is a stable module constant at both
+     * call sites, so this costs nothing in practice and is correct if that ever
+     * stops being true. */
+  }, [legalKey, laneSet]);
 
   return (
     <div className="shopboard__rail">

@@ -822,6 +822,9 @@ export interface BoardScreenProps {
   now: number;
   /** Fired with an order's id once a move has settled against the server. */
   onMoved?: (orderId: string) => void;
+  /** Which lanes to draw. The orders console passes `MOTION_LANES` so terminal
+   *  orders fall through to the Closed tab; defaults to every lane. */
+  lanes?: readonly BoardLane[];
   /**
    * Reload the whole page of orders. Offered in a toast in the one case the
    * board cannot resolve on its own — a write that succeeded and a re-read that
@@ -830,7 +833,7 @@ export interface BoardScreenProps {
   onReload?: () => void;
 }
 
-export function BoardScreen({ rows, now, onMoved, onReload }: BoardScreenProps) {
+export function BoardScreen({ rows, now, onMoved, onReload, lanes }: BoardScreenProps) {
   const session = useSession();
   /*
    * LEAST PRIVILEGE, and `writer` is the answer to every question that is not a
@@ -1344,6 +1347,7 @@ export function BoardScreen({ rows, now, onMoved, onReload }: BoardScreenProps) 
         <DroppableLanes
           rows={effective}
           now={now}
+          lanes={lanes}
           columnState={laneState}
           renderCard={(row, lane, cardId) => {
             const orderId = row.order?.id ?? '';

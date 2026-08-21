@@ -2016,3 +2016,41 @@
   margin-top: var(--s4);
   color: var(--ink-3);
 }
+
+/* ─────────────────────────────────────────────── sortable table headers
+ *
+ * A REAL BUTTON INSIDE THE `<th>`, not a click handler on the cell: a clickable
+ * `<th>` reaches no keyboard and announces nothing. It is unstyled back to the
+ * header's own type so the column still reads as a heading rather than as a
+ * row of controls — the affordance is the arrow and the hover, not a box.
+ */
+.dtable__sort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: inherit;
+}
+
+.dtable__sort:hover {
+  color: var(--accent);
+}
+
+/* Reserves its own width so the header does not jump sideways when the arrow
+   appears on the column you just sorted by. */
+.dtable__sortmark {
+  display: inline-block;
+  min-width: 1ch;
+  color: var(--accent);
+}
+
+.dtable__num .dtable__sort {
+  justify-content: flex-end;
+  width: 100%;
+}
