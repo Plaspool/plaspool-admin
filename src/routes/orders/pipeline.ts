@@ -130,6 +130,43 @@ export const COLUMN_LABEL: Record<ColumnKey, string> = {
   needs_attention: 'Needs a look',
 };
 
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE THREE WAYS AN ORDER ENDS, WHICH `closed` DELIBERATELY DOES NOT DISTINGUISH.
+ *
+ * `columnOf` answers `closed` for all of them, and that is right for the WORKING
+ * board: an operator clearing a queue cares only that there is no next action.
+ * But once the terminal orders get a surface of their own, "closed" is the one
+ * thing on it that says nothing — every card there is closed. What a person
+ * looking at that surface wants is WHICH ending, because the three mean opposite
+ * things about the money and about the customer.
+ *
+ * DERIVED, NEVER STORED, and only meaningful for a row `columnOf` calls `closed`.
+ * `delivered` is checked FIRST for the same reason `columnOf` does: an order can
+ * be delivered and later part-refunded, and it has still arrived.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+export type TerminalLane = 'delivered' | 'cancelled' | 'refunded';
+
+/** Left to right on the closed board: the good ending, then the two that are not. */
+export const TERMINAL_LANES: readonly TerminalLane[] = ['delivered', 'cancelled', 'refunded'];
+
+export const TERMINAL_LABEL: Record<TerminalLane, string> = {
+  delivered: 'Delivered',
+  cancelled: 'Cancelled',
+  refunded: 'Refunded',
+};
+
+export function terminalLaneOf(row: ShopOrderRow): TerminalLane {
+  if (isRenderable(orderOf(row).deliveredAt)) return 'delivered';
+  if (orderOf(row).status === 'cancelled') return 'cancelled';
+  /* Everything else `columnOf` parked in `closed` is a full refund — that is the
+   * only other way it gets there. Named rather than left as a fallthrough so a
+   * fourth ending added later lands here loudly instead of being called a
+   * refund. */
+  return 'refunded';
+}
+
 /** The refund badge, kept apart from the column on purpose. */
 export type MoneyState = 'none' | 'partly_refunded' | 'refunded';
 

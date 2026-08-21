@@ -40,6 +40,13 @@
 
 .mktscr__head {
   padding-bottom: var(--s5);
+  /* THE RULE NEEDS AIR UNDER IT. `padding-bottom` sets the gap ABOVE the border
+     and there was nothing setting one below, so the first thing on every screen
+     that uses this shell — the returns notice, the areas list, the delivery
+     banner — sat flush against the line, reading as one welded block. Every
+     child here already spaces itself from its own neighbours; this is the one
+     boundary that had no owner. */
+  margin-bottom: var(--s5);
   border-bottom: 1px solid var(--rule);
 }
 

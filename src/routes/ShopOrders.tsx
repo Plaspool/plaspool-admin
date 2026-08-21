@@ -23,7 +23,9 @@ import { Select } from '../components/ui/Select';
 import { useDelayed } from '../components/ui/useDelayed';
 import { Picker } from '../components/ui/Picker';
 import { Tabs, type TabItem } from '../components/ui/Tabs';
-import { Board, awaitingPayment } from './orders/Board';
+import { Board, MOTION_LANES, awaitingPayment } from './orders/Board';
+import { ClosedBoard } from './orders/ClosedBoard';
+import type { Role } from './orders/pipeline';
 import {
   deliveryZoneOf,
   deliveryZoneTableFrom,
@@ -156,17 +158,104 @@ function readStatus(params: URLSearchParams): OrderStatus | 'all' {
   return STATUS_TABS.some((t) => t.key === raw) ? (raw as OrderStatus | 'all') : 'all';
 }
 
-type View = 'board' | 'table';
+type View = 'board' | 'closed' | 'table';
 
-/** The two ways this list is drawn, in the order the control offers them. */
+/**
+ * The three ways this list is drawn, in the order the control offers them.
+ *
+ * `board` AND `closed` ARE THE SAME PAGE OF ORDERS SPLIT BY WHETHER THERE IS
+ * ANYTHING LEFT TO DO. The working board used to carry a `Closed` lane, and it
+ * was the lane that grew for ever: on a rail that shows four or five lanes at a
+ * time, every order the shop had ever finished was pushing the live ones past
+ * the edge. Splitting them is what makes "what is waiting on me" answerable at a
+ * glance — and it lets the finished orders be shown by HOW they ended
+ * (delivered / cancelled / refunded), which the single `Closed` lane could not.
+ */
 const VIEW_TABS: readonly TabItem<View>[] = [
-  { value: 'board', label: 'Board', hint: 'Lanes you can drag a card between' },
+  { value: 'board', label: 'In motion', hint: 'Everything with a next action' },
+  { value: 'closed', label: 'Closed', hint: 'Delivered, cancelled and refunded' },
   { value: 'table', label: 'Table', hint: 'Every column, sortable and dense' },
 ];
 
 /** `?view=bord` is the same typo as `?status=fulfille`, and gets the default. */
 function readView(params: URLSearchParams): View {
-  return params.get('view') === 'table' ? 'table' : 'board';
+  const raw = params.get('view');
+  return raw === 'table' || raw === 'closed' ? raw : 'board';
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE TABLE'S SORT, WHICH IS OVER ONE PAGE AND SAYS SO.
+ *
+ * The server paginates on `placed_at DESC, id ASC` and hands back a cursor
+ * built from those two columns (`server/shop/orders/repo/orders.ts`). Sorting
+ * the whole result set by total would need a different cursor and a different
+ * index, and would silently change what "next page" means. So this sorts the
+ * rows already on screen, and the pager under it is what says how many that is.
+ *
+ * IN THE URL, like every other filter here, so a sorted table is a link
+ * somebody can send and Back is the undo.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+type SortKey = 'order' | 'placed' | 'status' | 'destination' | 'total';
+type SortDir = 'asc' | 'desc';
+
+interface TableColumn {
+  key: SortKey;
+  label: string;
+  numeric?: boolean;
+}
+
+const TABLE_COLUMNS: readonly TableColumn[] = [
+  { key: 'order', label: 'Order' },
+  { key: 'placed', label: 'Placed' },
+  { key: 'status', label: 'Status' },
+  { key: 'destination', label: 'Destination' },
+  { key: 'total', label: 'Total', numeric: true },
+];
+
+function readSort(params: URLSearchParams): { key: SortKey; dir: SortDir } {
+  const rawKey = params.get('sort');
+  const key = TABLE_COLUMNS.some((c) => c.key === rawKey) ? (rawKey as SortKey) : 'placed';
+  /* `desc` is the default for every column, and for the same reason the server
+   * orders `placed_at DESC`: the row a person came to look at is the newest,
+   * the biggest, or the most recently changed — never the oldest. */
+  return { key, dir: params.get('dir') === 'asc' ? 'asc' : 'desc' };
+}
+
+/**
+ * ONE COMPARATOR, TOTAL, AND NEVER THROWING. Every field it reads is unvalidated
+ * JSON as far as this client is concerned — the same reason `pipeline.ts` is
+ * written the way it is — so a missing total or an unreadable address sorts to
+ * one end rather than taking the table down.
+ */
+function compareOrders(
+  a: ShopOrderRow,
+  b: ShopOrderRow,
+  key: SortKey,
+  dir: SortDir,
+): number {
+  const sign = dir === 'asc' ? 1 : -1;
+  const left = a.order;
+  const right = b.order;
+
+  const text = (value: unknown): string => (typeof value === 'string' ? value : '');
+  const num = (value: unknown): number => (typeof value === 'number' ? value : -Infinity);
+
+  let out = 0;
+  if (key === 'order') out = text(left?.orderNumber).localeCompare(text(right?.orderNumber));
+  else if (key === 'status') out = text(left?.status).localeCompare(text(right?.status));
+  else if (key === 'total') out = num(left?.grandTotal) - num(right?.grandTotal);
+  else if (key === 'destination') {
+    out = normaliseRegion(left?.shippingAddress)
+      .label.localeCompare(normaliseRegion(right?.shippingAddress).label);
+  } else out = num(left?.placedAt) - num(right?.placedAt);
+
+  /* TIE-BROKEN BY ID, ALWAYS. Without it two orders with the same total swap
+   * places on every re-render, because `Array.prototype.sort` is only stable
+   * with respect to the ARRAY it was given and this array is rebuilt each load. */
+  if (out !== 0) return out * sign;
+  return text(left?.id).localeCompare(text(right?.id));
 }
 
 /**
@@ -174,7 +263,12 @@ function readView(params: URLSearchParams): View {
  * than written. `?status=all&view=board` and `/shop/orders` are the same screen,
  * and only one of them is a link worth sending.
  */
-const PARAM_DEFAULT: Record<string, string> = { status: 'all', view: 'board' };
+const PARAM_DEFAULT: Record<string, string> = {
+  status: 'all',
+  view: 'board',
+  sort: 'placed',
+  dir: 'desc',
+};
 
 /** The same params with the defaults dropped rather than written. */
 function withParams(
@@ -243,8 +337,17 @@ export default function ShopOrders() {
 function OrderList() {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
+  /* The closed board draws the same `BoardCard` as the working one, which takes
+   * a role. It gates nothing there — every move is already unavailable on a
+   * terminal order — but the card requires it. */
+  const listSession = useSession();
+  /* Least privilege, matching `BoardScreen`: `writer` is the answer to every
+   * question that is not a confirmed owner. */
+  const role: Role =
+    listSession.status === 'authed' && listSession.user.role === 'owner' ? 'owner' : 'writer';
   const status = readStatus(params);
   const view = readView(params);
+  const sort = readSort(params);
   const search = params.get('q') ?? '';
   const cursor = params.get('cursor') ?? '';
 
@@ -471,6 +574,15 @@ function OrderList() {
     [allItems, destination],
   );
 
+  /* Only the TABLE sorts. The board has its own order (`compareCards`) which is
+   * about urgency rather than about a column, and re-sorting it from a table
+   * header would be a control on one view silently reordering another. */
+  const sorted = useMemo(
+    () => [...items].sort((a, b) => compareOrders(a, b, sort.key, sort.dir)),
+    [items, sort.key, sort.dir],
+  );
+
+
   /**
    * THE ORDERS THE BOARD DOES NOT DRAW, AND WHICH OF THEM MEAN SOMETHING.
    *
@@ -558,16 +670,23 @@ function OrderList() {
         )}
         {/*
           THE DESTINATION PICKER — the returns board's district control, doing
-          the same job on this screen. Rendered only when the page actually holds
-          more than one destination: a picker offering one choice is furniture,
-          and on a shop selling into a single city that is the normal case.
+          the same job on this screen.
+
+          SHOWN WHENEVER THE PAGE HAS A DESTINATION AT ALL, including when it has
+          only one. It was gated on `> 1` on the theory that a picker offering one
+          choice is furniture; on a shop selling into a single city that hid it
+          permanently, so the control the returns board has and this one visibly
+          lacked simply never appeared. A picker naming the one place everything
+          is going, with the count beside it, is a fact worth showing — and it
+          appears and disappears as pages change if it is conditional on the data,
+          which is worse than either.
 
           `setParams` RATHER THAN `navigate`, matching `ReturnsScreen`. This
           narrows rows already on screen; it does not fetch. Pushing a history
           entry per glance would make Back walk a trail of filter states instead
           of leaving the list the operator came from.
         */}
-        {destinations.length > 1 && (
+        {destinations.length > 0 && (
           <Picker
             label="Destination"
             value={destination}
@@ -694,6 +813,14 @@ function OrderList() {
             </Link>
           )}
         </div>
+      ) : view === 'closed' ? (
+        /*
+          THE FINISHED ORDERS, split by HOW they finished. Read-only by
+          construction — every card here is terminal, so there is no move, no
+          drop and no dialog; see `ClosedBoard`'s header on why it does not reuse
+          the drag machinery to render a list nothing can be done to.
+        */
+        <ClosedBoard rows={items} now={readAt} role={role} />
       ) : view === 'board' ? (
         <>
           <BoardScope
@@ -744,9 +871,17 @@ function OrderList() {
             array does it), and the only cure is a callback that says a move has
             STARTED, which `BoardProps` does not have.
           */}
+          {/*
+            `MOTION_LANES` — every lane except `closed`. The terminal orders on
+            this same page fall through to the Closed tab; `laneCardsOf` seeds
+            its buckets from the lane list it is given, so a row whose column is
+            not drawn is simply left out, exactly as `awaiting_payment` has
+            always been.
+          */}
           <Board
             rows={items}
             now={readAt}
+            lanes={MOTION_LANES}
             onMoved={() => void load(undefined, true)}
             onReload={() => void load()}
           />
@@ -766,16 +901,60 @@ function OrderList() {
               <table className="dtable">
                 <thead>
                   <tr>
-                    <th scope="col">Order</th>
-                    <th scope="col">Placed</th>
-                    <th scope="col">Status</th>
-                    <th scope="col" className="dtable__num">
-                      Total
-                    </th>
+                    {/*
+                      SORTABLE HEADERS, AND THE SORT IS OVER THIS PAGE ONLY.
+                      The list is cursor-paginated on `placed_at DESC, id ASC`
+                      server-side; re-sorting the whole result set would mean a
+                      new cursor contract and a new index. What an operator wants
+                      here is "show me the biggest order on this screen", and
+                      that is exactly what this does — the pager note says how
+                      many rows that is.
+
+                      `aria-sort` ON THE `<th>`, with a real `<button>` inside
+                      it. A clickable `<th>` reaches no keyboard and announces
+                      nothing, and `aria-sort` is the one attribute a screen
+                      reader uses to say which column is ordering the table and
+                      in which direction.
+                    */}
+                    {TABLE_COLUMNS.map((column) => (
+                      <th
+                        scope="col"
+                        key={column.key}
+                        className={column.numeric ? 'dtable__num' : undefined}
+                        aria-sort={
+                          sort.key === column.key
+                            ? sort.dir === 'asc'
+                              ? 'ascending'
+                              : 'descending'
+                            : 'none'
+                        }
+                      >
+                        <button
+                          type="button"
+                          className="dtable__sort"
+                          onClick={() =>
+                            setParams((prev) =>
+                              withParams(prev, {
+                                sort: column.key,
+                                dir:
+                                  sort.key === column.key && sort.dir === 'desc'
+                                    ? 'asc'
+                                    : 'desc',
+                              }),
+                            )
+                          }
+                        >
+                          {column.label}
+                          <span className="dtable__sortmark" aria-hidden="true">
+                            {sort.key === column.key ? (sort.dir === 'asc' ? '↑' : '↓') : ''}
+                          </span>
+                        </button>
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {items.map(({ order }) => (
+                  {sorted.map(({ order }) => (
                     <tr key={order.id}>
                       <td>
                         <Link
@@ -797,6 +976,9 @@ function OrderList() {
                           {STATUS_LABEL[order.status] ?? order.status}
                         </span>
                       </td>
+                      <td data-label="Destination">
+                        {normaliseRegion(order.shippingAddress).label || NO_REGION_LABEL}
+                      </td>
                       <td className="dtable__num" data-label="Total">
                         {safeFormatMinor(order.grandTotal, order.currency)}
                         {order.refundedTotal > 0 && (
@@ -807,6 +989,13 @@ function OrderList() {
                       </td>
                     </tr>
                   ))}
+                  {sorted.length === 0 && (
+                    <tr>
+                      <td colSpan={TABLE_COLUMNS.length}>
+                        Nothing on this page matches those filters.
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
