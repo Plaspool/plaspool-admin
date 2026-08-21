@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { pathParam, readJson, str } from '../../../middleware/errors';
-import { requireAuth } from '../../../middleware/session';
+import { requireAuth, requireOwner } from '../../../middleware/session';
 import { currentDb } from '../../../app-env';
 import type { AppEnv } from '../../../app-env';
 import {
@@ -14,6 +14,7 @@ import {
   updateShippingZone,
 } from './shipping-zones-repo';
 import type { ShippingOptionPatch, ShippingZonePatch } from './shipping-zones-repo';
+import { listDeliveryAreas, saveDeliveryArea, saveDeliveryAreas } from './delivery-areas-repo';
 
 /**
  * Admin CRUD for shipping zones and their options (admin#19).
@@ -128,4 +129,75 @@ shippingZoneRoutes.patch('/admin/shipping-options/:id', auth, async (c) => {
 shippingZoneRoutes.delete('/admin/shipping-options/:id', auth, async (c) => {
   await deleteShippingOption(currentDb(c), pathParam(c, 'id'));
   return c.json({ ok: true });
+});
+
+// ═══════════════════════════════════════════════ per-district delivery (0300)
+
+/**
+ * DOES THE SHOP GO TO THIS DISTRICT, AND WHAT DOES IT CHARGE.
+ *
+ * The districts are `marketing_service_areas` and live behind the marketing
+ * API; these routes carry only the COMMERCE opinion about them, keyed by the
+ * area's stable handle. The admin screen reads both lists and joins them — see
+ * `delivery-areas-repo.ts` for why the shop does not read marketing's tables.
+ *
+ * `requireOwner()` ON THE WRITES, AND THAT DIFFERS FROM THE ZONE ROUTES ABOVE.
+ * Whether the shop delivers somewhere, and for how much, is the same class of
+ * decision as which districts a van serves — which `MarketingAreas` already
+ * makes owner-only (spec D12: the control is ABSENT for a writer, not
+ * disabled). A writer reading the rate table is fine and useful; a writer
+ * silently switching off a city is not. The read therefore keeps `auth`.
+ */
+const RATE_MINOR = z.number().int().min(0).max(1_000_000_000);
+
+const DeliveryAreaBody = z
+  .object({
+    delivers: z.boolean().optional(),
+    /*
+     * `.nullable().optional()` IS THE WHOLE CONTRACT AND THE TWO HALVES DIFFER.
+     * Absent = leave the rate as it is. Explicit `null` = clear the override
+     * back to the state's zone rate. A number = override. `.strict()` above
+     * means a typo'd key is a 400 rather than a silently ignored no-op.
+     */
+    rateMinor: RATE_MINOR.nullable().optional(),
+    /** CAS. `null` asserts "there is no row for this district yet". */
+    expectedRevision: z.number().int().min(0).nullable(),
+  })
+  .strict();
+
+const DeliveryAreasBulkBody = z
+  .object({
+    areaKeys: z.array(str().min(1).max(200)).min(1).max(1000),
+    delivers: z.boolean().optional(),
+    rateMinor: RATE_MINOR.nullable().optional(),
+  })
+  .strict();
+
+shippingZoneRoutes.get('/admin/delivery-areas', auth, async (c) => {
+  return c.json({ items: await listDeliveryAreas(currentDb(c)) });
+});
+
+shippingZoneRoutes.put('/admin/delivery-areas/:areaKey', requireOwner(), async (c) => {
+  const body = await readJson(c, DeliveryAreaBody);
+  const area = await saveDeliveryArea(
+    currentDb(c),
+    pathParam(c, 'areaKey'),
+    { delivers: body.delivers, rateMinor: body.rateMinor },
+    body.expectedRevision,
+  );
+  return c.json({ area });
+});
+
+/**
+ * "Every district in this state" — one statement, no CAS. The bulk control is
+ * an owner deliberately overriding whatever is there; see the repo's note on
+ * why failing forty rows because one moved is the worse answer.
+ */
+shippingZoneRoutes.post('/admin/delivery-areas/bulk', requireOwner(), async (c) => {
+  const body = await readJson(c, DeliveryAreasBulkBody);
+  const items = await saveDeliveryAreas(currentDb(c), body.areaKeys, {
+    delivers: body.delivers,
+    rateMinor: body.rateMinor,
+  });
+  return c.json({ items });
 });

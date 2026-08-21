@@ -192,10 +192,17 @@ const SECTION_PAGES: Partial<Record<SectionId, SectionPage[]>> = {
      * be the place they add it.
      */
     { key: 'categories', label: 'Categories', to: '/shop/categories', icon: Tags },
+    /*
+     * ONE DELIVERY ENTRY, NOT TWO. This replaces the old "Shipping zones" entry
+     * and points at the screen an owner actually wants: districts, switches and
+     * prices in one place. The zones screen is still routed and is linked from
+     * this one's footer — putting both in the nav would let an operator land on
+     * the structural screen when they wanted a rate.
+     */
     {
-      key: 'shipping-zones',
-      label: 'Shipping zones',
-      to: '/shop/shipping-zones',
+      key: 'delivery-areas',
+      label: 'Delivery',
+      to: '/shop/delivery-areas',
       icon: Truck,
     },
     { key: 'orders', label: 'Orders', to: '/shop/orders', icon: Receipt },

@@ -1962,3 +1962,94 @@
 .shopcat__delete {
   margin-left: auto;
 }
+
+/* ══════════════════════════════════════════════ delivery areas (`ShopDeliveryAreas`)
+ *
+ * The rate cell and the across-the-board control, layered onto `marketing.css`'s
+ * `mktarea` rows rather than restated. That screen IS the areas screen with a
+ * price in the row — see the component header — so everything structural
+ * (`.mktarea__row`, `.mktarea__list`, `.mktform__input`) comes from there and
+ * only the money is new here.
+ */
+
+/* `auto` so the rate and its button sit together and are pushed to the right of
+   the district name, leaving the Switch last — the reading order is place,
+   price, decision. */
+.dlvrate {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-left: auto;
+}
+
+.dlvrate__value {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* AN INHERITED RATE IS NOT A DECISION AND MUST NOT LOOK LIKE ONE. Same number,
+   quieter voice — the component prints the state it came from beside it. */
+.dlvrate__value--inherited {
+  color: var(--ink-3);
+}
+
+.dlvrate__from {
+  font-size: var(--step--1);
+}
+
+/* The ₦ lives in the field rather than in the input's value, so what an operator
+   types is only ever digits and `parseNaira` never has to strip a sign it put
+   there itself. */
+.dlvrate__field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+}
+
+.dlvrate__sign {
+  color: var(--ink-3);
+}
+
+.dlvrate__input {
+  width: 8ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.dlvbulk {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.dlvbulk__label {
+  color: var(--ink-2);
+}
+
+/* The row is three things and a switch; below the fold of a phone it stacks, and
+   the rate keeps its own line rather than being squeezed against the name. */
+@media (max-width: 640px) {
+  .dlvrate {
+    margin-left: 0;
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+/* The state's own rate sits on its own line under the tally, because it governs
+   every row below it and reads as a heading fact rather than a row fact. */
+.dlvstate {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-basis: 100%;
+  flex-wrap: wrap;
+}
+
+/* Quiet, and last. The structural screen it points at is correct roughly never;
+   it must be findable without competing with the rows. */
+.dlvadvanced {
+  margin-top: var(--s4);
+  color: var(--ink-3);
+}

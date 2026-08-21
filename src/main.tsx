@@ -31,6 +31,7 @@ import Shop from './routes/Shop';
 import ShopProducts from './routes/ShopProducts';
 import ShopCategories from './routes/ShopCategories';
 import ShopShippingZones from './routes/ShopShippingZones';
+import ShopDeliveryAreas from './routes/ShopDeliveryAreas';
 import ShopOrders from './routes/ShopOrders';
 import ShopCustomers from './routes/ShopCustomers';
 import ShopAudit from './routes/ShopAudit';
@@ -228,6 +229,21 @@ const router = createHashRouter([
       { path: '/shop', element: <Shop />, errorElement: <RouteError /> },
       { path: '/shop/products', element: <ShopProducts />, errorElement: <RouteError /> },
       { path: '/shop/categories', element: <ShopCategories />, errorElement: <RouteError /> },
+      /*
+       * DELIVERY IS THE SCREEN; ZONES ARE THE STRUCTURE UNDER IT.
+       * `/shop/delivery-areas` is where the sidebar points and where the weekly
+       * questions are answered (do we go there, what does it cost).
+       * `/shop/shipping-zones` still exists because creating a zone, editing its
+       * countries, its tax rate or which one is the fallback has nowhere else to
+       * happen — it is linked from the footer of the delivery screen rather than
+       * from the nav. See `ShopDeliveryAreas.tsx`'s note on why that is one entry
+       * and not two.
+       */
+      {
+        path: '/shop/delivery-areas',
+        element: <ShopDeliveryAreas />,
+        errorElement: <RouteError />,
+      },
       {
         path: '/shop/shipping-zones',
         element: <ShopShippingZones />,

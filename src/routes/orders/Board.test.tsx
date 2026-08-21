@@ -1255,7 +1255,7 @@ describe('when the server refuses', () => {
 // ═══════════════════════════════════════════════════════════ the local mark
 
 describe('the triage marker', () => {
-  it('says it is local, on the control and on the board', async () => {
+  it('says it is local, on the control itself', async () => {
     const user = userEvent.setup();
     mount();
 
@@ -1263,7 +1263,12 @@ describe('the triage marker', () => {
     // The accessible name carries it, not a tooltip: an operator who reads
     // "Seen" as a shared state stops telling their colleague.
     expect(mark.getAttribute('aria-label')).toMatch(/stored in this browser only/);
-    expect(screen.getByText(/private note kept in this browser/)).toBeTruthy();
+    // AND THE CONTROL IS NOW THE ONLY PLACE IT IS SAID. The board used to repeat
+    // it in a paragraph above the lanes; that prose is gone, so this assertion
+    // moved onto the button rather than being dropped — the guarantee is that
+    // the locality claim is reachable at the point of the act, not that any
+    // particular paragraph exists.
+    expect(mark.getAttribute('title')).toMatch(/Stored in this browser/);
 
     await user.click(mark);
     expect(mark.getAttribute('aria-pressed')).toBe('true');
@@ -1280,10 +1285,11 @@ describe('the triage marker', () => {
       mount();
       const mark = within(card(cardsIn('To pack')[0])).getByRole('button', { name: /^Mark order/ });
       await user.click(mark);
-      // The mark still took for this session, and the board stopped promising it
-      // would last.
+      // The mark still took for this session, and the control stopped promising
+      // it would last. Asserted on the button's own tooltip now that the board's
+      // paragraph is gone — `seenPersists` is threaded to exactly this spot.
       expect(mark.getAttribute('aria-pressed')).toBe('true');
-      expect(screen.getByText(/refused to keep it/)).toBeTruthy();
+      expect(mark.getAttribute('title')).toMatch(/will not keep it/);
     } finally {
       Storage.prototype.setItem = setItem;
     }

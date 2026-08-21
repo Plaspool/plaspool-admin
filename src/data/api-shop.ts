@@ -838,6 +838,34 @@ export interface ShopShippingOptionDraft {
   position?: number;
 }
 
+/**
+ * The shop's opinion about one district (migration 0300). NOT the district
+ * itself — no name, no region. `marketingApi.listAreas` owns those, and the
+ * join is on `areaKey`, the handle a rename does not move.
+ */
+export interface ShopDeliveryArea {
+  id: string;
+  areaKey: string;
+  delivers: boolean;
+  /** `null` means NO OVERRIDE — price from the state's zone. Never "free". */
+  rateMinor: number | null;
+  revision: number;
+}
+
+export interface ShopDeliveryAreaWrite {
+  delivers?: boolean;
+  /** Absent leaves it; explicit `null` clears the override. The two differ. */
+  rateMinor?: number | null;
+  /** CAS. `null` asserts "no row for this district yet". */
+  expectedRevision: number | null;
+}
+
+export interface ShopDeliveryAreasBulkWrite {
+  areaKeys: string[];
+  delivers?: boolean;
+  rateMinor?: number | null;
+}
+
 export interface ShopShippingOptionPatch {
   label?: string;
   amountMinor?: number;
@@ -1235,6 +1263,40 @@ export const shopApi = {
       id,
       subject: 'Shipping zone',
     });
+  },
+
+  /**
+   * PER-DISTRICT DELIVERY (migration 0300). Only the shop's OPINION about a
+   * district — the districts themselves come from `marketingApi.listAreas`, and
+   * `ShopDeliveryAreas.tsx` joins the two on `areaKey`. A district with no row
+   * here delivers at its state's zone rate, which is the pre-0300 behaviour.
+   */
+  async listDeliveryAreas(signal?: AbortSignal): Promise<ShopDeliveryArea[]> {
+    const res = await shopFetch<{ items: ShopDeliveryArea[] }>(`${BASE}/delivery-areas`, {
+      signal,
+    });
+    return res.items ?? [];
+  },
+
+  async saveDeliveryArea(
+    areaKey: string,
+    body: ShopDeliveryAreaWrite,
+  ): Promise<ShopDeliveryArea> {
+    const res = await shopFetch<{ area: ShopDeliveryArea }>(
+      `${BASE}/delivery-areas/${seg(areaKey)}`,
+      { method: 'PUT', id: areaKey, subject: 'Delivery area', body },
+    );
+    return res.area;
+  },
+
+  /** "Every district in this state" — one request, no compare-and-swap. */
+  async saveDeliveryAreas(body: ShopDeliveryAreasBulkWrite): Promise<ShopDeliveryArea[]> {
+    const res = await shopFetch<{ items: ShopDeliveryArea[] }>(`${BASE}/delivery-areas/bulk`, {
+      method: 'POST',
+      body,
+      subject: 'Delivery areas',
+    });
+    return res.items ?? [];
   },
 
   async createShippingOption(
