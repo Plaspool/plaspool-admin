@@ -30,7 +30,6 @@ import MigrateRoute from './routes/Migrate';
 import Shop from './routes/Shop';
 import ShopProducts from './routes/ShopProducts';
 import ShopCategories from './routes/ShopCategories';
-import ShopShippingZones from './routes/ShopShippingZones';
 import ShopDeliveryAreas from './routes/ShopDeliveryAreas';
 import ShopOrders from './routes/ShopOrders';
 import ShopCustomers from './routes/ShopCustomers';
@@ -230,23 +229,22 @@ const router = createHashRouter([
       { path: '/shop/products', element: <ShopProducts />, errorElement: <RouteError /> },
       { path: '/shop/categories', element: <ShopCategories />, errorElement: <RouteError /> },
       /*
-       * DELIVERY IS THE SCREEN; ZONES ARE THE STRUCTURE UNDER IT.
-       * `/shop/delivery-areas` is where the sidebar points and where the weekly
-       * questions are answered (do we go there, what does it cost).
-       * `/shop/shipping-zones` still exists because creating a zone, editing its
-       * countries, its tax rate or which one is the fallback has nowhere else to
-       * happen — it is linked from the footer of the delivery screen rather than
-       * from the nav. See `ShopDeliveryAreas.tsx`'s note on why that is one entry
-       * and not two.
+       * DELIVERY IS THE ONLY SHIPPING SCREEN NOW.
+       *
+       * `/shop/shipping-zones` was routed here until it stopped being worth
+       * showing: it was the last unstyled surface in the admin — raw buttons,
+       * minor units printed at an operator, ISO codes typed comma-separated —
+       * and a rarely-correct screen reachable from the usually-correct one is a
+       * way to land on the wrong one.
+       *
+       * THE COMPONENT AND ITS API ARE UNTOUCHED. The route file is still in the
+       * tree and every `/admin/shipping-zones` endpoint still answers, so
+       * bringing it back is this entry plus its import — worth doing the day
+       * somebody needs a fourth zone, and worth restyling before it is shown.
        */
       {
         path: '/shop/delivery-areas',
         element: <ShopDeliveryAreas />,
-        errorElement: <RouteError />,
-      },
-      {
-        path: '/shop/shipping-zones',
-        element: <ShopShippingZones />,
         errorElement: <RouteError />,
       },
       { path: '/shop/orders', element: <ShopOrders />, errorElement: <RouteError /> },

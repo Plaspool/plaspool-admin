@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { Truck } from 'lucide-react';
 import { shopApi, safeFormatMinor, type ShopDeliveryArea, type ShopShippingZone } from '../data/api-shop';
 import { marketingApi, type ServiceArea } from '../data/api-marketing';
@@ -643,20 +642,20 @@ export default function ShopDeliveryAreas() {
       )}
 
       {/*
-        THE ESCAPE HATCH, AND WHY IT IS A LINK RATHER THAN A NAV ENTRY. This
-        screen answers the questions an owner has weekly — do we go there, what
-        does it cost. Creating a zone, editing its country list, its tax rate or
-        which zone is the fallback are structural jobs done roughly never, and
-        `ShopShippingZones` still does them. Two sidebar entries would put a
-        rarely-correct screen beside the usually-correct one and let an operator
-        land on the wrong one; one entry and a footer link does not.
+        THE LINK TO `ShopShippingZones` STOOD HERE AND IS GONE, along with that
+        screen's route. It was the last unstyled surface in the admin — raw
+        `<button>`s, "1000000 minor units" printed at an operator, ISO codes typed
+        comma-separated into a text box — and shipping it behind a footer link
+        meant the one place an owner could land on it was from the screen built to
+        replace it.
+
+        WHAT WENT WITH IT, SAID PLAINLY: there is now no UI for creating or
+        deleting a zone, for a zone's country list, its tax rate, or which zone is
+        the fallback. Those are structural jobs nobody has done since the zones
+        were seeded, the routes and the repo are untouched, and the file is still
+        in the tree — so restoring it is one route entry. What an owner does
+        weekly, this screen does.
       */}
-      {isOwner && areas !== null && (
-        <p className="mktarea__tally dlvadvanced">
-          <Link to="/shop/shipping-zones">Zones, countries and tax</Link> — the structure
-          behind these rates. Rarely needs changing.
-        </p>
-      )}
     </div>
   );
 }
