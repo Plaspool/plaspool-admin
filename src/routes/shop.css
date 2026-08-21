@@ -2010,12 +2010,8 @@
   flex-wrap: wrap;
 }
 
-/* Quiet, and last. The structural screen it points at is correct roughly never;
-   it must be findable without competing with the rows. */
-.dlvadvanced {
-  margin-top: var(--s4);
-  color: var(--ink-3);
-}
+/* `.dlvadvanced` stood here and went with the footer link to the shipping-zones
+   screen, which is no longer routed. */
 
 /* ─────────────────────────────────────────────── sortable table headers
  *
