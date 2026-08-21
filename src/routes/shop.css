@@ -1986,9 +1986,9 @@
   flex-wrap: wrap;
 }
 
-.dlvbulk__label {
-  color: var(--ink-2);
-}
+/* `.dlvbulk__label` stood here and went with the "set every district to ₦X"
+   row it labelled. `.dlvbulk` itself stays — the state-rate editor in the
+   section header uses the same inline form layout. */
 
 /* The row is three things and a switch; below the fold of a phone it stacks, and
    the rate keeps its own line rather than being squeezed against the name. */

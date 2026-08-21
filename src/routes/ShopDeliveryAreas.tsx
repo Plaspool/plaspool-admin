@@ -71,8 +71,18 @@ import './shop.css';
  *     `city: "Abuja"` — the state again. There is no district text at checkout
  *     to match against until the storefront's address form captures one. An
  *     owner who sets ₦3,500 for Gwarinpa today and is not told this would
- *     believe customers are being charged it. The notice below is therefore not
- *     decoration and must not be removed before the storefront change lands.
+ *     believe customers are being charged it.
+ *
+ *     The banner carries it as its closing clause rather than its headline —
+ *     leading with the warning made a pending screen look like a broken one —
+ *     but the clause itself stays until the storefront change lands.
+ *
+ * ONE CONTROL PER LEVEL, WHICH IS WHY THERE IS NO "SET EVERY DISTRICT TO ₦X"
+ * ROW. The state's price is the zone rate, edited in the section header; a
+ * district's price is its own row. A bulk field that wrote an override onto
+ * every district reached the same visible outcome by making all of them
+ * exceptions, after which the header's rate governed nothing — two controls for
+ * one job, and the redundant one quietly disabled the other.
  */
 
 /** Minor units per naira. 100, confirmed against a live price (CLAUDE.md §6). */
@@ -126,7 +136,8 @@ export default function ShopDeliveryAreas() {
   const [busy, setBusy] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ key: string; value: string } | null>(null);
   const [region, setRegion] = useState<string | null>(null);
-  const [bulk, setBulk] = useState('');
+  /* Shared by the master switch, which is now the only bulk write on this
+   * screen. The "set every district to" field it used to also guard is gone. */
   const [bulkBusy, setBulkBusy] = useState(false);
   const [stateRate, setStateRate] = useState<string | null>(null);
   const [stateBusy, setStateBusy] = useState(false);
@@ -345,34 +356,6 @@ export default function ShopDeliveryAreas() {
     }
   }
 
-  async function applyBulk(): Promise<void> {
-    if (shown === null) return;
-    const minor = parseNaira(bulk);
-    if (minor === null) {
-      notify('Type a delivery price, like 3000.', { tone: 'danger' });
-      return;
-    }
-    setBulkBusy(true);
-    try {
-      const saved = await shopApi.saveDeliveryAreas({
-        areaKeys: shown.areas.map((area) => area.key),
-        rateMinor: minor,
-      });
-      setOpinions((prev) => {
-        const next = new Map(prev);
-        for (const row of saved) next.set(row.areaKey, row);
-        return next;
-      });
-      setBulk('');
-      notify(
-        `${saved.length} ${saved.length === 1 ? 'district' : 'districts'} in ${shown.region} set to ${safeFormatMinor(minor, DELIVERY_RATE_CURRENCY)}`,
-      );
-    } catch (err) {
-      notify(explain(err, 'Those rates didn’t save.'), { tone: 'danger' });
-    } finally {
-      setBulkBusy(false);
-    }
-  }
 
   return (
     <div className="mktscr">
@@ -410,15 +393,26 @@ export default function ShopDeliveryAreas() {
       </header>
 
       {/*
-        THE HONESTY NOTICE. See this file's header: district rates are authored
-        here and not yet read at the till. Removing this before the storefront
-        captures a district would leave an owner believing a price is being
-        charged that is not.
+        WHAT THIS BANNER IS FOR NOW.
+
+        It used to lead with "Not charged at checkout yet" — a warning, in the
+        loudest position on the screen, repeated on every visit. The fact is
+        true and still has to be said, but leading with it was wrong twice: it
+        made the screen look broken rather than pending, and the work it was
+        warning about belongs to the storefront rather than to anyone reading
+        this page.
+
+        So the banner now answers the question an owner actually arrives with —
+        why a district shows a price nobody typed — and carries the caveat as
+        its last clause instead of its headline. It is still not removable while
+        that clause is true: an owner who sets a district price and is never
+        told it does not yet reach the till would believe customers are being
+        charged it.
       */}
       <p className="notice notice--warn">
-        <strong>Not charged at checkout yet.</strong> Orders are still priced by
-        state — the rates below are saved and will apply once the storefront’s
-        address form asks which district a customer is in.
+        <strong>How a district is priced.</strong> It charges the state rate
+        above unless you give it one of its own. A district’s own rate applies
+        once the storefront asks which district a customer is in.
       </p>
 
       {problem !== null && <p className="mktform__error">{problem}</p>}
@@ -511,39 +505,18 @@ export default function ShopDeliveryAreas() {
           </header>
 
           {/*
-            ACROSS-THE-BOARD PRICING — the "and all" half of the ask. It sets a
-            rate and never touches the switches: an owner repricing a state has
-            not thereby decided to start delivering to districts they had
-            switched off, and a control that did both would make that decision
-            for them silently.
+            THE "SET EVERY DISTRICT TO ₦X" ROW STOOD HERE AND IS GONE.
+            There were two controls for one job. "Charged today … Edit" in the
+            header above already changes what the whole state costs, and it does
+            it at the right level: it edits the ZONE rate, which every district
+            without a rate of its own inherits. The row here wrote a per-district
+            override onto all seventeen at once — the same visible outcome by a
+            worse mechanism, because it turned every district into an exception
+            and the state rate above then governed nothing.
+
+            So: the state price is the header. A district price is that
+            district's own row. One control per level.
           */}
-          {isOwner && (
-            <form
-              className="mktarea__add"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void applyBulk();
-              }}
-            >
-              <label className="dlvbulk">
-                <span className="dlvbulk__label">Set every district in {shown.region} to</span>
-                <span className="dlvrate__field">
-                  <span className="dlvrate__sign" aria-hidden="true">₦</span>
-                  <input
-                    className="mktform__input dlvrate__input"
-                    value={bulk}
-                    inputMode="decimal"
-                    placeholder="3000"
-                    aria-label={`Delivery price for every district in ${shown.region}`}
-                    onChange={(event) => setBulk(event.target.value)}
-                  />
-                </span>
-              </label>
-              <button type="submit" className="btn btn--sm" disabled={bulkBusy || bulk.trim() === ''}>
-                Apply to all {shown.areas.length}
-              </button>
-            </form>
-          )}
 
           <ul className="mktarea__list">
             {shown.areas.map((area) => {
