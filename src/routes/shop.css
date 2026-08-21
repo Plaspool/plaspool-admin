@@ -826,47 +826,10 @@
 
 /* --------------------------------------------------- the two order views */
 
-/* Board or table, as two links rather than a control with a state. FLUSH,
-   with one rule between them, because the pair is one choice: a gap would
-   read as two separate buttons that happen to sit together. The height is
-   `--ctl-h` so it lines up with the Status select and the search box beside
-   it in `.shopfilters`. */
-.oview {
-  display: inline-flex;
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-m);
-  background: var(--paper-raised);
-  overflow: hidden;
-}
-.oview__opt {
-  display: inline-flex;
-  align-items: center;
-  height: var(--ctl-h);
-  padding: 0 var(--ctl-pad-x);
-  color: var(--ink-3);
-  font-size: var(--step--1);
-  font-weight: 500;
-  text-decoration: none;
-  white-space: nowrap;
-  transition:
-    background var(--dur-1) var(--ease),
-    color var(--dur-1) var(--ease);
-}
-.oview__opt + .oview__opt {
-  border-left: 1px solid var(--rule);
-}
-.oview__opt:hover {
-  background: var(--paper-sunken);
-  color: var(--ink);
-}
-/* NEVER COLOUR ALONE — `aria-current` is the state a screen reader gets, and
-   this is the same fact drawn for everybody else. `.shoptabs__tab.is-active`
-   is the shop's existing selected-thing treatment; this borrows it rather
-   than inventing a second one. */
-.oview__opt[aria-current] {
-  background: var(--ink);
-  color: var(--paper);
-}
+/* Board or table is a `Tabs` now (`components/ui/Tabs.tsx`), which is where
+   the flush segmented shape this file used to declare as `.oview` lives. Its
+   height is `--ctl-h`, so it still lines up with the Status select and the
+   search box beside it in `.shopfilters`. */
 
 /* The terms the board is drawn under. Sunken rather than a `.notice`: it is
    not a warning and must not be dismissed as one. */
