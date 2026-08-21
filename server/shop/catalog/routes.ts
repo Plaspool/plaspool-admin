@@ -32,6 +32,12 @@ import {
 import { priceHistory, setPrice } from './prices';
 import { adjustInventory, getInventory } from './inventory';
 import {
+  revalidateCatalog,
+  revalidateProductById,
+  revalidateProducts,
+  revalidateVariantProduct,
+} from './revalidate';
+import {
   createShopCategory,
   deleteShopCategory,
   listPublicShopCategories,
@@ -416,6 +422,32 @@ function reassignTarget(raw: string | undefined): string | null {
   return normaliseShopCategoryName(raw, 'reassign');
 }
 
+// ------------------------------------------------------- storefront freshness
+
+/**
+ * EVERY ADMIN WRITE BELOW ENDS BY PUSHING A CACHE PURGE TO THE STOREFRONT, and
+ * the rules are the same at all twelve of them:
+ *
+ * - **After the write, not before.** The call sits between the awaited
+ *   repository function and the `c.json(...)`, so a write that threw never
+ *   purges — a 409 from a stale `baseRevision` changed nothing and must not
+ *   cost the storefront a re-render of every catalogue page.
+ * - **Never awaited, never able to fail.** `revalidate*` schedules and returns
+ *   synchronously, and swallows everything. A save's status code does not
+ *   depend on a cache somewhere else. See `revalidate.ts`.
+ * - **A product-scoped write sends the product's slug**; a write that is not
+ *   scoped to one product sends nothing and purges the lists only. The endpoint
+ *   purges the lists either way, so the slug form is never followed by a second
+ *   unscoped call.
+ *
+ * WHY THERE IS NO DEBOUNCE HERE. Every route below is an explicit save: the
+ * shop admin has a Save button (`src/routes/ShopProducts.tsx`) and no draft
+ * autosave loop — unlike the blog editor, which fires `PATCH /api/posts/:id` on
+ * a keystroke timer through `src/editor/useAutosave.ts`. If shop products ever
+ * grow an autosave, it must not reach these routes on the timer, because each
+ * purge costs the storefront a full re-render of every catalogue page.
+ */
+
 /** The union of the managed table and the values actually in use. */
 routes.get('/admin/categories', auth, async (c) => {
   readQuery(c, NoCategoryParams);
@@ -430,6 +462,8 @@ routes.post('/admin/categories', auth, async (c) => {
     accentHex: normaliseAccentHex(body.accentHex ?? null, 'accentHex'),
     position: body.position ?? 0,
   });
+  // Not scoped to one product: the lists only.
+  revalidateCatalog();
   return c.json({ category }, 201);
 });
 
@@ -449,6 +483,13 @@ routes.patch('/admin/categories/:id', auth, async (c) => {
   if (body.position !== undefined) patch.position = body.position;
 
   const result = await updateShopCategory(currentDb(c), pathParam(c, 'id'), patch);
+  /*
+   * A rename rewrites every product carrying the old value — an unknown number
+   * of them, and `result` reports the count rather than the slugs. That is the
+   * definition of a write that is not scoped to one product, so it is one
+   * unscoped purge rather than `moved` of them.
+   */
+  revalidateCatalog();
   return c.json(result);
 });
 
@@ -463,6 +504,8 @@ routes.delete('/admin/categories/:id', auth, async (c) => {
     pathParam(c, 'id'),
     reassignTarget(reassign),
   );
+  // Same as a rename: `?reassign=` moves an unknown set of products.
+  revalidateCatalog();
   return c.json(result);
 });
 
@@ -484,6 +527,16 @@ routes.get('/admin/products/:id', auth, async (c) => {
 routes.post('/admin/products', auth, async (c) => {
   const body = await readJsonOrEmpty(c, ProductPatchBody);
   const product = await createProduct(currentDb(c), currentUser(c), toPatch(body));
+  /*
+   * A product is created as a draft, so nothing a shopper can see has changed
+   * yet and this purge buys nothing. It is here anyway because the alternative
+   * is a status check at every call site that has to stay in step with what
+   * `getActiveProductBySlug` filters on, and creation is a once-per-product
+   * event — the cost is one re-render, not a stream of them. If catalogue
+   * re-renders ever become expensive enough to matter, gate the whole set of
+   * these on `product.status === 'active'` in ONE place, not here.
+   */
+  revalidateProducts(product.slug);
   return c.json({ product }, 201);
 });
 
@@ -499,6 +552,17 @@ routes.patch('/admin/products/:id', auth, async (c) => {
     baseRevision,
     note,
   });
+  /*
+   * ONE SLUG, AND THE BRIEF'S "SEND THE OLD ONE TOO" CASE CANNOT ARISE HERE.
+   * `saveProduct` assigns a slug once — when a product that has none first gets
+   * a title — and never rewrites a non-null one (`products.ts`: `if (!slug &&
+   * next.title)`). So the slug before this write is either the same string or
+   * `null`, and neither is a page cached under a name that is now wrong. The
+   * day a slug becomes editable, read the old one before the save and pass
+   * `revalidateProducts(before, product.slug)`; the helper is variadic and
+   * de-duplicates for exactly that.
+   */
+  revalidateProducts(product.slug);
   return c.json({ product });
 });
 
@@ -527,9 +591,17 @@ const TRANSITIONS = {
 } as const;
 
 for (const [name, run] of Object.entries(TRANSITIONS)) {
-  routes.post(`/admin/products/:id/${name}`, auth, async (c) =>
-    c.json({ product: await run(currentDb(c), pathParam(c, 'id'), currentUser(c)) }),
-  );
+  routes.post(`/admin/products/:id/${name}`, auth, async (c) => {
+    const product = await run(currentDb(c), pathParam(c, 'id'), currentUser(c));
+    /*
+     * The clearest case in the file: every one of these is a change to or from
+     * `active`, which is precisely what decides whether the storefront serves
+     * the product at all. An unpublish that leaves a stale page cached for an
+     * hour is a shopper adding a withdrawn product to a cart.
+     */
+    revalidateProducts(product.slug);
+    return c.json({ product });
+  });
 }
 
 /**
@@ -541,24 +613,36 @@ for (const [name, run] of Object.entries(TRANSITIONS)) {
  * way to be sure of that without a foreign key across a subsystem boundary
  * (which R3 forbids) is not to offer the operation.
  */
-routes.delete('/admin/products/:id', auth, async (c) =>
-  c.json({ product: await trashProduct(currentDb(c), pathParam(c, 'id'), currentUser(c)) }),
-);
+routes.delete('/admin/products/:id', auth, async (c) => {
+  const product = await trashProduct(currentDb(c), pathParam(c, 'id'), currentUser(c));
+  // Soft delete, but the storefront stops serving it — same urgency as unpublish.
+  revalidateProducts(product.slug);
+  return c.json({ product });
+});
 
 routes.post('/admin/products/:id/variants', auth, async (c) => {
+  // Body first, exactly as before: a malformed one is a 400 and must stay a 400
+  // rather than becoming whatever `currentDb(c)` answers on a deployment with no
+  // `DATABASE_URL`. The handle is only hoisted into a local so the purge below
+  // can share it.
   const body = await readJson(c, CreateVariantBody);
-  const variant = await createVariant(
-    currentDb(c),
-    pathParam(c, 'id'),
-    body,
-    currentUser(c),
-  );
+  const db = currentDb(c);
+  const productId = pathParam(c, 'id');
+  const variant = await createVariant(db, productId, body, currentUser(c));
+  // A new colour or weight option is a change to the product page and to the
+  // "from ₦x" the grids show. The slug is read in the background, not here.
+  revalidateProductById(db, productId);
   return c.json({ variant }, 201);
 });
 
 routes.patch('/admin/variants/:id', auth, async (c) => {
   const body = await readJson(c, UpdateVariantBody);
-  return c.json({ variant: await updateVariant(currentDb(c), pathParam(c, 'id'), body) });
+  const db = currentDb(c);
+  const variant = await updateVariant(db, pathParam(c, 'id'), body);
+  // Colour, weight, swatch, photograph, status — all of it is on the page.
+  // `variant.productId` is already in hand, so this needs no variant join.
+  revalidateProductById(db, variant.productId);
+  return c.json({ variant });
 });
 
 /**
@@ -571,9 +655,19 @@ routes.patch('/admin/variants/:id', auth, async (c) => {
  * by `server/shop/app.ts`'s `onError`, the same conflict-error vocabulary as
  * the product/category routes — when the variant has ever been ordered.
  */
-routes.delete('/admin/variants/:id', auth, async (c) =>
-  c.json({ variant: await deleteVariant(currentDb(c), pathParam(c, 'id')) }),
-);
+routes.delete('/admin/variants/:id', auth, async (c) => {
+  const db = currentDb(c);
+  const variant = await deleteVariant(db, pathParam(c, 'id'));
+  /*
+   * BY PRODUCT ID, NOT BY VARIANT ID. This is a hard delete: the row is gone, so
+   * `revalidateVariantProduct` — which joins through `shop_variants` — would
+   * find nothing by the time the background task ran and fall back to purging
+   * the lists, leaving the product's own page cached with a colour that no
+   * longer exists. The deleted row is returned, so its `productId` is free.
+   */
+  revalidateProductById(db, variant.productId);
+  return c.json({ variant });
+});
 
 /**
  * `PUT`, not `POST`: setting the price is idempotent in intent — "the price is
@@ -585,9 +679,17 @@ routes.put('/admin/variants/:id/price', auth, async (c) => {
   // `money()` is the one constructor, and it refuses a non-integer amount and a
   // malformed currency code before either reaches a column.
   const price = money(body.amount, body.currency);
-  return c.json({
-    price: await setPrice(currentDb(c), pathParam(c, 'id'), price, body.reason ?? null),
-  });
+  const db = currentDb(c);
+  const variantId = pathParam(c, 'id');
+  const written = await setPrice(db, variantId, price, body.reason ?? null);
+  /*
+   * The one purge on this page that a customer would notice most: a price the
+   * storefront serves for another hour is a price we have to honour, or an
+   * argument at checkout. `setPrice` returns the price row, not the variant, so
+   * the product is reached through the variant.
+   */
+  revalidateVariantProduct(db, variantId);
+  return c.json({ price: written });
 });
 
 /**
@@ -613,12 +715,16 @@ routes.get('/admin/variants/:id/prices', auth, async (c) => {
 
 routes.post('/admin/inventory/:variantId/adjust', auth, async (c) => {
   const { delta, reason } = await readJson(c, AdjustBody);
-  const level = await adjustInventory(
-    currentDb(c),
-    pathParam(c, 'variantId'),
-    delta,
-    reason,
-    currentUser(c),
-  );
+  const db = currentDb(c);
+  const variantId = pathParam(c, 'variantId');
+  const level = await adjustInventory(db, variantId, delta, reason, currentUser(c));
+  /*
+   * ONLY THIS ROUTE, AND NOT THE RESERVATION PATH. `adjustInventory` is an
+   * operator restocking or writing off — a deliberate, low-frequency admin act.
+   * The `reserved` column also moves on every add-to-cart and every checkout
+   * freeze, which happen at customer volume and are Cart's, not this file's; a
+   * purge wired there would re-render every catalogue page per basket.
+   */
+  revalidateVariantProduct(db, variantId);
   return c.json({ inventory: level });
 });

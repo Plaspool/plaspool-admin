@@ -138,6 +138,18 @@ every address rather than only for addresses that have an account.
 Commerce variables are read lazily by the modules that need them and are not
 validated at boot.
 
+Storefront cache purges need no variable at all. The storefront caches its
+product fetch for an hour, so every catalogue write in the admin pushes a purge
+to ``POST /api/revalidate`` on it and the edit is live in seconds instead. The
+URL is a repository constant in
+``server/shop/catalog/utils/revalidate-url.ts`` — it is public, and holding it
+in the repo means a fresh clone and every preview behave like production, with
+no deployment that silently stops purging because somebody forgot to set
+something. Purges are fire-and-forget: scheduled after the write commits, never
+awaited, and a failure is logged and dropped, because the storefront's own timer
+is already the floor. A **test process never purges**, unless it has installed a
+recording transport — see the guard in ``server/shop/catalog/revalidate.ts``.
+
 .. warning::
 
    ``.env`` holds real credentials and is excluded from version control.
