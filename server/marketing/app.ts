@@ -11,6 +11,7 @@ import type { PointsCustomerResolver } from './ledger/customer';
 import { createNotifyRoutes } from './notify/routes';
 import { routes as programRoutes } from './programs/routes';
 import { routes as returnRoutes } from './returns/routes';
+import { createCustomerReturnRoutes } from './returns/customer';
 import { routes as settingsRoutes } from './settings/routes';
 import { routes as summaryRoutes } from './summary/routes';
 import type { AppEnv } from '../app-env';
@@ -228,6 +229,24 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
   marketing.route(
     '/',
     createCustomerPointsRoutes({ customer: deps.customer, cors: deps.cors }),
+  );
+
+  /*
+   * A CUSTOMER ASKING FOR THEIR OWN RETURN — `/me/returns` and its list.
+   *
+   * MOUNTED BESIDE `/me/points` AND DISJOINT FROM IT: `/me/returns*` shares no
+   * prefix with `/me/points*`, `/customers*` or `/adjustments`, so registration
+   * order is not load-bearing here either.
+   *
+   * THE SAME TWO PORTS, THE SAME REASON (spec D9). `deps.customer` is now typed
+   * `{ id, email } | null` — widened in `./ledger/customer.ts` for exactly this
+   * router, which keys a written row by customer id where `/me/points` never
+   * needed one. `deps.cors` is Cart's `shopCors()` again, scoped by the
+   * receiving router to `/me/returns/*` rather than applied at this app's root.
+   */
+  marketing.route(
+    '/',
+    createCustomerReturnRoutes({ customer: deps.customer, cors: deps.cors }),
   );
 
   /*

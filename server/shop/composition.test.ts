@@ -792,3 +792,95 @@ describe('admin#2 — the customer points seam', () => {
     expect(res.headers.get('access-control-allow-credentials')).toBeNull();
   });
 });
+
+// ============================================================================
+// A CUSTOMER FILING THEIR OWN RETURN — /me/returns
+// ============================================================================
+
+describe('a customer asking for their own return', () => {
+  /** A served district. Areas ship INACTIVE (0012), so one is switched on here. */
+  let servedAreaId: string;
+
+  beforeAll(async () => {
+    const res = await ctx.db.execute(sql`
+      UPDATE marketing_service_areas SET active = true
+       WHERE id = (SELECT id FROM marketing_service_areas ORDER BY id LIMIT 1)
+       RETURNING id`);
+    servedAreaId = String(res.rows[0]!.id);
+  });
+
+  /* `5`, NOT `4`, AND THE NUMBER IS LOAD-BEARING. The seeded default programme
+     (`spool-return`, migration 0011) sets `min_units_per_return = 5`, so a 4
+     here is a `below_minimum` 400 and every 201 assertion below fails for a
+     reason that has nothing to do with what is under test. */
+  const body = (over: Record<string, unknown> = {}) => ({
+    qtyDeclared: 5,
+    phone: '08030000000',
+    pickupAddress: '1 Test Road',
+    serviceAreaId: servedAreaId,
+    ...over,
+  });
+
+  it('401s a caller with no session', async () => {
+    const res = await client.post('/api/marketing/me/returns', body());
+    expect(res.status).toBe(401);
+  });
+
+  it('gives the body no way to name an address', async () => {
+    /* THE SECURITY PROPERTY. `.strict()` means an unknown key is a 400, so a
+       request that tries to file against somebody else is REFUSED rather than
+       silently ignored — the mistake cannot be made quietly. */
+    const customer = await signedInCustomer('dara@example.test');
+    const res = await client.post(
+      '/api/marketing/me/returns',
+      body({ email: 'victim@example.test' }),
+      { headers: { cookie: customer.cookie } },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('files the return against the session, folded, and answers the programme words', async () => {
+    const customer = await signedInCustomer('Dara.Two@Example.Test');
+    const res = await client.post('/api/marketing/me/returns', body(), {
+      headers: { cookie: customer.cookie },
+    });
+    expect(res.status).toBe(201);
+
+    const answered = await json<{ requestId: string; program: { pointsPerUnit: number } }>(res);
+    expect(answered.program.pointsPerUnit).toBeGreaterThan(0);
+
+    const row = await ctx.db.execute(sql`
+      SELECT customer_email, customer_id, source FROM marketing_return_requests
+       WHERE id = ${answered.requestId}`);
+    expect(row.rows[0]!.customer_email).toBe('dara.two@example.test');
+    expect(row.rows[0]!.customer_id).toBe(customer.id);
+    expect(row.rows[0]!.source).toBe('customer');
+  });
+
+  it('lists one shopper their own returns and nobody else in them', async () => {
+    const customer = await signedInCustomer('lister@example.test');
+    await client.post('/api/marketing/me/returns', body(), {
+      headers: { cookie: customer.cookie },
+    });
+
+    const res = await client.get('/api/marketing/me/returns', {
+      headers: { cookie: customer.cookie },
+    });
+    expect(res.status).toBe(200);
+
+    const page = await json<{ items: { id: string }[] }>(res);
+    expect(page.items).toHaveLength(1);
+
+    /* The other half: somebody else's return is not in it. Filed by a second
+       signed-in customer rather than inserted raw, so this exercises the same
+       path it is asserting about. */
+    const other = await signedInCustomer('other@example.test');
+    await client.post('/api/marketing/me/returns', body(), {
+      headers: { cookie: other.cookie },
+    });
+    const again = await json<{ items: { id: string }[] }>(
+      await client.get('/api/marketing/me/returns', { headers: { cookie: customer.cookie } }),
+    );
+    expect(again.items).toHaveLength(1);
+  });
+});
