@@ -221,7 +221,7 @@ afterAll(async () => {
 
 // --------------------------------------------------------- mount and guards
 
-describe('mounting, the guards, and the one route that has none', () => {
+describe('mounting and the guards — every route here is requireAuth', () => {
   it('answers 401 without a session on every admin route', async () => {
     expect((await anon.get(`${API}/returns`)).status).toBe(401);
     expect((await anon.get(`${API}/returns/ret_x`)).status).toBe(401);
@@ -287,7 +287,7 @@ describe('mounting, the guards, and the one route that has none', () => {
   });
 });
 
-// ------------------------------------------------------------ public intake
+// ------------------------------------------------------- the retired intake
 
 describe('the public intake, now retired — contract #6', () => {
   it('is registered ABOVE every parameterised returns route', async () => {
@@ -411,6 +411,44 @@ describe('the admin intake — contract #5', () => {
       existingId: first.request.id,
       status: 'requested',
     });
+  });
+
+  /**
+   * TWO GUARANTEES THAT LOST THEIR ONLY ASSERTION WHEN THE RETIRED PUBLIC
+   * ROUTE'S TESTS WERE DELETED, RE-POINTED HERE AT THE ADMIN INTAKE — which
+   * parses the identical `optionalText()`-typed fields, so no new fixtures are
+   * needed.
+   *
+   * BLANK NORMALISES TO ABSENT. `repo.test.ts` asserts `null` for an ABSENT
+   * field, which is the repository's own normalisation and a different code
+   * path from this one; `/me/returns` cannot stand in either, because
+   * `customer.ts` deliberately uses `str().trim().min(1)`, so a blank there is
+   * a 400, not a transform. This is the only test anywhere driving a blank
+   * string through an HTTP route into `optionalText()`'s
+   * `.transform((value) => (value === '' ? undefined : value))` — deleting
+   * that transform today would otherwise pass the entire suite.
+   *
+   * A NUL IS REFUSED BEFORE THE TRANSFORM EVER RUNS. `server/nul-bytes.test.ts`'s
+   * `BODIES` map does not cover marketing routes, and the surviving NUL-byte
+   * test in this file drives `reason` on a cancel, whose `REASON` schema has no
+   * `.transform()` at all — so nothing else in the repository can fail if this
+   * ordering breaks. The `ZodString` NUL check running before the transform is
+   * the whole reason `str()` is a regex rather than a refinement.
+   */
+  it('treats a blank optional field as absent, and refuses a NUL in one before the transform runs', async () => {
+    const detail = await logReturn({ customerName: '', customerPhone: '   ', pickupAddress: '' });
+    expect(detail.request.customerName).toBeNull();
+    expect(detail.request.customerPhone).toBeNull();
+    expect(detail.request.pickupAddress).toBeNull();
+
+    const NUL = String.fromCharCode(0);
+    const res = await owner.post(`${API}/returns`, {
+      email: nextEmail(),
+      qtyDeclared: 4,
+      pickupAddress: `12 Allen${NUL} Avenue`,
+    });
+    expect(res.status).toBe(400);
+    expect(await json(res)).toMatchObject({ error: 'bad_request', detail: 'pickupAddress' });
   });
 });
 
