@@ -10,7 +10,6 @@ import {
   zodDetail,
 } from '../../middleware/errors';
 import { requireAuth } from '../../middleware/session';
-import { clientIp, limit } from '../../middleware/ratelimit';
 import { currentDb, currentUser } from '../../app-env';
 import { BadRequestError, NotFoundError } from '../../repo/errors';
 import { renderMarketingError } from '../wire';
@@ -38,27 +37,24 @@ import type { EmailIntentState, EmbeddedProgram, ReturnListItem } from './query'
  * The returns lifecycle on the wire — contract #4-14.
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * EVERY TRANSITION IS `requireAuth`, INCLUDING THE INSPECTION THAT AWARDS THE
- * POINTS. The frozen role matrix (spec D12) puts processing returns in any
- * staff member's hands and reserves `requireOwner` for the things that change
- * what a return is WORTH — the program's rate, the settings' economics, a
- * manual adjustment. A writer receiving a box and counting what is in it is the
- * ordinary path; making them fetch the owner to record the count is how the
- * count stops being recorded.
+ * EVERY ROUTE HERE IS `requireAuth` — STAFF ONLY, INCLUDING THE INSPECTION
+ * THAT AWARDS THE POINTS. The frozen role matrix (spec D12) puts processing
+ * returns in any staff member's hands and reserves `requireOwner` for the
+ * things that change what a return is WORTH — the program's rate, the
+ * settings' economics, a manual adjustment. A writer receiving a box and
+ * counting what is in it is the ordinary path; making them fetch the owner to
+ * record the count is how the count stops being recorded.
  *
  * THE GUARDS ARE ATTACHED PER ROUTE, NEVER AS `routes.use('*', …)` — see the
- * long version in `../programs/routes.ts`. It matters more here than anywhere
- * else in this subsystem, because ONE route in this file is deliberately
- * unguarded and a blanket `use` would silently close it.
+ * long version in `../programs/routes.ts`: a blanket `use` would turn every
+ * unrouted path under this prefix into a 401 instead of a 404, because the
+ * guard would run and refuse a request that had no handler to reach.
+ * `routes.test.ts` pins the 404.
  *
- * THE PUBLIC INTAKE IS IN THIS FILE AND NOT IN THE CACHEABLE PUBLIC ROUTER.
- * `POST /returns/request` is the brief's lifecycle step 1 — a customer asking
- * for a pickup — and it is a MUTATION, so it belongs under `originGuard` and a
- * rate budget rather than beside responses a shared cache may store and hand to
- * a different reader (spec D8). It grants nothing: an admin vets every request
- * before anything is awarded, which is why it needs no HMAC and no account.
- * It ships DARK — built and tested, undocumented to the storefront — so the
- * storefront form is a copy change later rather than a backend task.
+ * A CUSTOMER ASKING FOR THEIR OWN RETURN IS NOT IN THIS FILE. That is
+ * `POST /me/returns`, gated by a shop session rather than by `auth` here —
+ * `./customer.ts`, mounted separately in `../app.ts`. This file is the desk,
+ * not the storefront.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 export const routes = new Hono<AppEnv>();
@@ -106,12 +102,12 @@ const EMAIL = str().trim().min(1).max(320);
  * `customer_name` is milder and the same shape — a name that renders as nothing
  * where the email would have rendered.
  *
- * Refusing it instead would be hostile to the one client that matters here: the
- * public intake is a storefront form, and an empty optional input posting `""`
- * is what plain HTML does. So blank normalises to absent, which is also what
- * the admin client's own `filled()` does before it sends, and what the
- * repository does for anything reaching it from somewhere other than this file.
- * Three readers, one rule.
+ * Refusing it instead would gain nothing over the two readers left here: the
+ * admin client's own `filled()` already scrubs a blank field before it sends,
+ * and the repository does the same for anything reaching it from somewhere
+ * other than this file. So blank still normalises to absent — belt and braces
+ * rather than a rule either of those two is currently relying on this schema
+ * to enforce for them.
  *
  * The bounds keep a pasted document out of a history panel; none of them is a
  * business rule.
@@ -235,39 +231,6 @@ const AdminIntakeBody = z
      */
     serviceAreaId: SERVICE_AREA.optional(),
     note: OPTIONAL_NOTE,
-  })
-  .strict();
-
-/**
- * Contract #6 — the customer's own request.
- *
- * `name`/`phone` RATHER THAN `customerName`/`customerPhone`, exactly as the
- * contract spells them: this body is filled in by a person on a storefront
- * form, where every field is already about them, and the admin body's prefix
- * exists only because that dialog also carries a program and a staff note.
- *
- * NO `programId` AND NO `note`. A customer cannot choose which program pays
- * them, and a note here would be a free-text field written by the public into a
- * history staff read as though staff wrote it. What they have to say arrives by
- * mail, and an admin adds it with #14 under their own name.
- */
-const PublicIntakeBody = z
-  .object({
-    email: EMAIL,
-    qtyDeclared: QTY,
-    name: PERSON,
-    phone: PERSON,
-    pickupAddress: ADDRESS,
-    /**
-     * REQUIRED, unlike the admin body's. A customer picks their district from a
-     * Select of the places we collect from, so a submission without one is a
-     * form that was bypassed rather than a person with an unusual address — and
-     * a return the storefront accepted that could never be awarded is a promise
-     * the shop cannot keep. `400 bad_request detail: 'serviceAreaId'` puts the
-     * error on the field the person can fix; a MISSING district and an UNSERVED
-     * one are different sentences and get different answers.
-     */
-    serviceAreaId: SERVICE_AREA,
   })
   .strict();
 
@@ -537,120 +500,11 @@ async function readFreshDetail(db: Db, id: string): Promise<ReturnDetailBody> {
   return detail;
 }
 
-// ------------------------------------------------------------- rate budgets
-
-/**
- * The public intake's two buckets, and the reason there are two.
- *
- * The IP bucket bounds a host; the narrow `ip|email` bucket is what stops one
- * host filling one customer's history with pickup requests. Keyed on the PAIR
- * rather than on the address alone, the `POST /api/auth/forgot` arrangement:
- * a per-email bucket with no IP in it is a denial-of-service primitive against
- * a named customer, since anybody could spend their whole allowance for them.
- *
- * The numbers are choices, not spec: a customer sends back a box occasionally,
- * so three requests an hour for one address is generous, and thirty from one
- * address block covers an office behind one NAT while being useless to a loop.
- * The partial unique index already caps the damage at one OPEN return per
- * email — this bounds the work done discovering that.
- */
-export const INTAKE_IP_LIMIT = 30;
-export const INTAKE_EMAIL_LIMIT = 3;
-export const INTAKE_WINDOW_MS = 60 * 60_000;
-
 // ------------------------------------------------------------------- routes
 
 routes.get('/returns', auth, async (c) => {
   const q = readQuery(c, ListQuery);
   return c.json(await listReturns(currentDb(c), q));
-});
-
-/**
- * ═══════════════════════════════════════════════════════════════════════════
- * CONTRACT #6 — THE ONE PUBLIC MUTATION, AND IT IS REGISTERED HERE, ABOVE
- * EVERY `/:id` ROUTE, ON PURPOSE.
- *
- * Hono resolves two patterns claiming one path by registration order, and
- * `request` is a legal value for `:id`. Today nothing collides — there is no
- * `POST /returns/:id` — so the ordering costs nothing and buys the guarantee
- * that adding one later cannot silently swallow the customer-facing intake into
- * a route that would answer `gone` for every storefront submission.
- * `routes.test.ts` pins it by driving the real path.
- *
- * NO `auth`. That absence is the route, so it is stated rather than implied: a
- * customer has no session. What stands in its place is `originGuard` (the app
- * mounts this whole sub-app below it, so a cross-origin POST is a 403 — DEPLOY
- * NOTE: the storefront's origin must be in `APP_ORIGINS` or every customer sees
- * one), the rate budgets above, and the fact that the row this writes grants
- * nothing until an admin has scheduled, received and inspected it.
- * ═══════════════════════════════════════════════════════════════════════════
- */
-routes.post('/returns/request', async (c) => {
-  const ip = clientIp(c);
-  /*
-   * THE IP BUCKET BEFORE THE BODY IS READ, for the reason the login route gives
-   * at length: a limiter cannot bound work that runs after it.
-   */
-  await limit(c, `mktreq:${ip}`, INTAKE_IP_LIMIT, INTAKE_WINDOW_MS);
-
-  const body = await readJson(c, PublicIntakeBody);
-
-  // The narrow bucket cannot move above the parse: the address it keys on is in
-  // the body. Lower-cased here so `Dara@x` and `dara@x` share one budget, the
-  // same folding `createRequest` applies before it becomes an identity.
-  await limit(
-    c,
-    `mktreq:${ip}|${body.email.toLowerCase()}`,
-    INTAKE_EMAIL_LIMIT,
-    INTAKE_WINDOW_MS,
-  );
-
-  const db = currentDb(c);
-  const row = await createRequest(db, {
-    email: body.email,
-    qtyDeclared: body.qtyDeclared,
-    customerName: body.name,
-    customerPhone: body.phone,
-    pickupAddress: body.pickupAddress,
-    serviceAreaId: body.serviceAreaId,
-    /* The first timeline entry is attributed to the CUSTOMER, and there is no
-     * actor id because there is no account. A history that credited every
-     * request to whoever happened to be signed in could not answer "did they
-     * ask, or did we log it for them". */
-    source: 'customer',
-    now: Date.now(),
-  });
-
-  const read = await readReturn(db, row.id);
-  if (!read) throw new Error('marketing: the return was created and cannot be read back');
-  const { program } = read;
-
-  /*
-   * A NARROW, LABEL-COMPLETE ANSWER — never the admin detail.
-   *
-   * The storefront renders its confirmation entirely out of this ("we will
-   * collect your 6 canisters; each accepted one earns 7 Bottle Caps"), so every
-   * word it needs travels, and NOTHING ELSE DOES: no revision, no timeline, no
-   * internal ids, no other customer's anything. The label set is the one
-   * contract #30 spells out for the public rewards endpoint, so the two public
-   * surfaces are rendered from one shape.
-   */
-  return c.json(
-    {
-      requestId: row.id,
-      qtyDeclared: row.qtyDeclared,
-      program: {
-        name: program.name,
-        pointsLabelSingular: program.pointsLabelSingular,
-        pointsLabelPlural: program.pointsLabelPlural,
-        unitLabelSingular: program.unitLabelSingular,
-        unitLabelPlural: program.unitLabelPlural,
-        pointsPerUnit: program.pointsPerUnit ?? row.pointsPerUnitSnapshot,
-        minUnitsPerReturn: program.minUnitsPerReturn ?? row.qtyDeclared,
-      },
-    },
-    201,
-  );
 });
 
 /**
@@ -673,9 +527,9 @@ routes.post('/returns/request', async (c) => {
  * same functions the single-item routes call is the whole design: there is one
  * state machine, and the board is a second way to press its buttons.
  *
- * REGISTERED ABOVE THE `/:id` ROUTES, like the public intake and for the same
- * reason: `bulk` is a legal value for `:id`, and today nothing collides, so the
- * ordering costs nothing and buys the guarantee. `routes.test.ts` pins it.
+ * REGISTERED ABOVE THE `/:id` ROUTES: `bulk` is a legal value for `:id`, and
+ * today nothing collides, so the ordering costs nothing and buys the
+ * guarantee. `routes.test.ts` pins it.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 routes.post('/returns/bulk', auth, async (c) => {

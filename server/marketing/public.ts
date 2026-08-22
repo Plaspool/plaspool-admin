@@ -31,11 +31,14 @@ import type { Db } from '../db/client';
  * of the rows and one instant, and a test that cannot name the instant can only
  * assert about the present.
  *
- * THE ONE PUBLIC MUTATION IS NOT HERE. `POST /api/marketing/returns/request` —
- * the customer asking for a pickup — lives in the session-mounted app under
- * `originGuard` and a rate budget (`returns/routes.ts`). A mutation inside a
- * cacheable router would put "may be stored by a shared cache" and "writes a
- * row" in one file, which is the confusion this split exists to prevent.
+ * THERE IS NO PUBLIC MUTATION AT ALL, and the split this file argues for still
+ * holds for the same reason it always did. A customer asking for a pickup
+ * posts to `POST /api/marketing/me/returns`, under their own shop session
+ * rather than anything mounted here (`returns/customer.ts`) — a session-gated
+ * route was never a candidate for this cookieless router regardless. A
+ * mutation inside a cacheable router would put "may be stored by a shared
+ * cache" and "writes a row" in one file, which is the confusion this split
+ * exists to prevent.
  *
  * NO RATE LIMITER, deliberately, and `server/routes/public.ts` states the rule:
  * the limiter writes a Postgres row per call, so putting one on a cheap,

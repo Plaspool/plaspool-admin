@@ -385,12 +385,13 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * cached and evolved with the marketing contract. Same mount, same guarantee,
    * separate ownership.
    *
-   * THE ONE PUBLIC MUTATION IS NOT IN IT. `POST /api/marketing/returns/request`
-   * — the customer asking for a pickup — sits in the marketing app below, under
-   * `originGuard` and a rate limit. A mutation inside a cacheable router puts
-   * "may be stored by a shared cache" and "writes a row" in one file, which is
-   * the confusion this split exists to prevent (see `createUnsubscribeRoutes`
-   * above, which makes the same argument from the other direction).
+   * THERE IS NO PUBLIC MUTATION IN IT. A customer asking for a pickup posts to
+   * `POST /api/marketing/me/returns`, under their own shop session, in the
+   * marketing app below — not a cookieless route, so never a candidate for
+   * this router. A mutation inside a cacheable router puts "may be stored by a
+   * shared cache" and "writes a row" in one file, which is the confusion this
+   * split exists to prevent (see `createUnsubscribeRoutes` above, which makes
+   * the same argument from the other direction).
    */
   app.route(API_PREFIX, createMarketingPublicRoutes());
 

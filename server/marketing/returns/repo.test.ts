@@ -546,8 +546,8 @@ describe('creating a return', () => {
     });
     expect(row.programId).toBe(programId);
     expect(row.source).toBe('customer');
-    /* The public intake's first entry belongs to the CUSTOMER, not to whoever
-     * happens to be signed in. */
+    /* A customer's own intake's first entry belongs to the CUSTOMER, not to
+     * whoever happens to be signed in. */
     const [first] = await listEvents(db, row.id);
     expect(first.actorType).toBe('customer');
     expect(first.actorId).toBeNull();

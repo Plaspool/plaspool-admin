@@ -277,8 +277,8 @@ describe('everything else falls through to the shared table', () => {
   it('keeps the Retry-After HEADER on a rate limit, which a local re-render would lose', async () => {
     /*
      * The concrete reason `render()` refuses to answer rows it was not asked to:
-     * `toResponse` sets a header as well as a body here, and the public intake's
-     * countdown reads it. A well-meaning `{error:'rate_limited', retryAfter}`
+     * `toResponse` sets a header as well as a body here, and a client-side
+     * countdown would read it. A well-meaning `{error:'rate_limited', retryAfter}`
      * rendered locally would look identical in a body assertion and silently
      * drop the header.
      */

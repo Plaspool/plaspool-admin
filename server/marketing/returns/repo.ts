@@ -519,8 +519,9 @@ export interface CreateReturnInput extends Clocked {
    * Absent is legal for the admin path and means "out of area": a phone-in from
    * out of town is a real request, and it lands in the switcher's footer where
    * it can be closed with a reason. It can never be AWARDED —
-   * `marketing_return_requests_area_award_ck` sees to that — which is why the
-   * public intake requires one and the route, not this function, enforces that.
+   * `marketing_return_requests_area_award_ck` sees to that — which is why a
+   * customer's own intake requires one and the route, not this function,
+   * enforces that.
    */
   serviceAreaId?: string;
   /**
@@ -537,8 +538,8 @@ export interface CreateReturnInput extends Clocked {
   customerPhone?: string;
   pickupAddress?: string;
   note?: string;
-  /** `customer` for the public intake, `admin` for the staff dialog. It decides
-   *  who the first timeline entry is attributed to. */
+  /** `customer` for a shopper's own intake, `admin` for the staff dialog. It
+   *  decides who the first timeline entry is attributed to. */
   source: 'customer' | 'admin';
   actorId?: string | null;
 }
@@ -646,9 +647,10 @@ export async function createRequest(db: Db, input: CreateReturnInput): Promise<R
       : await requireServedArea(db, input.serviceAreaId);
 
   const id = newId(ID.return);
-  /* The public intake's first entry is the CUSTOMER's, the dialog's is staff's.
-   * A history that attributes every request to whoever happened to be signed in
-   * is a history that cannot answer "did they ask, or did we log it for them". */
+  /* A customer's own intake's first entry is the CUSTOMER's, the staff dialog's
+   * is staff's. A history that attributes every request to whoever happened to
+   * be signed in is a history that cannot answer "did they ask, or did we log
+   * it for them". */
   const actorType: ActorType = input.source === 'customer' ? 'customer' : 'admin';
 
   try {

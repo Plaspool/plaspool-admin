@@ -853,6 +853,29 @@ describe('a customer asking for their own return', () => {
     expect(res.status).toBe(400);
   });
 
+  it('REQUIRES a serviceAreaId, as a field error on the field', async () => {
+    /*
+     * MOVED FROM `server/marketing/areas/routes.test.ts` when
+     * `POST /returns/request` — the public form this used to drive — was
+     * retired. The asymmetry with the admin path is still the decision: a
+     * customer picks their district from a Select of served places, so a
+     * submission without one is a bypassed form rather than an unusual
+     * address, and a return the storefront accepted that could never be
+     * awarded is a promise the shop cannot keep. A shop session is now the
+     * only way to reach this requirement at all, which is why the test lives
+     * here rather than in the marketing suite (spec D9 — that suite may not
+     * import `server/shop/**`).
+     */
+    const customer = await signedInCustomer('no-area@example.test');
+    const res = await client.post(
+      '/api/marketing/me/returns',
+      body({ serviceAreaId: undefined }),
+      { headers: { cookie: customer.cookie } },
+    );
+    expect(res.status).toBe(400);
+    expect(await json(res)).toMatchObject({ error: 'bad_request', detail: 'serviceAreaId' });
+  });
+
   it('files the return against the session, folded, and answers the programme words', async () => {
     const customer = await signedInCustomer('Dara.Two@Example.Test');
     const res = await client.post('/api/marketing/me/returns', body(), {

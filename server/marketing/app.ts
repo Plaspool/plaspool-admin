@@ -164,9 +164,9 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
    *
    * THE ORDER OF THESE TWO DOES NOT MATTER, because they claim disjoint paths
    * (`/programs*` and `/settings`). Recorded because the next router along will
-   * not be so lucky: returns owns `/returns/request` AND `/returns/:id`, and
-   * Hono resolves two routers claiming one path by registration order — the
-   * public intake must register before the parameterised route or it is
+   * not be so lucky: returns owns `/returns/bulk` AND `/returns/:id`, and Hono
+   * resolves two routers claiming one path by registration order — the board's
+   * multi-select must register before the parameterised route or it is
    * swallowed by it (spec §Risks; A5 pins the order with its own test).
    */
   marketing.route('/', settingsRoutes);
@@ -184,15 +184,20 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
   marketing.route('/', areaRoutes);
 
   /*
-   * RETURNS — contract #4-14. The lifecycle, the queue that drives it, and the
-   * one PUBLIC route this sub-app has.
+   * RETURNS — contract #4-14. The lifecycle and the queue that drives it —
+   * every route in this router is `requireAuth`, staff only.
    *
    * IT MOUNTS AFTER THE OTHER TWO AND THE ORDER STILL DOES NOT MATTER, for the
    * reason above: `/returns*` is disjoint from `/programs*` and `/settings`.
    * What DOES matter is the order INSIDE that router, and it is settled there:
-   * `POST /returns/request` — the customer intake, the only unauthenticated
-   * route under this prefix — registers above every `/returns/:id` pattern, so
-   * a later `POST /returns/:id` cannot swallow it. `returns/routes.ts` pins it.
+   * `POST /returns/bulk` — the board's multi-select — registers above every
+   * `/returns/:id` pattern, because `bulk` is a legal value for `:id` and Hono
+   * resolves two patterns claiming one path by registration order.
+   * `returns/routes.ts` pins it.
+   *
+   * THE CUSTOMER'S OWN MUTATION IS NOT IN THIS ROUTER. A shopper asking for
+   * their own return posts to `/me/returns`, mounted separately below, under
+   * their shop session rather than under `requireAuth`'s staff one.
    */
   marketing.route('/', returnRoutes);
 
