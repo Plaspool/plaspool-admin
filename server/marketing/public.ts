@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { readQuery, toResponse } from '../middleware/errors';
 import { currentDb } from '../app-env';
 import { listPublicBanners } from './banners/repo';
+import { publicAreas } from './areas/repo';
 import type { AppEnv } from '../app-env';
 import type { Db } from '../db/client';
 
@@ -235,6 +236,23 @@ export function createMarketingPublicRoutes(deps: MarketingPublicDeps = {}): Hon
   routes.get(`${PREFIX}/rewards`, async (c) => {
     const program = await readPublicRewards(currentDb(c));
     return send({ program }, MARKETING_CACHE.rewards);
+  });
+
+  /**
+   * The districts collection actually runs in — the district Select on the
+   * storefront's return form, as data.
+   *
+   * IN THIS CACHEABLE ROUTER RATHER THAN BESIDE `/me/returns`, because it is a
+   * cookieless read that every shopper gets the same answer to, and this router's
+   * whole charter is exactly that. The MUTATION stays where a mutation belongs.
+   *
+   * ON THE REWARDS TTL, NOT THE BANNERS ONE. An area is switched on by somebody
+   * on a config screen, which is the same kind of deliberate act as renaming a
+   * programme — not a scheduled event an operator is waiting to see appear.
+   */
+  routes.get(`${PREFIX}/areas`, async (c) => {
+    const areas = await publicAreas(currentDb(c));
+    return send({ areas }, MARKETING_CACHE.rewards);
   });
 
   return routes;

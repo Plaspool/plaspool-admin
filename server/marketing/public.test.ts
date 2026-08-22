@@ -41,7 +41,7 @@ import { sql } from 'drizzle-orm';
 import { SEED_PASSWORD, freshDb } from '../test/harness';
 import { httpClient, json } from '../test/http';
 import { deriveBannerStatus } from '../../shared/marketing/banners';
-import { createMarketingPublicRoutes } from './public';
+import { MARKETING_CACHE, createMarketingPublicRoutes } from './public';
 import { listPublicBanners } from './banners/repo';
 import type { TestCtx } from '../test/harness';
 import type { HttpClient } from '../test/http';
@@ -657,5 +657,41 @@ describe('GET /api/public/marketing/rewards', () => {
      */
     await settings({ defaultReturnProgramId: goodwill.id });
     expect((await rewards()).program).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------- areas
+
+describe('GET /api/public/marketing/areas', () => {
+  /** A served district. Areas ship INACTIVE (0012's default), so one is
+   *  switched on here — the same shape `server/shop/composition.test.ts` uses
+   *  for its customer-returns suite, and for the same reason: the intake route
+   *  requires a `serviceAreaId` that resolves to something ACTIVE. */
+  beforeAll(async () => {
+    await ctx.db.execute(sql`
+      UPDATE marketing_service_areas SET active = true
+       WHERE id = (SELECT id FROM marketing_service_areas ORDER BY id LIMIT 1)`);
+  });
+
+  it('lists served areas, active only, grouped-ready by region', async () => {
+    const res = await anon.get(`${PUBLIC}/areas`);
+    expect(res.status).toBe(200);
+
+    const body = await json<{ areas: { id: string; region: string; name: string }[] }>(res);
+    expect(body.areas.length).toBeGreaterThan(0);
+    expect(body.areas.every((a) => a.id && a.region && a.name)).toBe(true);
+  });
+
+  it('omits an area that is switched off', async () => {
+    await ctx.db.execute(sql`UPDATE marketing_service_areas SET active = false`);
+    const res = await anon.get(`${PUBLIC}/areas`);
+    const body = await json<{ areas: unknown[] }>(res);
+    expect(body.areas).toEqual([]);
+  });
+
+  it('is cacheable and cross-origin readable, like its two siblings', async () => {
+    const res = await anon.get(`${PUBLIC}/areas`);
+    expect(res.headers.get('cache-control')).toBe(MARKETING_CACHE.rewards);
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
   });
 });
