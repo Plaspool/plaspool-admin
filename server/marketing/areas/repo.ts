@@ -232,6 +232,30 @@ export async function servedNames(db: Db): Promise<string[]> {
   return res.rows.map((row) => String(row.name));
 }
 
+/** The public projection — what a shopper's district Select is built from.
+ *
+ *  NOT `servedNames` WITH MORE COLUMNS. That one answers the OutsideServiceArea
+ *  error's "here are the places that work", which is prose; this one answers a
+ *  form control, which needs the id to submit and the region to group by. They
+ *  drift apart the moment either grows a filter, so they are two functions. */
+export interface PublicArea {
+  id: string;
+  region: string;
+  name: string;
+}
+
+export async function publicAreas(db: Db): Promise<PublicArea[]> {
+  const res = await db.execute(sql`
+    SELECT id, region, name FROM marketing_service_areas
+     WHERE active
+     ORDER BY region ASC, sort_order ASC, id ASC`);
+  return res.rows.map((row) => ({
+    id: String(row.id),
+    region: String(row.region),
+    name: String(row.name),
+  }));
+}
+
 /**
  * Fold a token the way a person types it: case and punctuation out, letters and
  * digits left.

@@ -519,16 +519,27 @@ export interface CreateReturnInput extends Clocked {
    * Absent is legal for the admin path and means "out of area": a phone-in from
    * out of town is a real request, and it lands in the switcher's footer where
    * it can be closed with a reason. It can never be AWARDED —
-   * `marketing_return_requests_area_award_ck` sees to that — which is why the
-   * public intake requires one and the route, not this function, enforces that.
+   * `marketing_return_requests_area_award_ck` sees to that — which is why a
+   * customer's own intake requires one and the route, not this function,
+   * enforces that.
    */
   serviceAreaId?: string;
+  /**
+   * The shop's customer id, when the request came from a signed-in shopper.
+   *
+   * NULLABLE AND NO FK, exactly as the column is: it belongs to another
+   * subsystem, and `customer_email` remains the key everything joins on. This
+   * is carried so a later account-merge backfill has something to work from,
+   * and so an admin looking at a request can tell "they asked, signed in" from
+   * "we logged it for them" without inferring it from `source`.
+   */
+  customerId?: string;
   customerName?: string;
   customerPhone?: string;
   pickupAddress?: string;
   note?: string;
-  /** `customer` for the public intake, `admin` for the staff dialog. It decides
-   *  who the first timeline entry is attributed to. */
+  /** `customer` for a shopper's own intake, `admin` for the staff dialog. It
+   *  decides who the first timeline entry is attributed to. */
   source: 'customer' | 'admin';
   actorId?: string | null;
 }
@@ -636,9 +647,10 @@ export async function createRequest(db: Db, input: CreateReturnInput): Promise<R
       : await requireServedArea(db, input.serviceAreaId);
 
   const id = newId(ID.return);
-  /* The public intake's first entry is the CUSTOMER's, the dialog's is staff's.
-   * A history that attributes every request to whoever happened to be signed in
-   * is a history that cannot answer "did they ask, or did we log it for them". */
+  /* A customer's own intake's first entry is the CUSTOMER's, the staff dialog's
+   * is staff's. A history that attributes every request to whoever happened to
+   * be signed in is a history that cannot answer "did they ask, or did we log
+   * it for them". */
   const actorType: ActorType = input.source === 'customer' ? 'customer' : 'admin';
 
   try {
@@ -651,8 +663,8 @@ export async function createRequest(db: Db, input: CreateReturnInput): Promise<R
     const res = await db.execute(sql`
       WITH ins AS (
         INSERT INTO marketing_return_requests
-          (id, program_id, customer_email, customer_name, customer_phone, pickup_address,
-           qty_declared, points_per_unit_snapshot, source, service_area_id,
+          (id, program_id, customer_email, customer_id, customer_name, customer_phone,
+           pickup_address, qty_declared, points_per_unit_snapshot, source, service_area_id,
            created_at, updated_at)
         ${
           /*
@@ -664,14 +676,14 @@ export async function createRequest(db: Db, input: CreateReturnInput): Promise<R
            * the same approach to its optional CTEs and for the same reason.
            */
           area === null
-            ? sql`VALUES (${id}, ${program.id}, ${email}, ${input.customerName ?? null},
-                    ${input.customerPhone ?? null}, ${address(input.pickupAddress) ?? null},
-                    ${input.qtyDeclared}, ${pointsPerUnit}, ${input.source}, NULL,
-                    ${input.now}, ${input.now})`
-            : sql`SELECT ${id}, ${program.id}, ${email}, ${input.customerName ?? null},
-                    ${input.customerPhone ?? null}, ${address(input.pickupAddress) ?? null},
-                    ${input.qtyDeclared}, ${pointsPerUnit}, ${input.source}, a.id,
-                    ${input.now}, ${input.now}
+            ? sql`VALUES (${id}, ${program.id}, ${email}, ${input.customerId ?? null},
+                    ${input.customerName ?? null}, ${input.customerPhone ?? null},
+                    ${address(input.pickupAddress) ?? null}, ${input.qtyDeclared},
+                    ${pointsPerUnit}, ${input.source}, NULL, ${input.now}, ${input.now})`
+            : sql`SELECT ${id}, ${program.id}, ${email}, ${input.customerId ?? null},
+                    ${input.customerName ?? null}, ${input.customerPhone ?? null},
+                    ${address(input.pickupAddress) ?? null}, ${input.qtyDeclared},
+                    ${pointsPerUnit}, ${input.source}, a.id, ${input.now}, ${input.now}
                     FROM marketing_service_areas a
                    WHERE a.id = ${area.id} AND a.active`
         }

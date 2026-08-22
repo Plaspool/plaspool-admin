@@ -11,6 +11,7 @@ import type { PointsCustomerResolver } from './ledger/customer';
 import { createNotifyRoutes } from './notify/routes';
 import { routes as programRoutes } from './programs/routes';
 import { routes as returnRoutes } from './returns/routes';
+import { createCustomerReturnRoutes } from './returns/customer';
 import { routes as settingsRoutes } from './settings/routes';
 import { routes as summaryRoutes } from './summary/routes';
 import type { AppEnv } from '../app-env';
@@ -163,9 +164,9 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
    *
    * THE ORDER OF THESE TWO DOES NOT MATTER, because they claim disjoint paths
    * (`/programs*` and `/settings`). Recorded because the next router along will
-   * not be so lucky: returns owns `/returns/request` AND `/returns/:id`, and
-   * Hono resolves two routers claiming one path by registration order — the
-   * public intake must register before the parameterised route or it is
+   * not be so lucky: returns owns `/returns/bulk` AND `/returns/:id`, and Hono
+   * resolves two routers claiming one path by registration order — the board's
+   * multi-select must register before the parameterised route or it is
    * swallowed by it (spec §Risks; A5 pins the order with its own test).
    */
   marketing.route('/', settingsRoutes);
@@ -183,15 +184,20 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
   marketing.route('/', areaRoutes);
 
   /*
-   * RETURNS — contract #4-14. The lifecycle, the queue that drives it, and the
-   * one PUBLIC route this sub-app has.
+   * RETURNS — contract #4-14. The lifecycle and the queue that drives it —
+   * every route in this router is `requireAuth`, staff only.
    *
    * IT MOUNTS AFTER THE OTHER TWO AND THE ORDER STILL DOES NOT MATTER, for the
    * reason above: `/returns*` is disjoint from `/programs*` and `/settings`.
    * What DOES matter is the order INSIDE that router, and it is settled there:
-   * `POST /returns/request` — the customer intake, the only unauthenticated
-   * route under this prefix — registers above every `/returns/:id` pattern, so
-   * a later `POST /returns/:id` cannot swallow it. `returns/routes.ts` pins it.
+   * `POST /returns/bulk` — the board's multi-select — registers above every
+   * `/returns/:id` pattern, because `bulk` is a legal value for `:id` and Hono
+   * resolves two patterns claiming one path by registration order.
+   * `returns/routes.ts` pins it.
+   *
+   * THE CUSTOMER'S OWN MUTATION IS NOT IN THIS ROUTER. A shopper asking for
+   * their own return posts to `/me/returns`, mounted separately below, under
+   * their shop session rather than under `requireAuth`'s staff one.
    */
   marketing.route('/', returnRoutes);
 
@@ -228,6 +234,24 @@ export function marketingApp(deps: MarketingAppDeps = {}): Hono<AppEnv> {
   marketing.route(
     '/',
     createCustomerPointsRoutes({ customer: deps.customer, cors: deps.cors }),
+  );
+
+  /*
+   * A CUSTOMER ASKING FOR THEIR OWN RETURN — `/me/returns` and its list.
+   *
+   * MOUNTED BESIDE `/me/points` AND DISJOINT FROM IT: `/me/returns*` shares no
+   * prefix with `/me/points*`, `/customers*` or `/adjustments`, so registration
+   * order is not load-bearing here either.
+   *
+   * THE SAME TWO PORTS, THE SAME REASON (spec D9). `deps.customer` is now typed
+   * `{ id, email } | null` — widened in `./ledger/customer.ts` for exactly this
+   * router, which keys a written row by customer id where `/me/points` never
+   * needed one. `deps.cors` is Cart's `shopCors()` again, scoped by the
+   * receiving router to `/me/returns/*` rather than applied at this app's root.
+   */
+  marketing.route(
+    '/',
+    createCustomerReturnRoutes({ customer: deps.customer, cors: deps.cors }),
   );
 
   /*

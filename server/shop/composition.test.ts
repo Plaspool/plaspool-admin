@@ -792,3 +792,244 @@ describe('admin#2 — the customer points seam', () => {
     expect(res.headers.get('access-control-allow-credentials')).toBeNull();
   });
 });
+
+// ============================================================================
+// A CUSTOMER FILING THEIR OWN RETURN — /me/returns
+// ============================================================================
+
+describe('a customer asking for their own return', () => {
+  /** A served district. Areas ship INACTIVE (0012), so one is switched on here. */
+  let servedAreaId: string;
+
+  beforeAll(async () => {
+    const res = await ctx.db.execute(sql`
+      UPDATE marketing_service_areas SET active = true
+       WHERE id = (SELECT id FROM marketing_service_areas ORDER BY id LIMIT 1)
+       RETURNING id`);
+    servedAreaId = String(res.rows[0]!.id);
+  });
+
+  /* `5`, NOT `4`, AND THE NUMBER IS LOAD-BEARING. The seeded default programme
+     (`spool-return`, migration 0011) sets `min_units_per_return = 5`, so a 4
+     here is a `below_minimum` 400 and every 201 assertion below fails for a
+     reason that has nothing to do with what is under test. */
+  const body = (over: Record<string, unknown> = {}) => ({
+    qtyDeclared: 5,
+    phone: '08030000000',
+    pickupAddress: '1 Test Road',
+    serviceAreaId: servedAreaId,
+    ...over,
+  });
+
+  it('401s a caller with no session', async () => {
+    const res = await client.post('/api/marketing/me/returns', body());
+    expect(res.status).toBe(401);
+  });
+
+  it('gives the body no way to name an address', async () => {
+    /* THE SECURITY PROPERTY. `.strict()` means an unknown key is a 400, so a
+       request that tries to file against somebody else is REFUSED rather than
+       silently ignored — the mistake cannot be made quietly. */
+    const customer = await signedInCustomer('dara@example.test');
+    const res = await client.post(
+      '/api/marketing/me/returns',
+      body({ email: 'victim@example.test' }),
+      { headers: { cookie: customer.cookie } },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('refuses a qtyDeclared past what the column can hold, 400 not 500', async () => {
+    /* `2_147_483_648` is one past `INT4_MAX`. `qty_declared` is `integer`
+       (migration 0011), so an uncapped body schema lets a shopper 500 the
+       route with an ordinary-looking number — Postgres answers SQLSTATE 22003,
+       which is not on the §8 table and falls through to a bare 500. */
+    const customer = await signedInCustomer('overflow@example.test');
+    const res = await client.post(
+      '/api/marketing/me/returns',
+      body({ qtyDeclared: 2_147_483_648 }),
+      { headers: { cookie: customer.cookie } },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('REQUIRES a serviceAreaId, as a field error on the field', async () => {
+    /*
+     * MOVED FROM `server/marketing/areas/routes.test.ts` when
+     * `POST /returns/request` — the public form this used to drive — was
+     * retired. The asymmetry with the admin path is still the decision: a
+     * customer picks their district from a Select of served places, so a
+     * submission without one is a bypassed form rather than an unusual
+     * address, and a return the storefront accepted that could never be
+     * awarded is a promise the shop cannot keep. A shop session is now the
+     * only way to reach this requirement at all, which is why the test lives
+     * here rather than in the marketing suite (spec D9 — that suite may not
+     * import `server/shop/**`).
+     */
+    const customer = await signedInCustomer('no-area@example.test');
+    const res = await client.post(
+      '/api/marketing/me/returns',
+      body({ serviceAreaId: undefined }),
+      { headers: { cookie: customer.cookie } },
+    );
+    expect(res.status).toBe(400);
+    expect(await json(res)).toMatchObject({ error: 'bad_request', detail: 'serviceAreaId' });
+  });
+
+  it('files the return against the session, folded, and answers the programme words', async () => {
+    const customer = await signedInCustomer('Dara.Two@Example.Test');
+    const res = await client.post('/api/marketing/me/returns', body(), {
+      headers: { cookie: customer.cookie },
+    });
+    expect(res.status).toBe(201);
+
+    const answered = await json<{
+      requestId: string;
+      qtyDeclared: number;
+      program: Record<string, unknown>;
+    }>(res);
+    /*
+     * KEY-SET EQUALITY, NOT VALUE EQUALITY. A key added here is a key the
+     * storefront may start depending on, and one dropped is a sentence it
+     * cannot finish — the pin the retired public intake carried, restored here
+     * for its replacement rather than a value assertion that only proves one
+     * field is truthy.
+     */
+    expect(Object.keys(answered).sort()).toEqual(['program', 'qtyDeclared', 'requestId']);
+    expect(Object.keys(answered.program).sort()).toEqual([
+      'minUnitsPerReturn',
+      'name',
+      'pointsLabelPlural',
+      'pointsLabelSingular',
+      'pointsPerUnit',
+      'unitLabelPlural',
+      'unitLabelSingular',
+    ]);
+
+    const row = await ctx.db.execute(sql`
+      SELECT customer_email, customer_id, source FROM marketing_return_requests
+       WHERE id = ${answered.requestId}`);
+    expect(row.rows[0]!.customer_email).toBe('dara.two@example.test');
+    expect(row.rows[0]!.customer_id).toBe(customer.id);
+    expect(row.rows[0]!.source).toBe('customer');
+  });
+
+  it('normalises a blank optional name to absent, not a stored empty string', async () => {
+    /*
+     * MINOR: the retired public intake used `optionalText()` precisely so a
+     * plain HTML form's untouched optional input — `{"name": ""}` — would not
+     * 400. A bare `.optional()` here would refuse it instead, with no field for
+     * the storefront to land the error beside.
+     */
+    const customer = await signedInCustomer('blank.name@example.test');
+    const res = await client.post('/api/marketing/me/returns', body({ name: '' }), {
+      headers: { cookie: customer.cookie },
+    });
+    expect(res.status).toBe(201);
+
+    const answered = await json<{ requestId: string }>(res);
+    const row = await ctx.db.execute(sql`
+      SELECT customer_name FROM marketing_return_requests
+       WHERE id = ${answered.requestId}`);
+    expect(row.rows[0]!.customer_name).toBeNull();
+  });
+
+  it('lists one shopper their own returns and nobody else in them', async () => {
+    const customer = await signedInCustomer('lister@example.test');
+    await client.post('/api/marketing/me/returns', body(), {
+      headers: { cookie: customer.cookie },
+    });
+
+    const res = await client.get('/api/marketing/me/returns', {
+      headers: { cookie: customer.cookie },
+    });
+    expect(res.status).toBe(200);
+
+    const page = await json<{ items: Record<string, unknown>[] }>(res);
+    expect(page.items).toHaveLength(1);
+    /*
+     * KEY-SET EQUALITY ON THE ITEM. Not `driverName` alone asserted truthy —
+     * the full projection, so a widened row (`driverPhone`, `revision`) fails
+     * here instead of shipping. NOT `driverPhone`: a shopper is told who is
+     * coming, not how to ring them directly. NOT `revision`: that is a
+     * concurrency token for a screen that can write, and this one cannot.
+     */
+    expect(Object.keys(page.items[0]!).sort()).toEqual([
+      'createdAt',
+      'driverName',
+      'id',
+      'pickupScheduledAt',
+      'pointsAwarded',
+      'qtyAccepted',
+      'qtyDeclared',
+      'status',
+    ]);
+
+    /* The other half: somebody else's return is not in it. Filed by a second
+       signed-in customer rather than inserted raw, so this exercises the same
+       path it is asserting about. */
+    const other = await signedInCustomer('other@example.test');
+    await client.post('/api/marketing/me/returns', body(), {
+      headers: { cookie: other.cookie },
+    });
+    const again = await json<{ items: { id: string }[] }>(
+      await client.get('/api/marketing/me/returns', { headers: { cookie: customer.cookie } }),
+    );
+    expect(again.items).toHaveLength(1);
+  });
+
+  /**
+   * THE CORS ASSERTIONS, mirroring `/me/points`' own above — on headers,
+   * deliberately. CLAUDE.md §2 records this exact gap shipping three times
+   * (reviews, payments, orders), a green suite every time, because a
+   * server-side request never enforces CORS.
+   */
+  it('answers the PREFLIGHT, not a 404 — both the response and the preflight are asserted', async () => {
+    /*
+     * CRITICAL, whole-branch review round: `OPTIONS /api/marketing/me/returns`
+     * 404'd — no `.options()` handler existed under `/me/returns` at all, so a
+     * cross-origin `POST` with `content-type: application/json` and
+     * `credentials: 'include'` never left the browser. The 404 status, and the
+     * absent `allow-methods`/`allow-headers` it carried, each independently
+     * fail a preflight; either alone would have been enough to break this.
+     */
+    const res = await client.request('/api/marketing/me/returns', {
+      method: 'OPTIONS',
+      headers: { origin: TEST_ORIGIN },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-methods')).toContain('POST');
+    expect(res.headers.get('access-control-allow-headers')).toBe('content-type');
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+  });
+
+  it('SETS access-control-allow-credentials on the list response', async () => {
+    const customer = await signedInCustomer('cors.list@example.test');
+    const res = await client.get('/api/marketing/me/returns', {
+      headers: { cookie: customer.cookie, origin: TEST_ORIGIN },
+    });
+
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    expect(res.headers.get('access-control-allow-origin')).toBe(TEST_ORIGIN);
+  });
+
+  it('SETS them on the 201 too, not only on reads', async () => {
+    const customer = await signedInCustomer('cors.post@example.test');
+    const res = await client.post('/api/marketing/me/returns', body(), {
+      headers: { cookie: customer.cookie },
+    });
+    expect(res.status).toBe(201);
+
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    expect(res.headers.get('access-control-allow-origin')).toBe(TEST_ORIGIN);
+  });
+
+  it('SETS access-control-allow-credentials on the 401 as well, or the browser hides the reason', async () => {
+    const res = await client.get('/api/marketing/me/returns', {
+      headers: { origin: TEST_ORIGIN },
+    });
+
+    expect(res.status).toBe(401);
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+  });
+});

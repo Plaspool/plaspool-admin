@@ -5,10 +5,10 @@
  * middleware, marketing's own `onError`, the global error handler — because the
  * seam between the state machine and HTTP is what this task adds and therefore
  * where its defects are. `repo.test.ts` already proves the transitions; what is
- * only provable here is the route ORDER, the guard that is attached per route
- * (and the one route that deliberately has none), the keyset pager, the counts
- * sidecar, and the exact JSON each domain error becomes — including the re-read
- * request every 409 carries so a screen can heal without a second fetch.
+ * only provable here is the route ORDER, the guard that is attached per route,
+ * the keyset pager, the counts sidecar, and the exact JSON each domain error
+ * becomes — including the re-read request every 409 carries so a screen can
+ * heal without a second fetch.
  *
  * NO NOUN FROM THE SEEDED PRESET APPEARS IN THIS FILE (spec D11). Every fixture
  * uses absurd labels — "Bottle Cap" / "canister" — and the suite installs its
@@ -20,7 +20,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { SEED_PASSWORD, freshDb } from '../../test/harness';
 import { httpClient, json } from '../../test/http';
-import { INTAKE_EMAIL_LIMIT, INTAKE_IP_LIMIT } from './routes';
 import type { TestCtx } from '../../test/harness';
 import type { HttpClient } from '../../test/http';
 import type { AuthUser } from '../../../shared/types';
@@ -222,7 +221,7 @@ afterAll(async () => {
 
 // --------------------------------------------------------- mount and guards
 
-describe('mounting, the guards, and the one route that has none', () => {
+describe('mounting and the guards — every route here is requireAuth', () => {
   it('answers 401 without a session on every admin route', async () => {
     expect((await anon.get(`${API}/returns`)).status).toBe(401);
     expect((await anon.get(`${API}/returns/ret_x`)).status).toBe(401);
@@ -272,10 +271,9 @@ describe('mounting, the guards, and the one route that has none', () => {
 
   it('answers 404 for an unrouted path under the prefix, not 401', async () => {
     /*
-     * The reason the guards are attached PER ROUTE. A blanket
-     * `routes.use('*', requireAuth())` would answer 401 here — the guard would
-     * refuse a request that had no handler to reach — and would ALSO close the
-     * public intake, which is the one route in this file that must stay open.
+     * The reason the guards are attached PER ROUTE rather than as a blanket
+     * `routes.use('*', requireAuth())`: that would answer 401 here — the guard
+     * would run and refuse a request that had no handler to reach at all.
      */
     const missing = await owner.get(`${API}/returns/ret_x/nothing-here`);
     expect(missing.status).toBe(404);
@@ -289,207 +287,48 @@ describe('mounting, the guards, and the one route that has none', () => {
   });
 });
 
-// ------------------------------------------------------------ public intake
+// ------------------------------------------------------- the retired intake
 
-describe('the public intake — contract #6', () => {
-  /** Its own IP per test, so one test's budget cannot exhaust another's. */
-  const fromIp = (ip: string) => ({ headers: { 'x-real-ip': ip } });
-
+describe('the public intake, now retired — contract #6', () => {
   it('is registered ABOVE every parameterised returns route', async () => {
     /*
-     * THE ROUTE-ORDER PIN, and it has to be a claim about the TABLE rather than
-     * about a response: nothing collides today (there is no `POST /returns/:id`
-     * for `request` to be swallowed by), so a behavioural test would stay green
-     * through the reordering it exists to prevent. Hono resolves two patterns
-     * claiming one path by registration order, and `request` is a legal value
-     * for `:id` — so the day somebody adds that route, this is what fails
-     * instead of every storefront submission answering `gone`.
+     * THE ROUTE-ORDER PIN, RETARGETED TO `bulk` NOW THAT THE INTAKE IS GONE —
+     * still a claim about the TABLE rather than about a response, because a
+     * behavioural test would stay green through the reordering it exists to
+     * prevent. Hono resolves two patterns claiming one path by registration
+     * order, and `bulk` is a legal value for `:id`, exactly as `request` was —
+     * so the day somebody adds `POST /returns/:id`, this is what fails instead
+     * of every board selection answering `gone`.
      */
     const posts = owner.app.routes
       .filter((r) => r.method === 'POST' && r.path.startsWith(`${API}/returns`))
       .map((r) => r.path);
 
-    const intake = posts.indexOf(`${API}/returns/request`);
+    const bulk = posts.indexOf(`${API}/returns/bulk`);
     const firstParam = posts.findIndex((p) => p.includes(':id'));
-    expect(intake).toBeGreaterThanOrEqual(0);
+    expect(bulk).toBeGreaterThanOrEqual(0);
     expect(firstParam).toBeGreaterThanOrEqual(0);
-    expect(intake).toBeLessThan(firstParam);
+    expect(bulk).toBeLessThan(firstParam);
   });
 
-  it('creates a return with no session at all, and answers in the program\'s own words', async () => {
-    const email = nextEmail();
-    const res = await anon.post(
-      `${API}/returns/request`,
-      { email, qtyDeclared: 6, name: 'Dara', phone: '0801', pickupAddress: '4 Awolowo Road', serviceAreaId: AREA },
-      fromIp('198.51.100.1'),
-    );
-    expect(res.status).toBe(201);
-
-    const body = await json<{ requestId: string; qtyDeclared: number; program: Record<string, unknown> }>(res);
-    expect(body.requestId.startsWith('ret_')).toBe(true);
-    expect(body.qtyDeclared).toBe(6);
-
-    /*
-     * LABEL-COMPLETE, so the storefront renders its confirmation entirely out
-     * of config — the never-hardcode guarantee, public edition. Asserted by
-     * EQUALITY: a key added here is a key the storefront may start depending
-     * on, and one dropped is a sentence it cannot finish.
-     */
-    expect(body.program).toEqual({
-      name: 'Cap Returns',
-      pointsLabelSingular: 'Bottle Cap',
-      pointsLabelPlural: 'Bottle Caps',
-      unitLabelSingular: 'canister',
-      unitLabelPlural: 'canisters',
-      pointsPerUnit: 7,
-      minUnitsPerReturn: 4,
+  /**
+   * THE RETIRED INTAKE. It was the one unauthenticated write in this subsystem and
+   * it had no caller: the storefront asks on `/api/marketing/me/returns`, where a
+   * session names the customer.
+   *
+   * It is gone rather than merely unused because it was a griefing primitive: any
+   * stranger could POST a known address, and `marketing_return_requests_open_uq`
+   * would then make that customer's own request fail with `return_already_open`.
+   * Rate-limited and cancellable, so low severity — but nothing depended on it.
+   */
+  it('is gone, and answers marketing\'s own 404 rather than 405', async () => {
+    const res = await anon.post(`${API}/returns/request`, {
+      email: 'someone@example.test',
+      qtyDeclared: 4,
+      serviceAreaId: 'anything',
     });
-
-    // Nothing internal travelled with it.
-    expect(Object.keys(body).sort()).toEqual(['program', 'qtyDeclared', 'requestId']);
-
-    // And the row is real, attributed to the CUSTOMER rather than to staff.
-    const detail = await json<Detail>(await owner.get(`${API}/returns/${body.requestId}`));
-    expect(detail.request.customerEmail).toBe(email);
-    /* THE RENAME, asserted with values rather than with nulls: this body spells
-     * them `name`/`phone` while the row spells them `customerName`/
-     * `customerPhone`, and a hand-written mapping between two pairs of
-     * same-typed strings is exactly the kind that can be swapped without any
-     * shape assertion noticing. */
-    expect(detail.request.customerName).toBe('Dara');
-    expect(detail.request.customerPhone).toBe('0801');
-    /* Attributed to the CUSTOMER: a history that credited every request to
-     * whoever happened to be signed in could not answer "did they ask, or did
-     * we log it for them". */
-    expect(detail.request.source).toBe('customer');
-    expect(detail.events[0]).toMatchObject({ type: 'requested', actorType: 'customer', actorId: null });
-  });
-
-  it('refuses a fourth request for one address with 429 and a Retry-After', async () => {
-    const email = nextEmail();
-    const ip = '198.51.100.2';
-    const send = () =>
-      anon.post(`${API}/returns/request`, { email, qtyDeclared: 5, serviceAreaId: AREA }, fromIp(ip));
-
-    expect((await send()).status).toBe(201);
-    // The second and third are refused by the OPEN-RETURN index, and they still
-    // spend budget: a limiter that only counted successes would let a loop
-    // hammer the create path for free.
-    expect((await send()).status).toBe(409);
-    expect((await send()).status).toBe(409);
-    expect(INTAKE_EMAIL_LIMIT).toBe(3);
-
-    const limited = await send();
-    expect(limited.status).toBe(429);
-    // The HEADER as well as the body: the storefront's countdown reads it, and
-    // it is set by the shared `toResponse` — which is why `rate_limited` must
-    // fall through marketing's own renderer rather than be re-rendered by it.
-    expect(Number(limited.headers.get('retry-after'))).toBeGreaterThan(0);
-    expect(await json(limited)).toMatchObject({ error: 'rate_limited' });
-  });
-
-  it('bounds one host with the IP budget, and spends it before the body is read', async () => {
-    /*
-     * THE OTHER BUCKET, and a per-email budget cannot stand in for it: thirty
-     * addresses from one host spend thirty separate email budgets and none of
-     * their own, so without this the create path is a free loop for anybody
-     * willing to vary the address.
-     *
-     * Driven with an INVALID body ON PURPOSE. The IP limiter is registered
-     * ABOVE `readJson`, so a request refused by the schema has already cost
-     * budget — which is the whole reason it sits there ("a limiter cannot bound
-     * work that runs after it"). Move it below the parse and this loop becomes
-     * free, and the 429 below becomes a 201.
-     */
-    const ip = '203.0.113.7';
-    for (let i = 0; i < INTAKE_IP_LIMIT; i += 1) {
-      expect((await anon.post(`${API}/returns/request`, { nope: true }, fromIp(ip))).status).toBe(400);
-    }
-
-    const limited = await anon.post(
-      `${API}/returns/request`,
-      { email: nextEmail(), qtyDeclared: 4, serviceAreaId: AREA },
-      fromIp(ip),
-    );
-    expect(limited.status).toBe(429);
-    expect(Number(limited.headers.get('retry-after'))).toBeGreaterThan(0);
-
-    // Keyed on the HOST and not globally: the office behind the next NAT is
-    // untouched, which is the difference between a rate limit and an outage.
-    const elsewhere = await anon.post(
-      `${API}/returns/request`,
-      { email: nextEmail(), qtyDeclared: 4, serviceAreaId: AREA },
-      fromIp('203.0.113.8'),
-    );
-    expect(elsewhere.status).toBe(201);
-  });
-
-  it('is refused cross-origin — that is what stands where the session would be', async () => {
-    /*
-     * The one route in this subsystem with no `requireAuth` behind it, so the
-     * guard that replaces the session is pinned HERE rather than left to the
-     * generic middleware suite: `originGuard` is mounted above the whole
-     * sub-app (`server/index.ts`, well below the marketing mount), and this is
-     * the route whose entire safety argument rests on that being true.
-     *
-     * DEPLOY NOTE: the storefront's origin must be in `APP_ORIGINS`, or every
-     * customer submitting the form sees exactly this.
-     */
-    const res = await anon.post(
-      `${API}/returns/request`,
-      { email: nextEmail(), qtyDeclared: 4, serviceAreaId: AREA },
-      { headers: { origin: 'https://not-the-storefront.test', 'x-real-ip': '203.0.113.9' } },
-    );
-    expect(res.status).toBe(403);
-    expect(await json(res)).toMatchObject({ error: 'forbidden' });
-  });
-
-  it('carries the minimum in below_minimum, in the program\'s own words', async () => {
-    const res = await anon.post(
-      `${API}/returns/request`,
-      { email: nextEmail(), qtyDeclared: 2, serviceAreaId: AREA },
-      fromIp('198.51.100.3'),
-    );
-    expect(res.status).toBe(400);
-    expect(await json(res)).toMatchObject({
-      error: 'below_minimum',
-      detail: 'qtyDeclared',
-      min: 4,
-    });
-  });
-
-  it('treats a blank optional field as an absent one, not as an empty value', async () => {
-    /*
-     * A storefront form is plain HTML: an optional input nobody filled in posts
-     * `""`. Stored, that is not NULL — `pickup_address = ''` satisfies
-     * `schedule`'s "an address on the row or in the body" and sends a driver to
-     * a blank doorstep — and refused, it is a 400 for leaving an optional field
-     * alone.
-     */
-    const res = await anon.post(
-      `${API}/returns/request`,
-      { email: nextEmail(), qtyDeclared: 4, name: '', phone: '   ', pickupAddress: '', serviceAreaId: AREA },
-      fromIp('198.51.100.5'),
-    );
-    expect(res.status).toBe(201);
-
-    const { requestId } = await json<{ requestId: string }>(res);
-    const detail = await json<Detail>(await owner.get(`${API}/returns/${requestId}`));
-    expect(detail.request.customerName).toBeNull();
-    expect(detail.request.customerPhone).toBeNull();
-    expect(detail.request.pickupAddress).toBeNull();
-  });
-
-  it('takes no programId and no note — the storefront chooses neither', async () => {
-    for (const extra of [{ programId: capsProgramId }, { note: 'please hurry' }]) {
-      const res = await anon.post(
-        `${API}/returns/request`,
-        { email: nextEmail(), qtyDeclared: 4, serviceAreaId: AREA, ...extra },
-        fromIp('198.51.100.4'),
-      );
-      expect(res.status).toBe(400);
-      expect(await json(res)).toMatchObject({ error: 'bad_request' });
-    }
+    expect(res.status).toBe(404);
+    expect((await json<{ error: string }>(res)).error).toBe('gone');
   });
 });
 
@@ -572,6 +411,44 @@ describe('the admin intake — contract #5', () => {
       existingId: first.request.id,
       status: 'requested',
     });
+  });
+
+  /**
+   * TWO GUARANTEES THAT LOST THEIR ONLY ASSERTION WHEN THE RETIRED PUBLIC
+   * ROUTE'S TESTS WERE DELETED, RE-POINTED HERE AT THE ADMIN INTAKE — which
+   * parses the identical `optionalText()`-typed fields, so no new fixtures are
+   * needed.
+   *
+   * BLANK NORMALISES TO ABSENT. `repo.test.ts` asserts `null` for an ABSENT
+   * field, which is the repository's own normalisation and a different code
+   * path from this one; `/me/returns` cannot stand in either, because
+   * `customer.ts` deliberately uses `str().trim().min(1)`, so a blank there is
+   * a 400, not a transform. This is the only test anywhere driving a blank
+   * string through an HTTP route into `optionalText()`'s
+   * `.transform((value) => (value === '' ? undefined : value))` — deleting
+   * that transform today would otherwise pass the entire suite.
+   *
+   * A NUL IS REFUSED BEFORE THE TRANSFORM EVER RUNS. `server/nul-bytes.test.ts`'s
+   * `BODIES` map does not cover marketing routes, and the surviving NUL-byte
+   * test in this file drives `reason` on a cancel, whose `REASON` schema has no
+   * `.transform()` at all — so nothing else in the repository can fail if this
+   * ordering breaks. The `ZodString` NUL check running before the transform is
+   * the whole reason `str()` is a regex rather than a refinement.
+   */
+  it('treats a blank optional field as absent, and refuses a NUL in one before the transform runs', async () => {
+    const detail = await logReturn({ customerName: '', customerPhone: '   ', pickupAddress: '' });
+    expect(detail.request.customerName).toBeNull();
+    expect(detail.request.customerPhone).toBeNull();
+    expect(detail.request.pickupAddress).toBeNull();
+
+    const NUL = String.fromCharCode(0);
+    const res = await owner.post(`${API}/returns`, {
+      email: nextEmail(),
+      qtyDeclared: 4,
+      pickupAddress: `12 Allen${NUL} Avenue`,
+    });
+    expect(res.status).toBe(400);
+    expect(await json(res)).toMatchObject({ error: 'bad_request', detail: 'pickupAddress' });
   });
 });
 
@@ -1407,23 +1284,5 @@ describe('a NUL byte', () => {
     });
     expect(body.status).toBe(400);
     expect(await json(body)).toMatchObject({ error: 'bad_request' });
-
-    const intake = await anon.post(
-      `${API}/returns/request`,
-      { email: `a${NUL}b@example.test`, qtyDeclared: 4 },
-      { headers: { 'x-real-ip': '198.51.100.9' } },
-    );
-    expect(intake.status).toBe(400);
-
-    // Including the optional fields, whose schema ends in a `.transform()` —
-    // the NUL check is a `ZodString` rule and runs BEFORE it, which is the
-    // whole reason `str()` is a regex rather than a refinement.
-    const optional = await anon.post(
-      `${API}/returns/request`,
-      { email: nextEmail(), qtyDeclared: 4, pickupAddress: `12 Allen${NUL} Avenue` },
-      { headers: { 'x-real-ip': '198.51.100.9' } },
-    );
-    expect(optional.status).toBe(400);
-    expect(await json(optional)).toMatchObject({ error: 'bad_request', detail: 'pickupAddress' });
   });
 });

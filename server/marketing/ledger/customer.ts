@@ -46,10 +46,15 @@ import type { AppEnv } from '../../app-env';
  * `email` is nullable because `shop_customers.email` is: a customer row can
  * exist without one. A wallet cannot be found without an address, so this file
  * treats a null email the same as no session at all.
+ *
+ * `id` IS CARRIED FOR A SIBLING, NOT FOR THIS FILE. `MarketingAppDeps.customer`
+ * is ONE field feeding both this router and `../returns/customer.ts`'s
+ * `/me/returns`, which keys a written row by customer id — so the shared port
+ * widened to carry it, even though nothing below this line reads it.
  */
 export type PointsCustomerResolver = (
   c: Context<AppEnv>,
-) => Promise<{ email: string | null } | null>;
+) => Promise<{ id: string; email: string | null } | null>;
 
 /** The default: nobody is signed in, so every route below answers 401. */
 export const NO_POINTS_CUSTOMER: PointsCustomerResolver = () => Promise.resolve(null);

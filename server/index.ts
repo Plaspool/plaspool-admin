@@ -385,12 +385,13 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * cached and evolved with the marketing contract. Same mount, same guarantee,
    * separate ownership.
    *
-   * THE ONE PUBLIC MUTATION IS NOT IN IT. `POST /api/marketing/returns/request`
-   * — the customer asking for a pickup — sits in the marketing app below, under
-   * `originGuard` and a rate limit. A mutation inside a cacheable router puts
-   * "may be stored by a shared cache" and "writes a row" in one file, which is
-   * the confusion this split exists to prevent (see `createUnsubscribeRoutes`
-   * above, which makes the same argument from the other direction).
+   * THERE IS NO PUBLIC MUTATION IN IT. A customer asking for a pickup posts to
+   * `POST /api/marketing/me/returns`, under their own shop session, in the
+   * marketing app below — not a cookieless route, so never a candidate for
+   * this router. A mutation inside a cacheable router puts "may be stored by a
+   * shared cache" and "writes a row" in one file, which is the confusion this
+   * split exists to prevent (see `createUnsubscribeRoutes` above, which makes
+   * the same argument from the other direction).
    */
   app.route(API_PREFIX, createMarketingPublicRoutes());
 
@@ -559,11 +560,11 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
        * slides its expiry the same way on every customer-facing route.
        *
        * `shopCors()` IS SCOPED BY THE RECEIVING ROUTER TO `/me/points/*` AND
-       * NOTHING ELSE. It is passed rather than applied at the marketing app's
-       * root deliberately: that app is almost entirely operator routes, and
-       * giving them a credentialed cross-origin surface as a side effect of
-       * adding two customer ones is the widening `server/shop/orders/routes.ts`
-       * examined and refused to make.
+       * `/me/returns/*`, AND NOTHING ELSE. It is passed rather than applied at
+       * the marketing app's root deliberately: that app is almost entirely
+       * operator routes, and giving them a credentialed cross-origin surface as
+       * a side effect of adding the customer-facing ones is the widening
+       * `server/shop/orders/routes.ts` examined and refused to make.
        */
       customer: resolveShopCustomer,
       cors: shopCors<AppEnv>(),

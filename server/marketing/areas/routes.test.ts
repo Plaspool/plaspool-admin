@@ -282,9 +282,6 @@ describe('GET /areas — contract #6.1', () => {
 // --------------------------------------------------------------- the gate
 
 describe('the intake gate — outside_service_area', () => {
-  const fromIp = (ip: string) => ({ headers: { 'x-real-ip': ip } });
-  let ipSeq = 0;
-  const nextIp = () => `198.51.100.${(ipSeq += 1) % 200}`;
   let emailSeq = 0;
   const nextEmail = () => `dara-${(emailSeq += 1)}@example.test`;
 
@@ -410,35 +407,29 @@ describe('the intake gate — outside_service_area', () => {
     expect(body.outOfArea.open).toBe(1);
   });
 
-  it('REQUIRES an area from the public form, as a field error on the field', async () => {
+  /**
+   * `POST /returns/request` — the public form this test used to drive — is
+   * retired (`returns/routes.ts`); the customer's own requirement to name a
+   * district now lives on `/me/returns`'s `.strict()` body, which needs a shop
+   * session to reach. That test moved to `server/shop/composition.test.ts`,
+   * into the describe block a customer's own return already has — the one
+   * place a shop session is legal, and the only place left where the
+   * requirement can still be driven end to end.
+   */
+  it('gives the ADMIN intake the same 409, with the same list — the gate does not care who is asking', async () => {
     /*
-     * The asymmetry with the admin path is the decision: a customer picks their
-     * district from a Select of served places, so a submission without one is a
-     * bypassed form rather than an unusual address — and a return the storefront
-     * accepted that could never be awarded is a promise the shop cannot keep.
-     *
-     * A MISSING district and an UNSERVED one are different sentences: this is
-     * `bad_request` on the field, and the one above is the 409 that names where
-     * we do go.
+     * RE-POINTED FROM THE RETIRED PUBLIC FORM TO THE ADMIN INTAKE. `createRequest`
+     * calls `requireServedArea` whenever a `serviceAreaId` is supplied, regardless
+     * of which caller supplied it, so this is still a genuine exercise of the
+     * gate rather than a test standing in for one that no longer exists.
      */
     await makeArea(SERVED, 'Cabbage Quarter', true);
-    const res = await anon.post(
-      `${API}/returns/request`,
-      { email: nextEmail(), qtyDeclared: 6 },
-      fromIp(nextIp()),
-    );
-    expect(res.status).toBe(400);
-    expect(await json(res)).toMatchObject({ error: 'bad_request', detail: 'serviceAreaId' });
-  });
-
-  it('gives the public form the same 409, with the same list', async () => {
-    await makeArea(SERVED, 'Cabbage Quarter', true);
     await makeArea(OFF, 'Distant Marsh', false);
-    const res = await anon.post(
-      `${API}/returns/request`,
-      { email: nextEmail(), qtyDeclared: 6, serviceAreaId: OFF },
-      fromIp(nextIp()),
-    );
+    const res = await owner.post(`${API}/returns`, {
+      email: nextEmail(),
+      qtyDeclared: 6,
+      serviceAreaId: OFF,
+    });
     expect(res.status).toBe(409);
     const body = await json<{ error: string; served: string[] }>(res);
     expect(body.error).toBe('outside_service_area');
