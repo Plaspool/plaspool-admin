@@ -98,9 +98,11 @@ const AdminListQuery = z.object({
 /**
  * The intake is called by a BROWSER ON ANOTHER ORIGIN — the storefront — and
  * a cross-origin `POST` with a JSON body preflights. Nothing else in this
- * app answers a preflight, because nothing else needed one: the cacheable
- * public routers are GET-only (simple requests), and the returns intake has
- * no storefront caller yet. This is where that stops being deferrable.
+ * app answers a preflight, because nothing else needs one here: the cacheable
+ * public routers are GET-only (simple requests). The customer returns intake
+ * (`/me/returns`, `server/marketing/returns/customer.ts`) needed the identical
+ * treatment once its own storefront caller arrived, and answers its preflight
+ * the same hand-rolled way this route does, for the same reason.
  *
  * NOW THE SHARED `shopCors()` / `shopPreflight()` FROM `server/shop/cart/cors.ts`
  * (admin#26), NOT A HAND-ROLLED COPY. The hand-rolled `corsHeaders()` this

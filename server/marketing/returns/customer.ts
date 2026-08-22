@@ -5,6 +5,7 @@ import { sql } from 'drizzle-orm';
 import { UnauthenticatedError, readJson, str } from '../../middleware/errors';
 import { currentDb } from '../../app-env';
 import { createRequest, readReturn } from './repo';
+import { optionalText } from './routes';
 import type { AppEnv } from '../../app-env';
 
 /**
@@ -61,7 +62,12 @@ const Body = z
     phone: str().trim().min(1).max(200),
     pickupAddress: str().trim().min(1).max(1000),
     serviceAreaId: str().trim().min(1).max(200),
-    name: str().trim().min(1).max(200).optional(),
+    /* `optionalText(200)`, NOT a bare `.optional()` — a blank `name` is what an
+       untouched optional field on a plain HTML form posts, and refusing it
+       would be hostile to the one client that matters here. `./routes.ts`
+       carries the full argument; this reuses its `optionalText` rather than a
+       second copy. */
+    name: optionalText(200),
   })
   .strict();
 
@@ -74,6 +80,38 @@ export function createCustomerReturnRoutes(deps: CustomerReturnDeps = {}): Hono<
      "sign in" from "the server is down". `/me/returns/*` matches the bare
      `/me/returns` too; `../ledger/customer.ts` records that being measured. */
   if (deps.cors) routes.use('/me/returns/*', deps.cors);
+
+  /*
+   * THE PREFLIGHT ITSELF — a cross-origin `POST` with a JSON body, and
+   * `credentials: 'include'`, mandates one, exactly as it does for the reviews
+   * intake (`server/shop/reviews/routes.ts`, admin#26). BEFORE THIS, `OPTIONS
+   * /me/returns` 404'd: no handler existed for it at all, so a 404 status, and
+   * the absent `allow-methods`/`allow-headers` it carried, each independently
+   * failed the preflight and the browser refused the `POST` before sending it.
+   *
+   * HAND-ROLLED, NOT `shopPreflight` — mirroring the reviews intake's own
+   * choice, for the same reason stated there: `shopPreflight` answers every
+   * cart path with the identical fixed method list (`GET, POST, PATCH, PUT,
+   * DELETE`), and this route only ever accepts `GET` and `POST`, so reusing it
+   * would advertise three methods that 404 here. It is also the shape spec D9
+   * leaves open: `shopPreflight` lives in `server/shop/cart/cors.ts`, which
+   * this subsystem may not import — `deps.cors` above is already the injected
+   * substitute for the response half, and a second injected dependency for
+   * four lines of `c.body` is more seam than the reuse is worth.
+   *
+   * THE ORIGIN/CREDENTIALS HALF IS NOT HERE. `deps.cors`, registered above,
+   * runs on every method under `/me/returns/*` including this one — matched
+   * the same way `/me/returns/*` matches the bare `/me/returns` for the real
+   * routes below — and appends `access-control-allow-origin` /
+   * `-allow-credentials` after this handler's 204 comes back through it.
+   */
+  routes.options('/me/returns', (c) =>
+    c.body(null, 204, {
+      'access-control-allow-methods': 'GET, POST',
+      'access-control-allow-headers': 'content-type',
+      'access-control-max-age': '86400',
+    }),
+  );
 
   /** Whoever is asking, or a 401. A customer with no email is treated as no
    *  customer: returns are keyed by address and there is nothing to file against. */

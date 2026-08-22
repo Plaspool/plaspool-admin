@@ -883,8 +883,28 @@ describe('a customer asking for their own return', () => {
     });
     expect(res.status).toBe(201);
 
-    const answered = await json<{ requestId: string; program: { pointsPerUnit: number } }>(res);
-    expect(answered.program.pointsPerUnit).toBeGreaterThan(0);
+    const answered = await json<{
+      requestId: string;
+      qtyDeclared: number;
+      program: Record<string, unknown>;
+    }>(res);
+    /*
+     * KEY-SET EQUALITY, NOT VALUE EQUALITY. A key added here is a key the
+     * storefront may start depending on, and one dropped is a sentence it
+     * cannot finish — the pin the retired public intake carried, restored here
+     * for its replacement rather than a value assertion that only proves one
+     * field is truthy.
+     */
+    expect(Object.keys(answered).sort()).toEqual(['program', 'qtyDeclared', 'requestId']);
+    expect(Object.keys(answered.program).sort()).toEqual([
+      'minUnitsPerReturn',
+      'name',
+      'pointsLabelPlural',
+      'pointsLabelSingular',
+      'pointsPerUnit',
+      'unitLabelPlural',
+      'unitLabelSingular',
+    ]);
 
     const row = await ctx.db.execute(sql`
       SELECT customer_email, customer_id, source FROM marketing_return_requests
@@ -892,6 +912,26 @@ describe('a customer asking for their own return', () => {
     expect(row.rows[0]!.customer_email).toBe('dara.two@example.test');
     expect(row.rows[0]!.customer_id).toBe(customer.id);
     expect(row.rows[0]!.source).toBe('customer');
+  });
+
+  it('normalises a blank optional name to absent, not a stored empty string', async () => {
+    /*
+     * MINOR: the retired public intake used `optionalText()` precisely so a
+     * plain HTML form's untouched optional input — `{"name": ""}` — would not
+     * 400. A bare `.optional()` here would refuse it instead, with no field for
+     * the storefront to land the error beside.
+     */
+    const customer = await signedInCustomer('blank.name@example.test');
+    const res = await client.post('/api/marketing/me/returns', body({ name: '' }), {
+      headers: { cookie: customer.cookie },
+    });
+    expect(res.status).toBe(201);
+
+    const answered = await json<{ requestId: string }>(res);
+    const row = await ctx.db.execute(sql`
+      SELECT customer_name FROM marketing_return_requests
+       WHERE id = ${answered.requestId}`);
+    expect(row.rows[0]!.customer_name).toBeNull();
   });
 
   it('lists one shopper their own returns and nobody else in them', async () => {
@@ -905,8 +945,25 @@ describe('a customer asking for their own return', () => {
     });
     expect(res.status).toBe(200);
 
-    const page = await json<{ items: { id: string }[] }>(res);
+    const page = await json<{ items: Record<string, unknown>[] }>(res);
     expect(page.items).toHaveLength(1);
+    /*
+     * KEY-SET EQUALITY ON THE ITEM. Not `driverName` alone asserted truthy —
+     * the full projection, so a widened row (`driverPhone`, `revision`) fails
+     * here instead of shipping. NOT `driverPhone`: a shopper is told who is
+     * coming, not how to ring them directly. NOT `revision`: that is a
+     * concurrency token for a screen that can write, and this one cannot.
+     */
+    expect(Object.keys(page.items[0]!).sort()).toEqual([
+      'createdAt',
+      'driverName',
+      'id',
+      'pickupScheduledAt',
+      'pointsAwarded',
+      'qtyAccepted',
+      'qtyDeclared',
+      'status',
+    ]);
 
     /* The other half: somebody else's return is not in it. Filed by a second
        signed-in customer rather than inserted raw, so this exercises the same
@@ -927,6 +984,25 @@ describe('a customer asking for their own return', () => {
    * (reviews, payments, orders), a green suite every time, because a
    * server-side request never enforces CORS.
    */
+  it('answers the PREFLIGHT, not a 404 — both the response and the preflight are asserted', async () => {
+    /*
+     * CRITICAL, whole-branch review round: `OPTIONS /api/marketing/me/returns`
+     * 404'd — no `.options()` handler existed under `/me/returns` at all, so a
+     * cross-origin `POST` with `content-type: application/json` and
+     * `credentials: 'include'` never left the browser. The 404 status, and the
+     * absent `allow-methods`/`allow-headers` it carried, each independently
+     * fail a preflight; either alone would have been enough to break this.
+     */
+    const res = await client.request('/api/marketing/me/returns', {
+      method: 'OPTIONS',
+      headers: { origin: TEST_ORIGIN },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-methods')).toContain('POST');
+    expect(res.headers.get('access-control-allow-headers')).toBe('content-type');
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+  });
+
   it('SETS access-control-allow-credentials on the list response', async () => {
     const customer = await signedInCustomer('cors.list@example.test');
     const res = await client.get('/api/marketing/me/returns', {

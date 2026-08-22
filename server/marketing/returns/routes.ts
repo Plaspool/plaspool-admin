@@ -113,7 +113,10 @@ const EMAIL = str().trim().min(1).max(320);
  * business rule.
  * ═══════════════════════════════════════════════════════════════════════════
  */
-function optionalText(max: number) {
+/** Exported for `./customer.ts`'s `name` field — the identical blank-means-absent
+ *  shape a shopper's own form needs, and this is the one implementation rather
+ *  than a second copy of it. */
+export function optionalText(max: number) {
   return str()
     .trim()
     .max(max)
