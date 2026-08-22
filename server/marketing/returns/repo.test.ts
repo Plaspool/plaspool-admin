@@ -573,6 +573,41 @@ describe('creating a return', () => {
     });
     expect(row.customerEmail).toBe(EMAIL);
   });
+
+  it('stores the customer id when one is supplied', async () => {
+    const programId = await makeProgram();
+    const row = await createRequest(db, {
+      email: 'Dara@Example.Test',
+      qtyDeclared: 4,
+      programId,
+      serviceAreaId: await makeArea(),
+      source: 'customer',
+      customerId: 'cus_abc123',
+      now: NOW,
+    });
+
+    const res = await db.execute(
+      sql`SELECT customer_id FROM marketing_return_requests WHERE id = ${row.id}`,
+    );
+    expect(res.rows[0]!.customer_id).toBe('cus_abc123');
+  });
+
+  it('leaves it null when none is supplied, so the admin dialog is unaffected', async () => {
+    const programId = await makeProgram();
+    const row = await createRequest(db, {
+      email: 'phoned.in@example.test',
+      qtyDeclared: 4,
+      programId,
+      serviceAreaId: await makeArea(),
+      source: 'admin',
+      now: NOW,
+    });
+
+    const res = await db.execute(
+      sql`SELECT customer_id FROM marketing_return_requests WHERE id = ${row.id}`,
+    );
+    expect(res.rows[0]!.customer_id).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------- transition guards

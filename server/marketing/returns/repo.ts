@@ -523,6 +523,16 @@ export interface CreateReturnInput extends Clocked {
    * public intake requires one and the route, not this function, enforces that.
    */
   serviceAreaId?: string;
+  /**
+   * The shop's customer id, when the request came from a signed-in shopper.
+   *
+   * NULLABLE AND NO FK, exactly as the column is: it belongs to another
+   * subsystem, and `customer_email` remains the key everything joins on. This
+   * is carried so a later account-merge backfill has something to work from,
+   * and so an admin looking at a request can tell "they asked, signed in" from
+   * "we logged it for them" without inferring it from `source`.
+   */
+  customerId?: string;
   customerName?: string;
   customerPhone?: string;
   pickupAddress?: string;
@@ -651,8 +661,8 @@ export async function createRequest(db: Db, input: CreateReturnInput): Promise<R
     const res = await db.execute(sql`
       WITH ins AS (
         INSERT INTO marketing_return_requests
-          (id, program_id, customer_email, customer_name, customer_phone, pickup_address,
-           qty_declared, points_per_unit_snapshot, source, service_area_id,
+          (id, program_id, customer_email, customer_id, customer_name, customer_phone,
+           pickup_address, qty_declared, points_per_unit_snapshot, source, service_area_id,
            created_at, updated_at)
         ${
           /*
@@ -664,14 +674,14 @@ export async function createRequest(db: Db, input: CreateReturnInput): Promise<R
            * the same approach to its optional CTEs and for the same reason.
            */
           area === null
-            ? sql`VALUES (${id}, ${program.id}, ${email}, ${input.customerName ?? null},
-                    ${input.customerPhone ?? null}, ${address(input.pickupAddress) ?? null},
-                    ${input.qtyDeclared}, ${pointsPerUnit}, ${input.source}, NULL,
-                    ${input.now}, ${input.now})`
-            : sql`SELECT ${id}, ${program.id}, ${email}, ${input.customerName ?? null},
-                    ${input.customerPhone ?? null}, ${address(input.pickupAddress) ?? null},
-                    ${input.qtyDeclared}, ${pointsPerUnit}, ${input.source}, a.id,
-                    ${input.now}, ${input.now}
+            ? sql`VALUES (${id}, ${program.id}, ${email}, ${input.customerId ?? null},
+                    ${input.customerName ?? null}, ${input.customerPhone ?? null},
+                    ${address(input.pickupAddress) ?? null}, ${input.qtyDeclared},
+                    ${pointsPerUnit}, ${input.source}, NULL, ${input.now}, ${input.now})`
+            : sql`SELECT ${id}, ${program.id}, ${email}, ${input.customerId ?? null},
+                    ${input.customerName ?? null}, ${input.customerPhone ?? null},
+                    ${address(input.pickupAddress) ?? null}, ${input.qtyDeclared},
+                    ${pointsPerUnit}, ${input.source}, a.id, ${input.now}, ${input.now}
                     FROM marketing_service_areas a
                    WHERE a.id = ${area.id} AND a.active`
         }
