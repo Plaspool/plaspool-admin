@@ -4,7 +4,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  * THREE PROPERTIES WORTH BREAKING A BUILD OVER.
  *
- * 1. **The mount is cookieless.** These two responses carry `Cache-Control:
+ * 1. **The mount is cookieless.** These three responses carry `Cache-Control:
  *    public`, so a shared cache may store one and hand it to a different
  *    reader. The router is mounted ABOVE `sessionMiddleware` in
  *    `server/index.ts`, which is what makes that safe by construction rather

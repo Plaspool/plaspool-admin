@@ -742,8 +742,8 @@ async function transition(
  *    segment, and `+` in a local part is a legal character that means something
  *    else entirely once it is in a URL.
  *
- * The public pair — `GET /api/public/marketing/{banners,rewards}` — has no
- * client here on purpose: it is cookieless, cached, and belongs to the
+ * The public trio — `GET /api/public/marketing/{banners,rewards,areas}` — has
+ * no client here on purpose: it is cookieless, cached, and belongs to the
  * storefront. Neither does `POST /api/marketing/me/returns`, the customer's
  * own intake under their shop session — that is the storefront's client to
  * write, not the admin's; the admin's own intake is `createReturn` below.
