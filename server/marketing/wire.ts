@@ -60,8 +60,8 @@ export interface Rendered {
  * fall through to `toResponse`, which is the one implementation the whole
  * application shares — so a marketing route cannot grow its own dialect of the
  * rows every other route already answers. `rate_limited` in particular MUST fall
- * through: `toResponse` is where the `Retry-After` HEADER is set, and the public
- * intake's countdown reads it.
+ * through: `toResponse` is where the `Retry-After` HEADER is set, and a
+ * client-side countdown would read it.
  */
 export function renderMarketingError(err: unknown): Rendered | null {
   /*
