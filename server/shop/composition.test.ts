@@ -839,6 +839,20 @@ describe('a customer asking for their own return', () => {
     expect(res.status).toBe(400);
   });
 
+  it('refuses a qtyDeclared past what the column can hold, 400 not 500', async () => {
+    /* `2_147_483_648` is one past `INT4_MAX`. `qty_declared` is `integer`
+       (migration 0011), so an uncapped body schema lets a shopper 500 the
+       route with an ordinary-looking number — Postgres answers SQLSTATE 22003,
+       which is not on the §8 table and falls through to a bare 500. */
+    const customer = await signedInCustomer('overflow@example.test');
+    const res = await client.post(
+      '/api/marketing/me/returns',
+      body({ qtyDeclared: 2_147_483_648 }),
+      { headers: { cookie: customer.cookie } },
+    );
+    expect(res.status).toBe(400);
+  });
+
   it('files the return against the session, folded, and answers the programme words', async () => {
     const customer = await signedInCustomer('Dara.Two@Example.Test');
     const res = await client.post('/api/marketing/me/returns', body(), {
@@ -882,5 +896,41 @@ describe('a customer asking for their own return', () => {
       await client.get('/api/marketing/me/returns', { headers: { cookie: customer.cookie } }),
     );
     expect(again.items).toHaveLength(1);
+  });
+
+  /**
+   * THE CORS ASSERTIONS, mirroring `/me/points`' own above — on headers,
+   * deliberately. CLAUDE.md §2 records this exact gap shipping three times
+   * (reviews, payments, orders), a green suite every time, because a
+   * server-side request never enforces CORS.
+   */
+  it('SETS access-control-allow-credentials on the list response', async () => {
+    const customer = await signedInCustomer('cors.list@example.test');
+    const res = await client.get('/api/marketing/me/returns', {
+      headers: { cookie: customer.cookie, origin: TEST_ORIGIN },
+    });
+
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    expect(res.headers.get('access-control-allow-origin')).toBe(TEST_ORIGIN);
+  });
+
+  it('SETS them on the 201 too, not only on reads', async () => {
+    const customer = await signedInCustomer('cors.post@example.test');
+    const res = await client.post('/api/marketing/me/returns', body(), {
+      headers: { cookie: customer.cookie },
+    });
+    expect(res.status).toBe(201);
+
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    expect(res.headers.get('access-control-allow-origin')).toBe(TEST_ORIGIN);
+  });
+
+  it('SETS access-control-allow-credentials on the 401 as well, or the browser hides the reason', async () => {
+    const res = await client.get('/api/marketing/me/returns', {
+      headers: { origin: TEST_ORIGIN },
+    });
+
+    expect(res.status).toBe(401);
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
   });
 });

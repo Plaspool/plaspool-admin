@@ -43,6 +43,12 @@ export interface CustomerReturnDeps {
   cors?: MiddlewareHandler<AppEnv>;
 }
 
+/** `qty_declared` is `integer` (migration 0011); past this is SQLSTATE 22003,
+ *  i.e. a 500 for a number somebody typed. The ceiling is the COLUMN's, not a
+ *  business rule — `./routes.ts`'s `QTY` caps the two operator intakes the
+ *  same way. */
+const INT4_MAX = 2_147_483_647;
+
 /**
  * `.strict()` IS THE SECURITY CONTROL, not a nicety. There is deliberately no
  * `email` and no `programId`: the address comes from the session, and the
@@ -51,9 +57,9 @@ export interface CustomerReturnDeps {
  */
 const Body = z
   .object({
-    qtyDeclared: z.number().int().positive(),
+    qtyDeclared: z.number().int().min(1).max(INT4_MAX),
     phone: str().trim().min(1).max(200),
-    pickupAddress: str().trim().min(1).max(2000),
+    pickupAddress: str().trim().min(1).max(1000),
     serviceAreaId: str().trim().min(1).max(200),
     name: str().trim().min(1).max(200).optional(),
   })
