@@ -130,7 +130,7 @@ export function createCustomerReturnRoutes(deps: CustomerReturnDeps = {}): Hono<
    *
    * The absent cursor is a decision. `marketing_return_requests_open_uq` caps a
    * customer at one OPEN return, so this list grows only as fast as somebody
-   * actually sends spools back — twenty is years of history, and a cursor would
+   * actually sends units back — twenty is years of history, and a cursor would
    * be paging machinery on both sides for a list with one screen in it. The
    * ledger next door pages because a ledger genuinely grows without bound; this
    * does not.
