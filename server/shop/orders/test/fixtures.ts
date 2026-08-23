@@ -259,6 +259,26 @@ export const paymentRefunded = (
 };
 
 /**
+ * task-d4: a refund the provider accepted later FAILED to settle. Mirrors
+ * `paymentRefunded` above with the fields `applyRefundEvent` actually emits
+ * on that arm — `failedAmount`/`refundedTotal`, no `remainingBalance`.
+ */
+export const paymentRefundFailed = (
+  o: PaymentOverrides & { refundedTotal?: number; refundId?: string } = {},
+): EventFixture => ({
+  id: o.id ?? 'evt_refund_failed_1',
+  type: 'payment.refund_failed',
+  subjectId: INTENT,
+  occurredAt: o.occurredAt ?? T0 + 2000,
+  payload: {
+    ...paymentBase(o),
+    refundId: o.refundId ?? 'ref_0001',
+    failedAmount: o.amount ?? 5400,
+    refundedTotal: o.refundedTotal ?? 0,
+  },
+});
+
+/**
  * A type nobody in this build has heard of.
  *
  * §6 rule 4's whole reason for existing: this subsystem must ignore and log it rather
