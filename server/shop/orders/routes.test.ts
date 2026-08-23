@@ -1045,6 +1045,14 @@ describe('POST /admin/sweep is the caller both sweepers otherwise lack', () => {
      * the reason CLAUDE.md §2 gives: the composition root is where this wiring
      * lives, and a test that called `renderConfirmation` directly would be testing
      * a function that was never wrong.
+     *
+     * THE PATH IS `/account/orders/…`, NOT `/shop/orders/…` — commit `e4b532c`
+     * corrected both link builders (`storefront-url.ts`'s `orderUrl` and
+     * `orders/mailer.ts`'s `accessUrl`) after finding `/shop/orders/…` 404s on
+     * the deployed storefront, but left this regex pinned to the path it
+     * replaced. A regression test asserting a path the app no longer builds
+     * cannot fail on a regression back to it — it is red unconditionally
+     * instead, which is what running the suite after that commit shows.
      */
     const sent: RenderedEmail[] = [];
     const mailer: Mailer = {
@@ -1059,7 +1067,7 @@ describe('POST /admin/sweep is the caller both sweepers otherwise lack', () => {
 
     expect(sent.length).toBeGreaterThan(0);
     for (const message of sent) {
-      const link = /https?:\/\/[^\s"<]*\/shop\/orders\/[^\s"<]+/.exec(message.body);
+      const link = /https?:\/\/[^\s"<]*\/account\/orders\/[^\s"<]+/.exec(message.body);
       expect(link, `${message.subject} carries no order link`).not.toBeNull();
       expect(link![0]).toContain(DEFAULT_STOREFRONT_ORIGIN);
       // The assertion the old suite was missing.
