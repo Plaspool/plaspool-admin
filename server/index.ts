@@ -33,8 +33,11 @@ import { resolveShopCustomer } from './shop/cart/identity/customers';
 import { shopCors } from './shop/cart/cors';
 import { paymentPort } from './shop/payments/port';
 import { drainPaymentEvents } from './shop/payments/webhook';
+import { createRefund } from './shop/payments/refunds';
+import { paystackProvider } from './shop/payments/config';
 import { redemptionPort } from './marketing/redemption/port';
 import type { Mailer } from './mail/port';
+import type { PaymentProvider } from './shop/payments/provider/types';
 import type { AppEnv } from './app-env';
 
 export type { AppEnv } from './app-env';
@@ -85,6 +88,25 @@ export interface AppDeps {
    * this module still demands no mail configuration — see `server/mail/resend.ts`.
    */
   mailer?: Mailer;
+
+  /**
+   * The payment provider. Defaults to the real, scrubbed Paystack adapter —
+   * exactly what `resolveProvider` in `server/shop/payments/routes.ts` already
+   * falls back to per request, and NEVER CALLED HERE AT CONSTRUCTION for the
+   * same reason `paymentsEnv()` reads its environment lazily (`config.ts`'s own
+   * header): a deployment that has not set up payments must still serve the
+   * blog, and `createApp()` runs for every suite in this repository, not only
+   * the ones that touch money.
+   *
+   * INJECTED FOR THE SAME REASON `mailer` IS. `server/shop/composition.test.ts`
+   * drives money-adjacent routes through the real `createApp()` rather than a
+   * hand-built router (CLAUDE.md §2 — a test app that registers its own
+   * dependencies hides a missing composition-root registration), and a real
+   * `PaystackProvider` dials a network `PAYSTACK_SECRET_KEY` no suite can
+   * supply. `FakeProvider` swaps out the network boundary; nothing about the
+   * WIRING under test is faked.
+   */
+  provider?: PaymentProvider | (() => PaymentProvider);
 }
 
 /**
@@ -95,6 +117,20 @@ export interface AppDeps {
  * port 8787, so a route mounted at `/posts` would be reachable in neither.
  */
 export const API_PREFIX = '/api';
+
+/**
+ * `deps.provider ?? paystackProvider()`, called FRESH per use rather than
+ * memoised on `deps` — the identical shape `resolveProvider` in
+ * `server/shop/payments/routes.ts` already uses per request, so the two
+ * callers this file now has (`createPaymentRoutes` below, and the `refund`
+ * seam) resolve a provider the same way Payments' own routes do. Cheap:
+ * `paystackProvider()` only re-wraps a stateless adapter; `paymentsEnv()`
+ * underneath it memoises the parsed environment on its own.
+ */
+function resolveAppProvider(deps: AppDeps): PaymentProvider {
+  const p = deps.provider;
+  return typeof p === 'function' ? p() : (p ?? paystackProvider());
+}
 
 export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
   const { db } = deps;
@@ -183,6 +219,23 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
     /* SpoolPoints. Orders spends them at the capture and gives them back on a
      * cancellation or a refund; see the seam comment below. */
     redemption: (db) => redemptionPort(db),
+    /*
+     * THE FIFTH SEAM (task-d3): ISSUE A REFUND. `POST /admin/orders/:id/cancel`
+     * calls this, through `RefundIssuer` (`shop/orders/ports.ts`), to refund a
+     * paid order BEFORE it cancels it — contract §2 R3 forbids Orders importing
+     * Payments directly, so this closure is the only place that does, exactly
+     * as `drainPayments` above already is for the same reason.
+     *
+     * `createRefund` IS THE SAME FUNCTION `POST /shop/admin/payments/intents/
+     * :id/refunds` calls (`payments/routes.ts`) — not a second implementation
+     * of the sum-check or the provider-call ordering, both of which stay
+     * exactly where `refunds.ts`'s header says they must.
+     */
+    refund: (db, args) =>
+      createRefund(db, resolveAppProvider(deps), args).then((result) => ({
+        refundId: result.refund.id,
+        status: result.refund.status,
+      })),
   });
 
   /*
@@ -599,6 +652,10 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
     API_PREFIX,
     createPaymentRoutes({
       checkout: checkoutPort(),
+      // Same provider the `refund` seam above resolves — see `resolveAppProvider`.
+      // `undefined` here is exactly what `createPaymentRoutes` already defaults
+      // on its own, so this changes nothing when `deps.provider` is unset.
+      provider: deps.provider,
       // The `/confirm` route is a genuine capture path too — a customer back
       // from Paystack whose webhook is late reaches `captured` there.
       sweepEvents: (db, origin) =>

@@ -992,6 +992,33 @@ function rememberIntent(intentId: string | null | undefined): SQL {
     : sql`, payment_intent_id = COALESCE(payment_intent_id, ${intentId})`;
 }
 
+/**
+ * `refunded_total`, ADDED TO rather than SET, so this can never overwrite a
+ * figure written some other way. Absent or zero appends nothing — the
+ * ordinary cancel-with-no-refund path is byte-identical to what it always was.
+ *
+ * ONLY `CANCEL` USES THIS (task-d3). The amount is never computed in this
+ * file: `routes.ts`'s admin cancel calls the refund FIRST, through the
+ * injected `RefundIssuer`, and only reaches this transition once that call has
+ * NOT thrown — so by the time a positive number reaches here the money has
+ * already moved (or is irreversibly in flight with the provider). This only
+ * records it.
+ *
+ * WHY A CANCELLED ORDER CARRIES A REFUND FIGURE AT ALL, given the design
+ * decided `status` becomes `'cancelled'` rather than `'refunded'` /
+ * `'partially_refunded'` (see the task's report: cancelled wins, because the
+ * order stops shipping either way and `status` holds one word). `refunded_
+ * total` is a SEPARATE COLUMN, read by the customer-facing order view, and
+ * losing it — silently reverting to 0 while real money moved — would tell a
+ * customer re-reading their cancelled order that they were never refunded.
+ * The AUTHORITATIVE figure for an operator remains the payment intent's own
+ * `refunded_total` (synchronous, via `shop_refunds`/`PaymentPort`); this is
+ * the customer-facing mirror of it for this one order.
+ */
+function withRefundedAmount(amount: number | undefined): SQL {
+  return !amount ? sql`` : sql`, refunded_total = refunded_total + ${amount}`;
+}
+
 // ------------------------------------------------------------ the transitions
 
 const MARK_PAID: Transition<{
@@ -1044,6 +1071,8 @@ const CANCEL: Transition<{
   link: AccessLink | null;
   intentId?: string | null;
   templates?: TemplateSet;
+  /** Minor units, already refunded before this runs. See `withRefundedAmount`. */
+  refundedAmount?: number;
 }> = {
   name: 'cancel',
   /*
@@ -1056,7 +1085,7 @@ const CANCEL: Transition<{
   holds: (o) => o.status === 'pending' || o.status === 'paid',
   guard: sql`status IN ('pending', 'paid')`,
   set: (_read, arg, now) =>
-    sql`status = 'cancelled', cancelled_at = ${now}${rememberIntent(arg.intentId)}`,
+    sql`status = 'cancelled', cancelled_at = ${now}${rememberIntent(arg.intentId)}${withRefundedAmount(arg.refundedAmount)}`,
   effects: (read, arg, now) => ({
     timeline: {
       type: arg.reason === 'payment_failed' ? 'payment_failed' : 'cancelled',
@@ -1224,6 +1253,8 @@ export const cancelOrder = (
     link: AccessLink | null;
     intentId?: string | null;
     templates?: TemplateSet;
+    /** Minor units, already refunded before this call. See `withRefundedAmount`. */
+    refundedAmount?: number;
   },
   now: number,
   claim: EventClaim | null,

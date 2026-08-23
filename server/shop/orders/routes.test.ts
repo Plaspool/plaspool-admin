@@ -604,7 +604,11 @@ describe('the admin surface', () => {
   it('cancel emits order.cancelled and records the acting owner', async () => {
     const read = await paidOrder(CUSTOMER_A);
     const owner = await login(ctx.users.owner);
-    const res = await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`);
+    // A paid order must now choose explicitly (task-d3); this test is about
+    // the event and the actor, so it chooses the plain no-refund path.
+    const res = await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`, {
+      refund: { kind: 'none' },
+    });
     expect(res.status).toBe(200);
 
     const body = await json<{ order: { status: string } }>(res);
@@ -654,7 +658,9 @@ describe('the admin surface', () => {
       }),
     });
 
-    const res = await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`);
+    const res = await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`, {
+      refund: { kind: 'none' },
+    });
     expect(res.status).toBe(200);
     expect(released).toEqual([{ orderId: read.order.id, reason: 'admin' }]);
   });
@@ -662,8 +668,11 @@ describe('the admin surface', () => {
   it('cancelling a cancelled order is a 409 precondition_failed, not a 500', async () => {
     const read = await paidOrder(CUSTOMER_A);
     const owner = await login(ctx.users.owner);
-    await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`);
+    await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`, { refund: { kind: 'none' } });
 
+    // The order is `cancelled` now, not `paid` — task-d3's "a paid order must
+    // choose" no longer applies, and this second call is refused by the SAME
+    // CAS guard it always was, with no body at all.
     const again = await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`);
     expect(again.status).toBe(409);
     expect(await json(again)).toMatchObject({ error: 'precondition_failed', operation: 'cancel' });

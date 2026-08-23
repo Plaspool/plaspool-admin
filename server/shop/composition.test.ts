@@ -40,6 +40,7 @@ import { collect, createRequest, inspect, receive, schedule } from '../marketing
 import { markOrderPaid, readOrderByCheckout } from './orders/repo/orders';
 import { paymentPort } from './payments/port';
 import { storeEvent } from './payments/webhook';
+import { FakeProvider } from './payments/provider/fake';
 
 let ctx: TestCtx;
 let client: HttpClient;
@@ -1140,5 +1141,200 @@ describe('a customer asking for their own return', () => {
 
     expect(res.status).toBe(401);
     expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+  });
+});
+
+// ============================================================================
+// task-d3 — CANCEL REFUNDS A PAID ORDER FIRST, THEN CANCELS IT
+// ============================================================================
+
+/**
+ * `POST /admin/orders/:id/cancel`'s `refund` seam, PROVEN THROUGH THE REAL
+ * `createApp()` — the same reason admin#27's test above lives in THIS file
+ * rather than in `orders/routes.test.ts`. That suite's own `ordersClient`
+ * registers its OWN fakes before building the app (`orders/test/app.ts`), so
+ * it proves the ROUTE and nothing about the WIRING `server/index.ts` does —
+ * and the wiring is exactly what broke silently before, on this file's own
+ * telling. `refund` is a new seam of the identical shape, added to `AppDeps`
+ * and `registerOrdersDefaults` for this.
+ *
+ * A `FakeProvider`, injected through `AppDeps.provider` (added for this task),
+ * stands in for the NETWORK boundary only. `createRefund`, its sum-check
+ * guard and its idempotency key are all the REAL functions from
+ * `payments/refunds.ts`, reached through the REAL `registerOrdersDefaults`
+ * call — nothing about the orchestration under test is faked.
+ */
+describe('task-d3: cancelling a paid order refunds it first, through the real refund seam', () => {
+  let provider: FakeProvider;
+  let money: HttpClient;
+
+  beforeEach(() => {
+    provider = new FakeProvider();
+    /*
+     * A SECOND `resetOrdersDeps()`, AFTER THE FILE-LEVEL ONE ABOVE. That outer
+     * hook already built `client = httpClient(ctx.db)` — with no `provider` —
+     * which means its OWN `createApp()` call already won the fill-only-absent
+     * race on the `refund` seam, registering a closure that resolves the REAL
+     * `paystackProvider()`. `registerOrdersDefaults` fills only what is
+     * absent, so `httpClient(ctx.db, { provider })` below would otherwise never
+     * get a chance to register ITS OWN, `FakeProvider`-backed closure — every
+     * request through `money` would reach the real Paystack adapter and 401.
+     * Resetting again, immediately before building `money`, is what makes this
+     * describe block's own registration the one that wins.
+     */
+    resetOrdersDeps();
+    money = httpClient(ctx.db, { provider });
+  });
+
+  async function ownerOf(client: HttpClient): Promise<HttpClient> {
+    const res = await client.post('/api/auth/login', {
+      email: 'owner@test.local',
+      password: SEED_PASSWORD,
+    });
+    expect(res.status).toBe(200);
+    return client;
+  }
+
+  /**
+   * A CAPTURED intent, ready to refund — inserted directly, like `intent()`
+   * above, but WITH a `provider_intent_id`: `createRefund` throws
+   * `provider_intent_id` without one, and the read-only `intent()` helper
+   * above never needed one because nothing there calls a refund.
+   */
+  async function capturedIntent(id: string, amount: number): Promise<void> {
+    await ctx.db.execute(sql`
+      INSERT INTO shop_payment_intents
+        (id, checkout_id, provider_intent_id, amount, currency, status,
+         idempotency_key, request_fingerprint, refunded_total,
+         created_at, updated_at, revision)
+      VALUES (${id}, ${CHECKOUT}, ${'prov_' + id}, ${amount}, 'USD', 'captured',
+              ${'idem_' + id}, 'fp', 0, ${NOW}, ${NOW}, 1)`);
+  }
+
+  async function refundRows(intentId: string): Promise<{ amount: number; status: string }[]> {
+    const res = await ctx.db.execute(
+      sql`SELECT amount, status FROM shop_refunds WHERE intent_id = ${intentId} ORDER BY created_at`,
+    );
+    return res.rows.map((r) => ({ amount: Number(r.amount), status: String(r.status) }));
+  }
+
+  async function intentRefundedTotal(intentId: string): Promise<number> {
+    const res = await ctx.db.execute(
+      sql`SELECT refunded_total FROM shop_payment_intents WHERE id = ${intentId}`,
+    );
+    return Number(res.rows[0]?.refunded_total ?? -1);
+  }
+
+  it('refunds 100% of the order total, then cancels it', async () => {
+    const intentId = 'pi_task_d3_100';
+    const orderId = await paidOrder('cust_task_d3_100', intentId);
+    await capturedIntent(intentId, 5400); // matches paidOrder's fixture grandTotal
+
+    const owner = await ownerOf(money);
+    const res = await owner.post(`/api/shop/admin/orders/${orderId}/cancel`, {
+      refund: { kind: 'percent', percent: 100 },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await json<{ order: { status: string; refundedTotal: number } }>(res);
+    expect(body.order.status).toBe('cancelled');
+    // The customer-facing mirror of the refund (`withRefundedAmount`), not
+    // only the intent-side ledger.
+    expect(body.order.refundedTotal).toBe(5400);
+
+    expect(await refundRows(intentId)).toEqual([{ amount: 5400, status: 'pending' }]);
+    expect(await intentRefundedTotal(intentId)).toBe(5400);
+    // Reached the ACTUAL provider boundary exactly once — proof this ran
+    // through the real `createRefund`, not a stand-in for the whole seam.
+    expect(provider.countOf('refund')).toBe(1);
+  });
+
+  it('refunds 75% of an odd total, rounded to the nearest minor unit, then cancels', async () => {
+    const customerId = 'cust_task_d3_75';
+    const intentId = 'pi_task_d3_75';
+    // 1001 minor units is deliberately not divisible by 4: 1001 * 0.75 =
+    // 750.75, which only proves the rounding rule if the total is odd enough
+    // to produce a fraction. `Math.round` → 751 (round half up); see
+    // `refundPercentOf` in `server/shop/orders/routes.ts`.
+    await insertEvents(ctx.db, [
+      { ...checkoutCompleted({ customerId, subtotal: 1001, shippingTotal: 0, taxTotal: 0, grandTotal: 1001 }), id: `evt_chk_${customerId}` },
+    ]);
+    await sweepCommerceEvents(ctx.db, DEPS, NOW);
+    const read = (await readOrderByCheckout(ctx.db, CHECKOUT))!;
+    await markOrderPaid(ctx.db, read.order.id, NOW, null, null, intentId);
+    await capturedIntent(intentId, 1001);
+
+    const owner = await ownerOf(money);
+    const res = await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`, {
+      refund: { kind: 'percent', percent: 75 },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await json<{ order: { status: string; refundedTotal: number } }>(res);
+    expect(body.order.status).toBe('cancelled');
+    expect(body.order.refundedTotal).toBe(751);
+    expect(await refundRows(intentId)).toEqual([{ amount: 751, status: 'pending' }]);
+    expect(await intentRefundedTotal(intentId)).toBe(751);
+  });
+
+  it('cancels an unpaid order without attempting any refund, and refuses one if offered', async () => {
+    const customerId = 'cust_task_d3_pending';
+    await insertEvents(ctx.db, [
+      { ...checkoutCompleted({ customerId }), id: `evt_chk_${customerId}` },
+    ]);
+    await sweepCommerceEvents(ctx.db, DEPS, NOW);
+    const read = (await readOrderByCheckout(ctx.db, CHECKOUT))!;
+    expect(read.order.status).toBe('pending'); // never marked paid
+
+    // Programmed to fail LOUDLY if this route ever reaches it — belt and
+    // braces alongside the direct call-count assertion below.
+    provider.program('refund', { kind: 'fail', code: 'invalid_request' });
+    const owner = await ownerOf(money);
+
+    // "An unpaid order must never reach a refund path" (task-d3, verbatim):
+    // offering one is refused outright, before anything is cancelled.
+    const offered = await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`, {
+      refund: { kind: 'none' },
+    });
+    expect(offered.status).toBe(400);
+
+    const res = await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`);
+    expect(res.status).toBe(200);
+    const body = await json<{ order: { status: string } }>(res);
+    expect(body.order.status).toBe('cancelled');
+    expect(provider.countOf('refund')).toBe(0);
+  });
+
+  /**
+   * A REAL DOUBLE-CLICK: the SAME preset, sent twice. 75% is what a real
+   * operator's second click actually resends (the button's own request body
+   * carries no memory of the first click), and 75%+75% exceeds the intent's
+   * amount — so the SECOND call's `createRefund` is refused by the sum-check
+   * guard itself before it can ever reach the provider a second time. See
+   * `server/shop/orders/routes.ts`'s block comment on this route for the case
+   * where a SMALLER repeated amount instead reads through
+   * `createRefund`'s idempotency key; either way nothing here double-refunds.
+   */
+  it('a double-submit refunds once, cancels once, and refuses the second attempt', async () => {
+    const intentId = 'pi_task_d3_double';
+    const orderId = await paidOrder('cust_task_d3_double', intentId);
+    await capturedIntent(intentId, 5400);
+
+    const owner = await ownerOf(money);
+    const body = { refund: { kind: 'percent' as const, percent: 75 as const } };
+
+    const first = await owner.post(`/api/shop/admin/orders/${orderId}/cancel`, body);
+    expect(first.status).toBe(200);
+    expect((await json<{ order: { status: string } }>(first)).order.status).toBe('cancelled');
+
+    const second = await owner.post(`/api/shop/admin/orders/${orderId}/cancel`, body);
+    // Refused — either the sum-check guard (this case) or `cancelOrder`'s own
+    // CAS on an already-cancelled order, but never a 200.
+    expect(second.status).not.toBe(200);
+
+    // THE PROPERTY THAT MATTERS: exactly one refund moved, exactly once.
+    expect(await refundRows(intentId)).toEqual([{ amount: 4050, status: 'pending' }]);
+    expect(await intentRefundedTotal(intentId)).toBe(4050);
+    expect(provider.countOf('refund')).toBe(1);
   });
 });
