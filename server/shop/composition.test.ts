@@ -36,6 +36,7 @@ import { resetOrdersDeps, resolveDeps } from './orders/ports';
 import { resetOrderTables } from './orders/test/harness';
 import { checkoutCompleted, insertEvents, CHECKOUT } from './orders/test/fixtures';
 import { sweepCommerceEvents, type ConsumerDeps } from './orders/repo/consumer';
+import { collect, createRequest, inspect, receive, schedule } from '../marketing/returns/repo';
 import { markOrderPaid, readOrderByCheckout } from './orders/repo/orders';
 import { paymentPort } from './payments/port';
 import { storeEvent } from './payments/webhook';
@@ -790,6 +791,100 @@ describe('admin#2 — the customer points seam', () => {
     });
 
     expect(res.headers.get('access-control-allow-credentials')).toBeNull();
+  });
+
+  it('awards a return through the real inspect path, and /me/points reads back the same balance', async () => {
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * THE TEST THIS FILE DID NOT HAVE — every case above proves the SEAM with
+     * a balance `grant()` seeds by raw SQL, never one `inspect()` actually
+     * wrote. A reported defect ("the customer got the 50-point award email,
+     * the admin shows the return awarded, but `/account/rewards` reads 0")
+     * can only be pinned by going through BOTH real writers at once: the
+     * marketing repo's own award path AND the real `createApp()` this file
+     * exists to exercise — exactly the discipline that caught the missing
+     * `customer` resolver and the missing CORS header on this same route.
+     *
+     * THE TWO EMAILS ARE DELIBERATELY DIFFERENTLY CASED. The session is
+     * signed in under one spelling and the return is logged under another,
+     * to pin the promise `ledger/repo.ts`'s `foldEmail` and
+     * `returns/repo.ts`'s own copy of it both make: `marketing_balances`,
+     * `marketing_ledger` and the open-return index all key on the SAME
+     * lower-cased address regardless of how either caller happened to spell
+     * it. If a fold were ever missing on either side, this is the test that
+     * would show the ledger and the wallet disagreeing about who earned it.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    const customer = await signedInCustomer('Fifty.Points@Example.Test');
+    const FOLDED = 'fifty.points@example.test';
+
+    const area = await ctx.db.execute(sql`
+      INSERT INTO marketing_service_areas (id, key, region, name, active, created_at, updated_at)
+      VALUES ('area_composition_0001', 'composition-test', 'Farflung Province',
+              'Composition Test District', true, ${NOW}, ${NOW})
+      ON CONFLICT (id) DO UPDATE SET active = true
+      RETURNING id`);
+    const areaId = String(area.rows[0]!.id);
+
+    const program = await ctx.db.execute(sql`
+      INSERT INTO marketing_programs
+        (id, key, kind, name, points_label_singular, points_label_plural,
+         unit_label_singular, unit_label_plural, min_units_per_return, points_per_unit,
+         status, created_at, updated_at)
+      VALUES ('prg_composition_0001', 'composition-test-caps', 'unit_return', 'Composition Caps',
+              'Composition Point', 'Composition Points', 'canister', 'canisters',
+              4, 10, 'active', ${NOW}, ${NOW})
+      ON CONFLICT (id) DO UPDATE SET status = 'active'
+      RETURNING id`);
+    const programId = String(program.rows[0]!.id);
+
+    // Created under UPPER CASE — the fold this repo owns, not the caller's job.
+    const created = await createRequest(ctx.db, {
+      email: 'FIFTY.POINTS@EXAMPLE.TEST',
+      qtyDeclared: 5,
+      programId,
+      serviceAreaId: areaId,
+      customerId: customer.id,
+      pickupAddress: '1 Composition Test Road',
+      source: 'customer',
+      now: NOW,
+    });
+    const scheduled = await schedule(ctx.db, created.id, {
+      expectedRevision: created.revision,
+      pickupAt: NOW + 86_400_000,
+      now: NOW,
+    });
+    const collected = await collect(ctx.db, created.id, {
+      expectedRevision: scheduled.revision,
+      now: NOW,
+    });
+    const received = await receive(ctx.db, created.id, {
+      expectedRevision: collected.revision,
+      now: NOW,
+    });
+
+    // THE AWARD ITSELF — 5 accepted × 10 a unit, the "50 points" the report named.
+    const outcome = await inspect(ctx.db, created.id, {
+      expectedRevision: received.revision,
+      qtyAccepted: 5,
+      qtyRejected: 0,
+      now: NOW,
+    });
+    expect(outcome.award).toEqual({ points: 50, balance: 50 });
+
+    // The write, confirmed directly against the folded key — a customer who
+    // earned 50 has a balance ROW that says so.
+    const written = await ctx.db.execute(sql`
+      SELECT balance FROM marketing_balances WHERE customer_email = ${FOLDED}`);
+    expect(written.rows[0]).toMatchObject({ balance: 50 });
+
+    // The read — the SAME path `/account/rewards` calls, over a session signed
+    // in under a DIFFERENT casing of the same address.
+    const res = await client.app.request('/api/marketing/me/points', {
+      headers: { cookie: customer.cookie, origin: TEST_ORIGIN },
+    });
+    expect(res.status).toBe(200);
+    expect((await json<{ points: number; lifetimeEarned: number }>(res)).points).toBe(50);
   });
 });
 
