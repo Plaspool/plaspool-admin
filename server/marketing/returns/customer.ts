@@ -173,15 +173,25 @@ export function createCustomerReturnRoutes(deps: CustomerReturnDeps = {}): Hono<
    * ledger next door pages because a ledger genuinely grows without bound; this
    * does not.
    *
-   * NOT `driver_phone` AND NOT `revision`. A shopper is told who is coming, not
-   * how to ring them directly, and a revision is a concurrency token for a screen
-   * that can write.
+   * `customer_name`, `customer_phone`, `pickup_address` AND `service_area_id`
+   * ARE IN THE PROJECTION, so the storefront can prefill its return form from a
+   * shopper's most recent request instead of asking them to retype it. This is
+   * the shopper's OWN data, returning to the shopper who supplied it, over a
+   * route that already derives identity from `who.email` below and can only
+   * ever answer that identity's rows — a different question from a third
+   * party's contact details, and the answer here is different too.
+   *
+   * NOT `driver_phone` AND NOT `revision`, and that line has not moved: a
+   * shopper is told who is coming, not how to ring them directly, and a
+   * revision is a concurrency token for a screen that can write. Those stay
+   * withheld regardless of whose data the rest of the row is.
    */
   routes.get('/me/returns', async (c) => {
     const who = await requireCustomer(c);
     const res = await currentDb(c).execute(sql`
       SELECT id, status, qty_declared, qty_accepted, points_awarded,
-             pickup_scheduled_at, driver_name, created_at
+             pickup_scheduled_at, driver_name, created_at,
+             customer_name, customer_phone, pickup_address, service_area_id
         FROM marketing_return_requests
        WHERE customer_email = ${who.email.trim().toLowerCase()}
        ORDER BY created_at DESC, id DESC
@@ -198,6 +208,10 @@ export function createCustomerReturnRoutes(deps: CustomerReturnDeps = {}): Hono<
           row.pickup_scheduled_at == null ? null : Number(row.pickup_scheduled_at),
         driverName: row.driver_name == null ? null : String(row.driver_name),
         createdAt: Number(row.created_at),
+        customerName: row.customer_name == null ? null : String(row.customer_name),
+        customerPhone: row.customer_phone == null ? null : String(row.customer_phone),
+        pickupAddress: row.pickup_address == null ? null : String(row.pickup_address),
+        serviceAreaId: row.service_area_id == null ? null : String(row.service_area_id),
       })),
     });
   });

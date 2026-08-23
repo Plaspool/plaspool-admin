@@ -949,21 +949,35 @@ describe('a customer asking for their own return', () => {
     expect(page.items).toHaveLength(1);
     /*
      * KEY-SET EQUALITY ON THE ITEM. Not `driverName` alone asserted truthy —
-     * the full projection, so a widened row (`driverPhone`, `revision`) fails
-     * here instead of shipping. NOT `driverPhone`: a shopper is told who is
-     * coming, not how to ring them directly. NOT `revision`: that is a
-     * concurrency token for a screen that can write, and this one cannot.
+     * the full projection, so a widened or narrowed row fails here instead of
+     * shipping quietly. The four contact fields (`customerName`,
+     * `customerPhone`, `pickupAddress`, `serviceAreaId`) are the shopper's OWN
+     * data, returned to the shopper who supplied it, over a route that already
+     * derives their identity from their session — a different question from the
+     * two fields still withheld below.
      */
     expect(Object.keys(page.items[0]!).sort()).toEqual([
       'createdAt',
+      'customerName',
+      'customerPhone',
       'driverName',
       'id',
+      'pickupAddress',
       'pickupScheduledAt',
       'pointsAwarded',
       'qtyAccepted',
       'qtyDeclared',
+      'serviceAreaId',
       'status',
     ]);
+
+    /* NOT `driverPhone`: a shopper is told who is coming, not how to ring them
+       directly. NOT `revision`: that is a concurrency token for a screen that
+       can write, and this one cannot. The exclusion is now a deliberate line
+       rather than an accident of a short SELECT, so it gets its own pin here,
+       independent of the key-set equality above. */
+    expect(page.items[0]).not.toHaveProperty('driverPhone');
+    expect(page.items[0]).not.toHaveProperty('revision');
 
     /* The other half: somebody else's return is not in it. Filed by a second
        signed-in customer rather than inserted raw, so this exercises the same
