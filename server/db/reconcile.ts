@@ -143,13 +143,30 @@ export interface ReconcilePlan {
  * read-only.
  */
 export async function planReconciliation(db: Db, folder: string): Promise<ReconcilePlan> {
-  const journal = [...readJournal(folder)].sort((a, b) => a.idx - b.idx);
+  /*
+   * READ IN FILE ORDER AND CHECKED IN FILE ORDER — deliberately NOT sorted by
+   * `idx` first, and re-sorting it here would silently reopen the hole this
+   * check exists to close.
+   *
+   * `readJournal` returns entries in `_journal.json` order, which is the order
+   * drizzle's migrator applies them and therefore the order the ledger's `id`
+   * column ascends in. Position-matching is only meaningful when file order IS
+   * idx order. Sorting before this loop makes `entry.idx !== i` test something
+   * weaker — merely that the idx values form the set 0..n-1 — which a journal
+   * listing idx 0, 2, 1 satisfies perfectly while its file order disagrees with
+   * its idx order, exactly the case abort 4 is for.
+   *
+   * Once this passes, file order and idx order provably agree, so everything
+   * below can index `journal` positionally without sorting it.
+   */
+  const journal = readJournal(folder);
   journal.forEach((entry, i) => {
     if (entry.idx !== i) {
       throw new ReconcileAbortError(
-        `${folder}/meta/_journal.json: entry "${entry.tag}" has idx ${entry.idx}, expected ${i} — ` +
-          `the journal is not a clean 0..n-1 run in file order, so row position cannot be trusted to ` +
-          `mean the same thing as journal position. Fix the journal by hand before reconciling.`,
+        `${folder}/meta/_journal.json: entry "${entry.tag}" is at file position ${i} but carries ` +
+          `idx ${entry.idx} — the journal is not a clean 0..n-1 run in file order, so row position ` +
+          `cannot be trusted to mean the same thing as journal position. Fix the journal by hand ` +
+          `before reconciling.`,
       );
     }
   });
@@ -247,23 +264,47 @@ function plural(n: number, one: string, many: string): string {
 }
 
 /**
- * Write the plan. Issues one `UPDATE ... WHERE id = ...` per changed row,
- * each on its own statement — NEVER `db.transaction`, which the Neon HTTP
- * driver this runs against in production rejects unconditionally (spec §4.3a
- * / CLAUDE.md §3). Rows that are already correct are skipped, not rewritten.
+ * Write the plan, as ONE statement — all of it lands or none of it does.
  *
- * Returns the number of rows actually written.
+ * NEVER `db.transaction`, which the Neon HTTP driver this runs against in
+ * production rejects unconditionally (spec §4.3a / CLAUDE.md §3). That ban is
+ * precisely why this is a single `UPDATE ... FROM (VALUES ...)` rather than the
+ * obvious loop of one `UPDATE ... WHERE id = ...` per row: with no transaction
+ * available, statement count IS the atomicity. A loop of N autocommitting
+ * statements that loses its connection at row k leaves rows 0..k-1 rewritten
+ * and the rest untouched — a ledger half-way between two states, which is the
+ * "NEW, uninspected state" `main()` warns about below, reached by a path where
+ * that warning never prints because it guards only the verification step.
+ * CLAUDE.md §3 prescribes the same shape for the same reason: "Write one
+ * guarded statement with CTEs instead."
+ *
+ * Rows already correct are left out of the VALUES list entirely rather than
+ * rewritten to themselves.
+ *
+ * Every column is cast explicitly. A bound parameter inside `VALUES` has no
+ * column to infer its type from, so `created_at` in particular would arrive as
+ * `text` against a `bigint` column and the whole statement would be refused
+ * (CLAUDE.md §5's cast rule, the same trap in a different shape).
+ *
+ * Returns how many rows the database says it changed — `RETURNING`, not a
+ * counter incremented by the caller's own intentions.
  */
 export async function applyReconciliation(db: Db, plan: ReconcilePlan): Promise<number> {
-  let written = 0;
-  for (const entry of plan.entries) {
-    if (!entry.hashChanged && !entry.createdAtChanged) continue;
-    await db.execute(
-      sql`UPDATE ${LEDGER} SET hash = ${entry.toHash}, created_at = ${entry.toCreatedAt} WHERE id = ${entry.id}`,
-    );
-    written += 1;
-  }
-  return written;
+  const changed = plan.entries.filter((e) => e.hashChanged || e.createdAtChanged);
+  if (changed.length === 0) return 0;
+
+  const values = changed.map(
+    (e) => sql`(${e.id}::integer, ${e.toHash}::text, ${e.toCreatedAt}::bigint)`,
+  );
+
+  const res = await db.execute(sql`
+    UPDATE ${LEDGER} AS l
+       SET hash = v.hash, created_at = v.created_at
+      FROM (VALUES ${sql.join(values, sql`, `)}) AS v(id, hash, created_at)
+     WHERE l.id = v.id
+    RETURNING l.id`);
+
+  return res.rows.length;
 }
 
 // ------------------------------------------------------- reporting

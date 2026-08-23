@@ -76,6 +76,24 @@ function buildFolder(entries: FixtureEntry[]): string {
   return dir;
 }
 
+/**
+ * Replace `db.execute` with a counting passthrough, and return the count.
+ *
+ * Mutates the instance rather than using `vi.spyOn`: `execute` arrives from
+ * drizzle's prototype chain, and the point here is only "how many round trips
+ * did this function make", which the simplest possible wrapper answers.
+ */
+function countingExecute(db: Db): () => number {
+  let calls = 0;
+  const target = db as unknown as { execute: (query: unknown) => unknown };
+  const original = target.execute.bind(target);
+  target.execute = (query: unknown) => {
+    calls += 1;
+    return original(query);
+  };
+  return () => calls;
+}
+
 /** Append a line to a migration file already written into `dir` — a "hand-edit after apply". */
 function editFile(dir: string, tag: string): void {
   const path = join(dir, `${tag}.sql`);
@@ -154,6 +172,40 @@ describe('reconciling a ledger drifted by a hand-edited migration file', () => {
     expect(String(row.rows[0].hash)).toBe(edited.toHash);
     expect(Number(row.rows[0].created_at)).toBe(edited.toCreatedAt);
 
+    await expect(assertJournalApplied(db, dir)).resolves.toBeUndefined();
+  });
+
+  it('writes every changed row in ONE statement, so a failure cannot half-repair the ledger', async () => {
+    /*
+     * ATOMICITY, ASSERTED BY STATEMENT COUNT, because that is the only
+     * observable form it takes here. `db.transaction` is banned outright
+     * (CLAUDE.md §3 — the Neon HTTP driver throws on it unconditionally while
+     * PGlite supports it, so a transaction passes every test here and 500s in
+     * production). One statement is therefore the ONLY way this write is
+     * all-or-nothing, and a per-row loop would leave rows 0..k-1 committed and
+     * the rest not when the connection drops at row k — the "NEW, uninspected
+     * state" this file's own post-write error warns about, arrived at without
+     * that warning ever printing.
+     *
+     * Two files are edited so there are genuinely two rows to write: with one,
+     * a loop and a single statement are indistinguishable.
+     */
+    const db = pglite();
+    const dir = buildFolder(THREE);
+    await migrate(db as never, { migrationsFolder: dir });
+    editFile(dir, '0000_nappy_betty_brant');
+    editFile(dir, '0002_lyrical_kate_bishop');
+
+    const plan = await planReconciliation(db, dir);
+    expect(plan.entries.filter((e) => e.hashChanged).length).toBe(2);
+
+    const statements = countingExecute(db);
+    const written = await applyReconciliation(db, plan);
+
+    expect(written).toBe(2);
+    expect(statements()).toBe(1);
+
+    // And the count is not the whole claim — both rows really landed.
     await expect(assertJournalApplied(db, dir)).resolves.toBeUndefined();
   });
 
@@ -260,10 +312,45 @@ describe('refusing rather than guessing', () => {
     ]);
 
     await expect(planReconciliation(db, gappedDir)).rejects.toThrow(ReconcileAbortError);
-    // Sorted by idx ascending, the run is 0, 2, 5 — the gap surfaces at
-    // position 1 (idx 2, not the expected 1), regardless of the FILE order
-    // the three entries were declared in above.
+    // Read in FILE order, the run is 0, 5, 2 — the gap surfaces at position 1,
+    // which carries idx 5 rather than the expected 1.
     await expect(planReconciliation(db, gappedDir)).rejects.toThrow(
+      /is not a clean 0\.\.n-1 run in file order/,
+    );
+  });
+
+  it('aborts when the journal file order and idx order disagree', async () => {
+    /*
+     * THE CASE THE idx CHECK IS ACTUALLY FOR, and the one it missed while it
+     * sorted by idx before looking.
+     *
+     * `readJournal` returns entries in `_journal.json` file order, which is the
+     * order drizzle's migrator applies them and therefore the order the
+     * ledger's `id` ascends in. So position-matching is only meaningful when
+     * file order IS idx order. Here it is not: the file lists idx 0, 2, 1.
+     * Sorting first hid that completely — after a sort the idx values are the
+     * clean set 0,1,2 and every `idx === i` holds.
+     *
+     * `when` still ascends in FILE order (1000, 2000, 3000) so the migrator
+     * applies all three; a journal whose `when` fell backwards would be
+     * stopped earlier by the high-water mark and never reach this check.
+     *
+     * Both permuted files are then edited, so neither can act as an anchor —
+     * without that, the position/hash contradiction check above already
+     * catches this and the gap never shows.
+     */
+    const db = pglite();
+    const permutedDir = buildFolder([
+      { idx: 0, tag: '0000_nappy_betty_brant', when: 1_000 },
+      { idx: 2, tag: '0001_bound_search_input', when: 2_000 },
+      { idx: 1, tag: '0002_lyrical_kate_bishop', when: 3_000 },
+    ]);
+    await migrate(db as never, { migrationsFolder: permutedDir });
+    editFile(permutedDir, '0001_bound_search_input');
+    editFile(permutedDir, '0002_lyrical_kate_bishop');
+
+    await expect(planReconciliation(db, permutedDir)).rejects.toThrow(ReconcileAbortError);
+    await expect(planReconciliation(db, permutedDir)).rejects.toThrow(
       /is not a clean 0\.\.n-1 run in file order/,
     );
   });
