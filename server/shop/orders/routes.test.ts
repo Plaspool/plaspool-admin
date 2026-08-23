@@ -604,7 +604,11 @@ describe('the admin surface', () => {
   it('cancel emits order.cancelled and records the acting owner', async () => {
     const read = await paidOrder(CUSTOMER_A);
     const owner = await login(ctx.users.owner);
-    const res = await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`);
+    // A paid order must now choose explicitly (task-d3); this test is about
+    // the event and the actor, so it chooses the plain no-refund path.
+    const res = await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`, {
+      refund: { kind: 'none' },
+    });
     expect(res.status).toBe(200);
 
     const body = await json<{ order: { status: string } }>(res);
@@ -654,7 +658,9 @@ describe('the admin surface', () => {
       }),
     });
 
-    const res = await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`);
+    const res = await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`, {
+      refund: { kind: 'none' },
+    });
     expect(res.status).toBe(200);
     expect(released).toEqual([{ orderId: read.order.id, reason: 'admin' }]);
   });
@@ -662,8 +668,11 @@ describe('the admin surface', () => {
   it('cancelling a cancelled order is a 409 precondition_failed, not a 500', async () => {
     const read = await paidOrder(CUSTOMER_A);
     const owner = await login(ctx.users.owner);
-    await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`);
+    await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`, { refund: { kind: 'none' } });
 
+    // The order is `cancelled` now, not `paid` — task-d3's "a paid order must
+    // choose" no longer applies, and this second call is refused by the SAME
+    // CAS guard it always was, with no body at all.
     const again = await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`);
     expect(again.status).toBe(409);
     expect(await json(again)).toMatchObject({ error: 'precondition_failed', operation: 'cancel' });
@@ -1045,6 +1054,14 @@ describe('POST /admin/sweep is the caller both sweepers otherwise lack', () => {
      * the reason CLAUDE.md §2 gives: the composition root is where this wiring
      * lives, and a test that called `renderConfirmation` directly would be testing
      * a function that was never wrong.
+     *
+     * THE PATH IS `/account/orders/…`, NOT `/shop/orders/…` — commit `e4b532c`
+     * corrected both link builders (`storefront-url.ts`'s `orderUrl` and
+     * `orders/mailer.ts`'s `accessUrl`) after finding `/shop/orders/…` 404s on
+     * the deployed storefront, but left this regex pinned to the path it
+     * replaced. A regression test asserting a path the app no longer builds
+     * cannot fail on a regression back to it — it is red unconditionally
+     * instead, which is what running the suite after that commit shows.
      */
     const sent: RenderedEmail[] = [];
     const mailer: Mailer = {
@@ -1059,7 +1076,7 @@ describe('POST /admin/sweep is the caller both sweepers otherwise lack', () => {
 
     expect(sent.length).toBeGreaterThan(0);
     for (const message of sent) {
-      const link = /https?:\/\/[^\s"<]*\/shop\/orders\/[^\s"<]+/.exec(message.body);
+      const link = /https?:\/\/[^\s"<]*\/account\/orders\/[^\s"<]+/.exec(message.body);
       expect(link, `${message.subject} carries no order link`).not.toBeNull();
       expect(link![0]).toContain(DEFAULT_STOREFRONT_ORIGIN);
       // The assertion the old suite was missing.

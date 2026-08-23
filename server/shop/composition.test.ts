@@ -36,9 +36,11 @@ import { resetOrdersDeps, resolveDeps } from './orders/ports';
 import { resetOrderTables } from './orders/test/harness';
 import { checkoutCompleted, insertEvents, CHECKOUT } from './orders/test/fixtures';
 import { sweepCommerceEvents, type ConsumerDeps } from './orders/repo/consumer';
+import { collect, createRequest, inspect, receive, schedule } from '../marketing/returns/repo';
 import { markOrderPaid, readOrderByCheckout } from './orders/repo/orders';
 import { paymentPort } from './payments/port';
 import { storeEvent } from './payments/webhook';
+import { FakeProvider } from './payments/provider/fake';
 
 let ctx: TestCtx;
 let client: HttpClient;
@@ -791,6 +793,100 @@ describe('admin#2 — the customer points seam', () => {
 
     expect(res.headers.get('access-control-allow-credentials')).toBeNull();
   });
+
+  it('awards a return through the real inspect path, and /me/points reads back the same balance', async () => {
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * THE TEST THIS FILE DID NOT HAVE — every case above proves the SEAM with
+     * a balance `grant()` seeds by raw SQL, never one `inspect()` actually
+     * wrote. A reported defect ("the customer got the 50-point award email,
+     * the admin shows the return awarded, but `/account/rewards` reads 0")
+     * can only be pinned by going through BOTH real writers at once: the
+     * marketing repo's own award path AND the real `createApp()` this file
+     * exists to exercise — exactly the discipline that caught the missing
+     * `customer` resolver and the missing CORS header on this same route.
+     *
+     * THE TWO EMAILS ARE DELIBERATELY DIFFERENTLY CASED. The session is
+     * signed in under one spelling and the return is logged under another,
+     * to pin the promise `ledger/repo.ts`'s `foldEmail` and
+     * `returns/repo.ts`'s own copy of it both make: `marketing_balances`,
+     * `marketing_ledger` and the open-return index all key on the SAME
+     * lower-cased address regardless of how either caller happened to spell
+     * it. If a fold were ever missing on either side, this is the test that
+     * would show the ledger and the wallet disagreeing about who earned it.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    const customer = await signedInCustomer('Fifty.Points@Example.Test');
+    const FOLDED = 'fifty.points@example.test';
+
+    const area = await ctx.db.execute(sql`
+      INSERT INTO marketing_service_areas (id, key, region, name, active, created_at, updated_at)
+      VALUES ('area_composition_0001', 'composition-test', 'Farflung Province',
+              'Composition Test District', true, ${NOW}, ${NOW})
+      ON CONFLICT (id) DO UPDATE SET active = true
+      RETURNING id`);
+    const areaId = String(area.rows[0]!.id);
+
+    const program = await ctx.db.execute(sql`
+      INSERT INTO marketing_programs
+        (id, key, kind, name, points_label_singular, points_label_plural,
+         unit_label_singular, unit_label_plural, min_units_per_return, points_per_unit,
+         status, created_at, updated_at)
+      VALUES ('prg_composition_0001', 'composition-test-caps', 'unit_return', 'Composition Caps',
+              'Composition Point', 'Composition Points', 'canister', 'canisters',
+              4, 10, 'active', ${NOW}, ${NOW})
+      ON CONFLICT (id) DO UPDATE SET status = 'active'
+      RETURNING id`);
+    const programId = String(program.rows[0]!.id);
+
+    // Created under UPPER CASE — the fold this repo owns, not the caller's job.
+    const created = await createRequest(ctx.db, {
+      email: 'FIFTY.POINTS@EXAMPLE.TEST',
+      qtyDeclared: 5,
+      programId,
+      serviceAreaId: areaId,
+      customerId: customer.id,
+      pickupAddress: '1 Composition Test Road',
+      source: 'customer',
+      now: NOW,
+    });
+    const scheduled = await schedule(ctx.db, created.id, {
+      expectedRevision: created.revision,
+      pickupAt: NOW + 86_400_000,
+      now: NOW,
+    });
+    const collected = await collect(ctx.db, created.id, {
+      expectedRevision: scheduled.revision,
+      now: NOW,
+    });
+    const received = await receive(ctx.db, created.id, {
+      expectedRevision: collected.revision,
+      now: NOW,
+    });
+
+    // THE AWARD ITSELF — 5 accepted × 10 a unit, the "50 points" the report named.
+    const outcome = await inspect(ctx.db, created.id, {
+      expectedRevision: received.revision,
+      qtyAccepted: 5,
+      qtyRejected: 0,
+      now: NOW,
+    });
+    expect(outcome.award).toEqual({ points: 50, balance: 50 });
+
+    // The write, confirmed directly against the folded key — a customer who
+    // earned 50 has a balance ROW that says so.
+    const written = await ctx.db.execute(sql`
+      SELECT balance FROM marketing_balances WHERE customer_email = ${FOLDED}`);
+    expect(written.rows[0]).toMatchObject({ balance: 50 });
+
+    // The read — the SAME path `/account/rewards` calls, over a session signed
+    // in under a DIFFERENT casing of the same address.
+    const res = await client.app.request('/api/marketing/me/points', {
+      headers: { cookie: customer.cookie, origin: TEST_ORIGIN },
+    });
+    expect(res.status).toBe(200);
+    expect((await json<{ points: number; lifetimeEarned: number }>(res)).points).toBe(50);
+  });
 });
 
 // ============================================================================
@@ -1045,5 +1141,200 @@ describe('a customer asking for their own return', () => {
 
     expect(res.status).toBe(401);
     expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+  });
+});
+
+// ============================================================================
+// task-d3 — CANCEL REFUNDS A PAID ORDER FIRST, THEN CANCELS IT
+// ============================================================================
+
+/**
+ * `POST /admin/orders/:id/cancel`'s `refund` seam, PROVEN THROUGH THE REAL
+ * `createApp()` — the same reason admin#27's test above lives in THIS file
+ * rather than in `orders/routes.test.ts`. That suite's own `ordersClient`
+ * registers its OWN fakes before building the app (`orders/test/app.ts`), so
+ * it proves the ROUTE and nothing about the WIRING `server/index.ts` does —
+ * and the wiring is exactly what broke silently before, on this file's own
+ * telling. `refund` is a new seam of the identical shape, added to `AppDeps`
+ * and `registerOrdersDefaults` for this.
+ *
+ * A `FakeProvider`, injected through `AppDeps.provider` (added for this task),
+ * stands in for the NETWORK boundary only. `createRefund`, its sum-check
+ * guard and its idempotency key are all the REAL functions from
+ * `payments/refunds.ts`, reached through the REAL `registerOrdersDefaults`
+ * call — nothing about the orchestration under test is faked.
+ */
+describe('task-d3: cancelling a paid order refunds it first, through the real refund seam', () => {
+  let provider: FakeProvider;
+  let money: HttpClient;
+
+  beforeEach(() => {
+    provider = new FakeProvider();
+    /*
+     * A SECOND `resetOrdersDeps()`, AFTER THE FILE-LEVEL ONE ABOVE. That outer
+     * hook already built `client = httpClient(ctx.db)` — with no `provider` —
+     * which means its OWN `createApp()` call already won the fill-only-absent
+     * race on the `refund` seam, registering a closure that resolves the REAL
+     * `paystackProvider()`. `registerOrdersDefaults` fills only what is
+     * absent, so `httpClient(ctx.db, { provider })` below would otherwise never
+     * get a chance to register ITS OWN, `FakeProvider`-backed closure — every
+     * request through `money` would reach the real Paystack adapter and 401.
+     * Resetting again, immediately before building `money`, is what makes this
+     * describe block's own registration the one that wins.
+     */
+    resetOrdersDeps();
+    money = httpClient(ctx.db, { provider });
+  });
+
+  async function ownerOf(client: HttpClient): Promise<HttpClient> {
+    const res = await client.post('/api/auth/login', {
+      email: 'owner@test.local',
+      password: SEED_PASSWORD,
+    });
+    expect(res.status).toBe(200);
+    return client;
+  }
+
+  /**
+   * A CAPTURED intent, ready to refund — inserted directly, like `intent()`
+   * above, but WITH a `provider_intent_id`: `createRefund` throws
+   * `provider_intent_id` without one, and the read-only `intent()` helper
+   * above never needed one because nothing there calls a refund.
+   */
+  async function capturedIntent(id: string, amount: number): Promise<void> {
+    await ctx.db.execute(sql`
+      INSERT INTO shop_payment_intents
+        (id, checkout_id, provider_intent_id, amount, currency, status,
+         idempotency_key, request_fingerprint, refunded_total,
+         created_at, updated_at, revision)
+      VALUES (${id}, ${CHECKOUT}, ${'prov_' + id}, ${amount}, 'USD', 'captured',
+              ${'idem_' + id}, 'fp', 0, ${NOW}, ${NOW}, 1)`);
+  }
+
+  async function refundRows(intentId: string): Promise<{ amount: number; status: string }[]> {
+    const res = await ctx.db.execute(
+      sql`SELECT amount, status FROM shop_refunds WHERE intent_id = ${intentId} ORDER BY created_at`,
+    );
+    return res.rows.map((r) => ({ amount: Number(r.amount), status: String(r.status) }));
+  }
+
+  async function intentRefundedTotal(intentId: string): Promise<number> {
+    const res = await ctx.db.execute(
+      sql`SELECT refunded_total FROM shop_payment_intents WHERE id = ${intentId}`,
+    );
+    return Number(res.rows[0]?.refunded_total ?? -1);
+  }
+
+  it('refunds 100% of the order total, then cancels it', async () => {
+    const intentId = 'pi_task_d3_100';
+    const orderId = await paidOrder('cust_task_d3_100', intentId);
+    await capturedIntent(intentId, 5400); // matches paidOrder's fixture grandTotal
+
+    const owner = await ownerOf(money);
+    const res = await owner.post(`/api/shop/admin/orders/${orderId}/cancel`, {
+      refund: { kind: 'percent', percent: 100 },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await json<{ order: { status: string; refundedTotal: number } }>(res);
+    expect(body.order.status).toBe('cancelled');
+    // The customer-facing mirror of the refund (`withRefundedAmount`), not
+    // only the intent-side ledger.
+    expect(body.order.refundedTotal).toBe(5400);
+
+    expect(await refundRows(intentId)).toEqual([{ amount: 5400, status: 'pending' }]);
+    expect(await intentRefundedTotal(intentId)).toBe(5400);
+    // Reached the ACTUAL provider boundary exactly once — proof this ran
+    // through the real `createRefund`, not a stand-in for the whole seam.
+    expect(provider.countOf('refund')).toBe(1);
+  });
+
+  it('refunds 75% of an odd total, rounded to the nearest minor unit, then cancels', async () => {
+    const customerId = 'cust_task_d3_75';
+    const intentId = 'pi_task_d3_75';
+    // 1001 minor units is deliberately not divisible by 4: 1001 * 0.75 =
+    // 750.75, which only proves the rounding rule if the total is odd enough
+    // to produce a fraction. `Math.round` → 751 (round half up); see
+    // `refundPercentOf` in `server/shop/orders/routes.ts`.
+    await insertEvents(ctx.db, [
+      { ...checkoutCompleted({ customerId, subtotal: 1001, shippingTotal: 0, taxTotal: 0, grandTotal: 1001 }), id: `evt_chk_${customerId}` },
+    ]);
+    await sweepCommerceEvents(ctx.db, DEPS, NOW);
+    const read = (await readOrderByCheckout(ctx.db, CHECKOUT))!;
+    await markOrderPaid(ctx.db, read.order.id, NOW, null, null, intentId);
+    await capturedIntent(intentId, 1001);
+
+    const owner = await ownerOf(money);
+    const res = await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`, {
+      refund: { kind: 'percent', percent: 75 },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await json<{ order: { status: string; refundedTotal: number } }>(res);
+    expect(body.order.status).toBe('cancelled');
+    expect(body.order.refundedTotal).toBe(751);
+    expect(await refundRows(intentId)).toEqual([{ amount: 751, status: 'pending' }]);
+    expect(await intentRefundedTotal(intentId)).toBe(751);
+  });
+
+  it('cancels an unpaid order without attempting any refund, and refuses one if offered', async () => {
+    const customerId = 'cust_task_d3_pending';
+    await insertEvents(ctx.db, [
+      { ...checkoutCompleted({ customerId }), id: `evt_chk_${customerId}` },
+    ]);
+    await sweepCommerceEvents(ctx.db, DEPS, NOW);
+    const read = (await readOrderByCheckout(ctx.db, CHECKOUT))!;
+    expect(read.order.status).toBe('pending'); // never marked paid
+
+    // Programmed to fail LOUDLY if this route ever reaches it — belt and
+    // braces alongside the direct call-count assertion below.
+    provider.program('refund', { kind: 'fail', code: 'invalid_request' });
+    const owner = await ownerOf(money);
+
+    // "An unpaid order must never reach a refund path" (task-d3, verbatim):
+    // offering one is refused outright, before anything is cancelled.
+    const offered = await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`, {
+      refund: { kind: 'none' },
+    });
+    expect(offered.status).toBe(400);
+
+    const res = await owner.post(`/api/shop/admin/orders/${read.order.id}/cancel`);
+    expect(res.status).toBe(200);
+    const body = await json<{ order: { status: string } }>(res);
+    expect(body.order.status).toBe('cancelled');
+    expect(provider.countOf('refund')).toBe(0);
+  });
+
+  /**
+   * A REAL DOUBLE-CLICK: the SAME preset, sent twice. 75% is what a real
+   * operator's second click actually resends (the button's own request body
+   * carries no memory of the first click), and 75%+75% exceeds the intent's
+   * amount — so the SECOND call's `createRefund` is refused by the sum-check
+   * guard itself before it can ever reach the provider a second time. See
+   * `server/shop/orders/routes.ts`'s block comment on this route for the case
+   * where a SMALLER repeated amount instead reads through
+   * `createRefund`'s idempotency key; either way nothing here double-refunds.
+   */
+  it('a double-submit refunds once, cancels once, and refuses the second attempt', async () => {
+    const intentId = 'pi_task_d3_double';
+    const orderId = await paidOrder('cust_task_d3_double', intentId);
+    await capturedIntent(intentId, 5400);
+
+    const owner = await ownerOf(money);
+    const body = { refund: { kind: 'percent' as const, percent: 75 as const } };
+
+    const first = await owner.post(`/api/shop/admin/orders/${orderId}/cancel`, body);
+    expect(first.status).toBe(200);
+    expect((await json<{ order: { status: string } }>(first)).order.status).toBe('cancelled');
+
+    const second = await owner.post(`/api/shop/admin/orders/${orderId}/cancel`, body);
+    // Refused — either the sum-check guard (this case) or `cancelOrder`'s own
+    // CAS on an already-cancelled order, but never a 200.
+    expect(second.status).not.toBe(200);
+
+    // THE PROPERTY THAT MATTERS: exactly one refund moved, exactly once.
+    expect(await refundRows(intentId)).toEqual([{ amount: 4050, status: 'pending' }]);
+    expect(await intentRefundedTotal(intentId)).toBe(4050);
+    expect(provider.countOf('refund')).toBe(1);
   });
 });

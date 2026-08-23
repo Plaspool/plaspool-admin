@@ -891,6 +891,23 @@ export interface ShopRefund {
   createdAt: number;
 }
 
+/**
+ * What `POST /admin/orders/:id/cancel` refunds before it cancels, for a PAID
+ * order (`server/shop/orders/routes.ts`, task-d3). REQUIRED by the server on a
+ * paid order — there is no default, because a silent default is the exact
+ * mismatch the feature exists to close: "if you refund without cancelling,
+ * what happens when you cancel by that logic." Never sent for a PENDING
+ * order, which the server refuses (there is nothing to refund).
+ *
+ * `'none'` IS "CANCEL WITHOUT REFUNDING", CHOSEN ON PURPOSE. A refund of zero
+ * is not a refund — `parseRefund` already refuses to parse one — so this is
+ * the named alternative rather than an amount box left empty.
+ */
+export type CancelRefundChoice =
+  | { kind: 'percent'; percent: 100 | 75 }
+  | { kind: 'amount'; amount: number }
+  | { kind: 'none' };
+
 // ============================================================================
 // ROUTES
 // ============================================================================
@@ -1427,11 +1444,19 @@ export const shopApi = {
     );
   },
 
-  /** OWNER-ONLY. Cancelling releases stock and stops the order ever shipping. */
-  async cancelOrder(id: string): Promise<ShopOrder> {
+  /**
+   * OWNER-ONLY. Cancelling releases stock and stops the order ever shipping.
+   *
+   * `refund` IS REQUIRED FOR A PAID ORDER (task-d3) — the server 400s a paid
+   * cancel sent with none, because "cancel and leave the money unaddressed" is
+   * no longer a default this route falls into silently. Omit it entirely for
+   * a PENDING order, which the server refuses to see one at all: nothing was
+   * captured, so there is nothing to choose an amount of.
+   */
+  async cancelOrder(id: string, refund?: CancelRefundChoice): Promise<ShopOrder> {
     const res = await shopFetch<{ order: ShopOrder }>(`${BASE}/orders/${seg(id)}/cancel`, {
       method: 'POST',
-      body: {},
+      body: refund === undefined ? {} : { refund },
       id,
       subject: 'Order',
     });

@@ -231,6 +231,37 @@ export function primaryOf(row: { allowedActions?: ReturnAction[] }): Exclude<Ret
   return first === undefined || first === 'note' ? null : first;
 }
 
+/** A discretionary top-up decided in `ReturnModal`'s stepper, carried across the
+ *  navigation to the full inspection screen. */
+export interface BonusIntent {
+  points: number;
+  reason: string;
+}
+
+/**
+ * Reads back what `ReturnModal`'s "Count what arrived…" wrote into `?bonus=` and
+ * `?bonusWhy=` — see `ReturnsScreen.tsx`, the only place that writes them.
+ *
+ * THIS USED TO GO NOWHERE. Both params landed in the URL and nothing on the full
+ * screen ever read them back: the bonus a person typed and clicked through was
+ * silently dropped before a request naming it was ever built, for every role and
+ * every return — the actual shape of "I set a bonus and nothing happened", which
+ * had nothing to do with who was signed in or what status the return was in.
+ *
+ * MALFORMED INPUT READS AS "NO BONUS" RATHER THAN AS AN ERROR — a tampered link,
+ * a `bonus` with no `bonusWhy` — because the inspection itself is legal without
+ * one and a link this screen cannot fully honour should not block the write it
+ * still can make.
+ */
+export function bonusFromParams(params: URLSearchParams): BonusIntent | null {
+  const raw = params.get('bonus');
+  if (raw === null) return null;
+  const points = Number(raw);
+  const reason = (params.get('bonusWhy') ?? '').trim();
+  if (!Number.isInteger(points) || points < 1 || reason === '') return null;
+  return { points, reason };
+}
+
 /** Everything after the primary that this screen can actually perform: the
  *  server's own list, minus the one already rendered, minus the two that are
  *  not a form here (`note` has its own composer, `inspect` its own panel). */

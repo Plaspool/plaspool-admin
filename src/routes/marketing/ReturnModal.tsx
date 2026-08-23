@@ -212,8 +212,18 @@ export function ReturnModal({
                   programme's rate is money, and the role matrix reserves money
                   for the owner. A disabled control would advertise a capability
                   and then refuse it.
+
+                  `request?.status === 'received'` TOO, NOT JUST `pointsAwarded
+                  === null` — and that used to be the whole condition. Both are
+                  true for every pre-award status, not only `received`, so a
+                  `collected` return ("Picked up") offered this exact box with
+                  no way to submit it: the button below that carries the bonus
+                  onward is gated on `received` alone, and a bonus typed here for
+                  any earlier status had nowhere to go — the box, the stepper and
+                  the reason field all filled in, and then nothing to press. Same
+                  rule as the role gate right above: absent, not disabled.
                 */}
-                {isOwner && row?.pointsAwarded === null && (
+                {isOwner && row?.pointsAwarded === null && request?.status === 'received' && (
                   <div className="mktmodal__bonus">
                     <h4 className="mktmodal__section">Add a bonus</h4>
                     <QtyStepper

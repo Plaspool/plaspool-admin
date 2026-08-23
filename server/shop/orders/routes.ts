@@ -11,7 +11,7 @@ import {
   str,
 } from '../../middleware/errors';
 import { requireAuth, requireOwner } from '../../middleware/session';
-import { NotFoundError } from '../../repo/errors';
+import { BadRequestError, NotFoundError } from '../../repo/errors';
 import { rejectNul } from '../../repo/cursor';
 import { currentDb, currentUser } from '../../app-env';
 import type { AppEnv } from '../../app-env';
@@ -187,7 +187,42 @@ const FulfillmentStatusBody = z
   .object({ status: z.enum(['shipped', 'delivered', 'cancelled']) })
   .strict();
 
-const CancelBody = z.object({}).strict();
+/**
+ * task-d3: cancelling a PAID order must choose a refund amount; cancelling a
+ * PENDING one must not, because there is nothing captured to refund. Which of
+ * those applies depends on the ORDER's status, so this schema only fixes the
+ * SHAPE of a choice — the handler decides whether one is required, forbidden,
+ * or free to be absent, against the order it actually read.
+ */
+const CancelRefundChoice = z.discriminatedUnion('kind', [
+  /** The two presets task-d3 asks for by name — not an arbitrary percentage. */
+  z
+    .object({ kind: z.literal('percent'), percent: z.union([z.literal(100), z.literal(75)]) })
+    .strict(),
+  z.object({ kind: z.literal('amount'), amount: z.number().int().positive() }).strict(),
+  /** Explicit "cancel without refunding" — never a silent default. A refund of
+   *  zero is not a refund; this is the named alternative to typing one. */
+  z.object({ kind: z.literal('none') }).strict(),
+]);
+
+const CancelBody = z.object({ refund: CancelRefundChoice.optional() }).strict();
+
+/**
+ * Percentage of a FROZEN total, in minor units. `100` is returned as the exact
+ * total with no arithmetic — a full refund must never land a unit short of it
+ * because of a multiply-then-divide it never needed.
+ *
+ * ROUNDS TO THE NEAREST MINOR UNIT (half up). A percentage of an odd total
+ * does not divide evenly, and floor/ceil would each ALWAYS favour one side —
+ * the shop on every odd total under floor, the customer on every odd total
+ * under ceil. Rounding to nearest is the rule under which neither party is
+ * favoured by the direction alone; the minor-unit remainder this leaves on an
+ * odd total goes wherever ordinary rounding sends it, not wherever is
+ * administratively convenient.
+ */
+function refundPercentOf(grandTotal: number, percent: 75 | 100): number {
+  return percent === 100 ? grandTotal : Math.round((grandTotal * percent) / 100);
+}
 
 // ------------------------------------------------------------------- shaping
 
@@ -560,11 +595,122 @@ function registerAdminRoutes(
    * behind owner, and cancelling a paid order is the most money-adjacent thing here: it
    * tells every consumer of `order.cancelled` to release the stock and it stops the order
    * ever shipping.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * TASK-D3: A PAID ORDER'S CANCEL REFUNDS FIRST, THEN CANCELS — IN THAT ORDER,
+   * AND THE ORDER IS THE WHOLE ANSWER TO "WHAT IF ONE HALF FAILS".
+   *
+   * If the refund throws — `createRefund`'s own contract makes every
+   * SYNCHRONOUS throw a KNOWN, permanent refusal (an over-large amount, a
+   * provider failure that means no money moved) — this handler returns before
+   * `cancelOrder` is ever reached: the order is untouched and the request is
+   * safe to retry. The reverse order has no good failure mode: cancel first,
+   * and a refund that then fails leaves a CANCELLED order (stock already
+   * released, the customer already told "this is off") with no money back —
+   * and nothing transitions a cancelled order back to paid to retry from.
+   * Refund-first makes the failure boring: nothing happened yet, try again.
+   *
+   * A refund call that does NOT throw — `succeeded`, or the provider's
+   * ordinary `pending` (Paystack settles most refunds asynchronously) — is
+   * treated as "the money is committed to move", and cancellation proceeds.
+   * This mirrors `refunds.ts`'s OWN distinction between a KNOWN failure
+   * (throws, its reservation released) and an INDETERMINATE one (returns
+   * normally, reservation held): this route invents no second opinion about
+   * which is which.
+   *
+   * THE ASYNCHRONOUS FLIP SIDE IS A REAL, CURRENTLY-SILENT GAP, NAMED RATHER
+   * THAN HIDDEN: a `pending` refund that later fails AT THE PROVIDER — arriving
+   * via `payment.refunded`'s webhook well after this order is already
+   * cancelled — tells Orders nothing. `applyRefundEvent` emits
+   * `payment.refunded` only on `succeeded` (`refunds.ts`); a failed settlement
+   * emits no event at all, so nothing here ever hears about it and the order
+   * stays `cancelled` with no automatic signal that its refund did not, in
+   * fact, land. The intent-level ledger — `shop_refunds.status`,
+   * `shop_payment_intents.refunded_total` — still records the truth for
+   * reconciliation; it is only the ORDER's status that goes stale. Left named
+   * rather than patched here, because closing it means changing `refunds.ts`'s
+   * webhook-emission contract, and that file's own header protects it ("do not
+   * rebuild any of it") — the fix reaches into the payments subsystem's own
+   * settlement semantics, not into a cancel-and-refund order screen.
+   * ═══════════════════════════════════════════════════════════════════════════
    */
   routes.post('/admin/orders/:id/cancel', requireOwner(), async (c) => {
     const db = currentDb(c);
-    await readJsonOrEmpty(c, CancelBody);
+    const body = await readJsonOrEmpty(c, CancelBody);
     const read = await requireOrder(db, pathParam(c, 'id'));
+
+    /*
+     * AN UNPAID ORDER MUST NEVER REACH A REFUND PATH (task-d3, verbatim).
+     * Nothing was captured, so a `refund` choice here can only be a caller
+     * that misread the order's own state — refused rather than quietly
+     * ignored, so the mistake is visible immediately rather than hidden
+     * behind a cancel that did less than the caller thought it asked for.
+     */
+    if (read.order.status === 'pending' && body.refund !== undefined) {
+      throw new BadRequestError('refund');
+    }
+
+    let refundedAmount: number | undefined;
+
+    /*
+     * A PAID ORDER MUST CHOOSE, EXPLICITLY — never a silent default. Before
+     * this change, `POST .../cancel` with no body cancelled a paid order and
+     * refunded nothing, which is precisely the mismatch task-d3 exists to
+     * close ("if you refund without cancelling, what happens when you cancel
+     * by that logic"). `{ kind: 'none' }` can still choose that same outcome —
+     * it is simply chosen on purpose and named, and the admin UI's button
+     * reads "cancel without refunding" rather than leaving an amount box
+     * empty and hoping the operator reads a hint underneath it.
+     */
+    if (read.order.status === 'paid') {
+      if (body.refund === undefined) throw new BadRequestError('refund');
+
+      if (body.refund.kind !== 'none') {
+        refundedAmount =
+          body.refund.kind === 'percent'
+            ? refundPercentOf(read.order.grandTotal, body.refund.percent)
+            : body.refund.amount;
+
+        /*
+         * A STATIC BOUND, NOT THE CONCURRENCY GUARD. `grandTotal` is FROZEN and
+         * never changes for this order, so comparing a requested amount
+         * against it races nothing and reads no total that a concurrent write
+         * could invalidate. The real guard — the one that must never be
+         * reimplemented as a JS pre-check — is the UPDATE's own WHERE inside
+         * `createRefund`, and it runs regardless of this line. This only turns
+         * an over-large custom amount into a same-request 400 instead of a
+         * round trip that was always going to be refused.
+         */
+        if (refundedAmount > read.order.grandTotal) throw new BadRequestError('amount');
+        if (!read.order.paymentIntentId) throw new BadRequestError('paymentIntentId');
+
+        const issue = deps().refund;
+        if (!issue) {
+          throw new Error('refunds are not wired: pass `refund` to registerOrdersDefaults');
+        }
+
+        /*
+         * THE DETERMINISTIC KEY IS THIS ROUTE'S OWN DOUBLE-SUBMIT SAFETY, and it
+         * is keyed on the AMOUNT as well as the order. Keying on the order
+         * alone would make a retry with a DIFFERENT amount — after a failure
+         * between the refund and the cancel below — silently read through to
+         * the FIRST amount and ignore the second, which is a wrong number no
+         * caller would see. Keying on both makes an identical retry idempotent
+         * (same key, `createRefund`'s own read-through) and a genuinely
+         * different amount either succeed or fail LOUDLY against the intent's
+         * real remaining balance, never silently.
+         */
+        await issue(db, {
+          intentId: read.order.paymentIntentId,
+          amount: refundedAmount,
+          idempotencyKey: `cancel:${read.order.id}:${refundedAmount}`,
+          createdBy: currentUser(c).id,
+        });
+        // Did not throw: the money is committed to move (see the block comment
+        // on this route). Cancel is what happens next, unconditionally.
+      }
+    }
+
     const order = await cancelOrder(
       db,
       read.order.id,
@@ -573,6 +719,7 @@ function registerAdminRoutes(
         actorId: currentUser(c).id,
         link: linkFor(c, read, deps()),
         templates: await loadTemplates(db),
+        refundedAmount,
       },
       deps().now(),
       null,

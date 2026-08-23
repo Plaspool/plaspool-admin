@@ -7,6 +7,8 @@ import {
   safeFormatMinor,
   moneyRefusalMessage,
   parseRefund,
+  plainMajor,
+  type CancelRefundChoice,
   type OrderStatus,
   type ShopFulfillment,
   type ShopOrderDetail,
@@ -288,6 +290,26 @@ const asSearch = (params: URLSearchParams): string => {
   const qs = params.toString();
   return qs === '' ? '' : `?${qs}`;
 };
+
+/**
+ * Percentage of a total, in minor units — MUST MATCH `refundPercentOf` in
+ * `server/shop/orders/routes.ts` exactly, digit for digit, because this is a
+ * PREVIEW of what the server is about to do: the confirm dialog quotes this
+ * number before the request is sent, and a client that rounded differently
+ * would show the customer one figure and charge another.
+ */
+function refundPercentOf(grandTotal: number, percent: 75 | 100): number {
+  return percent === 100 ? grandTotal : Math.round((grandTotal * percent) / 100);
+}
+
+/** What a cancel-with-refund choice actually refunds, in minor units — for
+ *  the confirm dialog and the post-cancel toast, never sent to the server as
+ *  a number (the choice itself is what travels; see `shopApi.cancelOrder`). */
+function previewCancelRefund(choice: CancelRefundChoice, grandTotal: number): number {
+  if (choice.kind === 'none') return 0;
+  if (choice.kind === 'percent') return refundPercentOf(grandTotal, choice.percent);
+  return choice.amount;
+}
 
 export default function ShopOrders() {
   const [params] = useSearchParams();
@@ -1237,6 +1259,11 @@ function OrderDetail({ id }: { id: string }) {
   const [loading, setLoading] = useState(true);
   const showSkeletons = useDelayed(loading);
   const [confirm, setConfirm] = useState<'cancel' | 'refund' | null>(null);
+  /** Which refund, if any, accompanies a PAID order's cancel — set by the
+   *  button pressed, read by the confirm dialog and the request it sends.
+   *  Meaningless outside `order.status === 'paid'`, which every reader below
+   *  checks before trusting it. */
+  const [cancelChoice, setCancelChoice] = useState<CancelRefundChoice | null>(null);
 
   const load = useCallback(
     (signal?: AbortSignal) => {
@@ -1306,6 +1333,30 @@ function OrderDetail({ id }: { id: string }) {
       ? null
       : moneyRefusalMessage(refundParse.reason, payment!.currency, refundable);
 
+  // -------------------------------------------------------- cancel & refund
+  /**
+   * task-d3: THE CUSTOM-AMOUNT INPUT FOR A PAID ORDER'S OWN CANCEL FLOW, KEPT
+   * SEPARATE FROM `refundDraft` ABOVE ON PURPOSE.
+   *
+   * The two boxes bound against different numbers and can even be visible on
+   * the same order under different circumstances (a `payment` panel absent
+   * here bounds by `order.grandTotal` regardless; the standalone Refund box
+   * above bounds by what the PAYMENT panel says is left, and is null-checked
+   * out entirely when there is no panel). Sharing one piece of state between
+   * two boxes with two different meanings and two different maximums is how a
+   * draft typed for one silently submits against the other.
+   */
+  const cancelRefundMax = detail?.order.grandTotal ?? 0;
+  const [cancelAmountDraft, setCancelAmountDraft] = useState('');
+  const cancelCurrency = detail?.order.currency ?? 'NGN';
+  const cancelAmountParse = detail
+    ? parseRefund(cancelAmountDraft, cancelCurrency, cancelRefundMax)
+    : null;
+  const cancelAmountError =
+    cancelAmountDraft.trim() === '' || !cancelAmountParse || cancelAmountParse.ok
+      ? null
+      : moneyRefusalMessage(cancelAmountParse.reason, cancelCurrency, cancelRefundMax);
+
   if (loading && !detail) {
     return showSkeletons ? (
       <div className="panel" aria-hidden="true">
@@ -1336,6 +1387,11 @@ function OrderDetail({ id }: { id: string }) {
   const { order, lines, fulfillments, timeline, emails } = detail;
   const currency = order.currency;
   const closed = order.status === 'cancelled' || order.status === 'refunded';
+  /** The choice the cancel dialog acts on — `'none'` for anything that is not
+   *  a PAID order, regardless of stale `cancelChoice` state, so the dialog can
+   *  never quote or send a refund the current order does not admit. */
+  const cancelRefund: CancelRefundChoice =
+    order.status === 'paid' ? (cancelChoice ?? { kind: 'none' }) : { kind: 'none' };
 
   return (
     <>
@@ -1565,74 +1621,183 @@ function OrderDetail({ id }: { id: string }) {
                 <h2 className="panel__title">Owner actions</h2>
               </div>
               <div className="panel__body shopform">
-                <div className="shopform__field">
-                  <span className="label">Refund</span>
-                  {payment ? (
-                    refundable === 0 ? (
-                      <p className="panel__note">Nothing left to refund on this payment.</p>
-                    ) : (
-                      <>
-                        <div className="shopform__row">
-                          <input
-                            className="input"
-                            style={{ maxWidth: '10rem' }}
-                            inputMode="decimal"
-                            value={refundDraft}
-                            aria-label={`Refund amount in ${payment.currency}`}
-                            placeholder={majorPlaceholder(refundable, payment.currency)}
-                            onChange={(e) => setRefundDraft(e.target.value)}
-                          />
-                          <button
-                            className="btn btn--danger btn--sm"
-                            disabled={!refundParse?.ok}
-                            onClick={() => setConfirm('refund')}
-                          >
-                            Refund
-                          </button>
-                        </div>
-                        <input
-                          className="input"
-                          value={refundReason}
-                          maxLength={500}
-                          aria-label="Refund reason"
-                          placeholder="Why (optional, kept with the refund)"
-                          onChange={(e) => setRefundReason(e.target.value)}
-                        />
-                        {refundError ? (
-                          <p className="shopform__error">{refundError}</p>
-                        ) : (
-                          <p className="shopform__hint">
-                            In {payment.currency}, as you would write it —{' '}
-                            {safeFormatMinor(refundable, payment.currency)} is what is left.
-                          </p>
-                        )}
-                      </>
-                    )
-                  ) : (
-                    <p className="panel__note">
-                      Refunding needs the payments connection this deployment does
-                      not wire up.
+                {order.status === 'paid' ? (
+                  /*
+                   * task-d3: A PAID ORDER'S CANCEL AND REFUND ARE ONE ACTION,
+                   * NOT TWO. The owner's own framing was "if you refund
+                   * without cancelling, what happens when you cancel by that
+                   * logic" — so there is exactly one choice to make here, and
+                   * every button that starts it opens the same confirm dialog
+                   * carrying that choice. `shopApi.cancelOrder` does the
+                   * refund first and the cancel second, server-side, in one
+                   * request; see `server/shop/orders/routes.ts` for why that
+                   * order is the one that leaves a failure safe to retry.
+                   */
+                  <div className="shopform__field">
+                    <span className="label">Cancel &amp; refund</span>
+                    <p className="shopform__hint">
+                      Cancelling a paid order refunds it first, then releases the
+                      stock. Choose how much goes back to the customer.
                     </p>
-                  )}
-                </div>
+                    <div className="shopform__row">
+                      <button
+                        className="btn btn--outline btn--sm"
+                        onClick={() => {
+                          setCancelChoice({ kind: 'percent', percent: 100 });
+                          setConfirm('cancel');
+                        }}
+                      >
+                        Refund 100% &amp; cancel
+                      </button>
+                      <button
+                        className="btn btn--outline btn--sm"
+                        onClick={() => {
+                          setCancelChoice({ kind: 'percent', percent: 75 });
+                          setConfirm('cancel');
+                        }}
+                      >
+                        Refund 75% &amp; cancel
+                      </button>
+                    </div>
+                    <div className="shopform__row">
+                      <input
+                        className="input"
+                        style={{ maxWidth: '10rem' }}
+                        inputMode="decimal"
+                        value={cancelAmountDraft}
+                        aria-label={`Custom refund amount in ${cancelCurrency}`}
+                        placeholder={majorPlaceholder(cancelRefundMax, cancelCurrency)}
+                        onChange={(e) => setCancelAmountDraft(e.target.value)}
+                      />
+                      <button
+                        className="btn btn--danger btn--sm"
+                        disabled={!cancelAmountParse?.ok}
+                        onClick={() => {
+                          if (!cancelAmountParse?.ok) return;
+                          setCancelChoice({ kind: 'amount', amount: cancelAmountParse.minor });
+                          setConfirm('cancel');
+                        }}
+                      >
+                        Refund custom amount &amp; cancel
+                      </button>
+                    </div>
+                    {cancelAmountError ? (
+                      <p className="shopform__error">{cancelAmountError}</p>
+                    ) : (
+                      <p className="shopform__hint">
+                        In {cancelCurrency}, as you would write it —{' '}
+                        {safeFormatMinor(cancelRefundMax, cancelCurrency)} is the order total.
+                      </p>
+                    )}
+                    <button
+                      className="btn btn--ghost btn--sm"
+                      onClick={() => {
+                        setCancelChoice({ kind: 'none' });
+                        setConfirm('cancel');
+                      }}
+                    >
+                      Cancel without refunding
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="shopform__field">
+                      <span className="label">Refund</span>
+                      {payment ? (
+                        refundable === 0 ? (
+                          <p className="panel__note">Nothing left to refund on this payment.</p>
+                        ) : (
+                          <>
+                            <div className="shopform__row">
+                              <button
+                                type="button"
+                                className="btn btn--ghost btn--sm"
+                                onClick={() =>
+                                  setRefundDraft(
+                                    plainMajor(refundPercentOf(refundable, 100), payment.currency),
+                                  )
+                                }
+                              >
+                                100%
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn--ghost btn--sm"
+                                onClick={() =>
+                                  setRefundDraft(
+                                    plainMajor(refundPercentOf(refundable, 75), payment.currency),
+                                  )
+                                }
+                              >
+                                75%
+                              </button>
+                            </div>
+                            <div className="shopform__row">
+                              <input
+                                className="input"
+                                style={{ maxWidth: '10rem' }}
+                                inputMode="decimal"
+                                value={refundDraft}
+                                aria-label={`Refund amount in ${payment.currency}`}
+                                placeholder={majorPlaceholder(refundable, payment.currency)}
+                                onChange={(e) => setRefundDraft(e.target.value)}
+                              />
+                              <button
+                                className="btn btn--danger btn--sm"
+                                disabled={!refundParse?.ok}
+                                onClick={() => setConfirm('refund')}
+                              >
+                                Refund
+                              </button>
+                            </div>
+                            <input
+                              className="input"
+                              value={refundReason}
+                              maxLength={500}
+                              aria-label="Refund reason"
+                              placeholder="Why (optional, kept with the refund)"
+                              onChange={(e) => setRefundReason(e.target.value)}
+                            />
+                            {refundError ? (
+                              <p className="shopform__error">{refundError}</p>
+                            ) : (
+                              <p className="shopform__hint">
+                                In {payment.currency}, as you would write it —{' '}
+                                {safeFormatMinor(refundable, payment.currency)} is what is left.
+                              </p>
+                            )}
+                          </>
+                        )
+                      ) : (
+                        <p className="panel__note">
+                          Refunding needs the payments connection this deployment does
+                          not wire up.
+                        </p>
+                      )}
+                    </div>
 
-                <div className="shopform__field">
-                  <span className="label">Cancel</span>
-                  <button
-                    className="btn btn--danger btn--sm"
-                    disabled={closed || order.status === 'fulfilled'}
-                    onClick={() => setConfirm('cancel')}
-                  >
-                    Cancel this order
-                  </button>
-                  <p className="shopform__hint">
-                    {closed
-                      ? 'This order is already closed.'
-                      : order.status === 'fulfilled'
-                        ? 'It has already shipped, so cancelling would not stop anything.'
-                        : 'Releases the reserved stock and stops the order ever shipping.'}
-                  </p>
-                </div>
+                    <div className="shopform__field">
+                      <span className="label">Cancel</span>
+                      <button
+                        className="btn btn--danger btn--sm"
+                        disabled={closed || order.status === 'fulfilled'}
+                        onClick={() => {
+                          setCancelChoice(null);
+                          setConfirm('cancel');
+                        }}
+                      >
+                        Cancel this order
+                      </button>
+                      <p className="shopform__hint">
+                        {closed
+                          ? 'This order is already closed.'
+                          : order.status === 'fulfilled'
+                            ? 'It has already shipped, so cancelling would not stop anything.'
+                            : 'No payment was taken, so nothing is refunded.'}
+                      </p>
+                    </div>
+                  </>
+                )}
               </div>
             </section>
           )}
@@ -1642,20 +1807,37 @@ function OrderDetail({ id }: { id: string }) {
       <ConfirmDialog
         open={confirm === 'cancel'}
         onClose={() => setConfirm(null)}
-        title="Cancel this order?"
+        title={cancelRefund.kind === 'none' ? 'Cancel this order?' : 'Refund and cancel this order?'}
         description={
-          <>
-            {order.orderNumber} for {safeFormatMinor(order.grandTotal, currency)} will be
-            cancelled, the reserved stock released, and the customer emailed. This does
-            not refund anything — do that separately.
-          </>
+          cancelRefund.kind === 'none' ? (
+            <>
+              {order.orderNumber} for {safeFormatMinor(order.grandTotal, currency)} will be
+              cancelled, the reserved stock released, and the customer emailed.
+              {order.status === 'paid'
+                ? ' Nothing will be refunded.'
+                : ' No payment was taken, so nothing is refunded.'}
+            </>
+          ) : (
+            <>
+              {formatMinor(previewCancelRefund(cancelRefund, order.grandTotal), currency)} goes
+              back to the customer&rsquo;s card, then {order.orderNumber} will be cancelled and
+              the reserved stock released. Refunds cannot be taken back from this screen.
+            </>
+          )
         }
-        confirmLabel="Cancel the order"
+        confirmLabel={cancelRefund.kind === 'none' ? 'Cancel the order' : 'Refund and cancel'}
         danger
         onConfirm={async () => {
           try {
-            await shopApi.cancelOrder(order.id);
-            notify('Order cancelled', { tone: 'danger' });
+            await shopApi.cancelOrder(order.id, order.status === 'paid' ? cancelRefund : undefined);
+            notify(
+              cancelRefund.kind === 'none'
+                ? 'Order cancelled'
+                : `Refunded ${formatMinor(previewCancelRefund(cancelRefund, order.grandTotal), currency)} and cancelled the order`,
+              { tone: 'danger' },
+            );
+            setCancelChoice(null);
+            setCancelAmountDraft('');
             await load();
           } catch (err) {
             notify(explain(err, 'cancellation'), { tone: 'danger' });

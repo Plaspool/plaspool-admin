@@ -89,7 +89,7 @@ describe('orderUrl', () => {
   it('builds the customer-facing order page on the STOREFRONT', () => {
     process.env.STOREFRONT_ORIGIN = 'https://shop.test';
     expect(orderUrl('2026-000005-F', 'tok123')).toBe(
-      'https://shop.test/shop/orders/2026-000005-F?token=tok123',
+      'https://shop.test/account/orders/2026-000005-F?token=tok123',
     );
   });
 
@@ -102,7 +102,25 @@ describe('orderUrl', () => {
      */
     process.env.STOREFRONT_ORIGIN = 'https://shop.test';
     const url = orderUrl('a b/c', 'tok+with/slash=');
-    expect(url).toContain('/shop/orders/a%20b%2Fc');
+    expect(url).toContain('/account/orders/a%20b%2Fc');
     expect(url).toContain('token=tok%2Bwith%2Fslash%3D');
+  });
+
+  it('THE FIX FOR THE 404: is never /shop/orders/…, which the storefront does not serve', () => {
+    /*
+     * Verified 2026-08-23 against the deployed storefront:
+     * `/shop/orders/2026-000007-E?token=…` is a 404; `/account/orders/2026-000007-E`
+     * is a 200. The route lives at
+     * `apps/storefront/app/(shop)/account/orders/[orderNumber]/page.tsx` in the
+     * storefront repo. This is the regression pin for THAT bug, not the
+     * admin-origin bug the rest of this file guards — the module comment above
+     * `orderUrl` asserted the `/shop/orders/…` shape for as long as the bug lived,
+     * which is exactly why an assertion on the literal string matters more than a
+     * comment.
+     */
+    process.env.STOREFRONT_ORIGIN = 'https://shop.test';
+    const url = orderUrl('2026-000007-E', 'tok123');
+    expect(url).not.toContain('/shop/orders/');
+    expect(url).toBe('https://shop.test/account/orders/2026-000007-E?token=tok123');
   });
 });

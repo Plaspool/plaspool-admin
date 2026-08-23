@@ -198,10 +198,19 @@ export interface AccessLink {
   token: string;
 }
 
+/**
+ * THE PATH IS `/account/orders/:orderNumber`, NOT `/shop/orders/:orderNumber`.
+ * Every order email built the latter until 2026-08-23 — it 404s on the deployed
+ * storefront, which serves this page from
+ * `apps/storefront/app/(shop)/account/orders/[orderNumber]/page.tsx` and reads
+ * `?token=` there. See `server/shop/storefront-url.ts`'s `orderUrl`, which builds
+ * the identical shape and carries the same fix; this function is the second of
+ * the two places that duplicated the path rather than calling it.
+ */
 function accessUrl(view: OrderMailView, link: AccessLink | null): string {
   if (!link) return '';
   return (
-    `${link.origin}/shop/orders/${encodeURIComponent(view.orderNumber)}` +
+    `${link.origin}/account/orders/${encodeURIComponent(view.orderNumber)}` +
     `?token=${encodeURIComponent(link.token)}`
   );
 }

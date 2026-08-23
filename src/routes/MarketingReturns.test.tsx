@@ -59,6 +59,7 @@ import {
   areasView,
   boardPage,
   cabbageArea,
+  collectedRow,
   needsActionPage,
   programs,
   requestedNew,
@@ -498,6 +499,29 @@ describe('acting on a card', () => {
      * rather than in a settings panel. */
     await waitFor(() => expect(within(modal).getByText(/67 Bottle Caps total/)).toBeTruthy());
     expect(within(modal).getByText(/42 \+ 25 bonus/)).toBeTruthy();
+  });
+
+  it('keeps the bonus stepper off a return that has not reached Received yet — absent, not disabled', async () => {
+    /*
+     * `pointsAwarded === null` is true for a COLLECTED return exactly as it is
+     * for a received one — nothing has been inspected yet either way — so
+     * gating the stepper on that alone offered an owner this box on a return
+     * still "Picked up", with no button anywhere in the modal that could ever
+     * submit what they typed into it: "Count what arrived…" below only renders
+     * for `status === 'received'`. Same rule this file already pins for a
+     * writer, applied to the OTHER precondition the box was missing.
+     */
+    fixture.session.user.role = 'owner';
+    aWorkingShop();
+    when(`/api/marketing/returns/${collectedRow.id}`, returnDetails.collected);
+    mount();
+
+    await settled();
+    await userEvent.click(card(collectedRow.customerEmail));
+
+    const modal = await screen.findByRole('dialog', { name: 'Return' });
+    expect(within(modal).queryByLabelText('Bonus points')).toBeNull();
+    expect(within(modal).queryByRole('button', { name: /count what arrived/i })).toBeNull();
   });
 });
 

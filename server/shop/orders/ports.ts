@@ -78,6 +78,53 @@ export type PaymentDrain = (db: Db, now: number) => Promise<{ count: number }>;
  *  commerce-event sweep still runs — rather than crashing. */
 export const NO_PAYMENT_DRAIN: PaymentDrain = () => Promise.resolve({ count: 0 });
 
+/**
+ * Execute a refund against a payment intent, and report enough of it to react.
+ *
+ * STRUCTURAL, LIKE `PaymentDrain` ABOVE AND FOR THE IDENTICAL REASON. Contract
+ * §2 R3 forbids Orders importing Payments directly, and `shared/commerce/
+ * ports.ts`'s own `PaymentPort` is deliberately READ-ONLY — that file's words:
+ * "Payments has no port into Orders, and Orders has no port into Payments for
+ * state changes." A refund is a state change, so it does not belong on that
+ * shared, append-only interface; it belongs here, exactly where `drainPayments`
+ * already lives for the same reason, typed by SHAPE rather than by importing
+ * `server/shop/payments/refunds.ts`.
+ *
+ * task-d3: "cancelling a paid order should refund it first." That coupling is
+ * an ADMIN-INITIATED, SYNCHRONOUS operation — one owner clicking one button —
+ * not the reactive, event-carried causation contract §2 R4 governs between
+ * subsystems reacting to each other's independent events. The composition root
+ * (`server/index.ts`) is the one place allowed to know both halves and is
+ * where this is wired to the real `createRefund`; Orders itself only ever sees
+ * this shape.
+ *
+ * THROWS ON A GENUINE REFUSAL — a known provider failure, an amount that would
+ * exceed what is left to refund, a wrong intent status — so the caller can
+ * decide NOT to cancel. See the long comment on the admin cancel route in
+ * `routes.ts` for why refund-then-cancel, in that order, is what makes a
+ * thrown refund leave the order untouched rather than cancelled with no money
+ * moved.
+ */
+export interface RefundOutcome {
+  refundId: string;
+  /** Paystack refunds settle asynchronously; `pending` is a normal, accepted
+   *  outcome here and is treated the same as `succeeded` by the caller — see
+   *  `routes.ts`. */
+  status: 'pending' | 'succeeded' | 'failed';
+}
+export type RefundIssuer = (
+  db: Db,
+  args: {
+    intentId: string;
+    /** Minor units, positive. */
+    amount: number;
+    reason?: string;
+    idempotencyKey: string;
+    /** `users.id` of the owner who asked for it. */
+    createdBy: string;
+  },
+) => Promise<RefundOutcome>;
+
 export interface OrdersDeps {
   customer?: CustomerResolver;
   payments?: PaymentPort<Db> | null;
@@ -126,6 +173,15 @@ export interface OrdersDeps {
    * customer whose checkout fails.
    */
   redemption?: (db: Db) => PointsRedemptionPort;
+  /**
+   * ISSUE A REFUND (task-d3). Wired at the composition root to the real
+   * `createRefund`. `null` when absent — NOT a silent no-op like `drainPayments`
+   * defaults to, because a refund the admin asked for and did not get is a
+   * customer out of pocket rather than a missed maintenance sweep. The cancel
+   * route in `routes.ts` throws loudly, rather than proceeding, when a refund
+   * was requested and this is absent.
+   */
+  refund?: RefundIssuer;
 }
 
 export interface ResolvedDeps {
@@ -135,6 +191,7 @@ export interface ResolvedDeps {
   mailer: Mailer;
   drainPayments: PaymentDrain;
   redemption?: (db: Db) => PointsRedemptionPort;
+  refund: RefundIssuer | null;
 }
 
 /**
@@ -222,6 +279,7 @@ export function resolveDeps(deps: OrdersDeps = {}): ResolvedDeps {
     mailer: merged.mailer ?? DEFAULT_MAILER,
     drainPayments: merged.drainPayments ?? NO_PAYMENT_DRAIN,
     redemption: merged.redemption,
+    refund: merged.refund ?? null,
   };
 }
 

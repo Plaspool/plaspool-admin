@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { toEpochMs, toEpochMsOrNull, uniqueViolation } from '../../db/client';
 import { BadRequestError, NotFoundError } from '../../repo/errors';
+import { BUILT_IN } from '../../email/system-templates';
 import { fmtUnits } from '../../../shared/marketing/copy';
 import {
   AlreadyAwardedError,
@@ -25,6 +26,7 @@ import {
 } from './events';
 import type { SQL } from 'drizzle-orm';
 import type { Db } from '../../db/client';
+import type { TemplateSet } from '../../email/system-templates';
 import type { ProgramLabels } from '../../../shared/marketing/copy';
 import type { ReturnAction, ReturnStatus } from '../errors';
 import type { ActorType } from '../ledger/fragments';
@@ -981,6 +983,16 @@ export async function inspect(
   db: Db,
   id: string,
   input: InspectInput,
+  /*
+   * DEFAULTS TO `BUILT_IN`, exactly as `server/shop/orders/repo/orders.ts`'s
+   * write functions default theirs: every existing caller — this file's own
+   * tests included — still renders the correct, branded default without
+   * threading anything through. `routes.ts`'s `/returns/:id/inspect` handler
+   * is the one caller that resolves a REAL `TemplateSet` via `loadTemplates`,
+   * so an owner's edit to "Return: points awarded" actually reaches a
+   * customer.
+   */
+  templates: TemplateSet = BUILT_IN,
 ): Promise<InspectOutcome> {
   if (!Number.isInteger(input.qtyAccepted) || input.qtyAccepted < 0) {
     throw new BadRequestError('qtyAccepted');
@@ -1048,7 +1060,9 @@ export async function inspect(
     pointsPerUnitSnapshot: perUnit,
     rejectedReason: storedReason,
   };
-  const mail = awarded ? renderReturnAwarded(view, labels) : renderReturnRejected(view, labels);
+  const mail = awarded
+    ? renderReturnAwarded(view, labels, templates)
+    : renderReturnRejected(view, labels, templates);
 
   /*
    * THE CTE LIST IS ASSEMBLED, NOT TEMPLATED WITH DISABLED ARMS. The
