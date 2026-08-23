@@ -77,45 +77,6 @@ async function drive(rows: EventFixture[], now = NOW) {
   return sweepCommerceEvents(ctx.db, DEPS, now);
 }
 
-/**
- * Run a body with `commerce_events_type_ck` removed — and this helper is itself a
- * finding, recorded as `AMENDMENTS.md` A-002.
- *
- * `0140_payments` adds `CHECK (type IN (…the eleven…))` to the shared outbox, reasoning
- * that "a type outside the list is a §6 violation, and a loud one here beats an event
- * nobody consumes". That is defensible on its own terms. Its measured consequence is
- * that **contract §6 rule 4 cannot be reached through the database at all**: a row whose
- * type this build has never heard of is `23514` at insert time, so the branch that
- * "ignores it and logs" is unreachable from a real table.
- *
- * Worse, and this is the part that is not merely academic: §6 rule 1 requires the event
- * to be written in the SAME TRANSACTION as the state change that caused it. So a
- * producer that emits a twelfth type before the migration adding it has run does not get
- * a logged no-op — **it loses its state change**. A capture would roll back because the
- * outbox refused the event type.
- *
- * The consumer's behaviour is correct either way and is what is under test here, so the
- * constraint is lifted for the duration rather than worked around. Nothing in
- * `server/shop/orders/**` depends on its absence.
- */
-async function withoutEventTypeCheck(body: () => Promise<void>): Promise<void> {
-  await ctx.db.execute(sql`ALTER TABLE commerce_events DROP CONSTRAINT IF EXISTS commerce_events_type_ck`);
-  try {
-    await body();
-  } finally {
-    // The rows written by the body would themselves violate the constraint being put
-    // back, so the table is emptied first. `beforeEach` would do it anyway; doing it
-    // here keeps the restore from depending on test order.
-    await resetOrderTables(ctx.db);
-    await ctx.db.execute(sql`
-      ALTER TABLE commerce_events ADD CONSTRAINT commerce_events_type_ck CHECK (type IN (
-        'catalog.variant.published', 'catalog.variant.unpublished',
-        'catalog.inventory.adjusted', 'checkout.completed',
-        'payment.authorized', 'payment.captured', 'payment.failed',
-        'payment.refunded', 'order.created', 'order.fulfilled', 'order.cancelled'))`);
-  }
-}
-
 async function orderCount(): Promise<number> {
   const res = await ctx.db.execute(sql`SELECT count(*)::int AS n FROM shop_orders`);
   return Number(res.rows[0].n);
@@ -410,32 +371,37 @@ describe('events arrive out of order (brief §4)', () => {
 
 describe('unknown and unhandled types (contract §6 rule 4)', () => {
   it('an unknown type is ignored and logged, never thrown', async () => {
-    await withoutEventTypeCheck(async () => {
-      const summary = await drive([unknownType()]);
-      expect(summary).toMatchObject({ applied: 0, ignored: 1, parked: 0 });
-      const consumption = await consumptionOf(ctx.db, 'evt_unknown_1');
-      expect(consumption?.outcome).toBe('ignored');
-      expect(consumption?.detail).toContain('unknown type: loyalty.points.awarded');
-    });
+    const summary = await drive([unknownType()]);
+    expect(summary).toMatchObject({ applied: 0, ignored: 1, parked: 0 });
+    const consumption = await consumptionOf(ctx.db, 'evt_unknown_1');
+    expect(consumption?.outcome).toBe('ignored');
+    expect(consumption?.detail).toContain('unknown type: loyalty.points.awarded');
   });
 
-  it('and the shared CHECK is currently what makes that branch unreachable', async () => {
+  it('and the shared outbox accepts it, which is what keeps that branch reachable', async () => {
     /*
-     * THE FINDING, AS AN ASSERTION (AMENDMENTS.md A-002). With
-     * `commerce_events_type_ck` in place — added by `0140_payments` — a twelfth event
-     * type cannot be WRITTEN at all. Since §6 rule 1 requires the event to be written in
-     * the same transaction as the state change that caused it, the producer of such an
-     * event does not get a logged no-op in its consumer: it loses its own state change to
-     * a 23514.
+     * THE RESOLVED FINDING, KEPT AS AN ASSERTION. `0140_payments` briefly carried
+     * `CHECK (type IN (…))` on the shared outbox. Orders raised A-ORD-001 against it and
+     * the migration now DROPs it — on already-migrated databases as well as new ones — so
+     * `commerce_events.type` is deliberately unconstrained and this row simply lands.
      *
-     * Asserted here rather than argued in a document, because §9's evidence rule is
-     * binding and because this test will start failing the day the constraint changes —
-     * which is exactly when this comment should be re-read.
+     * The reason is §6 rule 1: the outbox INSERT shares a transaction with the state
+     * change that caused it, so a CHECK on `type` does not reject an event, it rolls back
+     * the event's CAUSE. A producer emitting a type this build has never heard of would
+     * lose its capture instead of getting the logged no-op above — and §6 rule 4 exists
+     * precisely so a producer can ship ahead of its consumers.
+     *
+     * Asserted rather than argued, because re-adding that constraint would break a
+     * payment path while showing up here only as the test above failing for what looks
+     * like a consumer reason.
      */
-    await expect(insertEvents(ctx.db, [unknownType()])).rejects.toMatchObject({
-      code: '23514',
-      constraint: 'commerce_events_type_ck',
-    });
+    await insertEvents(ctx.db, [unknownType()]);
+    const written = await ctx.db.execute(sql`SELECT type FROM commerce_events WHERE id = 'evt_unknown_1'`);
+    expect(written.rows).toHaveLength(1);
+
+    const constraint = await ctx.db.execute(sql`
+      SELECT conname FROM pg_constraint WHERE conname = 'commerce_events_type_ck'`);
+    expect(constraint.rows).toHaveLength(0);
   });
 
   it('a KNOWN type this subsystem does not handle is ignored too', async () => {
@@ -460,18 +426,16 @@ describe('unknown and unhandled types (contract §6 rule 4)', () => {
   });
 
   it('one bad row does not stop the rest of the sweep', async () => {
-    await withoutEventTypeCheck(async () => {
-      const summary = await drive([
-        unknownType(),
-        checkoutMalformed(),
-        checkoutCompleted(),
-        paymentCaptured(),
-      ]);
-      expect(summary.applied).toBe(2);
-      expect(summary.ignored).toBe(1);
-      expect(summary.parked).toBe(1);
-      expect((await readOrderByCheckout(ctx.db, CHECKOUT))?.order.status).toBe('paid');
-    });
+    const summary = await drive([
+      unknownType(),
+      checkoutMalformed(),
+      checkoutCompleted(),
+      paymentCaptured(),
+    ]);
+    expect(summary.applied).toBe(2);
+    expect(summary.ignored).toBe(1);
+    expect(summary.parked).toBe(1);
+    expect((await readOrderByCheckout(ctx.db, CHECKOUT))?.order.status).toBe('paid');
   });
 });
 
