@@ -58,8 +58,35 @@ const NOW = T0 + 60_000;
 const ACTOR = '11111111-1111-4111-8111-111111111111';
 const EMAIL = 'dara@example.test';
 
+/**
+ * Every customer-facing word of the SEEDED preset, read from its own row.
+ *
+ * READ RATHER THAN SPELLED HERE, mirroring `notify/mailer.test.ts`'s
+ * `presetWords` — for the same reason: the shipped wording must not appear as
+ * a literal in this subsystem's source, and a value read from the row keeps
+ * testing the right thing if the seed is ever edited.
+ *
+ * `.toContain` (CASE-SENSITIVE) REPLACES A BARE CASE-INSENSITIVE NEEDLE HERE,
+ * and that is not a style choice. Every default template now renders through
+ * `server/mail/brand.ts`'s masthead, which spells the COMPANY'S OWN NAME in
+ * mixed case — and that name happens to embed this seed's lowercase unit word
+ * as a run of letters once case is ignored. A case-insensitive check cannot
+ * tell the brand mark from the seed; matching the row's OWN CASE, as stored,
+ * can.
+ */
+let presetWords: string[] = [];
+
 beforeAll(async () => {
   ({ db, close } = await migratedDb());
+  const res = await db.execute(sql`
+    SELECT name, points_label_singular, points_label_plural,
+           unit_label_singular, unit_label_plural
+      FROM marketing_programs WHERE seeded = true`);
+  presetWords = Object.values(res.rows[0] ?? {}).filter(
+    (value): value is string => typeof value === 'string' && value !== '',
+  );
+  // A seed that stopped seeding would make the assertion below vacuous.
+  expect(presetWords.length).toBeGreaterThan(0);
 });
 afterAll(() => close());
 
@@ -323,7 +350,9 @@ describe('the happy path', () => {
 
     expect(rendered).toContain('Bottle Caps');
     expect(rendered).toContain('canisters');
-    expect(rendered).not.toMatch(/spool/i);
+    for (const word of presetWords) {
+      expect(rendered, `preset word "${word}" reached a customer`).not.toContain(word);
+    }
   });
 
   it('records what actually arrived when it differs from what was declared', async () => {

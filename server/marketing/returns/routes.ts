@@ -11,6 +11,7 @@ import {
 } from '../../middleware/errors';
 import { requireAuth } from '../../middleware/session';
 import { currentDb, currentUser } from '../../app-env';
+import { loadTemplates } from '../../email/system-templates';
 import { BadRequestError, NotFoundError } from '../../repo/errors';
 import { renderMarketingError } from '../wire';
 import {
@@ -701,11 +702,26 @@ routes.post('/returns/:id/inspect', auth, async (c) => {
    */
   if (body.bonusPoints !== undefined && user.role !== 'owner') throw new ForbiddenError();
 
-  const { row, award, bonus } = await inspect(currentDb(c), id, {
-    ...body,
-    actorId: user.id,
-    now: Date.now(),
-  });
+  const db = currentDb(c);
+  /*
+   * RESOLVED HERE, ONCE, exactly as `server/shop/orders/routes.ts` resolves
+   * its own `TemplateSet` before a write: `loadTemplates` never throws, so a
+   * template read that fails degrades the award letter's wording rather than
+   * the inspection itself, and an owner's edit to "Return: points awarded"
+   * only reaches a customer if this is threaded through — `inspect()`'s
+   * default is the built-ins, for every caller that does not do this.
+   */
+  const templates = await loadTemplates(db);
+  const { row, award, bonus } = await inspect(
+    db,
+    id,
+    {
+      ...body,
+      actorId: user.id,
+      now: Date.now(),
+    },
+    templates,
+  );
   return c.json({ request: wireRequest(row), award, bonus });
 });
 

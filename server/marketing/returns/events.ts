@@ -1,7 +1,12 @@
 import { sql } from 'drizzle-orm';
 import { escapeHtml } from '../../email/render';
-import { awardSentence, awardedSubject, fmtUnits } from '../../../shared/marketing/copy';
+import { BUILT_IN } from '../../email/system-templates';
+import { p } from '../../mail/brand';
+import { render } from '../../mail/transactional';
+import { awardSentence, fmtPoints, fmtUnits } from '../../../shared/marketing/copy';
 import type { SQL } from 'drizzle-orm';
+import type { TemplateSet } from '../../email/system-templates';
+import type { TemplateValues } from '../../mail/transactional';
 import type { ProgramLabels } from '../../../shared/marketing/copy';
 import type { ActorType } from '../ledger/fragments';
 
@@ -27,12 +32,28 @@ import type { ActorType } from '../ledger/fragments';
  * against labels the shop has since renamed, telling a customer they earned
  * something nobody ever promised them.
  *
- * THE SENTENCE ITSELF IS NOT WRITTEN HERE. `awardSentence` and `awardedSubject`
- * come from `shared/marketing/copy.ts`, which the admin UI also imports — so the
- * live line under the inspection form, the confirm dialog, the success toast and
- * the customer's inbox carry ONE string rather than four that agreed on the day
- * they were written (spec D11). `server/shop/cart/totals/compute.ts` already
- * imports `shared/commerce` across the same boundary.
+ * THE SENTENCE ITSELF IS NOT WRITTEN HERE. `awardSentence` comes from
+ * `shared/marketing/copy.ts`, which the admin UI also imports — so the live line
+ * under the inspection form, the confirm dialog, the success toast and the
+ * customer's inbox carry ONE string rather than four that agreed on the day they
+ * were written (spec D11). `server/shop/cart/totals/compute.ts` already imports
+ * `shared/commerce` across the same boundary.
+ *
+ * ═══════════════ THE LETTER ITSELF IS AN EDITABLE DEFAULT TEMPLATE ═══════════
+ * `renderReturnAwarded` / `renderReturnRejected` do not build a subject or an
+ * HTML document by hand — that is `server/mail/defaults.ts`'s `return.awarded`
+ * and `return.rejected`, on the exact footing as `order.confirmation` and every
+ * other message the shop sends itself: seeded into `email_templates` on first
+ * read, editable by an owner from Emails → Templates, refused a delete or a
+ * rename by the same trigger, and rendered through the same `{{…}}` engine
+ * (`server/mail/transactional.ts`). What THIS FILE still owns is the VALUES —
+ * `ProgramLabels` read at the instant of the award, turned into scalars and
+ * blocks — because that step cannot move: A4's inspect statement needs the
+ * rendered subject/text/html as plain strings to write in the same statement as
+ * the award, and a template read is an `await` a SQL statement builder cannot
+ * make. `server/shop/orders/mailer.ts`'s `renderKind`/`baseValues` do the same
+ * split for order mail, one layer up because that pipeline has no such
+ * statement-builder constraint.
  *
  * NOTE FOR A7 (`notify/mailer.ts`): the two renderers below are the ones that
  * task's `renderReturnAwarded` / `renderReturnRejected` name. They live here
@@ -168,16 +189,29 @@ export interface RenderedNotification {
 }
 
 /**
- * The awarded mail.
+ * The awarded mail — rendered from the editable `return.awarded` default
+ * (`server/mail/defaults.ts`), exactly as `server/shop/orders/mailer.ts`'s
+ * `renderConfirmation` renders `order.confirmation`.
  *
- * ITS FIRST LINE IS THE SENTENCE THAT TRAVELS, verbatim — the same string the
- * admin saw under the inspection form and confirmed in the dialog. That is what
- * makes a dispute reconstructible: whatever surface either side quotes, the
- * arithmetic is inside the sentence rather than implied by it.
+ * `templates` DEFAULTS TO `BUILT_IN` for the same reason every order render
+ * function does: every existing caller — every test in this subsystem's
+ * suites, and any future one that forgets the argument — still gets the
+ * correct, branded, label-driven message rather than a compile error or a
+ * blank. `repo.ts`'s `inspect()` is the one caller that threads a REAL
+ * `TemplateSet` through, resolved once per request by the route.
+ *
+ * `{{award_sentence}}` CARRIES `awardSentence`'S OUTPUT WHOLE. Its first line
+ * is that sentence verbatim — the same string the admin saw under the
+ * inspection form and confirmed in the dialog — because it is substituted as
+ * ONE placeholder rather than reassembled from smaller ones: an operator can
+ * move it around the letter but cannot reword the arithmetic inside it. That
+ * is what makes a dispute reconstructible, unchanged from before this letter
+ * became an editable template.
  */
 export function renderReturnAwarded(
   request: ReturnMailView,
   labels: ProgramLabels,
+  templates: TemplateSet = BUILT_IN,
 ): RenderedNotification {
   const points = request.qtyAccepted * request.pointsPerUnitSnapshot;
   const sentence = awardSentence(
@@ -186,48 +220,78 @@ export function renderReturnAwarded(
     request.pointsPerUnitSnapshot,
     request.customerEmail,
   );
-  const shortfall =
+  /*
+   * INLINE-APPENDED, NOT ITS OWN PARAGRAPH — it finishes the sentence the
+   * default template starts ("…accepted.{{shortfall_note}}"), matching how
+   * this shortfall has always read. A SCALAR, not a block: the whole composed
+   * sentence — including a rejection reason a person typed — is escaped as
+   * one unit on the way into the html part, the same guarantee `paragraphs()`
+   * used to give per line.
+   */
+  const shortfallNote =
     request.qtyRejected > 0
       ? ` We could not accept ${fmtUnits(request.qtyRejected, labels)}${
           request.rejectedReason === null ? '' : ` — ${request.rejectedReason}`
         }.`
       : '';
-  const detail = `We have finished checking your ${labels.name} return: ${fmtUnits(
-    request.qtyAccepted,
-    labels,
-  )} accepted.${shortfall}`;
 
-  return {
-    subject: awardedSubject(labels, points),
-    text: `${sentence}\n\n${detail}\n`,
-    html: paragraphs([sentence, detail]),
+  const values: TemplateValues = {
+    scalars: {
+      points_awarded: fmtPoints(points, labels),
+      award_sentence: sentence,
+      program_name: labels.name,
+      qty_accepted_units: fmtUnits(request.qtyAccepted, labels),
+      shortfall_note: shortfallNote,
+    },
+    blocks: {},
   };
+
+  const message = render(templates.get('return.awarded'), request.customerEmail, values);
+  return { subject: message.subject, text: message.body, html: message.html };
 }
 
 /**
- * The rejected mail — an inspection that accepted nothing.
+ * The rejected mail — an inspection that accepted nothing. Rendered from the
+ * editable `return.rejected` default, on the same footing as the award letter
+ * above.
  *
  * NO QUANTITY ARITHMETIC IN THE COPY, because there is no honest number to
  * lead with: nothing was accepted, and a driver who came back empty makes the
  * rejected count zero too. What the customer needs is the outcome and the
- * reason, both in words this deployment chose.
+ * reason, both in words the template — an operator's, or this default —
+ * chooses.
  */
 export function renderReturnRejected(
   request: ReturnMailView,
   labels: ProgramLabels,
+  templates: TemplateSet = BUILT_IN,
 ): RenderedNotification {
-  const outcome =
-    `We have finished checking your ${labels.name} return, and it did not earn ` +
-    `${labels.points.other} this time.`;
-  const reason = request.rejectedReason === null ? [] : [`Reason: ${request.rejectedReason}`];
-  const invitation = 'If you think that is wrong, reply to this message and we will look again.';
-  const lines = [outcome, ...reason, invitation];
+  /*
+   * A BLOCK, NOT A SCALAR — it is either nothing or a whole extra paragraph,
+   * the same shape `server/shop/orders/mailer.ts`'s `tracking_panel` uses for
+   * a fulfilment with no tracking number. Blocks are inserted RAW
+   * (`server/mail/transactional.ts`), so the reason — something a person
+   * typed — is escaped by hand here exactly as `paragraphs()` used to escape
+   * every line.
+   */
+  const reasonNote =
+    request.rejectedReason === null
+      ? { html: '', text: '' }
+      : {
+          html: p(`Reason: ${escapeHtml(request.rejectedReason)}`),
+          text: `Reason: ${request.rejectedReason}\n\n`,
+        };
 
-  return {
-    subject: `About your ${labels.name} return`,
-    text: `${lines.join('\n\n')}\n`,
-    html: paragraphs(lines),
+  const values: TemplateValues = {
+    scalars: {
+      program_name: labels.name,
+      points_word: labels.points.other,
+    },
+    blocks: { reason_note: reasonNote },
   };
+
+  const message = render(templates.get('return.rejected'), request.customerEmail, values);
+  return { subject: message.subject, text: message.body, html: message.html };
 }
 
 /**
@@ -239,18 +303,4 @@ export function renderReturnRejected(
  */
 export function dedupeKeyFor(kind: EmailIntentKind, requestId: string): string {
   return `${kind}:${requestId}`;
-}
-
-/** Wrap a list of sentences as HTML paragraphs, ESCAPED. */
-function paragraphs(lines: readonly string[]): string {
-  /*
-   * `escapeHtml` is IMPORTED rather than copied, unlike `newId` in
-   * `server/marketing/ids.ts`. That copy exists because spec D9 forbids
-   * importing `server/shop/**` at all; nothing forbids `server/email/render.ts`,
-   * and an HTML escaper is the wrong thing to have two of — the second copy is
-   * the one that forgets `'`, and every value interpolated here (the program's
-   * name, its points word, a rejection reason, the customer's own address) is
-   * something a person typed into a form.
-   */
-  return lines.map((line) => `<p>${escapeHtml(line)}</p>`).join('\n');
 }

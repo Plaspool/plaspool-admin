@@ -69,6 +69,8 @@ export const SYSTEM_TEMPLATE_STAGES: Record<string, string> = {
   'account.welcome': 'Account — new subscriber',
   'account.invite': 'Account — writer invited',
   'account.password_reset': 'Account — password reset',
+  'return.awarded': 'Return inspected — points awarded',
+  'return.rejected': 'Return inspected — nothing accepted',
 };
 
 /** True for a template the application itself sends from. */

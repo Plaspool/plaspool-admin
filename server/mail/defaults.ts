@@ -22,7 +22,7 @@
  * ══════════ WHY THE HTML IS BUILT BY CALLING `brand.ts` RATHER THAN WRITTEN OUT
  *            ══════════
  *
- * The alternative is nine hand-written 200-line HTML documents, which is nine
+ * The alternative is eleven hand-written 200-line HTML documents, which is eleven
  * copies of the masthead, the card, the shadow trick and the dark-mode block. The
  * first time the accent colour moves, eight of them are updated and the refund
  * mail stays green for a year, because nobody re-reads the message that only
@@ -72,6 +72,8 @@ export const SYSTEM_KEYS = [
   'account.welcome',
   'account.invite',
   'account.password_reset',
+  'return.awarded',
+  'return.rejected',
 ] as const;
 
 export type SystemKey = (typeof SYSTEM_KEYS)[number];
@@ -489,6 +491,127 @@ const ACCOUNT_PASSWORD_RESET: SystemTemplate = {
     `changed and you can ignore this message — your current password still works.\n`,
 };
 
+/* ------------------------------------------------------------------- returns */
+
+/**
+ * The footer under a returns message. TRANSACTIONAL, so no unsubscribe link —
+ * same rule as `orderFooter()`.
+ *
+ * NO `{{support_email}}`, AND THAT IS DELIBERATE, unlike every other footer in
+ * this file. The value a caller would fill it with here is
+ * `server/marketing/returns/events.ts`'s own render function, which spec D9
+ * bars from importing `server/shop/**` — so it cannot reach
+ * `storefront-url.ts` — and which must not fall back to the literal address
+ * `server/email/system-templates.ts` and `server/shop/orders/mailer.ts` both
+ * use, because that address's domain contains this seed's forbidden noun
+ * (`no-hardcoded-labels.test.ts`'s needle matches `plaspool.com` the same as it
+ * matches the programme's own name). "Reply to this message" costs nothing and
+ * needs no address spelled out: replies route off the message's own headers.
+ */
+function returnFooter(): string {
+  return (
+    'You are receiving this because of a return you made with PlaSpool. ' +
+    'Reply to this message with any questions.'
+  );
+}
+
+function returnFooterText(): string {
+  return (
+    '\n\nYou are receiving this because of a return you made with PlaSpool. ' +
+    'Reply to this message with any questions.\n'
+  );
+}
+
+/**
+ * The award letter.
+ *
+ * EVERY PLACEHOLDER HERE IS THE PROGRAMME'S OWN WORD OR NUMBER, never this
+ * file's — `server/marketing/returns/events.ts` fills them from `ProgramLabels`
+ * and `shared/marketing/copy.ts`'s renderers at the instant an inspection
+ * writes, exactly as `server/shop/orders/mailer.ts`'s `baseValues` fills the
+ * order placeholders. `{{award_sentence}}` IS THE ONE STRING SPEC D11 PINS
+ * ACROSS FIVE SURFACES (the inspection form, its confirm dialog, the success
+ * toast, the timeline and this mail) — it travels here whole, as a single
+ * placeholder, so an operator can move it around the letter but never
+ * reassemble its arithmetic from smaller pieces.
+ */
+const RETURN_AWARDED_VARS = [
+  '{{points_awarded}}',
+  '{{award_sentence}}',
+  '{{program_name}}',
+  '{{qty_accepted_units}}',
+  '{{shortfall_note}}',
+] as const;
+
+const RETURN_AWARDED: SystemTemplate = {
+  key: 'return.awarded',
+  name: 'Return: points awarded',
+  description: 'Sent when a return is inspected and at least one unit is accepted.',
+  variables: RETURN_AWARDED_VARS,
+  subject: 'You earned {{points_awarded}}',
+  html: shell({
+    title: 'You earned {{points_awarded}}',
+    preheader: '{{qty_accepted_units}} accepted — you earned {{points_awarded}}.',
+    body:
+      badge('Return inspected') +
+      h1('You earned {{points_awarded}}') +
+      p('{{award_sentence}}') +
+      p(
+        'We have finished checking your {{program_name}} return: ' +
+          '{{qty_accepted_units}} accepted.{{shortfall_note}}',
+      ),
+    footer: returnFooter(),
+  }),
+  text:
+    `{{award_sentence}}\n\n` +
+    `We have finished checking your {{program_name}} return: ` +
+    `{{qty_accepted_units}} accepted.{{shortfall_note}}` +
+    returnFooterText(),
+};
+
+/**
+ * The rejection letter — an inspection that accepted nothing.
+ *
+ * NO ARITHMETIC PLACEHOLDER, matching `renderReturnRejected`'s own rule: there
+ * is no honest number to lead with when nothing was accepted.
+ * `{{reason_note}}` is a BLOCK, not a scalar — it is either empty or a whole
+ * extra paragraph, the same shape `{{tracking_panel}}` uses in
+ * `ORDER_SHIPMENT` for a value that is sometimes entirely absent.
+ */
+const RETURN_REJECTED_VARS = [
+  '{{program_name}}',
+  '{{points_word}}',
+  '{{reason_note}}',
+] as const;
+
+const RETURN_REJECTED: SystemTemplate = {
+  key: 'return.rejected',
+  name: 'Return: not accepted',
+  description: 'Sent when a return is inspected and nothing is accepted.',
+  variables: RETURN_REJECTED_VARS,
+  subject: 'About your {{program_name}} return',
+  html: shell({
+    title: 'About your {{program_name}} return',
+    preheader: 'We have finished checking your {{program_name}} return.',
+    body:
+      badge('Return inspected', 'neutral') +
+      h1('About your {{program_name}} return') +
+      p(
+        'We have finished checking your {{program_name}} return, and it did not ' +
+          'earn {{points_word}} this time.',
+      ) +
+      `{{reason_note}}` +
+      small('If you think that is wrong, reply to this message and we will look again.'),
+    footer: returnFooter(),
+  }),
+  text:
+    `We have finished checking your {{program_name}} return, and it did not earn ` +
+    `{{points_word}} this time.\n\n` +
+    `{{reason_note}}` +
+    `If you think that is wrong, reply to this message and we will look again.` +
+    returnFooterText(),
+};
+
 /**
  * Every default, by key.
  *
@@ -506,6 +629,8 @@ export const DEFAULT_TEMPLATES: Record<SystemKey, SystemTemplate> = {
   'account.welcome': ACCOUNT_WELCOME,
   'account.invite': ACCOUNT_INVITE,
   'account.password_reset': ACCOUNT_PASSWORD_RESET,
+  'return.awarded': RETURN_AWARDED,
+  'return.rejected': RETURN_REJECTED,
 };
 
 export function defaultTemplate(key: SystemKey): SystemTemplate {
