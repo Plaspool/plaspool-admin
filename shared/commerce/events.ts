@@ -35,7 +35,6 @@ export const COMMERCE_EVENT_TYPES = [
   'payment.captured',
   'payment.failed',
   'payment.refunded',
-  'payment.refund_failed',
   'order.created',
   'order.fulfilled',
   'order.cancelled',
@@ -146,33 +145,6 @@ export interface PaymentRefundedPayload extends PaymentEventBase {
    * consumer that can derive it differently.
    */
   remainingBalance: number;
-}
-
-/**
- * A refund the provider ACCEPTED (webhook `pending`, or a synchronous
- * `succeeded`) later failed to actually settle — task-d4.
- *
- * THE GAP THIS CLOSES. `applyRefundEvent` (`server/shop/payments/refunds.ts`)
- * unwinds its OWN subsystem correctly on a failed settlement — the refund row,
- * the intent's `refunded_total`, the intent's status — but until this payload
- * existed it told no other subsystem. That was harmless while nothing acted on
- * an accepted-but-unsettled refund; it stopped being harmless when cancelling
- * a paid order (`b9051ab`) started refunding FIRST and cancelling on
- * anything short of a thrown error, including the provider's ordinary
- * `pending`. A refund accepted now and failed later left a cancelled order
- * and no signal that the money never moved.
- *
- * `failedAmount`/`refundedTotal` NAME THEMSELVES AFTER THE FAILURE, not after
- * `PaymentRefundedPayload`'s success-shaped fields, because the two mean
- * different things here: `refundedTotal` is the intent's total AFTER this
- * failure was unwound (already decremented), not a total that grew.
- */
-export interface PaymentRefundFailedPayload extends PaymentEventBase {
-  refundId: string;
-  /** This refund alone, minor units, positive — what failed to move. */
-  failedAmount: number;
-  /** The intent's `refunded_total` AFTER this failure was subtracted back out. */
-  refundedTotal: number;
 }
 
 // ============================================================================
@@ -528,7 +500,6 @@ export interface CommerceEventPayloads {
   'payment.captured': PaymentCapturedPayload;
   'payment.failed': PaymentFailedPayload;
   'payment.refunded': PaymentRefundedPayload;
-  'payment.refund_failed': PaymentRefundFailedPayload;
 
   // Owned by Catalog:
   'catalog.variant.published': CatalogVariantPublishedPayload;

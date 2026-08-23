@@ -467,57 +467,18 @@ describe('settling a refund from a verified webhook', () => {
     });
   });
 
-  it('gives the reservation back on refund.failed AND emits payment.refund_failed (task-d4)', async () => {
+  it('gives the reservation back on refund.failed and emits nothing', async () => {
     const { intent, refund } = await pendingRefund(400);
-    const result = await applyRefundEvent(
+    await applyRefundEvent(
       db,
       { eventRowId: 'pev_r', providerRefundId: refund.providerRefundId as string, status: 'failed' },
       now,
     );
-
-    expect(result.settled).toBe(true);
     expect((await listRefunds(db, intent.id))[0].status).toBe('failed');
     expect(await refundedTotal(intent.id)).toBe(0);
     expect((await getIntent(db, intent.id))?.status).toBe('captured');
-
-    // The succeeded arm never fires on a failed settlement — this is a pure
-    // addition beside it, not a replacement.
-    const events = await outboxRows();
-    expect(events.filter((e) => e.type === 'payment.refunded')).toHaveLength(0);
-    expect(events.filter((e) => e.type === 'payment.refund_failed')).toHaveLength(1);
-    expect(result.emittedEventId).not.toBeNull();
-
-    // Selected by TYPE, not by position — see the comment on the succeeded
-    // test above; both outbox rows here (`payment.captured`,
-    // `payment.refund_failed`) mint in the same millisecond.
-    expect(events.find((e) => e.type === 'payment.refund_failed')?.payload).toMatchObject({
-      intentId: intent.id,
-      checkoutId: CHECKOUT,
-      refundId: refund.id,
-      failedAmount: 400,
-      // The POST-UNWIND figure: the reservation was already given back above.
-      refundedTotal: 0,
-    });
-  });
-
-  it('applies once when the same FAILED settlement is delivered three times (task-d4)', async () => {
-    const { intent, refund } = await pendingRefund(400);
-    const results = await Promise.all(
-      Array.from({ length: 3 }, () =>
-        applyRefundEvent(
-          db,
-          {
-            eventRowId: 'pev_r',
-            providerRefundId: refund.providerRefundId as string,
-            status: 'failed',
-          },
-          now,
-        ),
-      ),
-    );
-    expect(results.filter((r) => r.settled)).toHaveLength(1);
-    expect((await outboxRows()).filter((e) => e.type === 'payment.refund_failed')).toHaveLength(1);
-    expect(await refundedTotal(intent.id)).toBe(0);
+    // Contract §6 fixes the event list, and there is no `payment.refund_failed`.
+    expect((await outboxRows()).filter((e) => e.type === 'payment.refunded')).toHaveLength(0);
   });
 
   it('applies once when the same settlement is delivered three times', async () => {

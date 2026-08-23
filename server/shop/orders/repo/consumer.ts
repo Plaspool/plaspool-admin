@@ -9,7 +9,6 @@ import {
   parsePaymentCaptured,
   parsePaymentFailed,
   parsePaymentRefunded,
-  parsePaymentRefundFailed,
 } from '../inbound';
 import { mintGuestToken } from '../tokens';
 import type { AccessLink } from '../mailer';
@@ -23,7 +22,6 @@ import {
   markOrderPaid,
   readOrderByCheckout,
   recordAuthorization,
-  recordRefundFailure,
   refundOrder,
   type OrderRead,
 } from './orders';
@@ -501,33 +499,6 @@ async function dispatch(
        */
       const returned = await refundPoints(db, deps.redemption, read.order.id, 'payment_refunded');
       return returned === null ? { kind: 'applied' } : { kind: 'applied', detail: returned };
-    }
-
-    /*
-     * task-d4. A refund the provider ACCEPTED (a synchronous `succeeded`, or
-     * its ordinary `pending`) later FAILED TO SETTLE — `payment.refunded`'s
-     * sibling failure, emitted by the same `applyRefundEvent`
-     * (`server/shop/payments/refunds.ts`).
-     *
-     * NO STATUS TRANSITION, ON PURPOSE, UNLIKE EVERY OTHER `payment.*` CASE
-     * ABOVE. `payment.failed` cancels; `payment.captured` pays;
-     * `payment.refunded` moves the order toward `refunded`. This one does
-     * not touch `shop_orders.status` at all — see `recordRefundFailure`'s own
-     * comment in `./orders` for why: the order may already be `cancelled`
-     * (`b9051ab` refunds a paid order before cancelling it), and un-cancelling
-     * would be a second, messier failure — reservations already released,
-     * goods possibly gone. The recovery is human, so this only makes the
-     * failure VISIBLE: a timeline entry an operator sees on the order.
-     */
-    case 'payment.refund_failed': {
-      const parsed = parsePaymentRefundFailed(row.payload);
-      if (!parsed.ok) return parkOnBadPayload(parsed);
-      const read = await readOrderByCheckout(db, parsed.value.checkoutId);
-      if (!read) return awaitingCheckout(parsed.value.checkoutId);
-      const applied = await recordRefundFailure(db, read.order.id, row.id, now);
-      return applied
-        ? { kind: 'applied' }
-        : { kind: 'ignored', detail: 'already consumed' };
     }
   }
 }
