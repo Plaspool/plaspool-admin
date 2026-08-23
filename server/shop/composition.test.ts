@@ -38,6 +38,7 @@ import { checkoutCompleted, insertEvents, CHECKOUT } from './orders/test/fixture
 import { sweepCommerceEvents, type ConsumerDeps } from './orders/repo/consumer';
 import { collect, createRequest, inspect, receive, schedule } from '../marketing/returns/repo';
 import { markOrderPaid, readOrderByCheckout } from './orders/repo/orders';
+import { listIntents } from './orders/repo/emails';
 import { paymentPort } from './payments/port';
 import { storeEvent } from './payments/webhook';
 import { applyRefundEvent } from './payments/refunds';
@@ -1532,5 +1533,110 @@ describe('task-d4: a refund accepted by the provider later fails, after the orde
       sql`SELECT count(*)::int AS n FROM commerce_events WHERE type = 'payment.refund_failed'`,
     );
     expect(Number(outbox.rows[0].n)).toBe(1);
+  });
+
+  /*
+   * THE CUSTOMER'S HALF, which task-d4 scoped out and named as a follow-up
+   * (§5 of its own report). The two tests above prove an OPERATOR finds out;
+   * these prove the person who is owed the money does.
+   *
+   * The sequence matters: by this point the customer has already received the
+   * "Order cancelled" notice, which carries no refund figure but does imply
+   * money is coming back. Nothing corrected that implication until this email.
+   */
+  it('tells the customer the refund did not go through', async () => {
+    const intentId = 'pi_task_d4_mailed';
+    const orderId = await paidOrder('cust_task_d4_mailed', intentId);
+    await capturedIntent(intentId, 5400);
+
+    const owner = await ownerOf(money);
+    await owner.post(`/api/shop/admin/orders/${orderId}/cancel`, {
+      refund: { kind: 'percent', percent: 100 },
+    });
+    const { providerRefundId } = await pendingRefund(intentId);
+
+    await ctx.db.execute(sql`
+      INSERT INTO shop_payment_events (id, provider_event_id, type, payload, received_at)
+      VALUES ('pev_task_d4_mailed', ${'refund.processed:' + providerRefundId}, 'refund.processed',
+              '{}'::jsonb, ${NOW + 1})`);
+    await applyRefundEvent(
+      ctx.db,
+      { eventRowId: 'pev_task_d4_mailed', providerRefundId, status: 'failed' },
+      NOW + 1,
+    );
+    await sweepCommerceEvents(ctx.db, DEPS, NOW + 2);
+
+    const read = (await readOrderByCheckout(ctx.db, CHECKOUT))!;
+    const failures = (await listIntents(ctx.db, orderId)).filter(
+      (i) => i.kind === 'refund_failed',
+    );
+    expect(failures).toHaveLength(1);
+
+    // Addressed from the ORDER'S OWN snapshot — the address they bought with,
+    // never anything a webhook payload supplied.
+    expect(failures[0].to).toBe(read.order.email);
+    expect(failures[0].subject).toContain(read.order.orderNumber);
+
+    // The amount that failed to move, named — the decision recorded in
+    // `ORDER_REFUND_FAILED`'s own comment in `server/mail/defaults.ts`.
+    expect(failures[0].body).toContain('54.00 USD');
+
+    // Both parts are authored and stored, as migration 0320 requires of every
+    // message written by this build. A null `html` here would be a row the
+    // sweeper delivers through the pre-0320 `textToHtml` fallback.
+    expect(failures[0].html).not.toBeNull();
+    expect(failures[0].html).toContain('54.00 USD');
+  });
+
+  it('and a redelivered failure webhook does not send a second email', async () => {
+    /*
+     * The email intent is written in the SAME STATEMENT as the timeline entry
+     * and the consumption claim, gated `FROM claim` like everything else in
+     * `recordRefundFailure` — so this is the redelivery test above, asked
+     * about the customer's inbox instead of the operator's screen. A second
+     * "we could not complete your refund" for one failure is worse than the
+     * first: it reads as a second failure.
+     */
+    const intentId = 'pi_task_d4_mailed_twice';
+    const orderId = await paidOrder('cust_task_d4_mailed_twice', intentId);
+    await capturedIntent(intentId, 5400);
+
+    const owner = await ownerOf(money);
+    await owner.post(`/api/shop/admin/orders/${orderId}/cancel`, {
+      refund: { kind: 'percent', percent: 100 },
+    });
+    const { providerRefundId } = await pendingRefund(intentId);
+
+    await ctx.db.execute(sql`
+      INSERT INTO shop_payment_events (id, provider_event_id, type, payload, received_at)
+      VALUES ('pev_task_d4_mailed_twice', ${'refund.processed:' + providerRefundId},
+              'refund.processed', '{}'::jsonb, ${NOW + 1})`);
+    await applyRefundEvent(
+      ctx.db,
+      { eventRowId: 'pev_task_d4_mailed_twice', providerRefundId, status: 'failed' },
+      NOW + 1,
+    );
+    await sweepCommerceEvents(ctx.db, DEPS, NOW + 2);
+
+    await applyRefundEvent(
+      ctx.db,
+      { eventRowId: 'pev_task_d4_mailed_twice', providerRefundId, status: 'failed' },
+      NOW + 3,
+    );
+    await sweepCommerceEvents(ctx.db, DEPS, NOW + 4);
+
+    const kinds = (await listIntents(ctx.db, orderId)).map((i) => i.kind);
+    expect(kinds.filter((k) => k === 'refund_failed')).toHaveLength(1);
+    /*
+     * The rest of the order's mail is untouched by the redelivery, too —
+     * asserted as a MULTISET rather than in order. `listIntents` sorts by
+     * `created_at`, and the cancellation is written by the real route under the
+     * real clock while every event here is driven at the fixture's `NOW`
+     * (2023). Their relative order is an artefact of that gap, not behaviour,
+     * and pinning it would fail the day the fixture constant moves.
+     */
+    expect([...kinds].sort()).toEqual(
+      ['placed', 'confirmation', 'cancellation', 'refund_failed'].sort(),
+    );
   });
 });

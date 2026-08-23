@@ -304,6 +304,61 @@ describe('a cancelled fulfillment is terminal', () => {
   });
 });
 
+/**
+ * The email kinds the lifecycle is allowed to write.
+ *
+ * READ OUT OF `pg_constraint`, NOT OUT OF THE .sql FILE, for this file's own
+ * stated reason and for one specific to a widened CHECK: `0380` DROPs the
+ * constraint and re-ADDs it, because Postgres cannot widen one in place, and a
+ * migration that runs the DROP and then fails on the ADD leaves the column with
+ * NO constraint at all — a table that accepts every kind, silently, while the
+ * file on disk still reads correctly. `pg_get_constraintdef` is Postgres's own
+ * reparse of what actually shipped, so it can tell those two apart and the file
+ * cannot.
+ */
+describe('the email intent kinds, as the database understands them', () => {
+  it('shop_order_email_intents_kind_ck admits every kind the mailer can render', async () => {
+    const res = await ctx.db.execute(sql`
+      SELECT pg_get_constraintdef(c.oid) AS def
+        FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+       WHERE t.relname = 'shop_order_email_intents'
+         AND c.conname = 'shop_order_email_intents_kind_ck'`);
+    expect(res.rows).toHaveLength(1);
+    const def = String(res.rows[0].def);
+    for (const kind of [
+      'placed',
+      'confirmation',
+      'shipment',
+      'delivered',
+      'cancellation',
+      'refund',
+      'refund_failed',
+    ]) {
+      expect(def).toContain(`'${kind}'::text`);
+    }
+  });
+
+  it('and a refund_failed intent is actually insertable', async () => {
+    await seedOrder('ord_kind_ok');
+    await seedIntent('ord_kind_ok', 'refund_failed');
+    const res = await ctx.db.execute(
+      sql`SELECT kind FROM shop_order_email_intents WHERE order_id = 'ord_kind_ok'`,
+    );
+    expect(res.rows.map((r) => r.kind)).toEqual(['refund_failed']);
+  });
+
+  it('but the widening did not turn the CHECK into a formality', async () => {
+    // The half a DROP-that-never-re-ADDed would fail: a kind nobody defined is
+    // still refused, so the constraint is wider and still a constraint.
+    await seedOrder('ord_kind_bad');
+    const err = await rejection(seedIntent('ord_kind_bad', 'not_a_kind'));
+    expect(err).toBeInstanceOf(DbError);
+    expect((err as DbError).code).toBe('23514');
+    expect((err as DbError).constraint).toBe('shop_order_email_intents_kind_ck');
+  });
+});
+
 describe('the order number sequence', () => {
   it('is a sequence, so two callers never see one value (brief §3)', async () => {
     const first = await ctx.db.execute(sql`SELECT nextval('shop_order_number_seq') AS n`);
@@ -326,6 +381,15 @@ async function seedOrder(id: string): Promise<void> {
     INSERT INTO shop_order_lines (id, order_id, line_no, variant_id, sku, title, option_values,
                                   qty, unit_amount, line_total)
     VALUES (${`oln-${id}`}, ${id}, 0, 'var_1', 'SKU-1', 'Thing', '{}'::jsonb, 2, 1000, 2000)`);
+}
+
+/** One email intent, written straight to the column so no TypeScript is consulted. */
+async function seedIntent(orderId: string, kind: string): Promise<void> {
+  await ctx.db.execute(sql`
+    INSERT INTO shop_order_email_intents (id, order_id, kind, to_email, subject, body,
+                                          created_at, dedupe_key)
+    VALUES (${`eml-${orderId}`}, ${orderId}, ${kind}, 'buyer@test.local', 'Subject', 'Body',
+            1, ${`dedupe-${orderId}`})`);
 }
 
 async function generation(table: 'shop_orders' | 'shop_fulfillments', id: string): Promise<number> {

@@ -20,6 +20,7 @@ import {
   renderConfirmation,
   renderPlaced,
   renderRefund,
+  renderRefundFailed,
 } from '../mailer';
 import { BUILT_IN } from '../../../email/system-templates';
 import type { TemplateSet } from '../../../email/system-templates';
@@ -1450,6 +1451,27 @@ export async function recordAuthorization(
  * how `recordAuthorization` and every lifecycle transition already report to
  * the same place.
  *
+ * AND THE CUSTOMER IS TOLD, which task-d4 scoped out and named as a follow-up
+ * (§5 of its own report). The `mail` CTE below is the same shape `transition()`
+ * gives `cancelOrder` and `refundOrder`, moved into a function that is not a
+ * transition — because the ordering property it exists for is not about the
+ * status change, it is about the CLAIM: the intent row is written in the SAME
+ * STATEMENT as the timeline entry and the consumption, gated `FROM claim` like
+ * everything else here, so a redelivered webhook cannot send the message twice
+ * and a message cannot be written for a failure that was already recorded.
+ *
+ * UNCONDITIONAL, unlike `CANCEL`'s mail, which skips an order that was never
+ * paid. There is no equivalent case to skip: a refund can only fail against a
+ * capture that happened, so every order reaching this function has money of the
+ * customer's that did not come back.
+ *
+ * TAKES THE `OrderRead` RATHER THAN AN `orderId`, and that is the one place its
+ * signature departs from `cancelOrder`/`refundOrder`. Those pass an id because
+ * `transition()` re-reads the order to CAS against a fresh revision; there is
+ * no CAS here, so a re-read would buy nothing and cost the guarantee that the
+ * guest link in the email and the message around it were rendered from the same
+ * snapshot — the consumer has already read it, and mints the link from it.
+ *
  * IDEMPOTENT THE SAME WAY AS `recordAuthorization`, AND TWICE OVER. Two
  * independent redelivery paths, two independent guards:
  *
@@ -1465,10 +1487,39 @@ export async function recordAuthorization(
  */
 export async function recordRefundFailure(
   db: Db,
-  orderId: string,
+  read: OrderRead,
   eventId: string,
+  arg: {
+    /** Minor units, positive — this refund alone, the money that did NOT move. */
+    failedAmount: number;
+    link: AccessLink | null;
+    templates?: TemplateSet;
+  },
   now: number,
 ): Promise<boolean> {
+  const orderId = read.order.id;
+  /*
+   * Rendered BEFORE the statement, exactly as `transition()` renders in
+   * `effects()` before assembling its CTEs: `renderRefundFailed` is pure and
+   * synchronous, which is the whole reason `TemplateSet` resolves once per sweep
+   * instead of being read here (see `server/email/system-templates.ts`).
+   */
+  const message = renderRefundFailed(
+    { ...mailView(read), failedAmount: arg.failedAmount },
+    arg.link,
+    arg.templates ?? BUILT_IN,
+  );
+  /*
+   * PER FAILURE EVENT, NOT PER ORDER — `APPLY_REFUND`'s key has the same shape
+   * and the same reason. Two refunds against one order can each fail, and those
+   * are two separate sums of money that did not arrive; collapsing them onto
+   * `refund_failed:${orderId}` would silently swallow the second. The `FROM
+   * claim` gate already stops a REDELIVERY of one failure, since at most one
+   * outbox row exists per refund (`refunds.ts`'s `settled` CTE is gated on
+   * `r.status = 'pending'`) — this is the second, independent guard, held by a
+   * UNIQUE constraint rather than by that argument being right.
+   */
+  const dedupeKey = `refund_failed:${orderId}:${eventId}`;
   const res = await db.execute(sql`
     WITH claim AS (
       INSERT INTO shop_order_event_consumptions (consumer, event_id, handled_at, outcome, detail)
@@ -1480,6 +1531,15 @@ export async function recordRefundFailure(
       SELECT ${newId(ID.timeline)}, ${orderId}, 'refund_failed',
              'Refund failed — needs attention', ${now}, NULL
         FROM claim
+      RETURNING 1
+    ), mail AS (
+      INSERT INTO shop_order_email_intents (id, order_id, kind, to_email, subject, body,
+                                            html, created_at, dedupe_key)
+      SELECT ${newId(ID.emailIntent)}, ${orderId}, 'refund_failed', ${message.to},
+             ${message.subject}, ${message.body}, ${message.html ?? null}::text, ${now},
+             ${dedupeKey}
+        FROM claim
+      ON CONFLICT (dedupe_key) DO NOTHING
       RETURNING 1
     ), mark AS (
       UPDATE commerce_events SET processed_at = ${now}, last_error = NULL

@@ -204,6 +204,13 @@
                         "when":  1786600002100,
                         "tag":  "0360_refund_failed_timeline",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  29,
+                        "version":  "7",
+                        "when":  1786600002200,
+                        "tag":  "0380_refund_failed_email_kind",
+                        "breakpoints":  true
                     }
                 ]
 }

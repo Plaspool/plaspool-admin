@@ -22,11 +22,13 @@
  * ══════════ WHY THE HTML IS BUILT BY CALLING `brand.ts` RATHER THAN WRITTEN OUT
  *            ══════════
  *
- * The alternative is eleven hand-written 200-line HTML documents, which is eleven
- * copies of the masthead, the card, the shadow trick and the dark-mode block. The
- * first time the accent colour moves, eight of them are updated and the refund
- * mail stays green for a year, because nobody re-reads the message that only
- * sends on a refund.
+ * The alternative is one hand-written 200-line HTML document per message — a
+ * separate copy of the masthead, the card, the shadow trick and the dark-mode
+ * block in each. The first time the accent colour moves, most of them are
+ * updated and the refund mail stays green for a year, because nobody re-reads
+ * the message that only sends on a refund. (No count is named on purpose — this
+ * paragraph said "eleven" until the list grew again. `SYSTEM_KEYS` below is the
+ * count.)
  *
  * The cost is that the seeded HTML is GENERATED, so an owner who edits a template
  * in the admin is editing a snapshot of the generated document and no longer
@@ -69,6 +71,7 @@ export const SYSTEM_KEYS = [
   'order.delivered',
   'order.cancellation',
   'order.refund',
+  'order.refund_failed',
   'account.welcome',
   'account.invite',
   'account.password_reset',
@@ -391,6 +394,103 @@ const ORDER_REFUND: SystemTemplate = {
     orderFooterText(),
 };
 
+/**
+ * The one message in this file that reports a FAILURE OF OURS to the person it
+ * happened to, which is why the wording below was settled with the owner rather
+ * than written to match its neighbours.
+ *
+ * WHEN IT SENDS: a refund the provider ACCEPTED — a synchronous `succeeded`, or
+ * Paystack's ordinary `pending` — later failed to settle. Usually that is a
+ * cancelled order (`b9051ab` refunds a paid order before cancelling it), so the
+ * reader has already had "Order cancelled", which carries no refund figure but
+ * plainly implies money is coming back. This is the message that corrects it.
+ * It can also reach somebody whose order was never cancelled at all — the
+ * standalone refund box against a `paid`/`fulfilled` order — so nothing here
+ * assumes the reader was expecting a refund, or knows one was attempted.
+ *
+ * FOUR DECISIONS IN THE COPY, each of which could have gone the other way:
+ *
+ *  - **The amount is named.** `{{refund_amount}}` is the failed refund alone,
+ *    from the event's own `failedAmount`, so a reader can match it against
+ *    their statement and see that nothing arrived. The alternative — no figure,
+ *    so a later hand-made refund of a different amount cannot contradict this
+ *    email — was considered and rejected: a message about money that names no
+ *    money reads as a form letter.
+ *  - **"The money is still with us, and it is still yours."** The single most
+ *    important sentence here. A failed refund is the one payment failure where
+ *    the customer's real fear — that the money has vanished between two
+ *    companies — is wrong, and saying so costs one line.
+ *  - **"You do not need to do anything."** The recovery IS human (see
+ *    `recordRefundFailure`), so this promises a person, not a retry. Asking the
+ *    reader to supply another payment route instead would resolve the common
+ *    cause faster and put the work on somebody who did nothing wrong; the reply
+ *    is offered, never required.
+ *  - **`warn` and not `danger`.** `ORDER_CANCELLATION` is `danger` because the
+ *    order is over. Nothing here is over — it is late. A red badge on a message
+ *    whose whole job is to be reassuring undoes the sentence above it.
+ *
+ * NO `{{refunded_total}}` AND NO `{{outstanding_note}}`, unlike `ORDER_REFUND`.
+ * Both describe money that HAS moved, and the entire subject of this message is
+ * money that has not; a cumulative total beside a failure invites the reader to
+ * work out a difference that means nothing.
+ */
+const ORDER_REFUND_FAILED: SystemTemplate = {
+  key: 'order.refund_failed',
+  name: 'Refund did not go through',
+  description:
+    'Sent when a refund the provider accepted later fails to settle. Someone must then refund by hand.',
+  variables: [...ORDER_VARS, '{{refund_amount}}'],
+  subject: 'We could not complete your refund for order {{order_number}}',
+  html: shell({
+    title: 'We could not complete your refund for order {{order_number}}',
+    preheader: 'The refund did not complete. Nothing is owed by you — we are arranging it.',
+    body:
+      badge('Refund delayed', 'warn') +
+      h1('Your refund has not gone through yet') +
+      p(
+        'We tried to return <strong>{{refund_amount}}</strong> to you for order ' +
+        '<strong>{{order_number}}</strong>, and our payment provider could not ' +
+        'complete it. The money is still with us, and it is still yours.',
+      ) +
+      facts(
+        [
+          { label: 'This refund', value: '{{refund_amount}}', mono: true },
+          { label: 'Order total', value: '{{order_total}}', mono: true },
+        ],
+        'warn',
+      ) +
+      p(
+        'You do not need to do anything. Someone here is arranging it by hand and ' +
+        'will email you as soon as it is on its way. If you would rather talk to us ' +
+        'first, reply to this message and it comes straight to us.',
+      ) +
+      small(
+        'Refunds sometimes fail because a card has expired or an account has changed ' +
+        'since the payment. If either has happened, tell us in a reply and we will ' +
+        'use another route.',
+      ) +
+      orderSummary() +
+      viewOrder(),
+    footer: orderFooter(),
+  }),
+  text:
+    `Your refund has not gone through yet.\n\n` +
+    `We tried to return {{refund_amount}} to you for order {{order_number}}, and our\n` +
+    `payment provider could not complete it. The money is still with us, and it is\n` +
+    `still yours.\n\n` +
+    `  This refund:  {{refund_amount}}\n` +
+    `  Order total:  {{order_total}}\n\n` +
+    `You do not need to do anything. Someone here is arranging it by hand and will\n` +
+    `email you as soon as it is on its way. If you would rather talk to us first,\n` +
+    `reply to this message and it comes straight to us.\n\n` +
+    `Refunds sometimes fail because a card has expired or an account has changed\n` +
+    `since the payment. If either has happened, tell us in a reply and we will use\n` +
+    `another route.\n\n` +
+    orderSummaryText() +
+    viewOrderText() +
+    orderFooterText(),
+};
+
 /* ------------------------------------------------------------------ account */
 
 const ACCOUNT_WELCOME: SystemTemplate = {
@@ -626,6 +726,7 @@ export const DEFAULT_TEMPLATES: Record<SystemKey, SystemTemplate> = {
   'order.delivered': ORDER_DELIVERED,
   'order.cancellation': ORDER_CANCELLATION,
   'order.refund': ORDER_REFUND,
+  'order.refund_failed': ORDER_REFUND_FAILED,
   'account.welcome': ACCOUNT_WELCOME,
   'account.invite': ACCOUNT_INVITE,
   'account.password_reset': ACCOUNT_PASSWORD_RESET,
