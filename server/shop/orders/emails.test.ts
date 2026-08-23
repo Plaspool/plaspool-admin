@@ -22,7 +22,16 @@ import { sweepCommerceEvents, type ConsumerDeps } from './repo/consumer';
 import { markOrderPaid, readOrder, readOrderByCheckout } from './repo/orders';
 import { createFulfillment, shipFulfillment } from './repo/fulfillments';
 import { EMAIL_ATTEMPT_LIMIT, listIntents, sweepEmailIntents } from './repo/emails';
-import { LoggingMailer, formatAmount, portMailer, type Mailer, type RenderedEmail } from './mailer';
+import {
+  LoggingMailer,
+  formatAmount,
+  portMailer,
+  renderConfirmation,
+  type AccessLink,
+  type Mailer,
+  type OrderMailView,
+  type RenderedEmail,
+} from './mailer';
 import { resetOrdersDeps, resolveDeps } from './ports';
 import { httpClient } from '../../test/http';
 import { verifyGuestToken } from './tokens';
@@ -348,7 +357,34 @@ describe('what the customer would read', () => {
       email: 'buyer@example.test',
     });
     // And the link is built from the deployment's own allow-listed origin, never a header.
-    expect(mailer.sent[0].body).toContain(`${ORIGIN}/shop/orders/`);
+    expect(mailer.sent[0].body).toContain(`${ORIGIN}/account/orders/`);
+  });
+
+  it('THE FIX FOR THE 404: the built link is /account/orders/…, never /shop/orders/…', () => {
+    /*
+     * `server/shop/storefront-url.ts` carries the full account of this bug: every
+     * order email built `/shop/orders/…`, which 404s on the deployed storefront —
+     * the real route is `/account/orders/:orderNumber` and it reads `?token=`
+     * there. This function (`accessUrl`, not exported) duplicated that same wrong
+     * path rather than calling `orderUrl`, so it gets its own pin, deterministic
+     * and DB-free, rather than relying only on the sweep test above going through
+     * the mailer's `.toContain` check on a hardcoded string that could just as
+     * easily be wrong in the same way the old comment was.
+     */
+    const view: OrderMailView = {
+      orderNumber: '2026-000007-E',
+      email: 'buyer@example.test',
+      currency: 'USD',
+      grandTotal: 5400,
+      lines: [],
+    };
+    const link: AccessLink = { origin: ORIGIN, token: 'tok_abc123' };
+    const rendered = renderConfirmation(view, link);
+    const expected = `${ORIGIN}/account/orders/2026-000007-E?token=tok_abc123`;
+    expect(rendered.body).toContain(expected);
+    expect(rendered.html).toContain(expected);
+    expect(rendered.body).not.toContain('/shop/orders/');
+    expect(rendered.html).not.toContain('/shop/orders/');
   });
 
   it('with no origin configured the mail still renders, just without a link', async () => {
@@ -434,7 +470,7 @@ describe('a paid order produces a REAL send, not a log line', () => {
      * order.
      */
     expect(message.html).toContain('<!doctype html>');
-    expect(message.html).toContain(`<a href="${ORIGIN}/shop/orders/`);
+    expect(message.html).toContain(`<a href="${ORIGIN}/account/orders/`);
     // The line table is a table, not a paragraph of run-together text.
     expect(message.html).toContain('Enamel Mug');
   });

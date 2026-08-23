@@ -26,8 +26,8 @@
  *
  * NO TRAILING SLASH, and `normalise` enforces it rather than trusting whoever
  * sets the variable. Every caller concatenates a path beginning with `/`; an
- * origin ending in one produces `//shop/orders/…`, which is a protocol-relative
- * path in some clients and a 404 in the rest.
+ * origin ending in one produces `//account/orders/…`, which is a
+ * protocol-relative path in some clients and a 404 in the rest.
  */
 
 export const DEFAULT_STOREFRONT_ORIGIN =
@@ -57,13 +57,23 @@ export function storefrontOrigin(): string {
  * A customer's own order page, given the order number and a guest token.
  *
  * ONE PLACE THAT KNOWS THIS PATH. It is part of an external contract — the
- * storefront serves `/shop/orders/:orderNumber` and reads `?token=` — and a mail
- * already delivered cannot be corrected, so the shape is worth centralising even
- * though it is one line.
+ * storefront serves `/account/orders/:orderNumber` and reads `?token=` — and a
+ * mail already delivered cannot be corrected, so the shape is worth centralising
+ * even though it is one line.
+ *
+ * THIS WAS WRONG UNTIL 2026-08-23. Every order email built `/shop/orders/…`,
+ * which 404s — the route this comment used to claim "the storefront serves" does
+ * not exist. Verified against the deployed storefront: `/shop/orders/…?token=…`
+ * is a 404, `/account/orders/…` is a 200 and reads `?token=` in
+ * `apps/storefront/app/(shop)/account/orders/[orderNumber]/page.tsx`. Nothing
+ * caught it for the same reason the module doc above describes: it is invisible
+ * to any test or check that does not read the delivered link, and the assertion
+ * that used to guard this string (`storefront-url.test.ts`) pinned the wrong path
+ * with just as much confidence as this comment claimed it.
  */
 export function orderUrl(orderNumber: string, token: string): string {
   return (
-    `${storefrontOrigin()}/shop/orders/${encodeURIComponent(orderNumber)}` +
+    `${storefrontOrigin()}/account/orders/${encodeURIComponent(orderNumber)}` +
     `?token=${encodeURIComponent(token)}`
   );
 }
