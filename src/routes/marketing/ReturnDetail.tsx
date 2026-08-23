@@ -50,7 +50,7 @@ import {
   type StageProblem,
   type StageSubmission,
 } from './StageForm';
-import { DONE_MESSAGE, WHEN, fieldMessage, asSearch, isStageAction, withParams, primaryOf, explainLoad, explainWrite, carriedRequest } from './queue-shared';
+import { DONE_MESSAGE, WHEN, fieldMessage, asSearch, isStageAction, withParams, primaryOf, explainLoad, explainWrite, carriedRequest, bonusFromParams } from './queue-shared';
 
 
 /**
@@ -389,6 +389,13 @@ export function ReturnDetail({ id }: { id: string }) {
   };
 
   const wantsInspect = params.get('act') === 'inspect';
+  /**
+   * THE BONUS `ReturnModal` ALREADY DECIDED, if the click that sent us here
+   * carried one. See `bonusFromParams` — this is the read half of a write that
+   * used to have no reader at all, which is the whole reason a bonus typed into
+   * the modal never reached the server.
+   */
+  const bonus = bonusFromParams(params);
   useEffect(() => {
     if (!wantsInspect || aimed.current || request === null) return;
     const panel = actionRef.current;
@@ -428,9 +435,30 @@ export function ReturnDetail({ id }: { id: string }) {
           request.pointsPerUnitSnapshot,
           request.customerEmail,
         );
+
+  /**
+   * WHETHER THE CARRIED BONUS CAN ACTUALLY LAND. The server's own rule
+   * (`repo.ts`'s `inspect`): a bonus needs an award to sit beside, so one
+   * arriving with nothing accepted is refused outright. An operator who dials
+   * Accepted down to zero after the modal already set a bonus should see the
+   * bonus visibly drop out here rather than have the whole inspection 400 on a
+   * rule they never saw.
+   */
+  const bonusApplies = bonus !== null && counting.accepted > 0;
+  const totalPoints = points + (bonusApplies && bonus !== null ? bonus.points : 0);
+  /** THE SAME LINE, TWICE — under the form and in the dialog that confirms it,
+   *  exactly the parity `sentence` itself keeps. Kept apart from `sentence`
+   *  rather than folded into it: that function is frozen (`shared/marketing/copy.ts`)
+   *  and shared with the server's own mail, and a bonus is admin-side-only. */
+  const bonusLine =
+    bonus === null || labels === null
+      ? null
+      : bonusApplies
+        ? `+ ${fmtPoints(bonus.points, labels)} bonus — ${bonus.reason}`
+        : `The ${fmtPoints(bonus.points, labels)} bonus needs at least one accepted to attach to, so it will not be recorded.`;
   const inspectLabel =
     counting.accepted > 0 && labels !== null
-      ? `Record & award ${fmtPoints(points, labels)}`
+      ? `Record & award ${fmtPoints(bonusApplies ? totalPoints : points, labels)}`
       : 'Record — nothing to award';
 
   /** Refused here rather than by the server: both boxes are on screen together,
@@ -522,21 +550,31 @@ export function ReturnDetail({ id }: { id: string }) {
 
   async function runInspect(): Promise<void> {
     if (request === null) return;
+    /*
+     * THE BONUS TRAVELS WITH THE INSPECTION, if the modal carried one AND it
+     * still applies — see `bonusApplies` above. `undefined` on both fields
+     * rather than `0`/`''`: `filled()` in `api-marketing.ts` drops `undefined`
+     * before the request is built, which is what keeps a return with no bonus
+     * posting the exact three-field body it always has.
+     */
     const draft: InspectDraft = {
       expectedRevision: request.revision,
       qtyAccepted: counting.accepted,
       // Derived, never typed — see the header note and spec D5.
       qtyRejected: rejected,
       rejectedReason: rejected > 0 ? rejectionText(counting) : undefined,
+      bonusPoints: bonusApplies && bonus !== null ? bonus.points : undefined,
+      bonusReason: bonusApplies && bonus !== null ? bonus.reason : undefined,
       note: counting.note.trim() || undefined,
     };
     const said = sentence;
+    const bonusSaid = bonusApplies && bonus !== null && labels !== null ? bonusLine : null;
     setBusy(true);
     setStageProblem(null);
     setConflict(null);
     try {
       await marketingApi.inspect(request.id, draft);
-      notify(`Recorded — ${said}`);
+      notify(bonusSaid === null ? `Recorded — ${said}` : `Recorded — ${said} (${bonusSaid})`);
       sweepQuietly();
       await load();
     } catch (err) {
@@ -835,6 +873,7 @@ export function ReturnDetail({ id }: { id: string }) {
                   onChange={setCounted}
                   rejected={rejected}
                   sentence={sentence}
+                  bonusLine={bonusLine}
                   primaryLabel={inspectLabel}
                   problem={localProblem ?? stageProblem}
                   busy={busy || frozen}
@@ -1036,8 +1075,20 @@ export function ReturnDetail({ id }: { id: string }) {
           title={counting.accepted > 0 ? 'Record this inspection' : 'Record — nothing to award'}
           /* THE SAME STRING as the live line above the button that opened this.
              Phrase parity is what makes a confirmation a check rather than a
-             second, differently-worded claim about the same arithmetic. */
-          description={sentence}
+             second, differently-worded claim about the same arithmetic. The
+             bonus line — when there is one — restates alongside it for the same
+             reason, on its own line rather than folded into `sentence`. */
+          description={
+            bonusLine === null ? (
+              sentence
+            ) : (
+              <>
+                <span>{sentence}</span>
+                <br />
+                <span>{bonusLine}</span>
+              </>
+            )
+          }
           confirmLabel={inspectLabel}
         />
       )}
@@ -1106,6 +1157,7 @@ function InspectionForm({
   onChange,
   rejected,
   sentence,
+  bonusLine,
   primaryLabel,
   problem,
   busy,
@@ -1119,6 +1171,9 @@ function InspectionForm({
   /** Derived by the caller, which also posts it. Never an input. */
   rejected: number;
   sentence: string;
+  /** What the bonus the modal carried over is about to do — or why it won't.
+   *  `null` when the modal sent none. See `bonusLine` in `ReturnDetail`. */
+  bonusLine: string | null;
   primaryLabel: string;
   problem: StageProblem | null;
   busy: boolean;
@@ -1208,6 +1263,13 @@ function InspectionForm({
       </div>
 
       <p className={`mktmath${value.accepted === 0 ? ' mktmath--zero' : ''}`}>{sentence}</p>
+
+      {/* THE BONUS `ReturnModal` ALREADY DECIDED, restated here — not typed on
+          this screen, which has no field for one (spec D12: the top-up is the
+          owner's control and it lives on the card, not here). This is the whole
+          fix for a bonus that used to travel into a URL nothing ever read back
+          out of. */}
+      {bonusLine !== null && <p className="mktmath mktmath--bonus">{bonusLine}</p>}
 
       {problem !== null && problem.field === null && (
         <p className="mktform__error" role="alert">

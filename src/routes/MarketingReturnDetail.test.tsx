@@ -455,6 +455,98 @@ describe('the return detail', () => {
     expect(asked('/api/marketing/sweep')).toBeTruthy();
   });
 
+  it('carries the bonus the modal already decided through to the actual inspection', async () => {
+    /*
+     * THE BUG THIS PINS: `ReturnModal`'s "Count what arrived…" encodes a bonus
+     * into `?bonus=&bonusWhy=` and navigates here — and until this fix, nothing
+     * on this screen ever read those two params back out. `runInspect()` built
+     * its `InspectDraft` from exactly three fields, the number and the reason a
+     * person typed evaporated on the way, and the request that reached the
+     * server never once carried `bonusPoints`. That was true for every role and
+     * every return, independent of the 403 guard and independent of
+     * `AlreadyAwardedError` — the bonus was dropped before either could matter.
+     */
+    const user = userEvent.setup();
+    const reason = 'Loyal customer, five years running';
+    when('/api/marketing/programs', { programs: [] });
+    when(path(receivedRow.id), returnDetails.received);
+    when(`${path(receivedRow.id)}/inspect`, {
+      request: returnDetails.awarded.request,
+      award: { points: 42, balance: 222 },
+      bonus: { points: 25, reason },
+    });
+    when('/api/marketing/sweep', { sent: 1, failed: 0, skipped: 0 });
+    mount(
+      `/marketing/returns?id=${receivedRow.id}&act=inspect&bonus=25&bonusWhy=${encodeURIComponent(reason)}`,
+    );
+    await landed();
+
+    // Restated on the screen that actually submits it, not just carried
+    // silently in the address bar — the operator sees what is about to send.
+    expect(inPanel().getByText(`+ 25 Bottle Caps bonus — ${reason}`)).toBeTruthy();
+    // The button and the confirmation both total base + bonus, in front of the
+    // person committing it — the same "120 becomes 145" promise the modal makes.
+    await user.click(inPanel().getByRole('button', { name: 'Record & award 67 Bottle Caps' }));
+    expect(
+      within(sheet()).getByRole('button', { name: 'Record & award 67 Bottle Caps' }),
+    ).toBeTruthy();
+    await user.click(within(sheet()).getByRole('button', { name: 'Record & award 67 Bottle Caps' }));
+
+    await waitFor(() => expect(asked(`${path(receivedRow.id)}/inspect`)).toBeTruthy());
+    expect(sent(`${path(receivedRow.id)}/inspect`, 'POST')).toEqual({
+      expectedRevision: receivedRow.revision,
+      qtyAccepted: 6,
+      qtyRejected: 0,
+      bonusPoints: 25,
+      bonusReason: reason,
+    });
+    expect(await screen.findByText(`Recorded — ${ALL_SIX} (+ 25 Bottle Caps bonus — ${reason})`)).toBeTruthy();
+  });
+
+  it('drops a carried bonus rather than 400 the whole inspection, when nothing ends up accepted', async () => {
+    /*
+     * The server's own rule (`repo.ts`): `bonusPoints` requires `qtyAccepted >=
+     * 1`, because a bonus needs an award to sit beside. An operator can still
+     * reject everything after the modal already set a bonus — "Reject
+     * everything…" is right there on this screen — and the fix must not turn
+     * that into a 400 over a field the operator never typed here.
+     */
+    const user = userEvent.setup();
+    when('/api/marketing/programs', { programs: [] });
+    when(path(receivedRow.id), returnDetails.received);
+    when(`${path(receivedRow.id)}/inspect`, {
+      request: { ...returnDetails.rejected.request, id: receivedRow.id },
+      award: null,
+    });
+    when('/api/marketing/sweep', { sent: 0, failed: 0, skipped: 1 });
+    mount(`/marketing/returns?id=${receivedRow.id}&act=inspect&bonus=25&bonusWhy=${encodeURIComponent('x')}`);
+    await landed();
+
+    // Six declared, all still accepted by default — the bonus applies here,
+    // same as the happy-path test above.
+    expect(inPanel().getByText(/25 Bottle Caps bonus/)).toBeTruthy();
+
+    await user.click(inPanel().getByRole('button', { name: 'Reject everything…' }));
+
+    // Accepted just dropped to zero, so the bonus has nothing left to sit
+    // beside — and the screen says so instead of quietly forwarding a field
+    // the server would 400 the whole inspection over.
+    expect(inPanel().getByText(/needs at least one accepted to attach to/)).toBeTruthy();
+
+    await user.click(inPanel().getByRole('combobox', { name: 'Why they were rejected' }));
+    await user.click(await screen.findByRole('option', { name: 'Not ours' }));
+    await user.click(inPanel().getByRole('button', { name: 'Record — nothing to award' }));
+    await user.click(within(sheet()).getByRole('button', { name: 'Record — nothing to award' }));
+
+    await waitFor(() => expect(asked(`${path(receivedRow.id)}/inspect`)).toBeTruthy());
+    expect(sent(`${path(receivedRow.id)}/inspect`, 'POST')).toEqual({
+      expectedRevision: receivedRow.revision,
+      qtyAccepted: 0,
+      qtyRejected: 6,
+      rejectedReason: 'Not ours',
+    });
+  });
+
   it('relabels the primary when nothing is being kept, and refuses it without a reason', async () => {
     const user = userEvent.setup();
     when('/api/marketing/programs', { programs: [] });

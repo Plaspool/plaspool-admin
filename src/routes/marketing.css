@@ -1471,6 +1471,16 @@ a.mktstat:focus-visible {
   color: var(--ink-3);
 }
 
+/* The bonus `ReturnModal` already decided, restated here — a second, quieter
+   line rather than folded into the sentence above it, matching the modal's own
+   `.mktmodal__bonus` treatment of the same number. */
+.mktmath--bonus {
+  margin-top: var(--s2);
+  border: 1px solid var(--rule);
+  background: var(--paper-sunken);
+  color: var(--ink-2);
+}
+
 /* --------------------------------------------------------- plain words */
 
 /* The rules restated in the labels the operator is typing, live, before
