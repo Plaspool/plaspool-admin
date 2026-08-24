@@ -310,7 +310,8 @@ export const shopOrderEvents = pgTable(
       'shop_order_events_type_ck',
       sql`${t.type} IN ('placed', 'payment_authorized', 'payment_failed', 'paid',
                         'fulfillment_created', 'shipped', 'delivered',
-                        'fulfillment_cancelled', 'cancelled', 'refunded')`,
+                        'fulfillment_cancelled', 'cancelled', 'refunded',
+                        'refund_failed')`,
     ),
     index('shop_order_events_order_idx').on(t.orderId, t.occurredAt, t.id),
   ],
@@ -332,7 +333,16 @@ export const shopOrderEmailIntents = pgTable(
       .notNull()
       .references(() => shopOrders.id, { onDelete: 'restrict' }),
     kind: text('kind')
-      .$type<'placed' | 'confirmation' | 'shipment' | 'delivered' | 'cancellation' | 'refund'>()
+      .$type<
+        | 'placed'
+        | 'confirmation'
+        | 'shipment'
+        | 'delivered'
+        | 'cancellation'
+        | 'refund'
+        /** A refund the provider accepted failed to settle (migration 0380). */
+        | 'refund_failed'
+      >()
       .notNull(),
     toEmail: text('to_email').notNull(),
     subject: text('subject').notNull(),
@@ -352,7 +362,8 @@ export const shopOrderEmailIntents = pgTable(
     uniqueIndex('shop_order_email_intents_dedupe_uq').on(t.dedupeKey),
     check(
       'shop_order_email_intents_kind_ck',
-      sql`${t.kind} IN ('placed', 'confirmation', 'shipment', 'delivered', 'cancellation', 'refund')`,
+      sql`${t.kind} IN ('placed', 'confirmation', 'shipment', 'delivered', 'cancellation',
+                        'refund', 'refund_failed')`,
     ),
   ],
 );

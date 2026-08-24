@@ -66,6 +66,7 @@ export const SYSTEM_TEMPLATE_STAGES: Record<string, string> = {
   'order.delivered': 'Step 4 — parcel delivered',
   'order.cancellation': 'Ends the order — cancelled',
   'order.refund': 'Ends the order — refunded',
+  'order.refund_failed': 'Refund failed — needs a manual refund',
   'account.welcome': 'Account — new subscriber',
   'account.invite': 'Account — writer invited',
   'account.password_reset': 'Account — password reset',

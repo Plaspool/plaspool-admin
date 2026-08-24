@@ -25,6 +25,14 @@
  *
  * Migration 0320 widened `shop_order_email_intents_kind_ck` to admit both.
  *
+ * ═══════════════════ AND SEVEN, NOT SIX ═══════════════════
+ * `refund_failed` is the seventh, and it is the only message here that reports a
+ * failure of OURS to the person it happened to: a refund the provider accepted
+ * and later could not settle. task-d4 made that visible to an OPERATOR — a
+ * timeline entry on the order — and named the customer's half as a follow-up
+ * (§5 of its own report), which this is. Migration 0380 widened the same CHECK
+ * a second time to admit it.
+ *
  * ═══════════════════ THE HTML IS NO LONGER DERIVED FROM THE TEXT ═══════════════
  * It used to be: `textToHtml` wrapped the plain-text body in bare `<p>` elements
  * at DELIVERY time, which is why every order email this shop has sent looks like
@@ -55,14 +63,15 @@ import type { Step } from '../../mail/brand';
 import type { SystemKey } from '../../mail/defaults';
 import type { RenderedMessage, TemplateValues } from '../../mail/transactional';
 
-/** The kinds, matching `shop_order_email_intents_kind_ck` after migration 0320. */
+/** The kinds, matching `shop_order_email_intents_kind_ck` after migration 0380. */
 export type EmailKind =
   | 'placed'
   | 'confirmation'
   | 'shipment'
   | 'delivered'
   | 'cancellation'
-  | 'refund';
+  | 'refund'
+  | 'refund_failed';
 
 /**
  * A rendered message. `html` is nullable ONLY because rows written before
@@ -153,6 +162,16 @@ export interface RefundMailView extends OrderMailView {
   refundedAmount: number;
   /** Cumulative, so the message can say whether anything is still outstanding. */
   refundedTotal: number;
+}
+
+/**
+ * A refund that did NOT move. One figure and no cumulative total, unlike
+ * `RefundMailView` — see `ORDER_REFUND_FAILED` in `server/mail/defaults.ts` for
+ * why a running total beside a failure is a number that means nothing.
+ */
+export interface RefundFailedMailView extends OrderMailView {
+  /** This refund alone, minor units, positive — what failed to move. */
+  failedAmount: number;
 }
 
 export interface CancelMailView extends OrderMailView {
@@ -332,6 +351,19 @@ function stepsFor(kind: EmailKind): Step[] {
         { label: 'Paid', state: 'done' },
         { label: 'Refunded', state: 'stopped' },
       ];
+    /*
+     * `Refund` AS `now`, NOT `Refunded` AS `stopped`. The refund is the step the
+     * order is sitting on — attempted, not landed — and drawing it the way the
+     * `refund` message above does would tell a reader in a strip that their
+     * money came back, three lines under a paragraph saying it did not. The
+     * label loses its past tense for the same reason.
+     */
+    case 'refund_failed':
+      return [
+        { label: 'Placed', state: 'done' },
+        { label: 'Paid', state: 'done' },
+        { label: 'Refund', state: 'now' },
+      ];
   }
 }
 
@@ -486,6 +518,25 @@ export function renderRefund(
         `rest of this order.`
       : 'This order is now refunded in full. Nothing is still charged.';
   return renderKind('order.refund', view, values, templates);
+}
+
+/**
+ * "We tried to refund you and it did not go through."
+ *
+ * `{{refund_amount}}` IS THE SAME PLACEHOLDER `renderRefund` USES, deliberately
+ * — an owner editing either template in the admin meets one name for "the money
+ * this message is about" rather than two. It is filled from a different figure:
+ * the event's `failedAmount`, which is this refund alone and is what did NOT
+ * move, never a cumulative total.
+ */
+export function renderRefundFailed(
+  view: RefundFailedMailView,
+  link: AccessLink | null,
+  templates: TemplateSet = BUILT_IN,
+): RenderedEmail {
+  const values = baseValues(view, link, 'refund_failed');
+  values.scalars.refund_amount = formatAmount(view.failedAmount, view.currency);
+  return renderKind('order.refund_failed', view, values, templates);
 }
 
 // -------------------------------------------------------------- the adapter

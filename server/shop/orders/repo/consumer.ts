@@ -516,15 +516,30 @@ async function dispatch(
      * comment in `./orders` for why: the order may already be `cancelled`
      * (`b9051ab` refunds a paid order before cancelling it), and un-cancelling
      * would be a second, messier failure — reservations already released,
-     * goods possibly gone. The recovery is human, so this only makes the
-     * failure VISIBLE: a timeline entry an operator sees on the order.
+     * goods possibly gone. The recovery is human, so this makes the failure
+     * VISIBLE at both ends: a timeline entry an operator sees on the order,
+     * and — since the follow-up to task-d4 — an email to the customer whose
+     * money did not come back. `link`/`templates` are threaded exactly as
+     * `payment.failed` and `payment.refunded` above thread them, because the
+     * message carries the same guest link and honours the same operator edits
+     * every other order email does.
      */
     case 'payment.refund_failed': {
       const parsed = parsePaymentRefundFailed(row.payload);
       if (!parsed.ok) return parkOnBadPayload(parsed);
       const read = await readOrderByCheckout(db, parsed.value.checkoutId);
       if (!read) return awaitingCheckout(parsed.value.checkoutId);
-      const applied = await recordRefundFailure(db, read.order.id, row.id, now);
+      const applied = await recordRefundFailure(
+        db,
+        read,
+        row.id,
+        {
+          failedAmount: parsed.value.failedAmount,
+          link: accessLink(read, deps, now),
+          templates: deps.templates ?? BUILT_IN,
+        },
+        now,
+      );
       return applied
         ? { kind: 'applied' }
         : { kind: 'ignored', detail: 'already consumed' };

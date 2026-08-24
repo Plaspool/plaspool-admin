@@ -121,12 +121,12 @@ export async function loadTemplates(db: Db): Promise<TemplateSet> {
  * `INSERT … WHERE NOT EXISTS`, so an edited row is invisible to it forever.
  *
  * WHERE IT RUNS: the admin templates list, and the sweep. Not at boot — this app
- * has no boot, it is a lambda that starts on a request, and putting a nine-row
- * write in front of the first request after a cold start would put it in front of
- * a customer's checkout. Running it from the templates screen means it happens
- * the first time an operator looks, which is the first time it can possibly
- * matter; running it from the sweep means a deployment nobody visits still ends
- * up seeded.
+ * has no boot, it is a lambda that starts on a request, and putting a write of
+ * one row per system message in front of the first request after a cold start
+ * would put it in front of a customer's checkout. Running it from the templates
+ * screen means it happens the first time an operator looks, which is the first
+ * time it can possibly matter; running it from the sweep means a deployment
+ * nobody visits still ends up seeded.
  *
  * Returns how many rows it created, for the caller's log. Never throws: a seed
  * failure must not turn the templates screen into a 500, and it must certainly
