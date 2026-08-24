@@ -12,6 +12,7 @@
     "dev:all": "concurrently \"npm:dev\" \"npm:dev:api\"",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx server/db/migrate.ts",
+    "db:reconcile": "tsx server/db/reconcile.ts",
     "build": "tsc -b && vite build && vite build --config vite.server.config.ts",
     "lint": "oxlint",
     "test": "vitest run",

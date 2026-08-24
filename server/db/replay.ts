@@ -59,7 +59,13 @@ export interface JournalEntry {
   hash: string;
 }
 
-interface LedgerRow {
+/**
+ * Exported for `server/db/reconcile.ts`, which needs the exact same read —
+ * same table, same `ORDER BY id`, same int8-as-string coercion — as the two
+ * functions below. Duplicating it would risk the reconciler and the guard
+ * disagreeing about what "the ledger" contains.
+ */
+export interface LedgerRow {
   id: number;
   hash: string;
   createdAt: number;
@@ -94,7 +100,7 @@ export function readJournal(folder: string): JournalEntry[] {
 }
 
 /** `null` when the migrator has never run against this database. */
-async function readLedger(db: Db): Promise<LedgerRow[] | null> {
+export async function readLedger(db: Db): Promise<LedgerRow[] | null> {
   const exists = await db.execute(sql`SELECT to_regclass('drizzle.__drizzle_migrations') AS t`);
   if (exists.rows[0]?.t == null) return null;
   const res = await db.execute(sql`SELECT id, hash, created_at FROM ${LEDGER} ORDER BY id`);
