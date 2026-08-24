@@ -618,20 +618,24 @@ function registerAdminRoutes(
    * normally, reservation held): this route invents no second opinion about
    * which is which.
    *
-   * THE ASYNCHRONOUS FLIP SIDE IS A REAL, CURRENTLY-SILENT GAP, NAMED RATHER
-   * THAN HIDDEN: a `pending` refund that later fails AT THE PROVIDER — arriving
-   * via `payment.refunded`'s webhook well after this order is already
-   * cancelled — tells Orders nothing. `applyRefundEvent` emits
-   * `payment.refunded` only on `succeeded` (`refunds.ts`); a failed settlement
-   * emits no event at all, so nothing here ever hears about it and the order
-   * stays `cancelled` with no automatic signal that its refund did not, in
-   * fact, land. The intent-level ledger — `shop_refunds.status`,
+   * THE ASYNCHRONOUS FLIP SIDE WAS A REAL, SILENT GAP — CLOSED BY TASK-D4,
+   * NAMED HERE RATHER THAN LEFT FOR THE NEXT READER TO REDISCOVER. A `pending`
+   * refund that later fails AT THE PROVIDER, arriving well after this order is
+   * already cancelled, used to tell Orders nothing: `applyRefundEvent`
+   * (`refunds.ts`) emitted `payment.refunded` only on `succeeded`, so a failed
+   * settlement emitted no event and the order sat `cancelled` with no signal
+   * its refund had not, in fact, landed. `applyRefundEvent` now ALSO emits
+   * `payment.refund_failed` on a failed settlement — same shape, opposite
+   * `WHERE`, a pure addition beside the succeeded arm — and
+   * `server/shop/orders/repo/consumer.ts` records it as a `refund_failed`
+   * timeline entry (`recordRefundFailure` in `./repo/orders.ts`) WITHOUT
+   * touching `shop_orders.status`: cancelling already released the
+   * reservations, and un-cancelling here would be a second, messier failure.
+   * The intent-level ledger — `shop_refunds.status`,
    * `shop_payment_intents.refunded_total` — still records the truth for
-   * reconciliation; it is only the ORDER's status that goes stale. Left named
-   * rather than patched here, because closing it means changing `refunds.ts`'s
-   * webhook-emission contract, and that file's own header protects it ("do not
-   * rebuild any of it") — the fix reaches into the payments subsystem's own
-   * settlement semantics, not into a cancel-and-refund order screen.
+   * reconciliation; the order's own history now does too, and an operator
+   * reading either finds the same story. The recovery from here is still
+   * human: retry the refund, or pay the customer another way.
    * ═══════════════════════════════════════════════════════════════════════════
    */
   routes.post('/admin/orders/:id/cancel', requireOwner(), async (c) => {

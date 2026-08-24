@@ -67,7 +67,8 @@ export type OrderTimelineType =
   | 'delivered'
   | 'fulfillment_cancelled'
   | 'cancelled'
-  | 'refunded';
+  | 'refunded'
+  | 'refund_failed';
 
 export interface Order {
   id: string;
@@ -1411,6 +1412,74 @@ export async function recordAuthorization(
     ), intent AS (
       UPDATE shop_orders SET payment_intent_id = COALESCE(payment_intent_id, ${intentId})
         FROM claim WHERE shop_orders.id = ${orderId} AND ${intentId}::text IS NOT NULL
+      RETURNING 1
+    ), mark AS (
+      UPDATE commerce_events SET processed_at = ${now}, last_error = NULL
+        FROM claim WHERE commerce_events.id = ${eventId}
+      RETURNING 1
+    )
+    SELECT event_id FROM claim`);
+  return res.rows.length > 0;
+}
+
+/**
+ * A refund the provider accepted later FAILED to settle — task-d4, and the
+ * closest existing precedent is `recordAuthorization` immediately above: an
+ * event that records something on the order WITHOUT a `shop_orders` status
+ * transition, because none is wanted here either way.
+ *
+ * DELIBERATELY DOES NOT TOUCH `shop_orders.status`, and does not gate on what
+ * it currently is. Two reasons, not one:
+ *
+ *  - By the time this webhook lands the order may already be `cancelled`
+ *    (`b9051ab` refunds a paid order before cancelling it). Un-cancelling
+ *    would be a SECOND, messier failure: the reservations were already
+ *    released on cancel and the goods may already be gone. There is no
+ *    transition back to `paid` to retry a refund from, and inventing one here
+ *    would be a bigger, riskier change than this task is.
+ *  - A refund can also fail on an order that was never cancelled at all — the
+ *    standalone refund box against a `paid`/`fulfilled` order. This function
+ *    does not need to know which case it is in: either way the money did not
+ *    move and an operator needs to see that, which is all a timeline entry
+ *    claims to do.
+ *
+ * The recovery is human — retry the refund, or pay the customer another way —
+ * so this only makes the failure VISIBLE where an operator already looks: the
+ * order's own history (`GET /admin/orders/:id`'s `timeline`, rendered by
+ * `src/routes/ShopOrders.tsx`'s "History" panel). No new mechanism, matching
+ * how `recordAuthorization` and every lifecycle transition already report to
+ * the same place.
+ *
+ * IDEMPOTENT THE SAME WAY AS `recordAuthorization`, AND TWICE OVER. Two
+ * independent redelivery paths, two independent guards:
+ *
+ *  - THE PROVIDER REDELIVERS THE SAME WEBHOOK. `applyRefundEvent`'s own
+ *    `settled` CTE (`refunds.ts`) is gated on `r.status = 'pending'`, so once
+ *    a refund has settled to `failed` a second delivery of the same webhook
+ *    updates nothing and `emitted_failed` mints no second `commerce_events`
+ *    row. At most one `payment.refund_failed` row ever exists per refund.
+ *  - THAT ONE ROW IS SWEPT MORE THAN ONCE (two overlapping cron runs). This
+ *    is what `claim`'s `ON CONFLICT DO NOTHING` on `(consumer, event_id)` is
+ *    for: every other CTE here reads `FROM claim`, so whichever call loses
+ *    the race writes nothing at all — no second timeline entry, no error.
+ */
+export async function recordRefundFailure(
+  db: Db,
+  orderId: string,
+  eventId: string,
+  now: number,
+): Promise<boolean> {
+  const res = await db.execute(sql`
+    WITH claim AS (
+      INSERT INTO shop_order_event_consumptions (consumer, event_id, handled_at, outcome, detail)
+      VALUES (${CONSUMER}, ${eventId}, ${now}, 'applied', NULL)
+      ON CONFLICT DO NOTHING
+      RETURNING event_id
+    ), timeline AS (
+      INSERT INTO shop_order_events (id, order_id, type, message, occurred_at, actor_id)
+      SELECT ${newId(ID.timeline)}, ${orderId}, 'refund_failed',
+             'Refund failed — needs attention', ${now}, NULL
+        FROM claim
       RETURNING 1
     ), mark AS (
       UPDATE commerce_events SET processed_at = ${now}, last_error = NULL

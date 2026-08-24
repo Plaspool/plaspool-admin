@@ -264,6 +264,18 @@ export interface ApplyRefundResult {
  * `pending` and settles later. Announcing "refunded" when the request was
  * merely accepted would tell Orders money had moved that may still fail.
  *
+ * `payment.refund_failed` IS EMITTED HERE TOO (task-d4), on the opposite
+ * settlement. Until this existed, a refund the provider ACCEPTED and later
+ * failed to settle unwound perfectly on this side — the refund row, the
+ * reservation, the intent's status — and told nobody: the `emitted` CTE below
+ * only matched `succeeded`. That was inert while nothing acted on an
+ * accepted-but-unsettled refund; it stopped being inert once cancelling a paid
+ * order started refunding first and cancelling on anything short of a thrown
+ * error (`b9051ab`), which meant a provider's ordinary `pending` could be
+ * followed by a `failed` against an order already gone. `emitted_failed`
+ * mirrors `emitted`'s shape with the opposite `WHERE`, so a redelivered
+ * settlement is exactly as inert as the succeeded arm already was.
+ *
  * THE INTENT'S NEW STATUS IS DERIVED FROM `refunded_total`, AND IS THE ONE
  * TRANSITION IN THIS SUBSYSTEM THAT IS NOT RANK-GUARDED. Everywhere else,
  * `shop_payment_status_rank` refuses a move that would pull an intent
@@ -375,11 +387,55 @@ export async function applyRefundEvent(
         FROM intent i JOIN settled s ON s.intent_id = i.id
        WHERE ${target}::text = 'succeeded'
       RETURNING id
+    ),
+    -- task-d4: THE OTHER HALF OF emitted, AND THE WHOLE POINT OF THIS TASK.
+    --
+    -- SQL comments here, not a JS block comment: this whole WITH clause is
+    -- one tagged template literal, and an unescaped backtick in a JS-style
+    -- comment placed inside it would close the template early. Every note
+    -- below stays backtick-free for the same reason.
+    --
+    -- Same shape, same intent/settled join, opposite WHERE -- a pure
+    -- addition sitting beside the succeeded arm rather than a change to it.
+    -- outboxId is safely reused: target is one value for the whole
+    -- statement, so exactly one of emitted/emitted_failed ever produces a
+    -- row per call and there is never a collision.
+    --
+    -- Payments unwinds itself correctly on a failed settlement -- settled
+    -- marks the refund row failed, intent gives the reservation back -- and
+    -- until this arm existed it told nobody. That was harmless while nothing
+    -- downstream acted on an accepted-but-unsettled refund; it stopped being
+    -- harmless when cancelling a paid order (b9051ab) started refunding
+    -- FIRST and cancelling on anything short of a thrown error, including
+    -- the provider's ordinary pending. A refund accepted and later failed
+    -- left a cancelled order and no signal the money never moved.
+    --
+    -- refundedTotal here is the POST-UNWIND figure, not a total that grew:
+    -- i.refunded_total was read AFTER the intent CTE's own CASE already
+    -- subtracted this failed amount back out, so a consumer is told the
+    -- balance as it now stands, not as it stood before the failure.
+    emitted_failed AS (
+      INSERT INTO commerce_events (id, type, subject_id, payload, occurred_at, attempts)
+      SELECT ${outboxId}, 'payment.refund_failed', i.id,
+             jsonb_build_object(
+               'intentId', i.id,
+               'checkoutId', i.checkout_id,
+               'amount', i.amount,
+               'currency', i.currency,
+               'occurredAt', ${now}::bigint,
+               'refundId', s.id,
+               'failedAmount', s.amount,
+               'refundedTotal', i.refunded_total
+             ),
+             ${now}, 0
+        FROM intent i JOIN settled s ON s.intent_id = i.id
+       WHERE ${target}::text = 'failed'
+      RETURNING id
     )
     SELECT (SELECT count(*) FROM claimed)::int AS claimed,
            (SELECT count(*) FROM settled)::int AS settled,
            (SELECT count(*) FROM cur)::int AS resolved,
-           (SELECT id FROM emitted) AS emitted_id`);
+           COALESCE((SELECT id FROM emitted), (SELECT id FROM emitted_failed)) AS emitted_id`);
 
   const row = res.rows[0] ?? {};
   return {

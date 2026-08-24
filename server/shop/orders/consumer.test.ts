@@ -40,6 +40,7 @@ import {
   paymentCaptured,
   paymentFailed,
   paymentRefunded,
+  paymentRefundFailed,
   unknownType,
   type EventFixture,
 } from './test/fixtures';
@@ -643,6 +644,96 @@ describe('payment.refunded', () => {
     const summary = await drive([paymentRefunded()]);
     expect(summary).toMatchObject({ parked: 1 });
     expect((await outboxState(ctx.db, 'evt_refund_1')).lastError).toContain(
+      'awaiting predecessor',
+    );
+  });
+});
+
+describe('payment.refund_failed (task-d4)', () => {
+  it('writes a refund_failed timeline entry and changes no status', async () => {
+    // Two separate sweeps, deliberately: `paid` and `refund_failed` are both
+    // stamped with the SWEEP's `now`, and ids.ts says plainly that ULID order
+    // within one millisecond is random — a single combined drive would give
+    // both entries the SAME occurred_at and make the ordering assertion below
+    // a coin flip. Two `now` values (`NOW`, `NOW + 1`) settle it honestly.
+    await drive([checkoutCompleted(), paymentCaptured()]);
+    await drive([paymentRefundFailed()], NOW + 1);
+
+    const read = await readOrderByCheckout(ctx.db, CHECKOUT);
+    // UNCHANGED — this event never transitions `shop_orders.status`, on
+    // purpose. See `recordRefundFailure`'s own comment in `./repo/orders`.
+    expect(read?.order.status).toBe('paid');
+    const timeline = await listTimeline(ctx.db, read!.order.id);
+    expect(timeline.map((entry) => entry.type)).toEqual(['placed', 'paid', 'refund_failed']);
+    expect(timeline.at(-1)?.message).toContain('needs attention');
+  });
+
+  it('does NOT resurrect an order that is already cancelled', async () => {
+    /*
+     * THE D3 GAP THIS TASK CLOSES, AS A PROPERTY RATHER THAN A STORY.
+     * `payment.failed` is the only way this fixture-only file can reach a
+     * cancelled order (the anomaly test above, in `payment.captured`, uses
+     * the same route) — it is not the exact D3 choreography (a PAID order
+     * cancelled WITH a refund choice, `b9051ab`), which is proven end to end
+     * through the real `createApp()` in `composition.test.ts`'s task-d4
+     * block. This file's job is the narrower, subsystem-level property: NO
+     * MATTER HOW the order came to be cancelled, this event does not move it.
+     * Un-cancelling here would be a second, messier failure — reservations
+     * already released, goods possibly gone (`recordRefundFailure`'s comment).
+     */
+    await drive([checkoutCompleted(), paymentFailed()]);
+    expect((await readOrderByCheckout(ctx.db, CHECKOUT))?.order.status).toBe('cancelled');
+
+    const summary = await drive([paymentRefundFailed({ occurredAt: T0 + 3000 })], NOW + 1);
+    expect(summary).toMatchObject({ applied: 1 });
+
+    const read = await readOrderByCheckout(ctx.db, CHECKOUT);
+    expect(read?.order.status).toBe('cancelled');
+    const timeline = await listTimeline(ctx.db, read!.order.id);
+    expect(timeline.map((entry) => entry.type)).toContain('refund_failed');
+  });
+
+  it('three concurrent deliveries of the same event write exactly one timeline entry', async () => {
+    /*
+     * The redelivery guard this task adds, proven the same way brief §8's own
+     * redelivery tests are: THREE CONCURRENT CALLS, ONE CLAIM. PGlite
+     * serialises them at the driver, so each has already read and decided
+     * before the others' rows exist — `recordRefundFailure`'s `claim` CTE
+     * (`ON CONFLICT DO NOTHING` on `(consumer, event_id)`) is what refuses
+     * the second and third, not a prior read.
+     */
+    await drive([checkoutCompleted(), paymentCaptured()]);
+    const row = paymentRefundFailed();
+    await insertEvents(ctx.db, [row]);
+    const event = {
+      id: row.id,
+      type: row.type,
+      subjectId: row.subjectId,
+      payload: row.payload,
+      occurredAt: row.occurredAt,
+      attempts: 0,
+    };
+
+    const results = await Promise.all([
+      handleEvent(ctx.db, event, DEPS, NOW),
+      handleEvent(ctx.db, event, DEPS, NOW),
+      handleEvent(ctx.db, event, DEPS, NOW),
+    ]);
+
+    expect(results.filter((r) => r.kind === 'applied')).toHaveLength(1);
+    expect(results.filter((r) => r.kind === 'ignored')).toHaveLength(2);
+
+    const read = await readOrderByCheckout(ctx.db, CHECKOUT);
+    const entries = (await listTimeline(ctx.db, read!.order.id)).filter(
+      (entry) => entry.type === 'refund_failed',
+    );
+    expect(entries).toHaveLength(1);
+  });
+
+  it('a refund-failed event for an order that does not exist parks', async () => {
+    const summary = await drive([paymentRefundFailed()]);
+    expect(summary).toMatchObject({ parked: 1 });
+    expect((await outboxState(ctx.db, 'evt_refund_failed_1')).lastError).toContain(
       'awaiting predecessor',
     );
   });
