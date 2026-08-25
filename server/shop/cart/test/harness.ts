@@ -33,6 +33,6 @@ export async function resetShopTables(db: Db): Promise<void> {
   await db.execute(sql`
     TRUNCATE shop_reservations, shop_addresses, shop_cart_lines, shop_carts,
              shop_customer_sessions, shop_customers, commerce_events,
-             shop_cart_event_consumptions
+             shop_cart_event_consumptions, shop_delivery_areas
     RESTART IDENTITY CASCADE`);
 }

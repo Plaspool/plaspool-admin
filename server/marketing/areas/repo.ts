@@ -242,17 +242,23 @@ export interface PublicArea {
   id: string;
   region: string;
   name: string;
+  /** The stable handle a rename does not move — what checkout's
+   *  `shop_addresses.district` stores and `shop_delivery_areas` prices by.
+   *  The id would also survive a rename, but the key is what the delivery
+   *  table already joins on, so the picker submits it. */
+  key: string;
 }
 
 export async function publicAreas(db: Db): Promise<PublicArea[]> {
   const res = await db.execute(sql`
-    SELECT id, region, name FROM marketing_service_areas
+    SELECT id, region, name, key FROM marketing_service_areas
      WHERE active
      ORDER BY region ASC, sort_order ASC, id ASC`);
   return res.rows.map((row) => ({
     id: String(row.id),
     region: String(row.region),
     name: String(row.name),
+    key: String(row.key),
   }));
 }
 

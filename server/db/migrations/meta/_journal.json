@@ -232,6 +232,13 @@
                         "when":  1786600002500,
                         "tag":  "0440_product_seo",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  33,
+                        "version":  "7",
+                        "when":  1786600002600,
+                        "tag":  "0460_address_district",
+                        "breakpoints":  true
                     }
                 ]
 }

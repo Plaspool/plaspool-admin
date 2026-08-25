@@ -1,0 +1,24 @@
+-- DISTRICT ON THE CHECKOUT ADDRESS (range 0460-0479) — the checkout half of
+-- migration 0300's per-district delivery.
+--
+-- HAND-WRITTEN IN FULL, like every migration in these ranges: drizzle-kit has
+-- never seen `shop_addresses` (`drizzle.config.ts` declares only
+-- `server/db/schema.ts`). Declared in `server/shop/cart/schema.ts`.
+--
+-- THE VALUE IS THE SERVED-AREA KEY (`marketing_service_areas.key`), CHOSEN
+-- from the storefront's district picker and NEVER PARSED from street text —
+-- returns intake's rule, kept, because being told you are outside the served
+-- set by a parser that did not recognise your street is the worst failure
+-- this feature could have. The key is the handle a rename does not move, and
+-- it is exactly what `shop_delivery_areas.area_key` prices by — so checkout
+-- reads its OWN table and the shop still never reads marketing's.
+--
+-- NULLABLE, AND NULL MEANS "NO DISTRICT NAMED": every address written before
+-- this migration, and every customer who skips the picker. A null district
+-- prices at the state's zone, which is the pre-0300 behaviour.
+--
+-- NO CHECK CONSTRAINT ON THE SHAPE. The key's grammar belongs to marketing's
+-- table; a copy of it here would drift the first time that one changed, and
+-- an unknown key already means "no opinion — zone rate" by construction.
+ALTER TABLE shop_addresses
+  ADD COLUMN district text;--> statement-breakpoint

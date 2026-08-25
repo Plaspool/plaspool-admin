@@ -237,6 +237,10 @@ export const shopAddresses = pgTable(
     postalCode: text('postal_code'),
     countryCode: text('country_code').notNull(),
     phone: text('phone'),
+    /** `marketing_service_areas.key`, CHOSEN from the storefront's picker and
+     *  never parsed from street text. Null = no district named = zone rate.
+     *  Migration 0460 has the argument. */
+    district: text('district'),
   },
   (t) => [
     uniqueIndex('shop_addresses_cart_kind_uq').on(t.cartId, t.kind),

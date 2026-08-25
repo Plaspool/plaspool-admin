@@ -162,6 +162,13 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
           409,
         );
       }
+      // Its own error code rather than the catch-all: the storefront has to
+      // tell the customer "we do not deliver to <district>" and offer the
+      // address step back — a generic precondition message reads as a glitch
+      // to retry, and retrying cannot fix a place we refuse to go.
+      if (result.reason === 'outside_delivery_area') {
+        return c.json({ error: 'outside_delivery_area' }, 409);
+      }
       return c.json({ error: 'precondition_failed', operation: result.reason }, 409);
     }
 
@@ -328,6 +335,11 @@ const Address = z
     // tax.
     countryCode: str().regex(/^[A-Z]{2}$/),
     phone: str().max(40).nullable().optional(),
+    // A `marketing_service_areas.key`, CHOSEN from the storefront's picker —
+    // never parsed from `line1`. No shape check beyond length: an unknown key
+    // already means "no opinion — zone rate" by construction (migration 0460),
+    // and a switched-off one is refused by the repo, not the schema.
+    district: str().max(120).nullable().optional(),
   })
   .strict()
   .transform((a) => ({
@@ -339,6 +351,7 @@ const Address = z
     postalCode: a.postalCode ?? null,
     countryCode: a.countryCode,
     phone: a.phone ?? null,
+    district: a.district ?? null,
   }));
 
 const AddressesBody = z
