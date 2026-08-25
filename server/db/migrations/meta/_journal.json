@@ -267,6 +267,13 @@
                         "when":  1786600003000,
                         "tag":  "0540_product_seo_defaults_fix",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  38,
+                        "version":  "7",
+                        "when":  1786600003100,
+                        "tag":  "0560_zone_vat",
+                        "breakpoints":  true
                     }
                 ]
 }

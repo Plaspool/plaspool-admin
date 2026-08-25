@@ -168,11 +168,12 @@ describe('the storefront works through the real application', () => {
     const frozen = await client.post('/api/shop/checkout/freeze');
     expect(frozen.status).toBe(200);
     // 2 x 1999 item price + ₦10,000 Lagos delivery (1_000_000 minor units) +
-    // 0 tax (taxRateBps is 0 for every NG zone).
+    // 7.5% VAT on the goods (migration 0560): 0.075 × 3998 = 299.85, half-up
+    // 300. Delivery stays untaxed per the zones' own shipping_taxable.
     expect(
       (await json<{ totals: { grandTotal: { amount: number } } }>(frozen)).totals.grandTotal
         .amount,
-    ).toBe(3998 + 1_000_000);
+    ).toBe(3998 + 1_000_000 + 300);
   });
 
   it('still answers 404 rather than 500 for an unrouted shop path', async () => {

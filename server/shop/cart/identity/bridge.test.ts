@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { ASSERTION_TTL_MS, BadAssertionError, signAssertion, verifyAssertion } from './bridge';
 import type { Assertion } from './bridge';
@@ -95,5 +96,67 @@ describe('assertion refusals', () => {
     for (const bad of ['', '.', 'a.b.c', 'notbase64!!.x', 'onlyonepart']) {
       expect(() => verifyAssertion(SECRET, bad, NOW)).toThrow(BadAssertionError);
     }
+  });
+});
+
+describe('the trust boundary: a VALID MAC over a hostile payload', () => {
+  /*
+   * A valid MAC only proves the storefront signed these bytes — not that the
+   * bytes are an assertion. Everything after the MAC check is parsing
+   * attacker-shaped input on the strength of one shared secret, so each case
+   * here signs its garbage PROPERLY and asserts the shape check still refuses
+   * it. The `refuses garbage` cases above never get past the MAC; these are
+   * the ones that do.
+   */
+  function signRaw(payloadBytes: string): string {
+    const payload = Buffer.from(payloadBytes).toString('base64url');
+    const mac = createHmac('sha256', SECRET).update(payload).digest('base64url');
+    return `${payload}.${mac}`;
+  }
+
+  function reasonOf(raw: string): BadAssertionError['reason'] {
+    try {
+      verifyAssertion(SECRET, raw, NOW);
+      throw new Error('should not reach');
+    } catch (e) {
+      expect(e).toBeInstanceOf(BadAssertionError);
+      return (e as BadAssertionError).reason;
+    }
+  }
+
+  it('refuses base64url that is not JSON', () => {
+    expect(reasonOf(signRaw('not json at all'))).toBe('malformed');
+  });
+
+  it('refuses JSON null', () => {
+    // `JSON.parse('null')` is a legal parse whose result has no fields — the
+    // optional-chained shape check must land on `malformed`, not throw a
+    // TypeError that surfaces as a 500.
+    expect(reasonOf(signRaw('null'))).toBe('malformed');
+  });
+
+  it('refuses non-object JSON', () => {
+    for (const raw of ['42', '"a string"', 'true', '[1,2,3]']) {
+      expect(reasonOf(signRaw(raw))).toBe('malformed');
+    }
+  });
+
+  it('a __proto__ key neither pollutes nor rides into the result prototype', () => {
+    // `JSON.parse` makes `__proto__` an ordinary OWN property, and the
+    // verifier's spread copies own properties as data — so the global
+    // `Object.prototype` must be untouched and the returned assertion's
+    // actual prototype must still be the ordinary one.
+    const evil = JSON.stringify({
+      v: 1,
+      sub: 's',
+      email: 'Mixed@Case.example',
+      iat: NOW,
+      exp: NOW + 1000,
+      jti: 'j',
+    }).replace('{', '{"__proto__":{"polluted":true},');
+    const got = verifyAssertion(SECRET, signRaw(evil), NOW);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(Object.getPrototypeOf(got)).toBe(Object.prototype);
+    expect(got.email).toBe('mixed@case.example');
   });
 });

@@ -510,7 +510,7 @@ function registerAdminRoutes(
    *
    *  1. **The capture path**, inline and bounded, so an order exists seconds after the
    *     customer pays (`server/shop/payments/routes.ts`).
-   *  2. **An external cron service**, minute by minute, through the GET below.
+   *  2. **An external cron service**, every ten minutes, through the GET below.
    *  3. **The cart's daily maintenance cron**, which drains this outbox too
    *     (`server/shop/app.ts` injects it) — the backstop if 1 and 2 both stop.
    *
@@ -565,16 +565,16 @@ function registerAdminRoutes(
    * is not this endpoint's own work — an idle sweep is a handful of rows — it is
    * that calling it at all resets the idle timer.
    *
-   * IT IS SET TO ONE MINUTE ANYWAY, deliberately. The storefront's
-   * `/checkout/complete` polls for SIXTY SECONDS before it settles on "still
-   * confirming your payment", so a cron slower than that guarantees every paying
-   * customer sees a timeout and has to refresh. While the shop is quiet, the
-   * customer's moment right after paying was judged worth more than the compute
-   * hours.
-   *
-   * IF YOU SLOW IT DOWN, WIDEN THAT POLL WINDOW TO MATCH. Leaving them
-   * mismatched means every order times out on screen — worse than an honest
-   * "we will email you when it is confirmed", because it reads as a failure.
+   * THE CADENCE IS TEN MINUTES, settled by the owner on 2026-08-25 (it ran at
+   * one minute before that, deliberately, while the customer moment was judged
+   * worth more than the compute hours). Ten minutes ≈ 145 compute-hours/month
+   * with a short autosuspend — inside the free allowance. The storefront's
+   * `/checkout/complete` was updated IN THE SAME DECISION: its `confirm` call
+   * still resolves a capture from Paystack directly within its ~60s poll, and
+   * past that it settles early on the honest "we'll email you when it's
+   * confirmed" copy instead of spinning out the sweep gap. If the cadence
+   * moves again, move that page's copy and window with it — mismatched, every
+   * order reads as a failure to the person least able to tell.
    *
    * The highest-leverage lever is not here: shortening Neon's autosuspend
    * decides what each wake-up costs regardless of how often this is called.
