@@ -1,8 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createHashRouter, Navigate, RouterProvider } from 'react-router-dom';
-import { BarChart3, FileText } from 'lucide-react';
-
 import './styles/tokens.css';
 import './styles/base.css';
 import './styles/ui.css';
@@ -13,7 +11,6 @@ import { initSession, startSessionWatch } from '../data/session';
 import { syncDocumentBrand } from '../brand';
 import { ToastHost } from './ui/Toast';
 import { Gate } from './shell/Gate';
-import { Soon } from './routes/Soon';
 import Home from './routes/Home';
 import Orders from './routes/Orders';
 import OrderDetail from './routes/OrderDetail';
@@ -33,6 +30,8 @@ import EmailBroadcasts from './routes/EmailBroadcasts';
 import EmailTemplates from './routes/EmailTemplates';
 import EmailSubscribers from './routes/EmailSubscribers';
 import Posts from './routes/Posts';
+import PostEditor from './routes/PostEditor';
+import Analytics from './routes/Analytics';
 import Discounts from './routes/Discounts';
 import DiscountNew from './routes/DiscountNew';
 import DesignGallery from './routes/DesignGallery';
@@ -120,22 +119,8 @@ const router = createHashRouter([
       /* ── content ─────────────────────────────────────────────────────── */
       { path: '/content', element: <Navigate to="/content/posts" replace /> },
       { path: '/content/posts', element: <Posts /> },
-      {
-        path: '/content/posts/:id',
-        element: (
-          <Soon
-            title="Editor"
-            icon={<FileText />}
-            what="The editor is the TipTap writing surface, with autosave and revisions."
-            todos={[
-              'The editor itself — it is a large, frozen v1 component',
-              'Cover image, excerpt, category and tags',
-              'Publish, unpublish, archive and the revision history',
-              'Decide whether v2 restyles it or embeds it as-is',
-            ]}
-          />
-        ),
-      },
+      { path: '/content/posts/new', element: <PostEditor create /> },
+      { path: '/content/posts/:id', element: <PostEditor /> },
       { path: '/content/featured', element: <Featured /> },
       { path: '/content/banners', element: <Banners /> },
 
@@ -145,22 +130,7 @@ const router = createHashRouter([
       { path: '/emails/broadcasts', element: <EmailBroadcasts /> },
       { path: '/emails/templates', element: <EmailTemplates /> },
       { path: '/emails/subscribers', element: <EmailSubscribers /> },
-      {
-        path: '/analytics',
-        element: (
-          <Soon
-            title="Analytics"
-            icon={<BarChart3 />}
-            what="Analytics is the reporting surface the per-screen summary bars only hint at."
-            todos={[
-              'Revenue over a real daily series, not three cumulative windows',
-              'Orders by status over time',
-              'Best sellers, and what never sells',
-              'A date-range picker the analytics bars can share',
-            ]}
-          />
-        ),
-      },
+      { path: '/analytics', element: <Analytics /> },
       { path: '/settings', element: <Settings /> },
 
       /* A typo lands on Home rather than on a blank. `replace`, so Back does

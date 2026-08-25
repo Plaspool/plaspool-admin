@@ -1,32 +1,41 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { CornerDownRight, Package, Receipt, Search, TicketPercent } from 'lucide-react';
+import {
+  CornerDownRight,
+  FileText,
+  Package,
+  Receipt,
+  Search,
+  TicketPercent,
+  UserRound,
+} from 'lucide-react';
+import type { ListPost } from '../../../shared/types';
+import { api } from '../../data/api';
 import { shopApi, type ShopOrderRow, type ShopProduct } from '../../data/api-shop';
 import { discountsApi } from '../data/discounts';
-import type { Discount } from '../../data/api-marketing';
+import { marketingApi, type CustomerRow, type Discount } from '../../data/api-marketing';
 import { humanise, money } from '../lib/format';
 import { NAV, NAV_FOOT } from './nav';
 
 /**
  * Ctrl+K — the application search.
  *
- * WHAT IT SEARCHES, HONESTLY: pages (the nav), and the FIRST PAGE of
- * products, orders and discounts, filtered client-side. `listProducts` has no
- * search parameter at all (the route's schema is `.strict()` and would 400
- * one), and `listOrders`' search is an exact-match lookup — so a palette that
- * claimed to search the whole store would be lying about both. The footer
- * names the scope. A store at PlaSpool's size fits in these pages for a long
- * time.
+ * WHAT IT SEARCHES, HONESTLY: pages (the nav), the FIRST PAGE of products,
+ * orders, discounts and posts filtered client-side — plus CUSTOMERS through
+ * a real server search (`marketingApi.listCustomers` matches an email or id
+ * prefix over everyone who has ever paid or held points). `listProducts`
+ * still has no search parameter (the route's schema is `.strict()` and
+ * would 400 one), so the footer names the scope rather than implying a
+ * store-wide search that does not exist.
  *
- * TODO(v2): customers and blog posts are not in the palette yet, and true
- * store-wide search needs server-side search endpoints (products by title
- * prefix at least) — queued as backend work, per the session brief.
+ * TODO(v2): true store-wide product search needs a server-side endpoint
+ * (title prefix at least) — still queued as backend work.
  */
-type Scope = 'all' | 'pages' | 'products' | 'orders' | 'discounts';
+type Scope = 'all' | 'pages' | 'products' | 'orders' | 'discounts' | 'posts' | 'customers';
 
 interface Hit {
   key: string;
-  group: 'Pages' | 'Products' | 'Orders' | 'Discounts';
+  group: 'Pages' | 'Products' | 'Orders' | 'Discounts' | 'Posts' | 'Customers';
   icon: ReactNode;
   title: ReactNode;
   /** Plain text for filtering. */
@@ -41,6 +50,8 @@ const SCOPES: { value: Scope; label: string }[] = [
   { value: 'products', label: 'Products' },
   { value: 'orders', label: 'Orders' },
   { value: 'discounts', label: 'Discounts' },
+  { value: 'posts', label: 'Posts' },
+  { value: 'customers', label: 'Customers' },
 ];
 
 const STALE_MS = 60_000;
@@ -49,6 +60,7 @@ interface Pool {
   products: ShopProduct[];
   orders: ShopOrderRow[];
   discounts: Discount[];
+  posts: ListPost[];
 }
 
 function pageHits(): Hit[] {
@@ -104,10 +116,11 @@ export function Palette({ open, onClose }: { open: boolean; onClose: () => void 
         shopApi.listProducts({ limit: 50 }, controller.signal),
         shopApi.listOrders({ limit: 25 }, controller.signal),
         discountsApi.list(controller.signal),
+        api.listPosts({ limit: 50 }).catch(() => ({ items: [] as ListPost[], nextCursor: null })),
       ])
-        .then(([products, orders, discounts]) => {
+        .then(([products, orders, discounts, posts]) => {
           fetchedAt.current = Date.now();
-          setPool({ products: products.items, orders: orders.items, discounts });
+          setPool({ products: products.items, orders: orders.items, discounts, posts: posts.items });
           setLoading(false);
         })
         .catch((cause: unknown) => {
@@ -122,6 +135,28 @@ export function Palette({ open, onClose }: { open: boolean; onClose: () => void 
       document.body.style.overflow = previous;
     };
   }, [open]);
+
+  /* Customers are the one LIVE search — the marketing route matches an email
+     or customer-id prefix server-side, so it types along with the query,
+     debounced a beat. */
+  const [customers, setCustomers] = useState<CustomerRow[]>([]);
+  useEffect(() => {
+    if (!open || !q.trim() || (scope !== 'all' && scope !== 'customers')) {
+      setCustomers([]);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      marketingApi
+        .listCustomers({ query: q.trim(), limit: 8 }, controller.signal)
+        .then((page) => setCustomers(page.items))
+        .catch(() => setCustomers([]));
+    }, 220);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [open, q, scope]);
 
   const groups = useMemo(() => {
     const query = q.trim().toLowerCase();
@@ -186,8 +221,37 @@ export function Palette({ open, onClose }: { open: boolean; onClose: () => void 
       if (hits.length) result.push({ label: 'Discounts', hits });
     }
 
+    if ((scope === 'all' || scope === 'posts') && pool) {
+      const hits = pool.posts
+        .filter((p) => has(`${p.title} ${p.category}`))
+        .slice(0, cap)
+        .map<Hit>((p) => ({
+          key: `post:${p.id}`,
+          group: 'Posts',
+          icon: <FileText aria-hidden="true" />,
+          title: p.title || 'Untitled post',
+          text: p.title,
+          meta: humanise(p.status),
+          to: `/content/posts/${p.id}`,
+        }));
+      if (hits.length) result.push({ label: 'Posts', hits });
+    }
+
+    if ((scope === 'all' || scope === 'customers') && customers.length > 0) {
+      const hits = customers.slice(0, cap).map<Hit>((c) => ({
+        key: `customer:${c.email}`,
+        group: 'Customers',
+        icon: <UserRound aria-hidden="true" />,
+        title: c.displayName || c.email,
+        text: `${c.displayName ?? ''} ${c.email}`,
+        meta: `${c.balance} pts${c.guest ? ' · guest' : ''}`,
+        to: '/customers',
+      }));
+      result.push({ label: 'Customers', hits });
+    }
+
     return result;
-  }, [q, scope, pool]);
+  }, [q, scope, pool, customers]);
 
   const flat = useMemo(() => groups.flatMap((g) => g.hits), [groups]);
 
@@ -272,7 +336,8 @@ export function Palette({ open, onClose }: { open: boolean; onClose: () => void 
               </span>
               {!loading && q ? (
                 <span className="alerts__body">
-                  The palette covers pages plus the latest products, orders and discounts.
+                  The palette covers pages, the latest products, orders, discounts and posts, and
+                  a live customer search.
                 </span>
               ) : null}
             </div>
@@ -313,7 +378,7 @@ export function Palette({ open, onClose }: { open: boolean; onClose: () => void 
             <kbd>esc</kbd> close
           </span>
           <span className="spacer" />
-          <span>Pages, latest products, orders &amp; discounts</span>
+          <span>Pages, latest records &amp; live customer search</span>
         </div>
       </div>
     </div>

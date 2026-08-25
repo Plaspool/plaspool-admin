@@ -12,6 +12,7 @@ import {
   Bold,
   Heading2,
   Heading3,
+  ImagePlus,
   Italic,
   Link2,
   List,
@@ -21,8 +22,11 @@ import {
   Undo2,
   Underline as UnderlineIcon,
 } from 'lucide-react';
+import { IDB_SCHEME, imageIdFromSrc } from '../../../shared/doc';
 import { isAllowedHref } from '../../data/docguards';
+import { acquireImageURL, releaseImageURL, storeImageFile, ImageError } from '../../data/images';
 import { Button } from './primitives';
+import { useToast } from './Toast';
 
 /**
  * v2's description editor — TipTap assembled FRESH from the npm packages,
@@ -44,11 +48,46 @@ import { Button } from './primitives';
  * stored description with the stripped copy — losing a customer-facing block
  * with no error anywhere. Read-only plus a sentence is the honest version.
  *
- * TODO(v2): images inside legacy descriptions render as a placeholder chip
- * (the bytes live behind `asset:`/`idb:` ids that only `StoredImg` resolves);
- * a node view that resolves them can come later — no known description
- * carries one, because v1's product box already blocked image paste.
+ * STORED IMAGES RESOLVE. The image node's `src` is a scheme id
+ * (`idb:`/`asset:`) that no browser can load; the node view below resolves
+ * it through `acquireImageURL` — the same refcounted contract `StoredImg`
+ * uses — and releases on destroy. Blog posts are image-heavy, and an editor
+ * that showed grey chips where the pictures are would be unusable for them.
  */
+const ResolvedImage = DocImage.extend({
+  addNodeView() {
+    return ({ node }) => {
+      const img = document.createElement('img');
+      img.alt = typeof node.attrs.alt === 'string' ? node.attrs.alt : '';
+      if (typeof node.attrs.title === 'string' && node.attrs.title) img.title = node.attrs.title;
+      const src = typeof node.attrs.src === 'string' ? node.attrs.src : '';
+      const id = imageIdFromSrc(src);
+      if (id) {
+        let released = false;
+        let acquired = false;
+        void acquireImageURL(id).then((url) => {
+          acquired = true;
+          if (released) {
+            releaseImageURL(id);
+            return;
+          }
+          if (url) img.src = url;
+        });
+        return {
+          dom: img,
+          destroy() {
+            released = true;
+            if (acquired) releaseImageURL(id);
+          },
+        };
+      }
+      /* A remote src renders as-is — kept, never lost, same as v1's rule. */
+      img.src = src;
+      return { dom: img };
+    };
+  },
+});
+
 function buildExtensions(placeholder: string) {
   return [
     StarterKit.configure({
@@ -75,7 +114,7 @@ function buildExtensions(placeholder: string) {
     }),
     TaskList,
     TaskItem.configure({ nested: true }),
-    DocImage.configure({ inline: false, allowBase64: false }),
+    ResolvedImage.configure({ inline: false, allowBase64: false }),
     Placeholder.configure({ placeholder, showOnlyWhenEditable: true }),
   ];
 }
@@ -85,6 +124,7 @@ export function RichText({
   onChange,
   placeholder = 'What it is, what it is made of, who it is for…',
   ariaLabel = 'Description',
+  allowImages = false,
 }: {
   /** The stored ProseMirror document. Hydrated ONCE — remount (change `key`)
    *  to reset after a discard. */
@@ -92,7 +132,16 @@ export function RichText({
   onChange: (doc: unknown) => void;
   placeholder?: string;
   ariaLabel?: string;
+  /** Offers the insert-image button. OFF for product descriptions on
+   *  purpose: the orphan collector's reference walk covers a product's
+   *  cover and gallery ids and NOT images embedded in its description, so
+   *  an embedded one would be deleted from under the page (v1's §1.10
+   *  rule). Blog posts ARE walked, so the editor offers it there. */
+  allowImages?: boolean;
 }) {
+  const toast = useToast();
+  const imagePick = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
   const hydrated = useRef(false);
   const broken = useRef(false);
   const [locked, setLocked] = useState(false);
@@ -240,6 +289,46 @@ export function RichText({
         {tool('Link', <Link2 aria-hidden="true" />, Boolean(state?.link), () =>
           linkOpen ? setLinkOpen(false) : openLink(),
         )}
+        {allowImages ? (
+          <>
+            {tool(
+              'Insert image',
+              uploading ? <span className="spinner" aria-hidden="true" /> : <ImagePlus aria-hidden="true" />,
+              false,
+              () => imagePick.current?.click(),
+              !uploading,
+            )}
+            <input
+              ref={imagePick}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif,image/avif"
+              hidden
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (!file || !editor) return;
+                setUploading(true);
+                void storeImageFile(file)
+                  .then((stored) => {
+                    /* Same representation v1 writes: the scheme id, resolved
+                       at render by the node view above. */
+                    editor
+                      .chain()
+                      .focus()
+                      .setImage({ src: `${IDB_SCHEME}${stored.id}`, alt: '' })
+                      .run();
+                  })
+                  .catch((err: unknown) => {
+                    toast.show(
+                      err instanceof ImageError ? err.message : 'That image could not be added.',
+                      'critical',
+                    );
+                  })
+                  .finally(() => setUploading(false));
+              }}
+            />
+          </>
+        ) : null}
         <span className="spacer" />
         {tool('Undo', <Undo2 aria-hidden="true" />, false, () => editor?.chain().focus().undo().run(), Boolean(state?.canUndo))}
         {tool('Redo', <Redo2 aria-hidden="true" />, false, () => editor?.chain().focus().redo().run(), Boolean(state?.canRedo))}

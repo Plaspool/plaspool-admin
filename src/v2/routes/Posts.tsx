@@ -5,10 +5,9 @@ import { api } from '../../data/api';
 import { useAsync } from '../lib/useAsync';
 import { humanise, shortDate } from '../lib/format';
 import { AnalyticsBar, AnalyticsMenuItem, PageHeader, useAnalyticsBar, type Metric } from '../ui/Page';
-import { Badge, Banner, Button, EmptyState, type BadgeTone } from '../ui/primitives';
+import { Badge, Banner, Button, ButtonLink, EmptyState, type BadgeTone } from '../ui/primitives';
 import { PageArt } from '../ui/illustrations';
 import { DataTable, IdCell, TablePager, type Column } from '../ui/DataTable';
-import { useToast } from '../ui/Toast';
 
 /**
  * BLOG POSTS — and this is the screen the whole "home page separate from the
@@ -41,7 +40,6 @@ function postTone(status: PostStatus): BadgeTone {
 
 export default function Posts() {
   const [shown, toggle] = useAnalyticsBar('posts');
-  const toast = useToast();
   const [tab, setTab] = useState<PostStatus | 'all'>('all');
   const [search, setSearch] = useState('');
   const [cursors, setCursors] = useState<(string | undefined)[]>([undefined]);
@@ -135,14 +133,10 @@ export default function Posts() {
         title="Blog posts"
         subtitle="The publication side of the shop."
         actions={
-          <Button
-            tone="primary"
-            size="lg"
-            onClick={() => toast.show('The v2 editor is not built yet — write in v1 for now')}
-          >
+          <ButtonLink tone="primary" size="lg" to="/content/posts/new">
             <Plus aria-hidden="true" />
             New post
-          </Button>
+          </ButtonLink>
         }
         menu={(close) => <AnalyticsMenuItem shown={shown} onToggle={toggle} close={close} />}
       />

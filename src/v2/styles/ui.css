@@ -1542,21 +1542,30 @@
   gap: var(--s2);
 }
 
-/* Legacy blog-era images inside a description document. The bytes live behind
-   scheme ids v2 does not resolve inline, so the node renders as a quiet chip
-   rather than a broken picture. */
+/* Stored images resolve through the node view; while one is still fetching
+   (or truly unresolvable) the scheme src shows as a quiet chip, never a
+   broken-picture glyph. */
 .rte__body img {
   max-width: 100%;
   border-radius: var(--r-md);
+  display: block;
+  margin: var(--s2) 0;
 }
 
 .rte__body img[src^='asset:'],
-.rte__body img[src^='idb:'] {
+.rte__body img[src^='idb:'],
+.rte__body img:not([src]) {
   display: inline-block;
-  width: 4rem;
-  height: 2rem;
+  min-width: 4rem;
+  min-height: 2rem;
   background: var(--surface-sunken);
   box-shadow: 0 0 0 1px var(--border) inset;
+}
+
+.rte__body .ProseMirror-selectednode {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-md);
 }
 
 /* TipTap's placeholder classes. */
