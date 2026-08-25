@@ -24,6 +24,7 @@ import {
   shippingOptionsForCart,
   startCheckout,
 } from './repo';
+import { saveDeliveryArea } from './delivery-areas-repo';
 import { CartPreconditionError, CartStaleWriteError } from '../errors';
 import { NotFoundError } from '../../../repo/errors';
 import { checkoutPort } from '../port';
@@ -250,6 +251,91 @@ describe('shipping options', () => {
     await expect(
       setShipping(db, CONFIG, { cartId: cart.id, optionId: 'express' }),
     ).rejects.toThrow(/shipping/i);
+  });
+});
+
+describe('district delivery pricing', () => {
+  /*
+   * Migration 0460 + `districtRuling`: the shipping address carries a CHOSEN
+   * `marketing_service_areas.key`, and `shop_delivery_areas` (migration 0300)
+   * holds the shop's opinion of it. These four pin the contract — no opinion
+   * means the zone rate, a priced district replaces every option's amount AND
+   * the frozen number, and a switched-off district is refused at the door and
+   * again at the freeze, per the owner's "off = we refuse to deliver there".
+   */
+  const GWARINPA = { ...UK, district: 'gwarinpa' };
+
+  it('prices every option — and the FROZEN total — at the district override', async () => {
+    await saveDeliveryArea(db, 'gwarinpa', { delivers: true, rateMinor: 555 }, null);
+    const cart = await createCart(db, { currency: CURRENCY });
+    await addLine(db, { cartId: cart.id, variantId: 'var_tee', qty: 1 });
+    await putAddresses(db, CONFIG, { cartId: cart.id, shipping: GWARINPA, billing: null });
+
+    // Both zone options survive — id, label and taxability are still the
+    // zone's — but the amount is the district's flat rate on each of them.
+    const options = await shippingOptionsForCart(db, CONFIG, cart.id);
+    expect(options.map((o) => o.id)).toEqual(['standard', 'express']);
+    expect(options.map((o) => o.amount.amount)).toEqual([555, 555]);
+
+    // The number `setShipping` answers is the number the freeze will reach.
+    const chosen = await setShipping(db, CONFIG, { cartId: cart.id, optionId: 'standard' });
+    expect(chosen.amount).toEqual({ amount: 555, currency: CURRENCY });
+
+    const result = await freezeCheckout(db, catalog, CONFIG, { cartId: cart.id });
+    if (!result.ok) throw new Error('expected totals');
+    // £19.99 + £5.55 district delivery, 20% VAT on both: the override changes
+    // the shipping AMOUNT, never its taxability — that stays the zone's call.
+    expect(result.totals.shippingTotal).toEqual({ amount: 555, currency: CURRENCY });
+    expect(result.totals.taxTotal).toEqual({ amount: 400 + 111, currency: CURRENCY });
+    expect(result.totals.grandTotal).toEqual({ amount: 1999 + 555 + 511, currency: CURRENCY });
+  });
+
+  it('prices a district nobody has an opinion about at the zone rate', async () => {
+    // No row in `shop_delivery_areas` is not "missing" — it is the live
+    // behaviour before the table existed, and most districts will never have
+    // a row. An unknown key must therefore be indistinguishable from none.
+    const cart = await createCart(db, { currency: CURRENCY });
+    await addLine(db, { cartId: cart.id, variantId: 'var_tee', qty: 1 });
+    await putAddresses(db, CONFIG, {
+      cartId: cart.id,
+      shipping: { ...UK, district: 'maitama' },
+      billing: null,
+    });
+    const options = await shippingOptionsForCart(db, CONFIG, cart.id);
+    expect(options.map((o) => o.amount.amount)).toEqual([399, 799]);
+  });
+
+  it('refuses a switched-off district at the door, writing NOTHING', async () => {
+    await saveDeliveryArea(db, 'gwarinpa', { delivers: false }, null);
+    const cart = await createCart(db, { currency: CURRENCY });
+    await addLine(db, { cartId: cart.id, variantId: 'var_tee', qty: 1 });
+    await expect(
+      putAddresses(db, CONFIG, { cartId: cart.id, shipping: GWARINPA, billing: null }),
+    ).rejects.toThrow(/outside_delivery_area/);
+    // Refused BEFORE the cart write: no address exists, so no options do
+    // either — the customer is still on the address step with a clean slate.
+    expect(await shippingOptionsForCart(db, CONFIG, cart.id)).toEqual([]);
+  });
+
+  it('the freeze refuses a district switched off mid-checkout', async () => {
+    // The address passed when it was written; the owner turned Gwarinpa off
+    // while the customer sat at the payment step. The freeze is the last
+    // instant a refusal costs nothing — after it, the answer is a refund.
+    const cart = await createCart(db, { currency: CURRENCY });
+    await addLine(db, { cartId: cart.id, variantId: 'var_tee', qty: 1 });
+    await putAddresses(db, CONFIG, { cartId: cart.id, shipping: GWARINPA, billing: null });
+    await setShipping(db, CONFIG, { cartId: cart.id, optionId: 'standard' });
+
+    await saveDeliveryArea(db, 'gwarinpa', { delivers: false }, null);
+
+    expect(await shippingOptionsForCart(db, CONFIG, cart.id)).toEqual([]);
+    const result = await freezeCheckout(db, catalog, CONFIG, { cartId: cart.id });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('outside_delivery_area');
+    // Nothing froze: the cart is still open, and still editable back to an
+    // address the shop does go to.
+    expect((await getCart(db, cart.id))?.status).toBe('open');
   });
 });
 
@@ -539,7 +625,8 @@ describe('checkout.completed', () => {
 
     // The address is a COPY. `shop_addresses` is Cart's table under R3, so an
     // event carrying only an id would force the callback brief §7 forbids.
-    expect(payload.shippingAddress).toEqual(UK);
+    // `district` rides along since 0460 — null here, because UK names none.
+    expect(payload.shippingAddress).toEqual({ ...UK, district: null });
 
     // The holds, so whoever commits stock on capture knows which ones.
     expect(payload.reservationIds).toEqual([]);

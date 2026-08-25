@@ -276,6 +276,14 @@ export interface AddressSnapshot {
   /** ISO-3166-1 alpha-2, uppercase. The shipping zone is derived from it. */
   countryCode: string;
   phone: string | null;
+  /**
+   * `marketing_service_areas.key` — the district the customer CHOSE from the
+   * storefront's picker, never parsed from street text. OPTIONAL because every
+   * event serialized before migration 0460 lacks the property, and a replayed
+   * payload must not become invalid retroactively. Absent and null mean the
+   * same thing: no district named, priced at the state's zone.
+   */
+  district?: string | null;
 }
 
 /**

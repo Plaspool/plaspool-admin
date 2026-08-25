@@ -87,6 +87,7 @@ function rowToAddress(row: Record<string, unknown>): AddressSnapshot {
     postalCode: row.postal_code == null ? null : String(row.postal_code),
     countryCode: String(row.country_code),
     phone: row.phone == null ? null : String(row.phone),
+    district: row.district == null ? null : String(row.district),
   };
 }
 
@@ -96,9 +97,59 @@ export async function getAddress(
   kind: AddressKind,
 ): Promise<AddressSnapshot | null> {
   const res = await db.execute(sql`
-    SELECT name, line1, line2, city, region, postal_code, country_code, phone
+    SELECT name, line1, line2, city, region, postal_code, country_code, phone, district
       FROM shop_addresses WHERE cart_id = ${cartId} AND kind = ${kind}`);
   return res.rows[0] ? rowToAddress(res.rows[0]) : null;
+}
+
+// ----------------------------------------------------------------- districts
+
+/**
+ * What `shop_delivery_areas` says about one district (migration 0300), reduced
+ * to the two facts checkout acts on.
+ *
+ * NO DISTRICT AND NO ROW ARE THE SAME ANSWER — `{ refused: false, rateMinor:
+ * null }`, meaning "price at the state's zone", which is the live behaviour
+ * before districts existed. The table stores opinions, not places; a district
+ * nobody has priced is not an error and must not become one here.
+ *
+ * `delivers = false` MEANS REFUSED, per the owner's decision: a switched-off
+ * district is a place the shop does not go, not a place at the default rate.
+ */
+interface DistrictRuling {
+  refused: boolean;
+  /** `null` means NO OVERRIDE: price from the state's zone. Never "free". */
+  rateMinor: number | null;
+}
+
+const ZONE_RATE: DistrictRuling = { refused: false, rateMinor: null };
+
+async function districtRuling(db: Db, district: string | null): Promise<DistrictRuling> {
+  if (district == null) return ZONE_RATE;
+  const res = await db.execute(sql`
+    SELECT delivers, rate_minor FROM shop_delivery_areas WHERE area_key = ${district}`);
+  const row = res.rows[0];
+  if (!row) return ZONE_RATE;
+  if (!row.delivers) return { refused: true, rateMinor: null };
+  /* `rate_minor` is `bigint`, which the drivers disagree about (Neon answers a
+   * string, PGlite a number) — and `Number(null)` is 0, the one wrong answer
+   * available. Null check FIRST, cast second, exactly as `delivery-areas-repo`
+   * does. */
+  const raw = row.rate_minor;
+  return { refused: false, rateMinor: raw == null ? null : Number(raw) };
+}
+
+/**
+ * A zone option, re-priced at the district's flat rate.
+ *
+ * THE OVERRIDE REPLACES THE AMOUNT AND NOTHING ELSE. The option's id, label and
+ * taxability still come from the zone: the district table stores one number,
+ * not a shipping catalogue, and an owner pricing Gwarinpa is answering "what
+ * does delivery there cost", not designing new delivery methods for it.
+ */
+function districtPriced(option: ShippingQuote, ruling: DistrictRuling): ShippingQuote {
+  if (ruling.rateMinor == null) return option;
+  return { ...option, amount: { ...option.amount, amount: ruling.rateMinor } };
 }
 
 /**
@@ -126,6 +177,17 @@ export async function putAddresses(
   assertAddress(a.shipping);
   if (a.billing) assertAddress(a.billing);
 
+  // THE REFUSAL COMES BEFORE ANY WRITE. An address the shop will not deliver to
+  // is refused at the door rather than stored and failed later: a customer told
+  // "we do not deliver to Gwarinpa" while the form is still in front of them
+  // can pick another address; one told at the freeze has typed everything
+  // twice. (The freeze still checks — the owner can switch a district off
+  // between the two moments — but this is where the message is cheapest.)
+  // Only the SHIPPING district is ruled on: a billing address is where the
+  // card lives, not where the parcel goes.
+  const ruling = await districtRuling(db, a.shipping.district ?? null);
+  if (ruling.refused) throw new BadRequestError('outside_delivery_area');
+
   const zone = zoneFor(config.zones, a.shipping.countryCode, a.shipping.region);
   // The cart write goes FIRST because it carries the CAS and the state guard: if
   // the cart is not open, or has moved on, no address is written at all.
@@ -142,15 +204,15 @@ export async function putAddresses(
     if (!address) continue;
     await db.execute(sql`
       INSERT INTO shop_addresses (id, cart_id, kind, name, line1, line2, city, region,
-                                  postal_code, country_code, phone)
+                                  postal_code, country_code, phone, district)
       VALUES (${newId('address')}, ${a.cartId}, ${kind}, ${address.name}, ${address.line1},
               ${address.line2}, ${address.city}, ${address.region}, ${address.postalCode},
-              ${address.countryCode}, ${address.phone})
+              ${address.countryCode}, ${address.phone}, ${address.district ?? null})
       ON CONFLICT (cart_id, kind) DO UPDATE
         SET name = EXCLUDED.name, line1 = EXCLUDED.line1, line2 = EXCLUDED.line2,
             city = EXCLUDED.city, region = EXCLUDED.region,
             postal_code = EXCLUDED.postal_code, country_code = EXCLUDED.country_code,
-            phone = EXCLUDED.phone`);
+            phone = EXCLUDED.phone, district = EXCLUDED.district`);
   }
 
   return { zone: zone.id };
@@ -168,10 +230,15 @@ export async function shippingOptionsForCart(
   // before it knows the destination shows a number that goes up at the last
   // step, which is when a customer abandons.
   if (!address) return [];
+  // AND NONE TO A REFUSED DISTRICT. `putAddresses` already refuses these, but
+  // the owner can switch a district off while a cart is mid-checkout; an empty
+  // list is the honest answer, and the freeze backs it with a hard refusal.
+  const ruling = await districtRuling(db, address.district ?? null);
+  if (ruling.refused) return [];
   return shippingOptionsFor(
     zoneFor(config.zones, address.countryCode, address.region),
     config.storeCurrency,
-  );
+  ).map((option) => districtPriced(option, ruling));
 }
 
 export async function setShipping(
@@ -181,6 +248,8 @@ export async function setShipping(
 ): Promise<ShippingQuote> {
   const address = await getAddress(db, a.cartId, 'shipping');
   if (!address) throw new BadRequestError('shipping_address');
+  const ruling = await districtRuling(db, address.district ?? null);
+  if (ruling.refused) throw new BadRequestError('outside_delivery_area');
   const zone = zoneFor(config.zones, address.countryCode, address.region);
   const option = shippingOptionById(zone, config.storeCurrency, a.optionId);
   // An option from ANOTHER zone is refused rather than honoured: accepting the
@@ -192,7 +261,10 @@ export async function setShipping(
     baseRevision: a.baseRevision,
     fields: { shippingOptionId: option.id },
   });
-  return option;
+  // Re-priced on the way OUT, not on the way in: the cart stores the option ID
+  // and the freeze re-derives the amount, so what matters is that the number
+  // shown here is the number the freeze will reach — same ruling, same result.
+  return districtPriced(option, ruling);
 }
 
 // ---------------------------------------------------------------------- start
@@ -235,6 +307,7 @@ export type FreezeOutcome =
   | { ok: true; totals: FrozenTotals }
   | { ok: false; reason: 'empty_cart' }
   | { ok: false; reason: 'no_shipping_address' }
+  | { ok: false; reason: 'outside_delivery_area' }
   | { ok: false; reason: 'unresolved_lines'; variantIds: string[] }
   | {
       ok: false;
@@ -345,10 +418,21 @@ export async function freezeCheckout(
   const address = await getAddress(db, a.cartId, 'shipping');
   if (!address) return { ok: false, reason: 'no_shipping_address' };
 
+  // RULED ON AGAIN AT THE MONEY MOMENT, not trusted from `putAddresses`: the
+  // owner can switch a district off while this cart sits at the payment step,
+  // and the freeze is the last instant a refusal costs nothing. After it, the
+  // answer would be a refund.
+  const districts = await districtRuling(db, address.district ?? null);
+  if (districts.refused) return { ok: false, reason: 'outside_delivery_area' };
+
   const zone = zoneFor(config.zones, address.countryCode, address.region);
-  const shipping = cart.shippingOptionId
+  const chosen = cart.shippingOptionId
     ? shippingOptionById(zone, config.storeCurrency, cart.shippingOptionId)
     : null;
+  // The district's flat rate replaces the zone amount HERE, before the totals
+  // engine runs — so the frozen number, the only number ever charged, is the
+  // district one. `setShipping` showed the customer this same figure.
+  const shipping = chosen ? districtPriced(chosen, districts) : null;
 
   /*
    * ONE `quote` PER LINE, and the result is carried forward rather than

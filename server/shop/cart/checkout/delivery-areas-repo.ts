@@ -30,9 +30,11 @@ import type { Db } from '../../../db/client';
  * problem rather than the screen's.
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * ⚠️  NOTHING AT CHECKOUT READS THIS YET. `zoneFor` matches on the address's
- *     `region` (the state) and no checkout address carries a district. See the
- *     migration header; wiring it is a separate, money-adjacent change.
+ * CHECKOUT READS THIS THROUGH `districtRuling` (`checkout/repo.ts`), since
+ * migration 0460 put a `district` on the address: `delivers = false` refuses
+ * the address, the shipping options and the freeze; `rate_minor` replaces the
+ * zone amount on every option. This module stays the ADMIN's writer — checkout
+ * reads the two columns directly and never imports it.
  */
 
 function newAreaId(): string {
