@@ -211,6 +211,27 @@
                         "when":  1786600002200,
                         "tag":  "0380_refund_failed_email_kind",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  30,
+                        "version":  "7",
+                        "when":  1786600002300,
+                        "tag":  "0400_variant_compare_at",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  31,
+                        "version":  "7",
+                        "when":  1786600002400,
+                        "tag":  "0420_variant_cost",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  32,
+                        "version":  "7",
+                        "when":  1786600002500,
+                        "tag":  "0440_product_seo",
+                        "breakpoints":  true
                     }
                 ]
 }

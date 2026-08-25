@@ -103,6 +103,15 @@ const ProductPatchBody = z
     tags: z.array(str()).max(64),
     coverImageId: str().max(300).nullable(),
     imageIds: z.array(str().max(300)).max(100),
+    /**
+     * Migration 0440. `null` (or `''`, normalised in the repo) clears back to
+     * "use the defaults". The caps are generous over the ~70/~160 characters
+     * search engines render — those are UI guidance, not validity — and exist
+     * because `shop_products` has no byte-ceiling machinery: no tsvector hangs
+     * off it, so a route-level bound that names the field is the whole defence.
+     */
+    seoTitle: str().max(300).nullable(),
+    seoDescription: str().max(500).nullable(),
   })
   .partial()
   .strict();
@@ -176,6 +185,16 @@ const CreateVariantBody = z
      * lowercase-only.
      */
     colorHex: str().regex(/^#[0-9a-fA-F]{6}$/, 'hex').nullable().optional(),
+    /**
+     * Minor units (migrations 0400/0420). `.max(2_147_483_647)` IS THE COLUMN'S
+     * CEILING, not a style choice: both are `integer` (int4), and a value past
+     * it would be a 22003 the error table has no row for — a 500 retried five
+     * times for input that can never be accepted. (`PriceBody.amount` predates
+     * this observation and still says MAX_SAFE_INTEGER; `shop_prices.amount`
+     * is int4 too, so it shares the latent gap — not widened here.)
+     */
+    compareAtMinor: z.number().int().min(0).max(2_147_483_647).nullable().optional(),
+    costMinor: z.number().int().min(0).max(2_147_483_647).nullable().optional(),
   })
   .strict();
 
@@ -190,6 +209,16 @@ const UpdateVariantBody = z
     imageId: str().min(1).max(200).nullable(),
     /** `null` clears the colour code; shape-checked as on create. */
     colorHex: str().regex(/^#[0-9a-fA-F]{6}$/, 'hex').nullable(),
+    /** `null` clears — "no longer on sale". Bounds as on create (int4 ceiling). */
+    compareAtMinor: z.number().int().min(0).max(2_147_483_647).nullable(),
+    /** `null` clears. Admin-only on the wire — the storefront mapper strips it. */
+    costMinor: z.number().int().min(0).max(2_147_483_647).nullable(),
+    /**
+     * The inventory-policy flip the edit modal was missing (owner's queue,
+     * 2026-08-25). Lands on `shop_inventory` inside `updateVariant`'s one
+     * statement; a patch carrying ONLY this key is still a valid patch.
+     */
+    backorderable: z.boolean(),
   })
   .partial()
   .strict();

@@ -129,6 +129,16 @@ export const shopProducts = pgTable(
     publishedAt: bigint('published_at', { mode: 'number' }),
     /** Non-null == in the trash, regardless of status. */
     deletedAt: bigint('deleted_at', { mode: 'number' }),
+    /**
+     * Hand-written SEO copy for the storefront's <title>/<meta description>
+     * (migration 0440). NULL means "use the defaults" — the storefront falls
+     * back to `title` and the trimmed description — and `''` is normalised to
+     * NULL at the write boundary. No length check, matching `title`: no
+     * tsvector hangs off this table, so the bound lives in the route's Zod
+     * where the refusal can name the field.
+     */
+    seoTitle: text('seo_title'),
+    seoDescription: text('seo_description'),
     authorId: uuid('author_id')
       .notNull()
       .references(() => users.id),
@@ -246,6 +256,22 @@ export const shopVariants = pgTable(
      * than a user-facing refusal.
      */
     colorHex: text('color_hex'),
+    /**
+     * The struck-through "was" price (migration 0400). MINOR UNITS, integer.
+     * A COLUMN, NOT A `shop_prices` ROW: effective-dating exists because a
+     * price charges someone; this one is display-only and last-writer-wins,
+     * like `weightGrams`. Currency is implied by the current price row's.
+     * NULL means "not on sale"; the storefront draws the line through it only
+     * when it exceeds the current price, decided at render time.
+     */
+    compareAtMinor: integer('compare_at_minor'),
+    /**
+     * What the shop pays for one unit (migration 0420). MINOR UNITS, integer.
+     * ⚠️ ADMIN-ONLY ON THE WIRE — `toStorefrontVariant` strips it and
+     * `StorefrontVariant` is `Omit<…, 'costMinor'>`, so widening it back is a
+     * compile error, not a silent leak. NULL means "never told what it costs".
+     */
+    costMinor: integer('cost_minor'),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
     updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
   },
@@ -257,6 +283,13 @@ export const shopVariants = pgTable(
     check('shop_variants_status_ck', sql`${t.status} IN (${sqlLiterals(VARIANT_STATUSES)})`),
     check('shop_variants_position_ck', sql`${t.position} >= 0`),
     check('shop_variants_weight_ck', sql`${t.weightGrams} IS NULL OR ${t.weightGrams} >= 0`),
+    // Sign backstops, as `weight_ck`: against a backfill or hand-run UPDATE,
+    // not display policy — zero is storable and simply never renders as a sale.
+    check(
+      'shop_variants_compare_at_ck',
+      sql`${t.compareAtMinor} IS NULL OR ${t.compareAtMinor} >= 0`,
+    ),
+    check('shop_variants_cost_ck', sql`${t.costMinor} IS NULL OR ${t.costMinor} >= 0`),
     index('shop_variants_product_idx').on(t.productId, t.position),
     /** Partial: the reference walk and the public check both scan it, and a
      *  variant with no image answers neither question. */

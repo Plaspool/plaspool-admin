@@ -36,6 +36,13 @@ export interface Product {
   updatedAt: number;
   publishedAt: number | null;
   deletedAt: number | null;
+  /**
+   * Hand-written search-listing copy (migration 0440). `null` means "use the
+   * defaults" — the storefront falls back to `title` / the trimmed description.
+   * Deliberately public: rendering these into meta tags is their entire job.
+   */
+  seoTitle: string | null;
+  seoDescription: string | null;
   authorId: string;
   /** The CAS token. Every write carries the revision it derived from. */
   revision: number;
@@ -93,8 +100,15 @@ export interface StorefrontProduct extends Product {
  * variant carried a bare `imageId`, and the only way to use it there was to
  * re-derive `/api/public/images/:id` on the far side of the network, which is
  * the second definition `mapping.ts` exists to prevent.
+ *
+ * `Omit<…, 'costMinor'>` IS THE FIRST DELIBERATE STRIP ON THIS WIRE. The
+ * FIELD_DISPOSITION gap above still stands for everything else — but what the
+ * shop pays per unit is commercial information with no storefront use, so
+ * `toStorefrontVariant` removes it and this type says so, making a future
+ * widening a compile error instead of a silent leak. `compareAtMinor` stays,
+ * on purpose: the sale strikethrough is the reason it exists.
  */
-export interface StorefrontVariant extends VariantWithPrice {
+export interface StorefrontVariant extends Omit<VariantWithPrice, 'costMinor'> {
   /** `null` when nobody has photographed this colour yet. */
   imageUrl: string | null;
 }
@@ -122,6 +136,20 @@ export interface Variant {
    * identity and feeds SKU derivation; a swatch is presentation.
    */
   colorHex: string | null;
+  /**
+   * The struck-through "was" price, minor units (migration 0400). NULL means
+   * "not on sale". Display-only — never an input to a quote or an order total —
+   * which is why it is a plain column and not a `shop_prices` row. Currency is
+   * implied by the current price row's. Deliberately public.
+   */
+  compareAtMinor: number | null;
+  /**
+   * What the shop pays per unit, minor units (migration 0420). NULL means
+   * "never recorded". ⚠️ ADMIN-ONLY: `toStorefrontVariant` strips it, and
+   * `StorefrontVariant` omits it at the type level so widening it back is a
+   * compile error rather than a silent leak.
+   */
+  costMinor: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -186,6 +214,9 @@ export interface ProductPatch {
   tags?: string[];
   coverImageId?: string | null;
   imageIds?: string[];
+  /** `null` (or `''`, normalised) clears back to "use the defaults". */
+  seoTitle?: string | null;
+  seoDescription?: string | null;
 }
 
 /** The patchable half of a variant. `productId` is absent: a variant does not
@@ -200,4 +231,15 @@ export interface VariantPatch {
   imageId?: string | null;
   /** `null` clears it. Lowercased and shape-checked on the way in. */
   colorHex?: string | null;
+  /** `null` clears it — "no longer on sale". Minor units, non-negative int. */
+  compareAtMinor?: number | null;
+  /** `null` clears it. Minor units, non-negative int. Admin-only on the wire. */
+  costMinor?: number | null;
+  /**
+   * The inventory POLICY flip the edit modal was missing (owner's queue,
+   * 2026-08-25 — "updateVariant cannot flip backorderable"). Lives on
+   * `shop_inventory`, not `shop_variants`; `updateVariant` writes it in the
+   * same statement, exactly as `createVariant` already writes both tables.
+   */
+  backorderable?: boolean;
 }
