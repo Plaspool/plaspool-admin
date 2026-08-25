@@ -322,6 +322,41 @@ export default function DesignGallery() {
           )}
         />
 
+        <Section title="Mobile — resize this page to see the rules apply">
+          <div className="stack stack--tight" style={{ fontSize: 'var(--t-md)', color: 'var(--ink-sub)', lineHeight: 1.6 }}>
+            <p>
+              One breakpoint, <strong style={{ color: 'var(--ink)' }}>48rem</strong>, and five
+              transforms — every specimen on this page demonstrates its own below it:
+            </p>
+            <p>
+              <strong style={{ color: 'var(--ink)' }}>Tables become cards.</strong> The header row
+              stands down; each cell carries its column's name (from the same string the view
+              control uses), the identity leads at full width, facts tile two-up, an unnamed
+              action column floats to the card's corner.
+            </p>
+            <p>
+              <strong style={{ color: 'var(--ink)' }}>Modals become bottom sheets</strong> — pinned,
+              top-rounded, body scrolls between a fixed head and a footer whose two keys split
+              into thumb-sized halves.
+            </p>
+            <p>
+              <strong style={{ color: 'var(--ink)' }}>The rail becomes a drawer</strong> that slides
+              under the topbar, dims the page, and closes itself on any navigation, on the scrim,
+              and on Escape.
+            </p>
+            <p>
+              <strong style={{ color: 'var(--ink)' }}>The crumb takes two taps on touch</strong> —
+              the first peeks the parent page's name in a bubble (itself a link), the second goes.
+              Pointers keep the one-click chip with its hover title.
+            </p>
+            <p>
+              <strong style={{ color: 'var(--ink)' }}>The save bar takes the whole topbar</strong>,
+              the bento stacks to one column, and keyboard chords (Ctrl K, the palette legend)
+              stand down where there is no keyboard.
+            </p>
+          </div>
+        </Section>
+
         <Section title="Buttons — rest, held-open, disabled">
           <div className="row" style={{ flexWrap: 'wrap', gap: 'var(--s3)' }}>
             <Button tone="primary">Primary</Button>

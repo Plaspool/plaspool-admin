@@ -187,8 +187,12 @@ export default function Orders() {
         }
       />
 
+      {/* This line claimed order detail was "still on the v1 screen" for four
+          rounds after it stopped being true — caught by the mobile pass's
+          screenshot, not by anyone reading the code. Copy states the actual
+          affordance now. */}
       <p className="page__learn">
-        Order detail, fulfilment and refunds are still on the v1 screen — see Home for what is owed.
+        Open an order to fulfil it, refund it, or read its timeline.
       </p>
     </div>
   );

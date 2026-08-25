@@ -296,6 +296,7 @@
   right: 0;
   z-index: 40;
   min-width: 13rem;
+  max-width: calc(100vw - var(--s6));
   padding: calc(var(--s1) + 2px);
   background: var(--surface);
   border-radius: var(--r-lg);
@@ -602,12 +603,22 @@
 }
 
 .modal {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   max-width: 32rem;
+  max-height: calc(100dvh - var(--s10) * 2);
   background: var(--surface);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-modal);
   animation: v2-rise 180ms var(--ease-out);
+}
+
+@keyframes v2-sheet {
+  from {
+    transform: translateY(48px);
+    opacity: 0.4;
+  }
 }
 
 @keyframes v2-rise {
@@ -635,6 +646,7 @@
 
 .modal__body {
   padding: var(--s4) var(--s5) var(--s5);
+  min-height: 0;
 }
 
 /* An inline link inside running copy must be visibly a link at rest — in a
@@ -654,6 +666,47 @@
   justify-content: flex-end;
   gap: var(--s2);
   padding: 0 var(--s5) var(--s5);
+}
+
+/* ═══ THE MOBILE SHEET ════════════════════════════════════════════════════
+   Below the breakpoint every modal becomes a bottom sheet: full width, pinned
+   to the bottom edge, rounded only at the top, sliding UP — the reference
+   admin's own mobile dialog. The head and foot stay put while the body
+   scrolls, so Cancel/Save never leave the thumb's reach on a long form. The
+   footer clears the home-indicator with the safe-area inset.
+
+   BELOW the base modal rules on purpose: half of these override properties
+   the base declares, and at equal specificity source order is the whole
+   contest — the palette footer lost it once already. */
+@media (max-width: 48rem) {
+  .modal__scrim {
+    place-items: end stretch;
+    padding: var(--s8) 0 0;
+    overflow: hidden;
+  }
+
+  .modal {
+    max-width: none;
+    max-height: calc(100dvh - var(--topbar-h));
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    animation: v2-sheet 260ms var(--ease-out);
+  }
+
+  .modal__body {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .modal__foot {
+    padding-bottom: max(var(--s5), env(safe-area-inset-bottom));
+  }
+
+  /* Two keys, evenly split — thumb-sized halves rather than a right-aligned
+     pair a thumb has to aim at. */
+  .modal__foot > .btn {
+    flex: 1;
+    height: var(--ctl-h-lg);
+  }
 }
 
 /* A row of the type-picker list inside a modal. Full-bleed so the hover fill
@@ -1039,6 +1092,27 @@
 .savebar__btn .spinner {
   width: 13px;
   height: 13px;
+}
+
+/* On a phone the pill takes the WHOLE topbar — the reference's own move.
+   While a form is dirty the only application-level concern IS the unsaved
+   form, and at this width the bar cannot share the row with the burger and
+   the bell without covering one of them anyway. Honest beats overlapped. */
+@media (max-width: 48rem) {
+  .savebar {
+    left: var(--s2);
+    right: var(--s2);
+    width: auto;
+    transform: none;
+    animation: v2-savebar-m 200ms var(--ease-out);
+  }
+}
+
+@keyframes v2-savebar-m {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
 }
 
 /* ═══ DEFINITION LIST ═════════════════════════════════════════════════════
@@ -1824,6 +1898,7 @@
   right: 0;
   z-index: 40;
   width: 17rem;
+  max-width: calc(100vw - var(--s8));
   padding: var(--s3);
   background: var(--surface);
   border-radius: var(--r-lg);
@@ -1865,7 +1940,7 @@
   z-index: 40;
   min-width: 100%;
   width: max-content;
-  max-width: 19rem;
+  max-width: min(19rem, calc(100vw - var(--s8)));
   display: flex;
   flex-direction: column;
   overflow: hidden;

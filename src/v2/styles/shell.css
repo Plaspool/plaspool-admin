@@ -23,6 +23,24 @@
 @media (max-width: 60rem) {
   .top {
     grid-template-columns: auto 1fr auto;
+    gap: var(--s2);
+    padding: 0 var(--s3);
+  }
+
+  /* A keyboard chord painted onto a touch screen is chrome without its
+     reason — the search pill keeps its icon and ghost text only. */
+  .top__searchbtn kbd {
+    display: none;
+  }
+}
+
+/* Tighter still, the reference admin's own move: the wordmark stands down and
+   the search pill takes the room — the burger is the way home anyway, and a
+   logo beside a hamburger beside a search field is three things sharing the
+   width two of them need. */
+@media (max-width: 32rem) {
+  .top .top__brand {
+    display: none;
   }
 }
 
@@ -209,19 +227,53 @@
   border-right: 1px solid var(--border);
 }
 
+/* ═══ THE MOBILE DRAWER ═══════════════════════════════════════════════════
+   Below the breakpoint the rail becomes an off-canvas drawer: it slides in
+   from the left under the topbar, a scrim dims the working area, and it
+   CLOSES ITSELF on any navigation (Shell.tsx). `visibility` + `transform`
+   rather than `display: none`, because display cannot animate and a drawer
+   that teleports reads as a glitch where one that slides reads as a thing
+   you pushed. The visibility transition is delayed on the way OUT so the
+   slide finishes before the element leaves the accessibility tree. */
 @media (max-width: 60rem) {
   .side {
-    display: none;
+    position: fixed;
+    inset: var(--topbar-h) auto 0 0;
+    z-index: 55;
+    width: min(17rem, 85vw);
+    background: var(--bg);
+    border-right: 0;
+    border-radius: 0 var(--r-lg) 0 0;
+    box-shadow: var(--shadow-pop);
+    transform: translateX(-104%);
+    visibility: hidden;
+    transition: transform 240ms var(--ease-out), visibility 0s linear 240ms;
   }
 
   .side.is-open {
-    display: flex;
+    transform: translateX(0);
+    visibility: visible;
+    transition: transform 280ms var(--ease-out), visibility 0s;
+  }
+}
+
+/* The scrim behind the open drawer. Rendered only while open, mobile-only:
+   on desktop the rail is part of the layout and there is nothing to dim. */
+.shell__scrim {
+  display: none;
+}
+
+@media (max-width: 60rem) {
+  .shell__scrim {
+    display: block;
     position: fixed;
-    inset: var(--topbar-h) auto 0 0;
-    z-index: 50;
-    width: var(--sidebar-w);
-    background: var(--bg);
-    box-shadow: var(--shadow-pop);
+    inset: var(--topbar-h) 0 0 0;
+    z-index: 54;
+    border: 0;
+    padding: 0;
+    background: rgb(26 26 26 / 0.44);
+    cursor: pointer;
+    animation: v2-fade 200ms var(--ease);
   }
 }
 
@@ -893,6 +945,21 @@
   scroll-padding: 2.25rem 0;
 }
 
+/* On a phone the palette starts at the top edge and gets the height a
+   software keyboard will fight it for — 11vh of ceremony above it is 11vh of
+   results the thumb cannot reach. (The foot's own mobile rule lives BELOW the
+   foot's base rule — source order decides at equal specificity, the same trap
+   the burger's compound selector documents.) */
+@media (max-width: 48rem) {
+  .palette__scrim {
+    padding: var(--s2) var(--s2) var(--s4);
+  }
+
+  .palette__body {
+    max-height: min(60dvh, 30rem);
+  }
+}
+
 .palette__label {
   padding: var(--s2) var(--s5) var(--s1);
   font-size: var(--t-sm);
@@ -994,4 +1061,13 @@
   display: inline-flex;
   align-items: center;
   gap: var(--s1);
+}
+
+/* A keyboard legend on a touch screen explains keys the reader does not
+   have. Hidden on the phone layout — tapping and the ✕-less scrim already
+   carry the affordances the legend narrates. */
+@media (max-width: 48rem) {
+  .palette__foot {
+    display: none;
+  }
 }

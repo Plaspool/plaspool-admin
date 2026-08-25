@@ -182,6 +182,15 @@ export function DataTable<T, V extends string = string>({
 
   const visible = columns.filter((c) => c.primary || !hidden.has(c.key));
   const hideable = columns.filter((c) => !c.primary);
+
+  /* The card layout's label (page.css, ≤48rem): each non-primary cell carries
+     its column's name so a row can become a stack of labelled facts. The same
+     string the view control shows, so the card and the column picker never
+     disagree; an empty one marks an unnamed action column, which the card
+     floats to its corner instead of labelling. The primary cell carries none —
+     the identity labels itself. */
+  const cardLabel = (c: Column<T>): string | undefined =>
+    c.primary ? undefined : (c.label ?? (typeof c.header === 'string' ? c.header : ''));
   const hasViewMenu = Boolean(sort) || hideable.length > 0;
   const hasHead = Boolean(tabs) || Boolean(search) || hasViewMenu;
 
@@ -337,6 +346,7 @@ export function DataTable<T, V extends string = string>({
                       {visible.map((c) => (
                         <td
                           key={c.key}
+                          data-label={cardLabel(c)}
                           className={[
                             c.numeric ? 'cell--num' : '',
                             c.tight ? 'cell--tight' : '',
