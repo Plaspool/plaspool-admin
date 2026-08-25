@@ -1,0 +1,10 @@
+# MIGRATION BYTES ARE HASHED RAW. `server/db/replay.ts#readJournal` computes
+# sha256 over each .sql file's bytes exactly as drizzle's migrator records
+# them, so the same file MUST have the same bytes in every checkout — and
+# with core.autocrlf=true and no attributes, worktrees checked these out
+# CRLF while the main tree was LF. A migration applied from such a checkout
+# wedged 17 ledger rows for months (repaired 2026-08-25). This line is the
+# permanent fix: LF in every checkout, worktrees included. It also fixes the
+# known gen-service-areas.test.ts worktree failure, which compared the same
+# CRLF bytes against renderSeed()'s LF.
+server/db/migrations/** text eol=lf
