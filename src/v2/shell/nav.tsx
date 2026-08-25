@@ -86,7 +86,7 @@ export const NAV: NavEntry[] = [
       { to: '/emails/subscribers', label: 'Subscribers' },
     ],
   },
-  { to: '/analytics', label: 'Analytics', icon: <BarChart3 />, soon: true },
+  { to: '/analytics', label: 'Analytics', icon: <BarChart3 /> },
 ];
 
 export const NAV_FOOT: NavEntry[] = [
