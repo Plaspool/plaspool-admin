@@ -239,6 +239,27 @@
                         "when":  1786600002600,
                         "tag":  "0460_address_district",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  34,
+                        "version":  "7",
+                        "when":  1786600002700,
+                        "tag":  "0480_delivery_area_defaults",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  35,
+                        "version":  "7",
+                        "when":  1786600002800,
+                        "tag":  "0500_variant_cost_defaults",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  36,
+                        "version":  "7",
+                        "when":  1786600002900,
+                        "tag":  "0520_product_seo_defaults",
+                        "breakpoints":  true
                     }
                 ]
 }

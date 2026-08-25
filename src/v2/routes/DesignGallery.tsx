@@ -285,6 +285,7 @@ function SidebarSpecimen() {
 export default function DesignGallery() {
   const [seg, setSeg] = useState<'code' | 'auto'>('code');
   const [check, setCheck] = useState(true);
+  const [fillDemo, setFillDemo] = useState('');
   const [tab, setTab] = useState<'all' | 'active'>('all');
   const [q, setQ] = useState('');
   const [expScope, setExpScope] = useState<'page' | 'all' | 'selected'>('page');
@@ -577,6 +578,16 @@ export default function DesignGallery() {
             <TextField label="With an error" defaultValue="not-an-email" error="That does not look like an email address." />
             <AffixField label="Amount off" prefix="NGN" placeholder="0.00" inputMode="decimal" />
             <AffixField label="Percentage off" suffix="%" defaultValue="10" inputMode="decimal" />
+            <AffixField
+              label="With a quick-fill"
+              prefix="NGN"
+              inputMode="decimal"
+              value={fillDemo}
+              hint="Tab — or tap the keycap — types the suggestion out, ready to edit. Empty until then."
+              suggestion="27600.00"
+              onSuggest={setFillDemo}
+              onChange={(e) => setFillDemo(e.target.value)}
+            />
             <SelectField label="Type" defaultValue="percent">
               <option value="percent">Percentage</option>
               <option value="fixed">Fixed amount</option>

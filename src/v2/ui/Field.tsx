@@ -1,4 +1,4 @@
-import { useId, type ReactNode, type InputHTMLAttributes, type SelectHTMLAttributes } from 'react';
+import { useId, useRef, type ReactNode, type InputHTMLAttributes, type SelectHTMLAttributes } from 'react';
 
 /**
  * Form controls, wired so the label, the hint and the error are all associated
@@ -70,12 +70,27 @@ export function AffixField({
   error,
   prefix,
   suffix,
+  suggestion,
+  onSuggest,
   ...rest
-}: Common & { prefix?: string; suffix?: string } & Omit<
-    InputHTMLAttributes<HTMLInputElement>,
-    'id'
-  >) {
+}: Common & {
+  prefix?: string;
+  suffix?: string;
+  /**
+   * A greyed quick-fill (the owner's ask, 2026-08-25): rendered as the
+   * placeholder while the field is EMPTY, with a Tab keycap at its end.
+   * Pressing Tab in the empty field — or tapping the keycap, which is the
+   * touch path — types the digits out, focus kept, ready to edit. It is a
+   * SUGGESTION and never a value: a form submitted untouched still submits
+   * empty, because nothing enters state until it has been typed out.
+   */
+  suggestion?: string;
+  onSuggest?: (value: string) => void;
+} & Omit<InputHTMLAttributes<HTMLInputElement>, 'id'>) {
   const { id, hintId, errorId, describedBy } = useIds(hint, error);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const empty = rest.value == null || rest.value === '';
+  const offer = suggestion !== undefined && onSuggest !== undefined && empty;
   return (
     <div className="field">
       <label className="field__label" htmlFor={id}>
@@ -89,11 +104,37 @@ export function AffixField({
         ) : null}
         <input
           id={id}
+          ref={inputRef}
           className="input"
           aria-invalid={error ? true : undefined}
           aria-describedby={describedBy}
           {...rest}
+          placeholder={offer ? suggestion : rest.placeholder}
+          onKeyDown={(e) => {
+            // Tab ACCEPTS rather than leaves only while the field is empty and
+            // an offer stands; Shift+Tab still walks backwards untouched.
+            if (offer && e.key === 'Tab' && !e.shiftKey) {
+              e.preventDefault();
+              onSuggest(suggestion);
+              return;
+            }
+            rest.onKeyDown?.(e);
+          }}
         />
+        {offer ? (
+          <button
+            type="button"
+            className="affix__fill"
+            tabIndex={-1}
+            aria-label={`Fill in ${suggestion}`}
+            onClick={() => {
+              onSuggest(suggestion);
+              inputRef.current?.focus();
+            }}
+          >
+            Tab
+          </button>
+        ) : null}
         {suffix ? (
           <span className="affix__tag affix__tag--end" aria-hidden="true">
             {suffix}

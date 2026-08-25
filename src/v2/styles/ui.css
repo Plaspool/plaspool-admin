@@ -471,6 +471,34 @@
   border-left: 1px solid var(--border);
 }
 
+/* The quick-fill keycap inside an affix field. Reads "Tab" because pressing
+   the real Tab key does the same thing — the cap labels the shortcut as much
+   as it is the touch target for it. Keycap physics from the bevel language:
+   a thicker bottom edge that collapses on press. */
+.affix__fill {
+  align-self: center;
+  margin-right: var(--s2);
+  padding: 1px var(--s2) 2px;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--r-sm);
+  background: var(--surface-sunken);
+  color: var(--ink-sub);
+  font: inherit;
+  font-size: var(--t-xs);
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.affix__fill:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+.affix__fill:active {
+  border-bottom-width: 1px;
+  transform: translateY(1px);
+}
+
 .affix .input {
   border: 0;
   border-radius: 0;
