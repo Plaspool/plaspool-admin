@@ -9,29 +9,34 @@ import {
   type ShopShippingZone,
 } from '../../data/api-shop';
 import { marketingApi, type ServiceArea } from '../../data/api-marketing';
-import { humanise, money } from '../lib/format';
+import { money } from '../lib/format';
 import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, EmptyState } from '../ui/primitives';
 import { DataTable, IdCell, type Column } from '../ui/DataTable';
 import { AffixField, Toggle } from '../ui/Field';
-import { MenuItem } from '../ui/Menu';
 import { PopEdit, PopEditFoot } from '../ui/PopEdit';
+import { SearchSelect } from '../ui/SearchSelect';
 import { useToast } from '../ui/Toast';
 
 /**
  * DELIVERY AREAS — `/orders/delivery`. The districts a van goes to and what
  * each one costs.
  *
- * TWO SOURCES, JOINED ON `areaKey`: the districts themselves belong to
- * `marketingApi.listAreas` (name, region, active), and the shop holds only
- * its OPINION about each — delivers or not, and an optional rate override.
- * A district with NO shop row delivers at its state's zone rate, which is
- * the pre-0300 behaviour and the default this screen renders.
+ * ONE STATE AT A TIME, PICKED FROM A SEARCHABLE SELECT — v1's method, kept
+ * on purpose after a tab strip of thirty-seven states proved unfindable. The
+ * picker carries each state's delivering tally, the strip above the table
+ * carries the tally and the master "All of {state}" switch, and the table is
+ * only ever one state's districts.
  *
- * THE HONEST CAVEAT, STATED ON SCREEN: the storefront checkout does not send
- * a district yet, so nothing prices from these rows today — the state's zone
- * still prices delivery. Rates authored here arm the moment the storefront
- * sends `district`.
+ * TWO SOURCES, JOINED ON `areaKey`: the districts belong to
+ * `marketingApi.listAreas` (name, region, active), and the shop holds only
+ * its OPINION about each — delivers or not, and an optional rate override. A
+ * district with NO shop row delivers at its state's zone rate, the pre-0300
+ * behaviour and the default this screen renders.
+ *
+ * THE HONEST CAVEAT, ON SCREEN: the storefront checkout does not send a
+ * district yet, so nothing prices from these rows today. Rates authored here
+ * arm the moment it does.
  */
 
 /* TODO(tests): none — skipped this session, recorded in CLAUDE.md. Worth
@@ -65,8 +70,9 @@ export default function DeliveryAreas() {
   const [opinions, setOpinions] = useState<Map<string, ShopDeliveryArea>>(new Map());
   const [zones, setZones] = useState<ShopShippingZone[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [tab, setTab] = useState<string>('all');
+  const [region, setRegion] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -91,18 +97,40 @@ export default function DeliveryAreas() {
     return () => controller.abort();
   }, [load]);
 
-  const regions = useMemo(
-    () => [...new Set((areas ?? []).map((a) => a.region))].sort((a, b) => a.localeCompare(b)),
-    [areas],
+  const delivers = useCallback(
+    (area: ServiceArea) => opinions.get(area.key)?.delivers ?? true,
+    [opinions],
   );
+
+  /** States in the API's order, each with its delivering tally — the picker's
+   *  rows and the strip's numbers come from the same derivation. */
+  const groups = useMemo(() => {
+    const names = [...new Set((areas ?? []).map((a) => a.region))];
+    return names.map((name) => {
+      const inRegion = (areas ?? []).filter((a) => a.region === name);
+      return { region: name, areas: inRegion, on: inRegion.filter(delivers).length };
+    });
+  }, [areas, delivers]);
+
+  /* The opening state, v1's rule: the first state that delivers, else the
+     first — chosen once per load, kept while it still exists. */
+  useEffect(() => {
+    if (groups.length === 0) return;
+    setRegion((chosen) => {
+      if (chosen !== null && groups.some((g) => g.region === chosen)) return chosen;
+      return (groups.find((g) => g.on > 0) ?? groups[0]!).region;
+    });
+  }, [groups]);
+
+  const shown = groups.find((g) => g.region === region) ?? null;
+  const zone = shown ? zoneFor(zones, shown.region) : null;
 
   const rows = useMemo<Row[]>(() => {
     const q = search.trim().toLowerCase();
-    return (areas ?? [])
-      .filter((a) => tab === 'all' || a.region === tab)
+    return (shown?.areas ?? [])
       .filter((a) => !q || a.name.toLowerCase().includes(q))
       .map((area) => ({ area, opinion: opinions.get(area.key) ?? null }));
-  }, [areas, opinions, tab, search]);
+  }, [shown, opinions, search]);
 
   const adopt = (next: ShopDeliveryArea) =>
     setOpinions((m) => new Map(m).set(next.areaKey, next));
@@ -131,23 +159,27 @@ export default function DeliveryAreas() {
     }
   }
 
-  async function bulkDelivers(region: string, delivers: boolean) {
-    const keys = (areas ?? []).filter((a) => a.region === region).map((a) => a.key);
-    if (!keys.length) return;
+  /** The master switch: one press means "deliver to all of this state". */
+  async function switchAll(next: boolean) {
+    if (!shown) return;
+    setBulkBusy(true);
     try {
-      const written = await shopApi.saveDeliveryAreas({ areaKeys: keys, delivers });
+      const written = await shopApi.saveDeliveryAreas({
+        areaKeys: shown.areas.map((a) => a.key),
+        delivers: next,
+      });
       setOpinions((m) => {
-        const next = new Map(m);
-        for (const d of written) next.set(d.areaKey, d);
-        return next;
+        const merged = new Map(m);
+        for (const d of written) merged.set(d.areaKey, d);
+        return merged;
       });
       toast.show(
-        delivers
-          ? `Delivering everywhere in ${region}`
-          : `Deliveries off across ${region}`,
+        next ? `Delivering everywhere in ${shown.region}` : `Deliveries off across ${shown.region}`,
       );
     } catch (cause) {
       toast.show(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.', 'critical');
+    } finally {
+      setBulkBusy(false);
     }
   }
 
@@ -157,17 +189,13 @@ export default function DeliveryAreas() {
       header: 'District',
       primary: true,
       render: ({ area }) => (
-        <IdCell
-          thumb={<MapPin aria-hidden="true" />}
-          title={area.name}
-          meta={area.region}
-        />
+        <IdCell thumb={<MapPin aria-hidden="true" />} title={area.name} meta={area.region} />
       ),
     },
     {
       key: 'board',
-      header: 'Board',
-      label: 'Board',
+      header: 'Returns board',
+      label: 'Returns board',
       tight: true,
       render: ({ area }) =>
         area.active ? <Badge tone="ok">Active</Badge> : <Badge>Off the board</Badge>,
@@ -184,9 +212,7 @@ export default function DeliveryAreas() {
       header: 'Delivery rate',
       label: 'Delivery rate',
       numeric: true,
-      render: (row) => (
-        <RateCell row={row} zone={zoneFor(zones, row.area.region)} onWrite={write} />
-      ),
+      render: (row) => <RateCell row={row} zone={zoneFor(zones, row.area.region)} onWrite={write} />,
     },
   ];
 
@@ -195,37 +221,29 @@ export default function DeliveryAreas() {
       <PageHeader
         icon={<Truck />}
         title="Delivery areas"
-        subtitle="Per-district rates over the state zones — Abuja, Lagos, and everywhere else."
-        menu={
-          tab === 'all'
-            ? undefined
-            : (close) => (
-                <>
-                  <MenuItem
-                    onSelect={() => {
-                      close();
-                      void bulkDelivers(tab, true);
-                    }}
-                  >
-                    Deliver everywhere in {humanise(tab)}
-                  </MenuItem>
-                  <MenuItem
-                    critical
-                    onSelect={() => {
-                      close();
-                      void bulkDelivers(tab, false);
-                    }}
-                  >
-                    Stop delivering in {humanise(tab)}
-                  </MenuItem>
-                </>
-              )
+        subtitle="Per-district rates over the state zones."
+        actions={
+          groups.length > 0 && region ? (
+            <SearchSelect
+              label="State"
+              value={region}
+              onChange={setRegion}
+              align="right"
+              placeholder="Search states…"
+              emptyText="No state matches that."
+              options={groups.map((g) => ({
+                value: g.region,
+                label: g.region,
+                meta: `${g.on} of ${g.areas.length}`,
+              }))}
+            />
+          ) : undefined
         }
       />
 
       <Banner tone="info" title="The storefront doesn’t send a district yet">
-        These rows arm the moment checkout sends one; until then the state’s zone prices delivery
-        — Abuja ₦3,000, elsewhere ₦10,000. Authoring here is safe and takes effect automatically.
+        These rows arm the moment checkout sends one; until then the state’s zone prices delivery.
+        Authoring here is safe and takes effect automatically.
       </Banner>
 
       {loadError ? (
@@ -234,20 +252,44 @@ export default function DeliveryAreas() {
         </Banner>
       ) : null}
 
+      {shown ? (
+        <section className="card">
+          <div
+            className="card__body row"
+            style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 'var(--s3)' }}
+          >
+            <div>
+              <h2 style={{ fontSize: 'var(--t-lg)', fontWeight: 'var(--w-semi)' }}>
+                {shown.region}
+                <span className="muted" style={{ fontWeight: 'var(--w-normal)', marginLeft: 'var(--s2)' }}>
+                  {shown.on} of {shown.areas.length} delivering
+                </span>
+              </h2>
+              <p className="muted" style={{ fontSize: 'var(--t-sm)', marginTop: 2 }}>
+                State zone rate: {zoneRateLabel(zone)} — a district charges this unless you give it
+                a rate of its own.
+              </p>
+            </div>
+            <span style={bulkBusy ? { opacity: 0.6, pointerEvents: 'none' } : undefined}>
+              <Toggle
+                label={`All of ${shown.region}`}
+                checked={shown.areas.length > 0 && shown.on === shown.areas.length}
+                onChange={(next) => void switchAll(next)}
+              />
+            </span>
+          </div>
+        </section>
+      ) : null}
+
       <DataTable
         caption="Delivery areas"
         columns={columns}
         rows={rows}
         rowKey={(r) => r.area.key}
         loading={areas === null && !loadError}
-        tabs={{
-          value: tab,
-          tabs: [{ value: 'all', label: 'All regions' }, ...regions.map((r) => ({ value: r, label: r }))],
-          onChange: setTab,
-        }}
         search={{
           value: search,
-          placeholder: 'Filter districts',
+          placeholder: shown ? `Filter districts in ${shown.region}` : 'Filter districts',
           onChange: setSearch,
         }}
         empty={
@@ -284,7 +326,7 @@ function DeliversCell({
   onWrite: (area: ServiceArea, body: { delivers?: boolean }) => Promise<boolean>;
 }) {
   const [busy, setBusy] = useState(false);
-  const delivers = row.opinion?.delivers ?? true;
+  const on = row.opinion?.delivers ?? true;
   return (
     <span
       onClick={(e) => e.stopPropagation()}
@@ -292,7 +334,7 @@ function DeliversCell({
     >
       <Toggle
         label={<span className="sr">Delivers to {row.area.name}</span>}
-        checked={delivers}
+        checked={on}
         onChange={(next) => {
           setBusy(true);
           void onWrite(row.area, { delivers: next }).finally(() => setBusy(false));

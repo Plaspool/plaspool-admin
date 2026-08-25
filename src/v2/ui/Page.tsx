@@ -1,6 +1,6 @@
 import { useCallback, useId, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Calendar, Eye, EyeOff } from 'lucide-react';
+import { Calendar, ChevronRight, Eye, EyeOff } from 'lucide-react';
 import { Menu, MenuItem } from './Menu';
 import { useToast } from './Toast';
 
@@ -80,7 +80,11 @@ export function PageHeader({
   /** A status badge beside the title — the detail pages' "Active" chip. */
   titleBadge?: ReactNode;
   subtitle?: ReactNode;
+  /** Turns the header into a BREADCRUMB, the reference's own anatomy: the
+   *  section is an icon chip you can click, a chevron, then this page's
+   *  title. No "← Back" line — the parent page IS the icon. */
   backTo?: string;
+  /** Accessible name for the crumb chip — the parent page's name. */
   backLabel?: string;
   /** Buttons shown on the header row, primary last — the reference admin puts
    *  the primary action at the far right, where the eye lands after the title. */
@@ -91,16 +95,24 @@ export function PageHeader({
 }) {
   return (
     <div>
-      {backTo ? (
-        <Link className="page__back" to={backTo}>
-          <ArrowLeft aria-hidden="true" />
-          {backLabel ?? 'Back'}
-        </Link>
-      ) : null}
       <div className="page__head">
         <div className="page__titles">
           <h1 className="page__title">
-            {icon}
+            {backTo ? (
+              <>
+                <Link
+                  className="page__crumb"
+                  to={backTo}
+                  title={backLabel}
+                  aria-label={backLabel ?? 'Back'}
+                >
+                  {icon}
+                </Link>
+                <ChevronRight className="page__crumbsep" aria-hidden="true" />
+              </>
+            ) : (
+              icon
+            )}
             {title}
             {titleBadge}
           </h1>
