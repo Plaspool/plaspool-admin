@@ -50,7 +50,7 @@ export const NAV: NavEntry[] = [
     icon: <ShoppingBag />,
     children: [
       { to: '/orders/returns', label: 'Returns', soon: true },
-      { to: '/orders/delivery', label: 'Delivery areas', soon: true },
+      { to: '/orders/delivery', label: 'Delivery areas' },
     ],
   },
   {
@@ -59,8 +59,8 @@ export const NAV: NavEntry[] = [
     icon: <Package />,
     children: [
       { to: '/products/categories', label: 'Categories' },
-      { to: '/products/inventory', label: 'Inventory', soon: true },
-      { to: '/products/reviews', label: 'Reviews', soon: true },
+      { to: '/products/inventory', label: 'Inventory' },
+      { to: '/products/reviews', label: 'Reviews' },
     ],
   },
   { to: '/customers', label: 'Customers', icon: <Users /> },

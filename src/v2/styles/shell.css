@@ -489,3 +489,509 @@
   color: var(--ink-muted);
   text-align: center;
 }
+
+/* ═══ TOPBAR SEARCH TRIGGER ═══════════════════════════════════════════════
+   A button drawn as the field it opens. The real input lives in the palette;
+   this is its handle, so it takes a button's states — hover brightens, the
+   press sinks — while keeping the field's anatomy (icon, ghost text, kbd). */
+.top__searchbtn {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  height: var(--ctl-h-lg);
+  padding: 0 var(--s3);
+  border: 1px solid var(--topbar-line);
+  border-radius: var(--r-md);
+  background: var(--topbar-field);
+  color: var(--topbar-ink);
+  font: inherit;
+  font-size: var(--t-md);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 140ms var(--ease), border-color 140ms var(--ease);
+}
+
+.top__searchbtn:hover {
+  background: var(--topbar-field-hover);
+  border-color: #565656;
+}
+
+.top__searchbtn:active {
+  background: #2a2a2a;
+  transition: none;
+}
+
+.top__searchbtn > svg {
+  width: 16px;
+  height: 16px;
+  opacity: 0.7;
+  flex: none;
+}
+
+.top__searchbtn .top__ghost {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.75;
+}
+
+.top__searchbtn kbd {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgb(255 255 255 / 0.12);
+  color: var(--topbar-ink);
+  font-family: var(--font);
+  font-size: var(--t-xs);
+  font-weight: var(--w-medium);
+  line-height: 1.3;
+}
+
+/* ═══ THE BELL ════════════════════════════════════════════════════════════
+   Hover rings it — a small damped swing from the top mount, the way a real
+   bell moves — and holding it down (or holding its panel open) keeps the
+   pressed disc, same rule as every menu trigger. The unread dot is the one
+   bright blue in the system, ringed in the bar's own dark so it reads at
+   arm's length. */
+.top__bell {
+  position: relative;
+}
+
+.top__bell > svg {
+  transform-origin: 50% 2px;
+}
+
+@media (hover: hover) {
+  .top__bell:hover > svg {
+    animation: v2-bellring 700ms var(--ease);
+  }
+}
+
+@keyframes v2-bellring {
+  0% { transform: rotate(0deg); }
+  18% { transform: rotate(13deg); }
+  36% { transform: rotate(-11deg); }
+  54% { transform: rotate(7deg); }
+  72% { transform: rotate(-4deg); }
+  86% { transform: rotate(2deg); }
+  100% { transform: rotate(0deg); }
+}
+
+.top__icon:active,
+.top__icon.is-open {
+  background: rgb(255 255 255 / 0.2);
+  color: var(--topbar-ink-strong);
+}
+
+.top__bell__dot {
+  position: absolute;
+  top: 6px;
+  right: 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4a9eff;
+  box-shadow: 0 0 0 2.5px var(--topbar-bg);
+  pointer-events: none;
+  animation: v2-dot-in 240ms var(--ease-spring);
+}
+
+@keyframes v2-dot-in {
+  from { transform: scale(0); }
+}
+
+/* ═══ ALERTS POPOVER ══════════════════════════════════════════════════════
+   A light panel hung off the dark bar. Unread rows sit on the sub surface
+   with the blue dot; the mark-read check surfaces on hover, exactly where
+   the reference puts it. */
+.alerts {
+  position: absolute;
+  top: calc(100% + var(--s2));
+  right: 0;
+  z-index: 60;
+  width: 26rem;
+  max-width: calc(100vw - 2rem);
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  animation: v2-pop 140ms var(--ease);
+  color: var(--ink);
+  overflow: hidden;
+}
+
+.alerts__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s3) var(--s3) var(--s3) var(--s4);
+}
+
+.alerts__title {
+  font-size: var(--t-lg);
+  font-weight: var(--w-semi);
+  color: var(--ink-strong);
+}
+
+.alerts__tools {
+  display: flex;
+  gap: var(--s1);
+}
+
+.alerts__tool {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-sub);
+  cursor: pointer;
+}
+
+.alerts__tool:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+.alerts__tool > svg {
+  width: 15px;
+  height: 15px;
+}
+
+.alerts__list {
+  max-height: 23rem;
+  overflow-y: auto;
+}
+
+.alerts__item {
+  position: relative;
+  display: flex;
+  gap: var(--s3);
+  width: 100%;
+  padding: var(--s3) var(--s4);
+  border: 0;
+  border-top: 1px solid var(--border-sub);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.alerts__item:hover {
+  background: var(--surface-hover);
+}
+
+.alerts__item.is-unread {
+  background: var(--surface-sub);
+}
+
+.alerts__item.is-unread:hover {
+  background: var(--surface-hover);
+}
+
+.alerts__dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  flex: none;
+  border-radius: 50%;
+  background: #2c6ecb;
+}
+
+.alerts__item:not(.is-unread) .alerts__dot {
+  background: transparent;
+}
+
+.alerts__content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.alerts__meta {
+  font-size: var(--t-sm);
+  color: var(--ink-sub);
+}
+
+.alerts__itemtitle {
+  font-size: var(--t-md);
+  font-weight: var(--w-semi);
+  color: var(--ink-strong);
+}
+
+.alerts__body {
+  font-size: var(--t-md);
+  color: var(--ink-sub);
+  line-height: 1.5;
+}
+
+.alerts__check {
+  position: absolute;
+  top: var(--s3);
+  right: var(--s3);
+  display: grid;
+  place-items: center;
+  width: 1.625rem;
+  height: 1.625rem;
+  border: 0;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--border);
+  color: var(--ink-sub);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms var(--ease);
+}
+
+.alerts__item:hover .alerts__check,
+.alerts__check:focus-visible {
+  opacity: 1;
+}
+
+.alerts__check:hover {
+  color: var(--ink-strong);
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
+
+.alerts__check > svg {
+  width: 13px;
+  height: 13px;
+}
+
+.alerts__foot {
+  padding: var(--s3);
+  border-top: 1px solid var(--border-sub);
+  text-align: center;
+  font-size: var(--t-md);
+  color: var(--ink-sub);
+}
+
+.alerts__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s8) var(--s6);
+  text-align: center;
+}
+
+/* ═══ SEARCH PALETTE ══════════════════════════════════════════════════════
+   Ctrl+K. A panel dropped from the top of the screen, not a centred modal —
+   search starts where the eye already is. Scope chips under the input,
+   grouped results below, the keyboard legend in the footer. */
+.palette__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  display: grid;
+  place-items: start center;
+  padding: 11vh var(--s4) var(--s6);
+  background: rgb(26 26 26 / 0.44);
+  overflow-y: auto;
+  animation: v2-fade 120ms var(--ease);
+}
+
+.palette {
+  width: min(44rem, 100%);
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-modal);
+  overflow: hidden;
+  animation: v2-rise 180ms var(--ease-out);
+}
+
+.palette__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s4) var(--s5) var(--s3);
+}
+
+.palette__head > svg {
+  width: 18px;
+  height: 18px;
+  color: var(--ink-sub);
+  flex: none;
+}
+
+.palette__input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  font-size: var(--t-xl);
+  color: var(--ink-strong);
+}
+
+.palette__input::placeholder {
+  color: var(--ink-muted);
+}
+
+/* Same reasoning as .tagin__input: the open panel IS the focus context and
+   the caret is visible; Chrome's always-on :focus-visible for text inputs
+   would ring it pointlessly. */
+.palette__input:focus-visible {
+  box-shadow: none;
+}
+
+.palette__esc {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--surface-sunken);
+  box-shadow: 0 0 0 1px var(--border) inset;
+  color: var(--ink-sub);
+  font-size: var(--t-xs);
+  font-weight: var(--w-medium);
+}
+
+.palette__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  padding: 0 var(--s5) var(--s3);
+}
+
+.palette__chip {
+  display: inline-flex;
+  align-items: center;
+  height: 1.5rem;
+  padding: 0 var(--s3);
+  border: 0;
+  border-radius: var(--r-full);
+  background: var(--surface-sunken);
+  box-shadow: 0 0 0 1px var(--border) inset;
+  color: var(--ink);
+  font-size: var(--t-sm);
+  font-weight: var(--w-medium);
+  cursor: pointer;
+}
+
+.palette__chip:hover {
+  background: var(--surface-hover);
+}
+
+.palette__chip[aria-pressed='true'] {
+  background: var(--ink-strong);
+  box-shadow: none;
+  color: #ffffff;
+}
+
+.palette__body {
+  border-top: 1px solid var(--border-sub);
+  max-height: 52vh;
+  overflow-y: auto;
+  padding: var(--s2) 0;
+  scroll-padding: 2.25rem 0;
+}
+
+.palette__label {
+  padding: var(--s2) var(--s5) var(--s1);
+  font-size: var(--t-sm);
+  font-weight: var(--w-medium);
+  color: var(--ink-sub);
+}
+
+.palette__row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  padding: var(--s2) var(--s5);
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: var(--t-md);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.palette__row > svg {
+  width: 16px;
+  height: 16px;
+  color: var(--ink-sub);
+  flex: none;
+}
+
+.palette__row.is-hot {
+  background: var(--surface-hover);
+}
+
+.palette__rowtitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette__rowmeta {
+  margin-left: auto;
+  flex: none;
+  font-size: var(--t-sm);
+  color: var(--ink-muted);
+}
+
+.palette__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s10) var(--s6);
+  text-align: center;
+}
+
+.palette__glass {
+  display: grid;
+  place-items: center;
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 50%;
+  background: var(--surface-sunken);
+  color: var(--ink-muted);
+}
+
+.palette__glass > svg {
+  width: 26px;
+  height: 26px;
+}
+
+.palette__hint {
+  font-size: var(--t-lg);
+  font-weight: var(--w-medium);
+  color: var(--ink);
+}
+
+.palette__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  padding: var(--s2) var(--s5);
+  border-top: 1px solid var(--border-sub);
+  background: var(--surface-sub);
+  font-size: var(--t-xs);
+  color: var(--ink-muted);
+}
+
+.palette__foot kbd {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--border) inset;
+  font-family: var(--font);
+  font-size: var(--t-xs);
+}
+
+.palette__foot span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+}

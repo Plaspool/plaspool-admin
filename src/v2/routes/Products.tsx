@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react';
-import { Archive, Package, Plus, Tags, Trash2 } from 'lucide-react';
+import { Archive, Package, Plus, Trash2 } from 'lucide-react';
 import { shopApi, type ProductStatus, type ShopProduct } from '../../data/api-shop';
 import { useAsync } from '../lib/useAsync';
 import { humanise, productTone, shortDate } from '../lib/format';
 import { AnalyticsBar, AnalyticsMenuItem, PageHeader, useAnalyticsBar, type Metric } from '../ui/Page';
-import { Badge, Banner, Button, EmptyState, SplitEmpty } from '../ui/primitives';
+import { Badge, Banner, Button, ButtonLink, EmptyState, SplitEmpty } from '../ui/primitives';
 import { SpoolTiles } from '../ui/illustrations';
 import { DataTable, IdCell, TablePager, type Column } from '../ui/DataTable';
+import { StoredImg } from '../ui/Img';
 import { MenuItem } from '../ui/Menu';
 import { useToast } from '../ui/Toast';
 
@@ -40,7 +41,7 @@ export default function Products() {
   const [cursors, setCursors] = useState<(string | null)[]>([null]);
   const cursor = cursors[cursors.length - 1] ?? null;
 
-  const { data, error, loading } = useAsync(
+  const { data, error, loading, reload } = useAsync(
     (signal) =>
       shopApi.listProducts(
         {
@@ -53,6 +54,35 @@ export default function Products() {
       ),
     [tab, sort, cursor],
   );
+
+  /**
+   * Bulk lifecycle, run one product at a time — the API has no bulk route,
+   * and pretending it does by hiding partial failure would be worse than the
+   * sequential requests. The toast reports what actually happened.
+   */
+  async function bulkTransition(
+    keys: string[],
+    run: (id: string) => Promise<unknown>,
+    verb: string,
+  ) {
+    let ok = 0;
+    let failed = 0;
+    for (const id of keys) {
+      try {
+        await run(id);
+        ok += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    toast.show(
+      failed === 0
+        ? `${ok} ${ok === 1 ? 'product' : 'products'} ${verb}`
+        : `${ok} ${verb}, ${failed} refused — a transition only applies from certain states`,
+      failed === 0 ? 'default' : 'critical',
+    );
+    reload();
+  }
 
   const all = data?.items ?? [];
   const rows = useMemo(() => {
@@ -84,7 +114,9 @@ export default function Products() {
       primary: true,
       render: (p) => (
         <IdCell
-          thumb={<Package aria-hidden="true" />}
+          thumb={
+            p.coverImageId ? <StoredImg id={p.coverImageId} alt="" /> : <Package aria-hidden="true" />
+          }
           title={p.title || 'Untitled product'}
           meta={p.slug ? <span className="mono">/{p.slug}</span> : 'No slug'}
           href={`/products/${p.id}`}
@@ -124,14 +156,10 @@ export default function Products() {
         icon={<Package />}
         title="Products"
         actions={
-          <Button
-            tone="primary"
-            size="lg"
-            onClick={() => toast.show('Creating products lands with the v2 product editor')}
-          >
+          <ButtonLink tone="primary" size="lg" to="/products/new">
             <Plus aria-hidden="true" />
             Add product
-          </Button>
+          </ButtonLink>
         }
         menu={(close) => (
           <>
@@ -139,7 +167,7 @@ export default function Products() {
             <MenuItem
               onSelect={() => {
                 close();
-                toast.show('Export lands with the v2 product editor');
+                toast.show('Export is not built yet');
               }}
             >
               Export
@@ -147,7 +175,7 @@ export default function Products() {
             <MenuItem
               onSelect={() => {
                 close();
-                toast.show('Import lands with the v2 product editor');
+                toast.show('Import is not built yet');
               }}
             >
               Import
@@ -175,36 +203,32 @@ export default function Products() {
           pills: [
             {
               label: 'Set as draft',
-              onAction: (keys) => toast.show(`Bulk edits land with the v2 product editor (${keys.length} selected)`),
+              onAction: (keys) =>
+                void bulkTransition(keys, (id) => shopApi.transitionProduct(id, 'unpublish'), 'set as draft'),
             },
           ],
+          /* TODO(v2): bulk add/remove tags needs a tag-picking modal plus a
+             CAS save per product — deferred, not forgotten. */
           menuGroups: [
             {
               items: [
                 {
+                  label: 'Publish products',
+                  onAction: (keys) =>
+                    void bulkTransition(keys, (id) => shopApi.transitionProduct(id, 'publish'), 'published'),
+                },
+                {
                   label: 'Archive products',
                   icon: <Archive aria-hidden="true" />,
-                  onAction: (keys) => toast.show(`Archiving lands with the v2 product editor (${keys.length} selected)`),
+                  onAction: (keys) =>
+                    void bulkTransition(keys, (id) => shopApi.transitionProduct(id, 'archive'), 'archived'),
                 },
                 {
-                  label: 'Delete products',
+                  label: 'Move to trash',
                   icon: <Trash2 aria-hidden="true" />,
                   critical: true,
-                  onAction: (keys) => toast.show(`Deleting lands with the v2 product editor (${keys.length} selected)`),
-                },
-              ],
-            },
-            {
-              items: [
-                {
-                  label: 'Add tags',
-                  icon: <Tags aria-hidden="true" />,
-                  onAction: (keys) => toast.show(`Tagging lands with the v2 product editor (${keys.length} selected)`),
-                },
-                {
-                  label: 'Remove tags',
-                  icon: <Tags aria-hidden="true" />,
-                  onAction: (keys) => toast.show(`Tagging lands with the v2 product editor (${keys.length} selected)`),
+                  onAction: (keys) =>
+                    void bulkTransition(keys, (id) => shopApi.trashProduct(id), 'moved to the trash'),
                 },
               ],
             },
@@ -252,13 +276,11 @@ export default function Products() {
               body="Start by stocking the store with spools your customers will love. Products you add show up here with their status, category and tags."
               actions={
                 <>
-                  <Button tone="primary" onClick={() => toast.show('Creating products lands with the v2 product editor')}>
+                  <ButtonLink tone="primary" to="/products/new">
                     <Plus aria-hidden="true" />
                     Add product
-                  </Button>
-                  <Button onClick={() => toast.show('Import lands with the v2 product editor')}>
-                    Import
-                  </Button>
+                  </ButtonLink>
+                  <Button onClick={() => toast.show('Import is not built yet')}>Import</Button>
                 </>
               }
               shelf={<SpoolTiles />}
