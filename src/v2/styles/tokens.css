@@ -1,0 +1,212 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   PLASPOOL ADMIN — DESIGN SYSTEM v2
+   ═══════════════════════════════════════════════════════════════════════════
+
+   A SECOND SYSTEM, NOT AN EDIT OF THE FIRST. Nothing here is imported by any
+   v1 file and nothing here imports one. `src/styles/tokens.css` is untouched
+   and still describes v1 exactly as it did; reverting is one line in
+   `index.html` (see the header of `src/v2/main.tsx`).
+
+   WHAT CHANGED FROM v1, AND WHY:
+
+   1. NEOBRUTALISM IS GONE. v1's card is a hard 1px near-black edge with a 3px
+      unblurred offset shadow that presses down on click. It is a strong idea
+      and it fights the one thing an admin does all day — read a table. Rules
+      at that weight compete with the data they separate. v2 replaces it with
+      the reference admin's arrangement: a hairline, a 1px ambient shadow, and
+      elevation carried by surface colour rather than by an outline.
+
+   2. LIGHT ONLY. The storefront is pinned to light and the reference admin is
+      light with a dark topbar. Halving the palette removes an entire class of
+      contrast bug from screens that only need to be compared visually. v1's
+      dark theme is intact and returns on revert.
+
+   3. THE ACCENT IS THE STOREFRONT'S. v1 is botanical green (#1c6b4b); the
+      storefront's brand ramp is a deep indigo (hsl 248.1 48.1% 21.2%). Two
+      surfaces of one business had two unrelated brand colours. v2 adopts the
+      indigo and reserves it for meaning — links, selection, focus — while the
+      chrome itself is neutral near-black, which is what makes a status badge
+      the only saturated thing on a table row.
+--------------------------------------------------------------------------- */
+
+:root {
+  /* This system does not participate in the OS theme. Declaring it stops the
+     browser tinting form controls and scrollbars dark under a dark OS while
+     every surface we paint stays light — the half-dark form that results is
+     worse than either theme would be on its own. */
+  color-scheme: light;
+
+  /* ── surfaces ───────────────────────────────────────────────────────────
+     `--bg` is the page and `--surface` is everything raised onto it. This is
+     the inverse of v1, where cards were WARMER than the page; here the page is
+     grey and the card is white, so a card needs no outline to read as one. */
+  --bg: #f1f1f1;
+  --surface: #ffffff;
+  --surface-sub: #fafafa;      /* row hover, table head */
+  --surface-sunken: #f7f7f7;   /* inset wells, disabled fields */
+  --surface-hover: #f1f1f1;
+  --surface-active: #ebebeb;
+
+  /* ── ink ────────────────────────────────────────────────────────────────
+     Contrast is against `--surface` (#fff). `--ink-disabled` is the only value
+     below AA and is never used for anything a person has to read. */
+  --ink: #303030;           /* 12.1:1 — body and headings */
+  --ink-strong: #1a1a1a;    /* 16.6:1 — numbers, emphasis */
+  --ink-sub: #616161;       /*  6.4:1 — secondary text, table headers */
+  --ink-muted: #757575;     /*  4.6:1 — the floor for real text */
+  --ink-disabled: #b5b5b5;  /*  2.0:1 — DECORATIVE ONLY */
+
+  /* ── lines ──────────────────────────────────────────────────────────────
+     Two weights and no more. `--border` separates a component from the page;
+     `--border-sub` separates rows INSIDE one, and is deliberately lighter than
+     you would guess — at equal weight a table reads as a grid of boxes rather
+     than as a list of records. */
+  --border: #e3e3e3;
+  --border-sub: #f1f1f1;
+  --border-strong: #b5b5b5;
+
+  /* ── accent — the storefront's indigo ───────────────────────────────────
+     hsl(248.1 48.1% 21.2%) is the storefront's `--brand-accent`, written as
+     hex here because this app has no Tailwind and no HSL-triple convention.
+     6.9:1 on white as text, so it is legal for links at body size. */
+  --accent: #2e2a6b;
+  --accent-hover: #221f52;
+  --accent-soft: #eeedf5;
+  --accent-line: #c3c0dc;
+  --accent-ink: #ffffff;
+
+  /* ── status ─────────────────────────────────────────────────────────────
+     Each is a fill plus the ink that is legal ON that fill, never on white.
+     Badges are the only saturated surfaces in the system, which is precisely
+     what makes a scan down a status column work. */
+  --ok-bg: #cdfee1;
+  --ok-ink: #0c5132;        /* 7.8:1 on --ok-bg */
+  --warn-bg: #ffd6a4;
+  --warn-ink: #5e4200;      /* 7.3:1 */
+  --critical-bg: #ffd6d9;
+  --critical-ink: #8e1f0b;  /* 6.2:1 */
+  --info-bg: #d6e0ff;
+  --info-ink: #00527c;      /* 6.0:1 */
+  --neutral-bg: #e3e3e3;
+  --neutral-ink: #4a4a4a;   /* 7.4:1 */
+
+  /* Banner SURFACES, one soft step down from the badge fills above. A banner
+     is a paragraph, not a chip: at badge saturation a two-line notice shouts
+     over the data it is warning about — measured on the first v2 pass, where
+     the stuck-email banner was the loudest object on the Home screen. */
+  --ok-soft: #eaf7ef;
+  --warn-soft: #fdf3e4;
+  --critical-soft: #fdf0ee;
+  --info-soft: #eef3fd;
+
+  /* Destructive ACTIONS, which is not the same token as the critical badge:
+     one is a fill under dark ink, the other is ink and a button fill. */
+  --critical: #8e1f0b;
+  --critical-hover: #6f1707;
+  --critical-fg: #ffffff;
+
+  /* ── topbar — the one dark surface ──────────────────────────────────────
+     Dark chrome does two things at once: it frames the light working area so
+     the eye settles inside it, and it makes the account/store control read as
+     "the application" rather than as part of whichever screen is open. */
+  --topbar-bg: #1a1a1a;
+  --topbar-ink: #e3e3e3;
+  --topbar-ink-strong: #ffffff;
+  --topbar-field: #303030;
+  --topbar-field-hover: #3d3d3d;
+  --topbar-line: #444444;
+
+  /* ── type ───────────────────────────────────────────────────────────────
+     Inter only. v1's Spectral display serif belongs to a publication; this is
+     an operations console, and a serif headline over a table of order numbers
+     reads as a magazine spread. Mono is kept for ids, SKUs and codes — the
+     strings people compare character by character. */
+  --font: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    Roboto, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono',
+    Menlo, Consolas, monospace;
+
+  /* A TIGHTER RAMP THAN v1'S, on purpose. v1 climbs to 42px because a post
+     needs a title. The largest thing on an admin screen is a page heading at
+     20px; everything else is 12–14. Density is the feature. */
+  --t-xs: 0.6875rem;  /* 11 — badge, meta */
+  --t-sm: 0.75rem;    /* 12 — table header, helper text */
+  --t-md: 0.8125rem;  /* 13 — THE BODY SIZE: rows, buttons, nav */
+  --t-lg: 0.875rem;   /* 14 — card titles, emphasised cells */
+  --t-xl: 1rem;       /* 16 — section headings */
+  --t-2xl: 1.25rem;   /* 20 — page title */
+  --t-3xl: 1.5rem;    /* 24 — the home greeting, and nothing else */
+
+  --w-normal: 450;
+  --w-medium: 550;
+  --w-semi: 650;
+  --w-bold: 700;
+
+  /* ── space — 4px base ───────────────────────────────────────────────── */
+  --s1: 0.25rem;
+  --s2: 0.5rem;
+  --s3: 0.75rem;
+  --s4: 1rem;
+  --s5: 1.25rem;
+  --s6: 1.5rem;
+  --s8: 2rem;
+  --s10: 2.5rem;
+  --s12: 3rem;
+
+  /* ── radius ─────────────────────────────────────────────────────────────
+     Controls are rounder than v1 (8px against a near-square edge) and cards
+     rounder still. The 4px gap between the two is what stops a button inside a
+     card from looking concentric with it. */
+  --r-sm: 6px;
+  --r-md: 8px;   /* buttons, inputs, badges */
+  --r-lg: 12px;  /* cards, panels, menus */
+  --r-full: 999px;
+
+  /* ── elevation ──────────────────────────────────────────────────────────
+     BLURRED AND NEARLY INVISIBLE, which is the whole departure from v1. A card
+     is white on grey and carries NO border — the faint ring plus a 1px bottom
+     shadow are its entire edge. Removing the border is what removed the
+     wireframe look of the first v2 pass. */
+  --shadow-card: 0 0 0 1px rgb(26 26 26 / 0.035), 0 1px 0 0 rgb(26 26 26 / 0.07);
+  --shadow-pop: 0 0 0 1px rgb(26 26 26 / 0.06), 0 6px 20px -4px rgb(26 26 26 / 0.16),
+    0 2px 5px 0 rgb(26 26 26 / 0.08);
+  --shadow-modal: 0 26px 80px rgb(26 26 26 / 0.22), 0 0 0 1px rgb(26 26 26 / 0.06);
+
+  /* ── the button bevel ───────────────────────────────────────────────────
+     THE ONE EFFECT COPIED EXACTLY, to the half-pixel. The reference admin's
+     buttons are pressed out of the page by THREE inset shadows and no border:
+       · a dark hairline along the BOTTOM only   → the button has thickness
+       · a full 1px ring                          → it has an edge
+       · a HALF-PIXEL WHITE LINE ACROSS THE TOP,
+         1.5px wide so it rounds into the corners → light lands on it
+     The first pass here had two of the three; the missing top light is most of
+     the difference between "grey pill" and "machined key". A `border` cannot
+     express any of this, because a border is the same on all four sides. */
+  --bevel: 0 -1px 0 0 #b5b5b5 inset, 0 0 0 1px rgb(0 0 0 / 0.1) inset,
+    0 0.5px 0 1.5px #ffffff inset;
+  --bevel-primary: 0 -1px 0 1px rgb(0 0 0 / 0.8) inset, 0 0 0 1px #303030 inset,
+    0 0.5px 0 1.5px rgb(255 255 255 / 0.25) inset;
+  --bevel-critical: 0 -1px 0 1px rgb(0 0 0 / 0.45) inset,
+    0 0 0 1px var(--critical) inset, 0 0.5px 0 1.5px rgb(255 255 255 / 0.22) inset;
+  /* Pressed: the top light goes out and the fill sinks. */
+  --bevel-pressed: 0 2px 1px 0 rgb(0 0 0 / 0.12) inset, 0 0 0 1px rgb(0 0 0 / 0.12) inset;
+
+  /* ── controls ───────────────────────────────────────────────────────────
+     ONE height for every control that can share a row. */
+  --ctl-h: 2rem;      /* 32 */
+  --ctl-h-lg: 2.25rem; /* 36 — page-header actions */
+  --ctl-pad-x: 0.75rem;
+
+  /* ── layout ─────────────────────────────────────────────────────────── */
+  --topbar-h: 3.5rem;   /* 56 */
+  --sidebar-w: 15rem;   /* 240 */
+  --page-max: 62.5rem;  /* 1000 — the reference admin's content column */
+
+  --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent);
+  --ease: cubic-bezier(0.4, 0.14, 0.3, 1);
+  /* Motion: `--ease-out` for entrances (fast start, soft landing) and
+     `--ease-spring` for hover lifts (a few percent of overshoot — the
+     difference between "moved" and "responded"). */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.44, 1);
+}
