@@ -259,6 +259,29 @@ describe('variants, prices and inventory over HTTP', () => {
     expect(bad.status).toBe(400);
   });
 
+  it('refuses an amount past the int4 column as a 400, not a retried 500', async () => {
+    /*
+     * 2^31 passes `z.int()`, `Number.isSafeInteger` and `money()` alike — the
+     * only thing that used to refuse it was `shop_prices.amount` itself, with
+     * SQLSTATE 22003, which has no row in the error table and answered 500: a
+     * status the client's retry policy re-sends five times for input that can
+     * never be accepted. The same failure mode the lowercase-currency fix on
+     * `PriceBody` documents, one field over.
+     */
+    const created = await createProduct('Int4 Price');
+    const variantRes = await http.post(`/api/shop/admin/products/${created.id}/variants`, {
+      sku: 'INT4-1',
+    });
+    const { variant } = await json<{ variant: { id: string } }>(variantRes);
+
+    const res = await http.request(`/api/shop/admin/variants/${variant.id}/price`, {
+      method: 'PUT',
+      headers: { origin: TEST_ORIGIN, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: 2_147_483_648, currency: 'NGN' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it('adjusts inventory with a reason, and refuses one without', async () => {
     const created = await createProduct('Adjust Route');
     const variantRes = await http.post(`/api/shop/admin/products/${created.id}/variants`, {

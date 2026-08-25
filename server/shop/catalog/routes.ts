@@ -189,9 +189,8 @@ const CreateVariantBody = z
      * Minor units (migrations 0400/0420). `.max(2_147_483_647)` IS THE COLUMN'S
      * CEILING, not a style choice: both are `integer` (int4), and a value past
      * it would be a 22003 the error table has no row for — a 500 retried five
-     * times for input that can never be accepted. (`PriceBody.amount` predates
-     * this observation and still says MAX_SAFE_INTEGER; `shop_prices.amount`
-     * is int4 too, so it shares the latent gap — not widened here.)
+     * times for input that can never be accepted. `PriceBody.amount` now
+     * carries the same ceiling for the same int4 column.
      */
     compareAtMinor: z.number().int().min(0).max(2_147_483_647).nullable().optional(),
     costMinor: z.number().int().min(0).max(2_147_483_647).nullable().optional(),
@@ -243,7 +242,14 @@ const UpdateVariantBody = z
  */
 const PriceBody = z
   .object({
-    amount: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    /**
+     * `.max` IS THE COLUMN'S CEILING. `shop_prices.amount` is `integer`
+     * (int4), and this said MAX_SAFE_INTEGER until 2026-08-25 — so 2^31
+     * passed Zod and `money()` alike and died at the column with SQLSTATE
+     * 22003, which has no row in the error table and answered 500: the exact
+     * lowercase-currency failure documented above, one field over.
+     */
+    amount: z.number().int().min(0).max(2_147_483_647),
     currency: str().regex(/^[A-Z]{3}$/, 'iso4217'),
     /**
      * WHY the price moved (migration 0009). Optional, because every price
