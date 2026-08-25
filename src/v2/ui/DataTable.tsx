@@ -80,6 +80,7 @@ export function DataTable<T, V extends string = string>({
   rows,
   rowKey,
   hrefFor,
+  onRowClick,
   empty,
   footer,
   caption,
@@ -95,6 +96,10 @@ export function DataTable<T, V extends string = string>({
   rows: T[];
   rowKey: (row: T) => string;
   hrefFor?: (row: T) => string;
+  /** For a row whose "open" is a panel rather than a route — the review
+   *  modal. Ignored when `hrefFor` is set: a real href wins, because it
+   *  keeps middle-click and open-in-new-tab. */
+  onRowClick?: (row: T) => void;
   /** Rendered when there are no rows AND nothing is loading. */
   empty: ReactNode;
   footer?: ReactNode;
@@ -296,18 +301,23 @@ export function DataTable<T, V extends string = string>({
               <tbody>
                 {shownRows.map((row) => {
                   const href = hrefFor?.(row);
+                  const open = href
+                    ? () => navigate(href)
+                    : onRowClick
+                      ? () => onRowClick(row)
+                      : null;
                   return (
                     <tr
                       key={rowKey(row)}
-                      className={href ? 'is-clickable' : undefined}
+                      className={open ? 'is-clickable' : undefined}
                       onClick={
-                        href
+                        open
                           ? (event) => {
                               /* A click on a real control inside the row is
                                  that control's click, not the row's. */
                               const target = event.target as HTMLElement;
                               if (target.closest('a,button,input,label,select')) return;
-                              navigate(href);
+                              open();
                             }
                           : undefined
                       }

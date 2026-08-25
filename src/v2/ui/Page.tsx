@@ -68,6 +68,7 @@ export function useAnalyticsBar(screen: string): [boolean, () => void] {
 export function PageHeader({
   icon,
   title,
+  titleBadge,
   subtitle,
   backTo,
   backLabel,
@@ -76,6 +77,8 @@ export function PageHeader({
 }: {
   icon?: ReactNode;
   title: string;
+  /** A status badge beside the title — the detail pages' "Active" chip. */
+  titleBadge?: ReactNode;
   subtitle?: ReactNode;
   backTo?: string;
   backLabel?: string;
@@ -99,6 +102,7 @@ export function PageHeader({
           <h1 className="page__title">
             {icon}
             {title}
+            {titleBadge}
           </h1>
           {subtitle ? <p className="page__sub">{subtitle}</p> : null}
         </div>

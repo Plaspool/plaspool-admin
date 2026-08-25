@@ -1,6 +1,6 @@
 import type { ReactNode, ButtonHTMLAttributes } from 'react';
 import { Link } from 'react-router-dom';
-import { CircleAlert, Info } from 'lucide-react';
+import { CircleAlert, Info, Star } from 'lucide-react';
 
 /**
  * v2 primitives — button, badge, spinner, empty state, banner.
@@ -188,6 +188,25 @@ export function SplitEmpty({
         {shelf}
       </div>
     </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════ STARS ══ */
+
+/** A review rating. Ink-dark like the reference admin's — the rating is data,
+ *  not decoration, so it gets the data colour. */
+export function Stars({ value, outOf = 5 }: { value: number; outOf?: number }) {
+  return (
+    <span className="stars" role="img" aria-label={`${value} out of ${outOf} stars`}>
+      {Array.from({ length: outOf }, (_, i) => (
+        <Star
+          key={i}
+          className={i < value ? undefined : 'is-off'}
+          fill={i < value ? 'currentColor' : 'none'}
+          aria-hidden="true"
+        />
+      ))}
+    </span>
   );
 }
 

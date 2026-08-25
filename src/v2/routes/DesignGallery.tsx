@@ -2,25 +2,39 @@ import { useState } from 'react';
 import {
   Archive,
   ArrowRight,
+  Check,
+  CheckCheck,
+  CircleAlert,
   CornerDownRight,
   Download,
   House,
+  ImagePlus,
   Inbox,
   Package,
   Plus,
+  Receipt,
+  Search,
   ShoppingBag,
+  Star,
   Tags,
+  TicketPercent,
   Trash2,
   Upload,
   Users,
   X,
 } from 'lucide-react';
-import { Badge, Banner, Button, ButtonLink, EmptyState, SplitEmpty } from '../ui/primitives';
+import { Badge, Banner, Button, ButtonLink, EmptyState, SplitEmpty, Stars } from '../ui/primitives';
 import { AnalyticsBar, PageHeader } from '../ui/Page';
 import { DataTable, IdCell, TablePager, type Column } from '../ui/DataTable';
 import { Menu, MenuItem, MenuSeparator } from '../ui/Menu';
-import { AffixField, Checkbox, Radio, Segmented, SelectField, TextField } from '../ui/Field';
+import { AffixField, Checkbox, Radio, Segmented, SelectField, TextArea, TextField } from '../ui/Field';
 import { CouponArt, ReceiptArt, SpoolTiles } from '../ui/illustrations';
+import { Defs } from '../ui/Defs';
+import { PopEdit, PopEditFoot } from '../ui/PopEdit';
+import { RichText } from '../ui/RichText';
+import { StatusPicker } from '../ui/StatusPicker';
+import { TagInput } from '../ui/TagInput';
+import { Timeline } from '../ui/Timeline';
 
 /**
  * THE DESIGN SYSTEM, ON ONE PAGE — `#/design`.
@@ -62,6 +76,121 @@ const COLUMNS: Column<SampleRow>[] = [
   { key: 'qty', header: 'On hand', label: 'On hand', numeric: true, render: (r) => r.qty },
   { key: 'total', header: 'Price', label: 'Price', numeric: true, render: (r) => <strong className="num">{r.total}</strong> },
 ];
+
+/** A drawn stand-in for a product photo — the gallery fetches nothing. */
+const SPOOL_IMG = (ink: string, bg: string) =>
+  `data:image/svg+xml,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80"><rect width="80" height="80" fill="${bg}"/><circle cx="40" cy="40" r="24" fill="none" stroke="${ink}" stroke-width="7"/><circle cx="40" cy="40" r="8" fill="${ink}"/></svg>`,
+  )}`;
+
+const SAMPLE_DOC = {
+  type: 'doc',
+  content: [
+    {
+      type: 'paragraph',
+      content: [
+        { type: 'text', text: 'Our ' },
+        { type: 'text', marks: [{ type: 'bold' }], text: 'PLA Spool — Forest 1kg' },
+        {
+          type: 'text',
+          text: ' prints clean at 195–215°C and holds its colour from first layer to last.',
+        },
+      ],
+    },
+    { type: 'heading', attrs: { level: 3 }, content: [{ type: 'text', text: 'Why this spool' }] },
+    {
+      type: 'bulletList',
+      content: ['Tangle-free winding, measured', '1.75mm ±0.02 tolerance', 'Recyclable core'].map(
+        (text) => ({
+          type: 'listItem',
+          content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
+        }),
+      ),
+    },
+  ],
+};
+
+function StatusSpecimen() {
+  const [status, setStatus] = useState('active');
+  return (
+    <StatusPicker
+      label="Product status"
+      value={status}
+      onChange={setStatus}
+      options={[
+        {
+          value: 'active',
+          label: 'Active',
+          description: 'For sale on the storefront and in search.',
+        },
+        {
+          value: 'draft',
+          label: 'Draft',
+          description: 'Not visible to customers until published.',
+        },
+        {
+          value: 'archived',
+          label: 'Archived',
+          description: 'Off the storefront, kept for the record.',
+        },
+      ]}
+    />
+  );
+}
+
+function TagSpecimen() {
+  const [tags, setTags] = useState<string[]>(['PLA', 'Matte']);
+  return (
+    <TagInput
+      label="Tags"
+      value={tags}
+      onChange={setTags}
+      suggestions={[
+        { name: 'PLA', count: 12 },
+        { name: 'PETG', count: 5 },
+        { name: 'Matte', count: 4 },
+        { name: 'Silk', count: 3 },
+        { name: 'Recycled', count: 2 },
+      ]}
+      hint="Existing spellings are offered while you type, so a tag is reused rather than re-invented."
+    />
+  );
+}
+
+function PopEditSpecimen() {
+  const [price, setPrice] = useState('185.00');
+  const [draft, setDraft] = useState(price);
+  return (
+    <PopEdit value={<span className="num">₦{price}</span>} ariaLabel="Edit price" align="left">
+      {(close) => (
+        <>
+          <AffixField
+            label="Price"
+            prefix="NGN"
+            inputMode="decimal"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <TextArea label="Reason" rows={2} hint="Recorded in the audit trail." onChange={() => {}} />
+          <PopEditFoot>
+            <Button tone="plain" onClick={close}>
+              Cancel
+            </Button>
+            <Button
+              tone="primary"
+              onClick={() => {
+                setPrice(draft);
+                close();
+              }}
+            >
+              Save
+            </Button>
+          </PopEditFoot>
+        </>
+      )}
+    </PopEdit>
+  );
+}
 
 function Section({ title, children, flush = false }: { title: string; children: React.ReactNode; flush?: boolean }) {
   return (
@@ -435,6 +564,240 @@ export default function DesignGallery() {
                 ]}
               />
               <Checkbox label="Limit total uses" hint="Null means unlimited." checked={check} onChange={setCheck} />
+            </div>
+          </div>
+        </Section>
+
+        {/* ══════════════════ DETAIL/EDIT COMPONENTS (second wave) ═════════ */}
+
+        <Section title="Save bar — takes the topbar slot while a form is dirty">
+          <div
+            style={{
+              background: 'var(--topbar-bg)',
+              borderRadius: 'var(--r-lg)',
+              padding: 'var(--s3)',
+              display: 'grid',
+              placeItems: 'center',
+            }}
+          >
+            <div
+              className="savebar"
+              style={{ position: 'static', transform: 'none', animation: 'none', width: 'min(34rem, 100%)' }}
+            >
+              <CircleAlert aria-hidden="true" />
+              <span className="savebar__label">Unsaved changes</span>
+              <button type="button" className="savebar__btn savebar__btn--ghost">
+                Discard
+              </button>
+              <button type="button" className="savebar__btn savebar__btn--save">
+                Save
+              </button>
+            </div>
+          </div>
+          <p className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+            The live component portals over the topbar's centre — the reference's own move — and
+            wires <span className="mono">beforeunload</span> to the same dirty flag.
+          </p>
+        </Section>
+
+        <Section title="Status picker — a state is a sentence, not a word">
+          <div style={{ maxWidth: '16rem' }}>
+            <StatusSpecimen />
+          </div>
+        </Section>
+
+        <Section title="Definition list — the payment card's grammar">
+          <div style={{ maxWidth: '20rem' }}>
+            <Defs
+              rows={[
+                { label: 'Subtotal · 3 items', value: <span className="num">₦55,500.00</span> },
+                { label: 'Delivery — Abuja', value: <span className="num">₦3,000.00</span> },
+                { label: 'Tax', value: <span className="num">₦0.00</span> },
+                { label: 'Total', value: <span className="num">₦58,500.00</span>, total: true },
+                { label: 'Refunded', value: <span className="num">₦0.00</span> },
+              ]}
+            />
+          </div>
+        </Section>
+
+        <Section title="Tag input — chips, and the store's own vocabulary">
+          <div style={{ maxWidth: '26rem' }}>
+            <TagSpecimen />
+          </div>
+        </Section>
+
+        <Section title="Media — cover big, gallery small, add tile last">
+          <div className="imgg" style={{ maxWidth: '26rem' }}>
+            <div className="imgg__tile imgg__tile--cover">
+              <img src={SPOOL_IMG('#2e2a6b', '#eeedf5')} alt="" />
+              <span className="imgg__cover">Cover</span>
+              <span className="imgg__acts" style={{ opacity: 1 }}>
+                <button type="button" className="imgg__act" aria-label="Remove image">
+                  <Trash2 aria-hidden="true" />
+                </button>
+              </span>
+            </div>
+            <div className="imgg__tile">
+              <img src={SPOOL_IMG('#0c5132', '#eaf7ef')} alt="" />
+              <span className="imgg__acts" style={{ opacity: 1 }}>
+                <button type="button" className="imgg__act" aria-label="Set as cover image">
+                  <Star aria-hidden="true" />
+                </button>
+                <button type="button" className="imgg__act" aria-label="Remove image">
+                  <Trash2 aria-hidden="true" />
+                </button>
+              </span>
+            </div>
+            <div className="imgg__tile">
+              <img src={SPOOL_IMG('#8e1f0b', '#fdf0ee')} alt="" />
+            </div>
+            <button type="button" className="imgg__add" aria-label="Add images">
+              <ImagePlus aria-hidden="true" />
+            </button>
+          </div>
+          <p className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+            Tile actions surface on hover (shown forced here). The live component uploads through
+            the EXIF-stripping pipeline and releases every object URL it acquires.
+          </p>
+        </Section>
+
+        <Section title="Rich text — the description editor, live">
+          <RichText value={SAMPLE_DOC} onChange={() => {}} />
+        </Section>
+
+        <Section title="Inline cell editor — a price change carries its reason">
+          <div className="row" style={{ gap: 'var(--s6)' }}>
+            <PopEditSpecimen />
+            <span className="muted" style={{ fontSize: 'var(--t-sm)', maxWidth: '20rem' }}>
+              The dashed underline is the affordance. The panel is where the reason lives — the
+              audit trail refuses a stock change without one.
+            </span>
+          </div>
+        </Section>
+
+        <Section title="Timeline — dots on a rail that ends at the last event">
+          <div style={{ maxWidth: '28rem' }}>
+            <Timeline
+              events={[
+                {
+                  id: '1',
+                  tone: 'ok',
+                  message: 'Fulfilment marked delivered',
+                  meta: '21 Aug, 14:02 · admin',
+                },
+                {
+                  id: '2',
+                  tone: 'info',
+                  message: (
+                    <>
+                      Payment captured — <strong className="num">₦58,500.00</strong>
+                    </>
+                  ),
+                  meta: '20 Aug, 09:15',
+                },
+                { id: '3', message: 'Order placed by dami@example.com', meta: '20 Aug, 09:14' },
+              ]}
+            />
+          </div>
+        </Section>
+
+        <Section title="Rating stars">
+          <div className="row" style={{ gap: 'var(--s4)' }}>
+            <Stars value={5} />
+            <Stars value={4} />
+            <Stars value={2} />
+            <span className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+              Ink, not gold — the rating is data, and badges stay the only saturated surfaces.
+            </span>
+          </div>
+        </Section>
+
+        <Section title="Alerts popover — unread on the sub surface, check on hover" flush>
+          <div className="card__body" style={{ background: 'var(--topbar-bg)', borderRadius: '0 0 var(--r-lg) var(--r-lg)' }}>
+            <div className="alerts" style={{ position: 'static', animation: 'none', margin: '0 auto' }}>
+              <div className="alerts__head">
+                <span className="alerts__title">Alerts</span>
+                <span className="alerts__tools">
+                  <button type="button" className="alerts__tool" aria-label="Mark all as read">
+                    <CheckCheck aria-hidden="true" />
+                  </button>
+                </span>
+              </div>
+              <div className="alerts__list">
+                <div className="alerts__item is-unread">
+                  <span className="alerts__dot" aria-hidden="true" />
+                  <span className="alerts__content">
+                    <span className="alerts__meta">Emails • Sunday at 4:05 PM</span>
+                    <span className="alerts__itemtitle">2 emails will never send</span>
+                    <span className="alerts__body">
+                      Out of retry attempts — nothing resends these without you.
+                    </span>
+                  </span>
+                  <button type="button" className="alerts__check" style={{ opacity: 1 }} aria-label="Mark as read">
+                    <Check aria-hidden="true" />
+                  </button>
+                </div>
+                <div className="alerts__item">
+                  <span className="alerts__dot" aria-hidden="true" />
+                  <span className="alerts__content">
+                    <span className="alerts__meta">Reviews • Sunday at 1:22 PM</span>
+                    <span className="alerts__itemtitle">3 reviews awaiting moderation</span>
+                    <span className="alerts__body">Nothing shows on the storefront until it is approved.</span>
+                  </span>
+                </div>
+              </div>
+              <div className="alerts__foot">No more alerts</div>
+            </div>
+          </div>
+        </Section>
+
+        <Section title="Search palette (Ctrl+K) — pages and the latest records" flush>
+          <div className="card__body" style={{ background: 'var(--bg)', borderRadius: '0 0 var(--r-lg) var(--r-lg)' }}>
+            <div className="palette" style={{ animation: 'none', margin: '0 auto' }}>
+              <div className="palette__head">
+                <Search aria-hidden="true" />
+                <input className="palette__input" placeholder="Search PlaSpool Admin" defaultValue="spool" aria-label="Search (specimen)" />
+                <span className="palette__esc" aria-hidden="true">esc</span>
+              </div>
+              <div className="palette__chips">
+                <button type="button" className="palette__chip" aria-pressed="true">Everything</button>
+                <button type="button" className="palette__chip" aria-pressed="false">Pages</button>
+                <button type="button" className="palette__chip" aria-pressed="false">Products</button>
+                <button type="button" className="palette__chip" aria-pressed="false">Orders</button>
+                <button type="button" className="palette__chip" aria-pressed="false">Discounts</button>
+              </div>
+              <div className="palette__body">
+                <div className="palette__label">Products</div>
+                <button type="button" className="palette__row is-hot">
+                  <Package aria-hidden="true" />
+                  <span className="palette__rowtitle">PLA Spool — Forest 1kg</span>
+                  <span className="palette__rowmeta">Active</span>
+                </button>
+                <button type="button" className="palette__row">
+                  <Package aria-hidden="true" />
+                  <span className="palette__rowtitle">PETG Spool — Clear 750g</span>
+                  <span className="palette__rowmeta">Draft</span>
+                </button>
+                <div className="palette__label">Orders</div>
+                <button type="button" className="palette__row">
+                  <Receipt aria-hidden="true" />
+                  <span className="palette__rowtitle mono">PS-1042-7</span>
+                  <span className="palette__rowmeta">dami@example.com · ₦58,500.00</span>
+                </button>
+                <div className="palette__label">Discounts</div>
+                <button type="button" className="palette__row">
+                  <TicketPercent aria-hidden="true" />
+                  <span className="palette__rowtitle mono">SPOOL10</span>
+                  <span className="palette__rowmeta">10% off</span>
+                </button>
+              </div>
+              <div className="palette__foot">
+                <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+                <span><kbd>↵</kbd> open</span>
+                <span><kbd>esc</kbd> close</span>
+                <span className="spacer" />
+                <span>Pages, latest products, orders &amp; discounts</span>
+              </div>
             </div>
           </div>
         </Section>

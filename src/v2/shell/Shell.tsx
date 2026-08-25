@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
-import { Bell, CircleAlert, CornerDownRight, LogOut, Menu as MenuIcon, Search } from 'lucide-react';
+import { CircleAlert, CornerDownRight, LogOut, Menu as MenuIcon, Search } from 'lucide-react';
 import { NAV, NAV_FOOT, type NavEntry } from './nav';
 import { Menu, MenuItem, MenuSeparator } from '../ui/Menu';
 import { logout } from '../../data/session';
 import { brand } from '../../brand';
+import { AlertsBell } from './Alerts';
+import { Palette } from './Palette';
 
 /**
  * The application frame: dark topbar over a light rail and the working area.
@@ -91,6 +93,20 @@ function NavItem({ entry, pathname }: { entry: NavEntry; pathname: string }) {
 export function Shell({ storeName, userName }: { storeName: string; userName: string }) {
   const { pathname } = useLocation();
   const [railOpen, setRailOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  /* Ctrl+K / ⌘K from anywhere in the app. The palette's own Escape handling
+     lives with the palette; this only opens. */
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setSearchOpen(true);
+      }
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
 
   return (
     <div className="shell">
@@ -116,27 +132,27 @@ export function Shell({ storeName, userName }: { storeName: string; userName: st
           </Link>
         </div>
 
-        {/* Presentational for now, and it says so: the control is disabled
-            rather than accepting text it cannot search. */}
+        {/* The search HANDLE — a button drawn as the field it opens. The real
+            input lives in the palette, so focus goes straight there. */}
         <div className="top__search">
-          <Search aria-hidden="true" />
-          <input
-            type="search"
-            placeholder="Search"
-            aria-label="Search (not wired yet)"
-            disabled
-            title="Search is not wired up in v2 yet"
-          />
-          <span className="top__kbd" aria-hidden="true">
-            <kbd>Ctrl</kbd>
-            <kbd>K</kbd>
-          </span>
+          <button
+            type="button"
+            className="top__searchbtn"
+            aria-label="Search (Ctrl+K)"
+            aria-haspopup="dialog"
+            onClick={() => setSearchOpen(true)}
+          >
+            <Search aria-hidden="true" />
+            <span className="top__ghost">Search</span>
+            <span aria-hidden="true" style={{ display: 'flex', gap: 2 }}>
+              <kbd>Ctrl</kbd>
+              <kbd>K</kbd>
+            </span>
+          </button>
         </div>
 
         <div className="top__end">
-          <button type="button" className="top__icon" aria-label="Notifications" disabled title="Not wired yet">
-            <Bell aria-hidden="true" />
-          </button>
+          <AlertsBell />
           <Menu
             tone="plain"
             chrome="bare"
@@ -200,6 +216,8 @@ export function Shell({ storeName, userName }: { storeName: string; userName: st
           <Outlet />
         </main>
       </div>
+
+      <Palette open={searchOpen} onClose={() => setSearchOpen(false)} />
     </div>
   );
 }

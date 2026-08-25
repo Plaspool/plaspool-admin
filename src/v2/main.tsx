@@ -7,8 +7,6 @@ import {
   LayoutTemplate,
   Mail,
   Megaphone,
-  Package,
-  Receipt,
   Settings,
   Star,
   Truck,
@@ -27,7 +25,12 @@ import { Gate } from './shell/Gate';
 import { Soon } from './routes/Soon';
 import Home from './routes/Home';
 import Orders from './routes/Orders';
+import OrderDetail from './routes/OrderDetail';
 import Products from './routes/Products';
+import ProductDetail from './routes/ProductDetail';
+import Inventory from './routes/Inventory';
+import Reviews from './routes/Reviews';
+import DeliveryAreas from './routes/DeliveryAreas';
 import Categories from './routes/Categories';
 import Customers from './routes/Customers';
 import Posts from './routes/Posts';
@@ -96,23 +99,7 @@ const router = createHashRouter([
 
       /* ── orders ──────────────────────────────────────────────────────── */
       { path: '/orders', element: <Orders /> },
-      {
-        path: '/orders/:id',
-        element: (
-          <Soon
-            title="Order"
-            icon={<Receipt />}
-            what="Order detail is where you fulfil, cancel and refund an order."
-            todos={[
-              'The order header: number, buyer, payment state and the frozen totals',
-              'Line items with fulfilled-vs-ordered quantities',
-              'Create a fulfilment, and move one to shipped or delivered',
-              'Cancel with the refund choice, and refund a payment directly',
-              'The timeline, and the email intents queued against this order',
-            ]}
-          />
-        ),
-      },
+      { path: '/orders/:id', element: <OrderDetail /> },
       {
         path: '/orders/returns',
         element: (
@@ -129,74 +116,17 @@ const router = createHashRouter([
           />
         ),
       },
-      {
-        path: '/orders/delivery',
-        element: (
-          <Soon
-            title="Delivery areas"
-            icon={<Truck />}
-            what="Delivery areas are the districts a van goes to and what each one costs."
-            todos={[
-              'The area list grouped by region',
-              'Editing a rate — Abuja ₦3,000, Lagos ₦10,000, elsewhere ₦10,000 today',
-              'Activating and deactivating an area',
-              'A note that the storefront does not send a district at checkout yet',
-            ]}
-          />
-        ),
-      },
+      { path: '/orders/delivery', element: <DeliveryAreas /> },
 
       /* ── products ────────────────────────────────────────────────────── */
       { path: '/products', element: <Products /> },
       { path: '/products/categories', element: <Categories /> },
-      {
-        path: '/products/inventory',
-        element: (
-          <Soon
-            title="Inventory"
-            icon={<Package />}
-            what="Inventory is stock on hand, what is reserved, and what is left to sell."
-            todos={[
-              'The variant table with on-hand, reserved and available',
-              'Adjusting stock, with the audit entry it writes',
-              'The low-stock threshold and its filter',
-              'Backorderable variants, which can go negative on purpose',
-            ]}
-          />
-        ),
-      },
-      {
-        path: '/products/reviews',
-        element: (
-          <Soon
-            title="Reviews"
-            icon={<Star />}
-            what="Reviews are what customers wrote about a product, pending your approval."
-            todos={[
-              'The moderation queue',
-              'Approve and reject, with the storefront effect stated',
-              'Filtering by product and by rating',
-            ]}
-          />
-        ),
-      },
-      {
-        path: '/products/:id',
-        element: (
-          <Soon
-            title="Product"
-            icon={<Package />}
-            what="Product detail is where the title, description, images, variants and prices live."
-            todos={[
-              'Title, slug, description and the category picker',
-              'Images, with a cover and the rest of the gallery',
-              'Variants: options, SKU, price and inventory per row',
-              'The lifecycle controls — publish, archive, trash, restore',
-              'Deferred deliberately this session: in-depth viewing and editing',
-            ]}
-          />
-        ),
-      },
+      { path: '/products/inventory', element: <Inventory /> },
+      { path: '/products/reviews', element: <Reviews /> },
+      /* Static beats dynamic in the router's ranking, but the create route is
+         listed first anyway so nobody has to know that. */
+      { path: '/products/new', element: <ProductDetail create /> },
+      { path: '/products/:id', element: <ProductDetail /> },
 
       /* ── customers, discounts ────────────────────────────────────────── */
       { path: '/customers', element: <Customers /> },
