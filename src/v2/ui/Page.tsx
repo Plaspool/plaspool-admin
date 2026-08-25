@@ -1,4 +1,4 @@
-import { useCallback, useId, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Calendar, ChevronRight, Eye, EyeOff } from 'lucide-react';
 import { Menu, MenuItem } from './Menu';
@@ -93,6 +93,36 @@ export function PageHeader({
    *  a menu of secondary things belongs left of the primary button. */
   menu?: (close: () => void) => ReactNode;
 }) {
+  /* ═══ THE TWO-TAP CRUMB (touch only) ═══ On a pointer the chip has a hover
+     title, so an icon-only crumb is legible before it is pressed. Touch has
+     no hover, and an unlabelled icon that navigates on first contact is a
+     mystery button — so on touch the FIRST tap peeks the destination's name
+     in a small bubble under the chip (the reference admin's own move,
+     photographed by the owner), and the second tap — on the chip or on the
+     bubble, which is a real link — actually goes. The peek dismisses itself
+     after a beat, on an outside tap, and on Escape. */
+  const [peek, setPeek] = useState(false);
+  const crumbRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!peek) return;
+    const timer = window.setTimeout(() => setPeek(false), 2600);
+    function onDown(event: PointerEvent) {
+      if (crumbRef.current?.contains(event.target as Node)) return;
+      setPeek(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === 'Escape') setPeek(false);
+    }
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener('pointerdown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [peek]);
+
   return (
     <div>
       <div className="page__head">
@@ -100,14 +130,28 @@ export function PageHeader({
           <h1 className="page__title">
             {backTo ? (
               <>
-                <Link
-                  className="page__crumb"
-                  to={backTo}
-                  title={backLabel}
-                  aria-label={backLabel ?? 'Back'}
-                >
-                  {icon}
-                </Link>
+                <span className="page__crumbwrap" ref={crumbRef}>
+                  <Link
+                    className="page__crumb"
+                    to={backTo}
+                    title={backLabel}
+                    aria-label={backLabel ?? 'Back'}
+                    onClick={(event) => {
+                      if (peek) return;
+                      if (window.matchMedia('(hover: none)').matches) {
+                        event.preventDefault();
+                        setPeek(true);
+                      }
+                    }}
+                  >
+                    {icon}
+                  </Link>
+                  {peek ? (
+                    <Link className="page__peek" to={backTo}>
+                      {backLabel ?? 'Back'}
+                    </Link>
+                  ) : null}
+                </span>
                 <ChevronRight className="page__crumbsep" aria-hidden="true" />
               </>
             ) : (

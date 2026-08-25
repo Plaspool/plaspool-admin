@@ -38,6 +38,20 @@
   min-height: var(--ctl-h-lg);
 }
 
+/* On a phone the title keeps the row and the actions may take the next one —
+   wrapping beats a truncated "Add produ…" key. The actions keep their own
+   right edge so a lone primary key still lands where the thumb expects it. */
+@media (max-width: 48rem) {
+  .page__head {
+    flex-wrap: wrap;
+  }
+
+  .page__actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+}
+
 .page__titles {
   display: flex;
   flex-direction: column;
@@ -109,6 +123,39 @@
   width: 15px;
   height: 15px;
   color: inherit;
+}
+
+/* The touch peek: the parent page's name, hung under the chip as a small
+   machined key. It IS a link — the second tap can land on either the chip or
+   the name and both go up a level. */
+.page__crumbwrap {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+.page__peek {
+  position: absolute;
+  top: calc(100% + var(--s2));
+  left: 0;
+  z-index: 45;
+  display: inline-flex;
+  align-items: center;
+  height: var(--ctl-h);
+  padding: 0 var(--s3);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  color: var(--ink-strong);
+  font-size: var(--t-md);
+  font-weight: var(--w-medium);
+  white-space: nowrap;
+  animation: v2-pop 120ms var(--ease);
+}
+
+.page__peek:hover {
+  text-decoration: none;
+  background: var(--surface-sub);
 }
 
 .page__title .page__crumbsep {
@@ -305,6 +352,14 @@
   padding: var(--s2) var(--s3) 0;
   border-bottom: 1px solid var(--border-sub);
   overflow-x: auto;
+  /* Scrolls but shows no bar — same rule as .abar__cells: on Windows and on
+     phones the always-on scrollbar draws a grey rule straight through the
+     card. The cut-off tab is the affordance. */
+  scrollbar-width: none;
+}
+
+.ttabs::-webkit-scrollbar {
+  display: none;
 }
 
 .ttab {
@@ -622,6 +677,112 @@ a.idcell__title:hover {
   color: var(--ink-sub);
 }
 
+/* ═══ THE TABLE, ON A PHONE: CARDS ════════════════════════════════════════
+   Below the breakpoint every row becomes a card — the reference admin's own
+   mobile products list. Columns cannot survive a 375px screen as columns; a
+   sideways-scrolling table asks the reader to remember the row while hunting
+   the cell, which is the failure the owner photographed.
+
+   The transform is PURE CSS over the one DataTable, so every screen gets it
+   at once and none can opt into a worse layout: the header row stands down
+   (each value now carries its own label, from the `data-label` the table
+   writes on every cell), the identity cell leads the card at full width with
+   the checkbox beside it, and the remaining cells tile two-up beneath as
+   small label-over-value facts. The whole card stays the click target. */
+@media (max-width: 48rem) {
+  .tscroll {
+    overflow-x: visible;
+  }
+
+  .table,
+  .table tbody {
+    display: block;
+  }
+
+  .table thead {
+    display: none;
+  }
+
+  .table tbody tr {
+    position: relative;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: var(--s2) var(--s4);
+    padding: var(--s3) var(--s4);
+  }
+
+  .table td {
+    display: block;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+    text-align: left;
+  }
+
+  /* Identity first — always, whatever its source order — sharing the top
+     line with the bulk checkbox when one exists. */
+  .table td.cell--primary {
+    order: -1;
+    flex: 1 1 70%;
+    min-width: 0;
+  }
+
+  /* The bulk checkbox — the one tight cell that carries no label — rides
+     beside the identity. Labelled tight cells (counts, short codes) stay
+     facts like everything else. */
+  .table td.cell--tight:not([data-label]) {
+    order: -2;
+    flex: none;
+    width: auto;
+    padding: var(--s1) 0 0;
+  }
+
+  /* Every labelled cell is a small fact: its column's name over its value,
+     tiling two to a line. The label comes from the same string the view
+     control uses, so the card and the column picker never disagree. */
+  .table td[data-label] {
+    flex: 1 1 calc(50% - var(--s4));
+    width: auto;
+    min-width: calc(50% - var(--s4));
+    font-variant-numeric: tabular-nums;
+  }
+
+  .table td.cell--num {
+    text-align: left;
+  }
+
+  .table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 1px;
+    font-size: var(--t-xs);
+    font-weight: var(--w-medium);
+    font-variant-numeric: normal;
+    color: var(--ink-sub);
+  }
+
+  /* A cell whose column has no name — a per-row ⋯, a lone action — floats to
+     the card's top corner instead of pretending to be a fact. */
+  .table td[data-label=''] {
+    position: absolute;
+    top: var(--s2);
+    right: var(--s2);
+    flex: none;
+    min-width: 0;
+  }
+
+  .table td[data-label='']::before {
+    display: none;
+  }
+
+  /* Skeleton rows card up the same way; their unlabelled cells read as bars. */
+  .table td:not([data-label]):not(.cell--primary):not(.cell--tight) {
+    flex: 1 1 calc(50% - var(--s4));
+    min-width: calc(50% - var(--s4));
+  }
+}
+
 /* === BULK SELECTION ======================================================
    The selection bar takes the header row's slot while anything is selected --
    the reference swaps column headers for the bar, because you cannot sort and
@@ -631,6 +792,7 @@ a.idcell__title:hover {
 .tsel {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--s2);
   padding: var(--s2) var(--s3);
   border-bottom: 1px solid var(--border-sub);
@@ -807,6 +969,56 @@ a.idcell__title:hover {
   .bento__card--a, .bento__card--b { grid-column: span 12; }
   .bento__card--c, .bento__card--d { grid-column: span 6; }
   .bento__card--e { grid-column: span 12; }
+}
+
+/* ═══ THE BENTO, ON A PHONE ═══════════════════════════════════════════════
+   One column, full stop — two half-width cards at 375px are two crushed
+   cards, and the bento's whole rhythm (2/3/1) only exists at widths that can
+   draw it. The art steps down with the cards so the crop stays a corner
+   detail rather than swallowing the copy, the strip card stacks, and the
+   greeting comes down a size to match the narrower stage. */
+@media (max-width: 34rem) {
+  .bento {
+    gap: var(--s3);
+  }
+
+  .bento__card--c, .bento__card--d { grid-column: span 12; }
+
+  .bento__card { min-height: 11rem; }
+  .bento__card--a, .bento__card--b { min-height: 13rem; }
+
+  .bento__art { width: 11rem; top: -2.25rem; right: -2.75rem; }
+  .bento__card--a .bento__art { width: 15rem; top: -3rem; right: -4.5rem; }
+  .bento__card--b .bento__art { width: 13rem; top: -2.5rem; right: -3rem; }
+
+  .bento__card--f {
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-end;
+    gap: var(--s1);
+    min-height: 11rem;
+  }
+
+  .bento__card--f .bento__art {
+    position: absolute;
+    top: -2.25rem;
+    right: -2.75rem;
+    width: 11rem;
+    order: 0;
+    margin-left: 0;
+  }
+
+  .bento__card--f .bento__go {
+    position: absolute;
+    order: 0;
+    margin-left: 0;
+  }
+
+  .bento__stat { font-size: 2.25rem; }
+
+  .home__greet { padding-top: var(--s4); }
+  .home__greet h1 { font-size: 1.375rem; }
+  .home__greet p { font-size: var(--t-md); }
 }
 
 /* The picture: absolutely placed off the top-right corner, larger than its

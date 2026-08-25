@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { CircleAlert, CornerDownRight, LogOut, Menu as MenuIcon, Search } from 'lucide-react';
 import { NAV, NAV_FOOT, type NavEntry } from './nav';
@@ -108,6 +108,48 @@ export function Shell({ storeName, userName }: { storeName: string; userName: st
     return () => document.removeEventListener('keydown', onKey);
   }, []);
 
+  /* ═══ THE DRAWER CLOSES ITSELF ═══ On a phone the rail is an overlay, and an
+     overlay that outlives the tap that used it is the bug the owner named:
+     pick "Orders", arrive on Orders, and the menu is still covering it. The
+     pathname IS the signal a navigation happened — including a tap on the row
+     for the screen you are already on, which `NavLink` does not re-path, so
+     that case closes via the nav's own click handler below instead. */
+  useEffect(() => {
+    setRailOpen(false);
+  }, [pathname]);
+
+  /* A new screen starts at its top. The scroll container is `.main`, not the
+     window, so the browser's own restoration never sees it — without this a
+     phone user who taps through from the bottom of a long form lands mid-way
+     down the next list and reads it as missing rows. (Caught by the mobile
+     pass: Orders opened at its skeleton's waist.) */
+  const mainRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    mainRef.current?.scrollTo(0, 0);
+  }, [pathname]);
+
+  /* Escape closes the drawer, from anywhere — same contract as every panel. */
+  useEffect(() => {
+    if (!railOpen) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === 'Escape') setRailOpen(false);
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [railOpen]);
+
+  /* The page behind an open drawer must not scroll under it. Only the mobile
+     layout ever sets `railOpen` (the burger does not exist on desktop), so
+     locking on the flag alone cannot bite a desktop session. */
+  useEffect(() => {
+    if (!railOpen) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [railOpen]);
+
   return (
     <div className="shell">
       <header className="top">
@@ -186,7 +228,27 @@ export function Shell({ storeName, userName }: { storeName: string; userName: st
       </header>
 
       <div className="shell__body">
-        <nav className={railOpen ? 'side is-open' : 'side'} aria-label="Sections">
+        {/* The scrim: mobile-only (display gated in CSS), tap-to-close, and a
+            real button so it is reachable and labelled rather than a div with
+            a click handler. */}
+        {railOpen ? (
+          <button
+            type="button"
+            className="shell__scrim"
+            aria-label="Close navigation"
+            onClick={() => setRailOpen(false)}
+          />
+        ) : null}
+        <nav
+          className={railOpen ? 'side is-open' : 'side'}
+          aria-label="Sections"
+          onClick={(event) => {
+            /* A tap on any nav LINK closes the drawer — including the link for
+               the page already on screen, where the pathname effect above never
+               fires because nothing navigated. */
+            if ((event.target as HTMLElement).closest('a')) setRailOpen(false);
+          }}
+        >
           {NAV.map((entry) => (
             <NavItem key={entry.to} entry={entry} pathname={pathname} />
           ))}
@@ -212,7 +274,7 @@ export function Shell({ storeName, userName }: { storeName: string; userName: st
           </div>
         </nav>
 
-        <main className="main">
+        <main className="main" ref={mainRef}>
           <Outlet />
         </main>
       </div>
