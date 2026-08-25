@@ -46,6 +46,11 @@
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <!-- ADMIN UI VERSION SWITCH — this line is the whole revert.
+           v2 (current):  /src/v2/main.tsx
+           v1 (previous): /src/main.tsx
+         Nothing under src/ outside src/v2/ was changed to make v2 work, so
+         swapping the src back restores v1 exactly. -->
+    <script type="module" src="/src/v2/main.tsx"></script>
   </body>
 </html>

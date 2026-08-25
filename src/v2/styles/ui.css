@@ -1,0 +1,908 @@
+/* ---------------------------------------------------------------------------
+   v2 primitives — button, badge, menu, field, modal, empty state, toast.
+--------------------------------------------------------------------------- */
+
+/* ═══ BUTTON ═══════════════════════════════════════════════════════════════
+   FOUR TONES AND NO MORE: primary (one per screen), default, plain, critical.
+   The bevel does all the structural work; there is no `border` on any of them,
+   because a border is uniform on four sides and the effect being copied is
+   deliberately heavier along the bottom edge. See `--bevel` in tokens.css. */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  height: var(--ctl-h);
+  padding: 0 var(--ctl-pad-x);
+  border: 0;
+  border-radius: var(--r-md);
+  font-size: var(--t-md);
+  /* 550, not 650. The reference sets button labels at its medium weight; a
+     step bolder reads as shouting at 13px and was a real part of "cheap". */
+  font-weight: var(--w-medium);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  text-decoration: none;
+  /* The RELEASE is animated; the PRESS is not — see :active. */
+  transition: background-color 140ms var(--ease), box-shadow 140ms var(--ease),
+    transform 140ms var(--ease);
+}
+
+/* THE PRESS IS INSTANT. A button that eases downward over 100ms feels like it
+   is deciding whether to obey; a key drops the moment your finger lands and
+   only the release springs. `transition: none` on :active is most of the
+   "feel" the first two passes were missing — and the travel is a FULL pixel,
+   because 0.5px rounds to nothing on a 1× display. */
+.btn:active {
+  transition: none;
+}
+
+.btn:hover {
+  text-decoration: none;
+}
+
+.btn > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+/* Coarse pointers get a 44px hit area without the visual box growing — the
+   button stays 32px tall and the tap target extends past it. */
+@media (pointer: coarse) {
+  .btn::after {
+    content: '';
+    position: absolute;
+    inset: 50% 0 0;
+    height: 2.75rem;
+    transform: translateY(-50%);
+  }
+
+  .btn {
+    position: relative;
+  }
+}
+
+/* ── default: white, machined ─────────────────────────────────────────── */
+.btn--default {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--bevel);
+}
+
+.btn--default:hover {
+  background: #fafafa;
+}
+
+/* Pressed: the top light goes out, the fill darkens one step, and the whole
+   face sinks by the height of its own bottom hairline. The 1px translate is
+   what sells the press — the shadow alone reads as a colour change. */
+.btn--default:active {
+  background: #f2f2f2;
+  box-shadow: 0 2px 1px 0 rgb(0 0 0 / 0.14) inset, 0 0 0 1px rgb(0 0 0 / 0.12) inset;
+  transform: translateY(1px);
+}
+
+/* HELD OPEN = HELD DOWN. While a dropdown this button owns is on screen, the
+   trigger keeps the pressed face — the reference's More-actions button stays
+   sunken for exactly as long as its menu stands. */
+.btn--default.is-open {
+  background: var(--surface-sunken);
+  box-shadow: 0 2px 1px 0 rgb(0 0 0 / 0.1) inset, 0 0 0 1px rgb(0 0 0 / 0.1) inset;
+}
+
+/* ── primary: the ink key ─────────────────────────────────────────────────
+   #303030 and not black — the reference primary sits one step off true black
+   so its own bottom shade (at 80% black) still reads as an edge against it.
+   Hover is where it deepens to near-black. */
+.btn--primary {
+  background: var(--ink);
+  color: #ffffff;
+  box-shadow: var(--bevel-primary);
+}
+
+.btn--primary:hover {
+  background: var(--ink-strong);
+}
+
+.btn--primary:active {
+  background: #1a1a1a;
+  box-shadow: 0 3px 2px 0 rgb(0 0 0 / 0.75) inset, 0 0 0 1px #000000 inset;
+  transform: translateY(1px);
+}
+
+.btn--primary.is-open {
+  /* One step down from rest (#303030), not all the way to near-black — a
+     pressed key stays recognisably the same key. */
+  background: #262626;
+  box-shadow: 0 2px 2px 0 rgb(0 0 0 / 0.5) inset, 0 0 0 1px #111111 inset;
+}
+
+/* ── plain: no chrome at all until hovered ────────────────────────────── */
+.btn--plain {
+  background: transparent;
+  color: var(--ink);
+  box-shadow: none;
+}
+
+.btn--plain:hover {
+  background: var(--surface-hover);
+}
+
+.btn--plain:active {
+  background: var(--surface-active);
+  transform: translateY(1px);
+}
+
+.btn--plain.is-open {
+  background: var(--surface-active);
+}
+
+/* ── critical ─────────────────────────────────────────────────────────── */
+.btn--critical {
+  background: var(--critical);
+  color: var(--critical-fg);
+  box-shadow: var(--bevel-critical);
+}
+
+.btn--critical:hover {
+  background: var(--critical-hover);
+}
+
+.btn--critical:active {
+  background: var(--critical-hover);
+  box-shadow: 0 3px 2px 0 rgb(0 0 0 / 0.45) inset, 0 0 0 1px var(--critical-hover) inset;
+  transform: translateY(1px);
+}
+
+/* ── sizes ────────────────────────────────────────────────────────────── */
+.btn--lg {
+  height: var(--ctl-h-lg);
+  padding: 0 var(--s4);
+}
+
+.btn--icon {
+  width: var(--ctl-h);
+  padding: 0;
+}
+
+.btn--icon.btn--lg {
+  width: var(--ctl-h-lg);
+}
+
+.btn[disabled],
+.btn[aria-disabled='true'] {
+  cursor: not-allowed;
+  background: var(--surface-sunken);
+  color: var(--ink-disabled);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.06) inset;
+}
+
+/* A button whose work is in flight. The label stays put — swapping it for
+   "Saving…" changes the button's width mid-press and moves the thing under the
+   cursor. */
+.btn--busy {
+  cursor: progress;
+}
+
+/* ═══ SPINNER ═════════════════════════════════════════════════════════════ */
+.spinner {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  opacity: 0.65;
+  animation: v2-spin 620ms linear infinite;
+}
+
+.spinner--lg {
+  width: 24px;
+  height: 24px;
+}
+
+@keyframes v2-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s3);
+  padding: var(--s12) var(--s4);
+  color: var(--ink-sub);
+  font-size: var(--t-md);
+}
+
+/* ═══ BADGE ═══════════════════════════════════════════════════════════════
+   A pill, and the dot is what makes it work for a reader who cannot separate
+   the hues: position in the tone ramp is encoded twice, once as fill and once
+   as the dot's own colour. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  padding: 0 var(--s2);
+  height: 1.25rem;
+  border-radius: var(--r-md);
+  background: var(--neutral-bg);
+  color: var(--neutral-ink);
+  font-size: var(--t-sm);
+  font-weight: var(--w-medium);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.badge--ok {
+  background: var(--ok-bg);
+  color: var(--ok-ink);
+}
+
+.badge--warn {
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+}
+
+.badge--critical {
+  background: var(--critical-bg);
+  color: var(--critical-ink);
+}
+
+.badge--info {
+  background: var(--info-bg);
+  color: var(--info-ink);
+}
+
+.badge__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+/* ═══ MENU (the More actions dropdown) ════════════════════════════════════ */
+.menu {
+  position: relative;
+  display: inline-flex;
+}
+
+/* A trigger that is its own affordance — the avatar disc, a ⋯ cell — gets no
+   button chrome at all. */
+.menu__bare {
+  display: inline-grid;
+  place-items: center;
+  padding: 2px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+
+.menu__bare:hover,
+.menu__bare.is-open {
+  background: rgb(255 255 255 / 0.14);
+}
+
+.menu__panel {
+  position: absolute;
+  top: calc(100% + var(--s2));
+  right: 0;
+  z-index: 40;
+  min-width: 13rem;
+  padding: calc(var(--s1) + 2px);
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  animation: v2-pop 120ms var(--ease);
+}
+
+.menu__panel--left {
+  right: auto;
+  left: 0;
+}
+
+@keyframes v2-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  padding: var(--s2) var(--s2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--t-md);
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu__item:hover {
+  background: var(--surface-hover);
+}
+
+.menu__item > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--ink-sub);
+}
+
+.menu__item--critical {
+  color: var(--critical);
+}
+
+.menu__item--critical > svg {
+  color: var(--critical);
+}
+
+.menu__sep {
+  height: 1px;
+  margin: var(--s1) 0;
+  background: var(--border-sub);
+}
+
+/* ═══ FIELD ═══════════════════════════════════════════════════════════════ */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.field__label {
+  font-size: var(--t-md);
+  font-weight: var(--w-medium);
+  color: var(--ink);
+}
+
+.field__hint {
+  font-size: var(--t-sm);
+  color: var(--ink-sub);
+}
+
+.field__error {
+  font-size: var(--t-sm);
+  color: var(--critical);
+  font-weight: var(--w-medium);
+}
+
+.input,
+.select,
+.textarea {
+  width: 100%;
+  min-height: var(--ctl-h-lg);
+  padding: var(--s2) var(--s3);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-md);
+}
+
+/* Fields DO carry a border where buttons carry a bevel, and the difference is
+   the point: a button is a solid thing you press, a field is a hole you type
+   into. Giving both the same treatment is what makes a form look like a row of
+   buttons. */
+.input:hover,
+.select:hover,
+.textarea:hover {
+  border-color: var(--ink-muted);
+}
+
+.input:focus,
+.select:focus,
+.textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  outline: none;
+}
+
+.input[disabled],
+.select[disabled],
+.textarea[disabled] {
+  background: var(--surface-sunken);
+  color: var(--ink-muted);
+  cursor: not-allowed;
+}
+
+.input--invalid,
+.select--invalid {
+  border-color: var(--critical);
+}
+
+.textarea {
+  min-height: 5rem;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.select {
+  appearance: none;
+  padding-right: var(--s8);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23616161' stroke-width='1.6' stroke-linecap='round'%3E%3Cpath d='M5 6.5 8 3.5l3 3M5 9.5l3 3 3-3'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--s3) center;
+  background-size: 16px;
+}
+
+/* A field with a fixed prefix — the currency symbol on a money input, the % on
+   a rate. The affix sits INSIDE the border so the pair reads as one control. */
+.affix {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.affix:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.affix__tag {
+  display: flex;
+  align-items: center;
+  padding: 0 var(--s3);
+  background: var(--surface-sunken);
+  border-right: 1px solid var(--border);
+  color: var(--ink-sub);
+  font-size: var(--t-md);
+  white-space: nowrap;
+}
+
+.affix__tag--end {
+  border-right: 0;
+  border-left: 1px solid var(--border);
+}
+
+.affix .input {
+  border: 0;
+  border-radius: 0;
+}
+
+.affix .input:focus {
+  box-shadow: none;
+}
+
+/* ── segmented control (Discount code / Automatic) ─────────────────────── */
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  gap: 2px;
+}
+
+.segmented__opt {
+  padding: 0 var(--s3);
+  height: 1.75rem;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-sub);
+  font-size: var(--t-md);
+  font-weight: var(--w-medium);
+  cursor: pointer;
+}
+
+.segmented__opt[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--ink-strong);
+  box-shadow: var(--bevel);
+}
+
+/* ── checkbox ─────────────────────────────────────────────────────────── */
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  cursor: pointer;
+  font-size: var(--t-md);
+}
+
+.check input {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  flex: none;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.check input:checked {
+  background: var(--ink-strong) url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3.5 8.5 3 3 6-6'/%3E%3C/svg%3E")
+    center / 12px no-repeat;
+  border-color: var(--ink-strong);
+}
+
+.check input[type='radio'] {
+  border-radius: 50%;
+}
+
+/* A radio is a dot in a disc, never a checkmark — and the fill goes the
+   reference's way round: a SOLID dark disc with a small white dot punched out
+   of its centre. (The first cut inverted it — dark ring, dark centre — which
+   reads as an outline control, not a selection.) */
+.check input[type='radio']:checked {
+  background: radial-gradient(circle, #ffffff 0 2.5px, var(--ink-strong) 3px);
+  border-color: var(--ink-strong);
+}
+
+.check input:indeterminate {
+  background: var(--ink-strong) url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' stroke='white' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M4 8h8'/%3E%3C/svg%3E")
+    center / 12px no-repeat;
+  border-color: var(--ink-strong);
+}
+
+/* ═══ MODAL ═══════════════════════════════════════════════════════════════ */
+.modal__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: start center;
+  padding: var(--s10) var(--s4);
+  background: rgb(26 26 26 / 0.55);
+  overflow-y: auto;
+  animation: v2-fade 120ms var(--ease);
+}
+
+@keyframes v2-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+.modal {
+  width: 100%;
+  max-width: 32rem;
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-modal);
+  animation: v2-rise 180ms var(--ease-out);
+}
+
+@keyframes v2-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+}
+
+/* NO RULES between the modal's regions — the reference separates title, body
+   and footer with space alone, and the hairlines made ours read as a form. */
+.modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s5) var(--s5) 0;
+}
+
+.modal__title {
+  font-size: var(--t-xl);
+  font-weight: var(--w-bold);
+  letter-spacing: -0.01em;
+}
+
+.modal__body {
+  padding: var(--s4) var(--s5) var(--s5);
+}
+
+/* An inline link inside running copy must be visibly a link at rest — in a
+   monochrome paragraph the accent alone is too close to ink at 13px. */
+.modal__body a,
+.field__hint a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.modal__body--flush {
+  padding: 0;
+}
+
+.modal__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s2);
+  padding: 0 var(--s5) var(--s5);
+}
+
+/* A row of the type-picker list inside a modal. Full-bleed so the hover fill
+   reaches the modal's own edges. */
+.pick {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  padding: var(--s4);
+  border: 0;
+  border-bottom: 1px solid var(--border-sub);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pick:last-child {
+  border-bottom: 0;
+}
+
+.pick:hover {
+  background: var(--surface-sub);
+}
+
+.pick__icon {
+  color: var(--ink-sub);
+  flex: none;
+}
+
+.pick__icon > svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+.pick__title {
+  font-size: var(--t-md);
+  font-weight: var(--w-semi);
+  color: var(--ink-strong);
+}
+
+.pick__body {
+  font-size: var(--t-md);
+  color: var(--ink-sub);
+}
+
+.pick__chev {
+  margin-left: auto;
+  color: var(--ink-muted);
+  flex: none;
+}
+
+/* ═══ EMPTY STATE ═════════════════════════════════════════════════════════
+   Two grades. `.empty__art` carries a drawn illustration (see
+   `ui/illustrations.tsx`) and is the treatment for a screen's true first-run
+   state — the moment worth an ounce of warmth. `.empty__mark` is the plain
+   icon ring, kept for filter-miss states: "no rows match" happens forty times
+   a day and does not deserve a picture every time. */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--s2);
+  padding: var(--s10) var(--s6) var(--s12);
+  max-width: 26rem;
+  margin: 0 auto;
+}
+
+.empty__art {
+  width: min(13.75rem, 70%);
+  margin-bottom: var(--s2);
+}
+
+.empty__art svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.empty__mark {
+  display: grid;
+  place-items: center;
+  width: 4rem;
+  height: 4rem;
+  margin-bottom: var(--s2);
+  border-radius: 50%;
+  background: var(--surface-sunken);
+  color: var(--ink-muted);
+}
+
+.empty__mark > svg {
+  width: 26px;
+  height: 26px;
+}
+
+.empty__title {
+  font-size: var(--t-xl);
+  font-weight: var(--w-semi);
+}
+
+.empty__body {
+  font-size: var(--t-md);
+  color: var(--ink-sub);
+  line-height: 1.55;
+}
+
+.empty__actions {
+  display: flex;
+  gap: var(--s2);
+  margin-top: var(--s1);
+}
+
+/* ═══ BANNER ══════════════════════════════════════════════════════════════
+   The persistent, dismissable-only-by-being-fixed notice.
+
+   ANATOMY, second pass: a SOFT surface (see `--*-soft` in tokens) with the
+   badge fill demoted to a small icon chip. The first pass painted the whole
+   banner in the badge fill and it out-shouted the data it warned about. Body
+   text is `--ink`, not the tone ink — a paragraph in dark red reads as an
+   error message even when it is only context; the tone now lives in the chip,
+   the title and the left edge.
+
+   A banner about something REACHABLE carries an action button. A warning that
+   names a problem and offers no way to go look at it is a to-do the reader has
+   to keep in their head. */
+.banner {
+  display: flex;
+  gap: var(--s3);
+  align-items: flex-start;
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r-lg);
+  background: var(--info-soft);
+  box-shadow: var(--shadow-card);
+  font-size: var(--t-md);
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.banner__icon {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: none;
+  border-radius: var(--r-md);
+  background: var(--info-bg);
+  color: var(--info-ink);
+}
+
+.banner--warn .banner__icon {
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+}
+
+.banner--critical .banner__icon {
+  background: var(--critical-bg);
+  color: var(--critical-ink);
+}
+
+.banner--warn {
+  background: var(--warn-soft);
+}
+
+.banner--critical {
+  background: var(--critical-soft);
+}
+
+.banner__icon > svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.banner__content {
+  flex: 1;
+  min-width: 0;
+  /* Centres a one-line banner against its 28px chip without moving a two-line
+     one: the chip is the taller element only in the one-line case. */
+  align-self: center;
+}
+
+.banner__title {
+  font-weight: var(--w-semi);
+  color: var(--ink-strong);
+}
+
+.banner__body {
+  color: var(--ink-sub);
+}
+
+.banner__action {
+  flex: none;
+  align-self: center;
+}
+
+/* Scoped to the BODY: a bare `a` here also caught the action slot's
+   ButtonLink and underlined a button label — the one place the system spoke
+   two affordance languages at once (the integration critic's find). */
+.banner__body a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+@media (max-width: 40rem) {
+  .banner {
+    flex-wrap: wrap;
+  }
+
+  .banner__action {
+    margin-left: calc(1.75rem + var(--s3));
+  }
+}
+
+/* ═══ TOAST ═══════════════════════════════════════════════════════════════
+   Bottom-centre and near-black, matching the reference admin. It reports what
+   just happened and never asks a question — anything needing an answer is a
+   modal. */
+.toaster {
+  position: fixed;
+  left: 50%;
+  bottom: var(--s6);
+  z-index: 80;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s2);
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  padding: var(--s3) var(--s3) var(--s3) var(--s4);
+  border-radius: var(--r-md);
+  background: var(--ink-strong);
+  color: #ffffff;
+  font-size: var(--t-md);
+  font-weight: var(--w-medium);
+  box-shadow: var(--shadow-pop);
+  pointer-events: auto;
+  animation: v2-toast 180ms var(--ease);
+}
+
+.toast--critical {
+  background: var(--critical);
+}
+
+@keyframes v2-toast {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+.toast__close {
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.toast__close:hover {
+  opacity: 1;
+  background: rgb(255 255 255 / 0.14);
+}
+
+.toast__close > svg {
+  width: 14px;
+  height: 14px;
+}

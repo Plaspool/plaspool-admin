@@ -1,0 +1,491 @@
+/* ---------------------------------------------------------------------------
+   v2 shell — the dark topbar, the light sidebar, and the working area.
+--------------------------------------------------------------------------- */
+
+.shell {
+  display: grid;
+  grid-template-rows: var(--topbar-h) 1fr;
+  height: 100%;
+  background: var(--topbar-bg);
+}
+
+/* ═══ TOPBAR ══════════════════════════════════════════════════════════════ */
+.top {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr var(--sidebar-w);
+  align-items: center;
+  gap: var(--s3);
+  padding: 0 var(--s4);
+  background: var(--topbar-bg);
+  color: var(--topbar-ink);
+}
+
+@media (max-width: 60rem) {
+  .top {
+    grid-template-columns: auto 1fr auto;
+  }
+}
+
+/* The REAL wordmark — `public/brand/logo-dark.png`, the artwork drawn for
+   dark surfaces, because this bar is the one dark surface in the system. A
+   drawn logo where the first pass had a placeholder icon-in-a-box. */
+.top__brand {
+  display: inline-flex;
+  align-items: center;
+  height: var(--ctl-h);
+  padding: 0 var(--s2);
+  border-radius: var(--r-md);
+}
+
+.top__brand:hover {
+  background: rgb(255 255 255 / 0.08);
+  text-decoration: none;
+}
+
+.top__brand img {
+  display: block;
+  height: 1.625rem;
+  width: auto;
+}
+
+/* The mobile rail toggle. Desktop has the rail always on screen, so the
+   burger only exists where the rail does not. The compound selector is
+   load-bearing: `.top__icon` sets `display: grid` LATER in this file, and at
+   equal specificity source order would win — measured, the burger rendered on
+   desktop until the selector out-ranked it. */
+.top__icon.top__burger {
+  display: none;
+}
+
+@media (max-width: 60rem) {
+  .top__icon.top__burger {
+    display: grid;
+  }
+}
+
+/* The search field. Centred and capped, matching the reference: it belongs to
+   the application, not to the screen, so it does not sit over the content
+   column. */
+.top__search {
+  position: relative;
+  justify-self: center;
+  width: 100%;
+  max-width: 30rem;
+}
+
+.top__search > svg {
+  position: absolute;
+  left: var(--s3);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  color: var(--topbar-ink);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.top__search input {
+  width: 100%;
+  height: var(--ctl-h-lg);
+  padding: 0 var(--s10) 0 var(--s8);
+  border: 1px solid var(--topbar-line);
+  border-radius: var(--r-md);
+  background: var(--topbar-field);
+  color: var(--topbar-ink-strong);
+  font: inherit;
+  font-size: var(--t-md);
+}
+
+.top__search input::placeholder {
+  color: var(--topbar-ink);
+  opacity: 0.75;
+}
+
+.top__search input:hover {
+  background: var(--topbar-field-hover);
+}
+
+.top__search input:focus {
+  outline: none;
+  border-color: #ffffff;
+  background: var(--topbar-field-hover);
+}
+
+.top__kbd {
+  position: absolute;
+  right: var(--s2);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.top__kbd kbd {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgb(255 255 255 / 0.12);
+  color: var(--topbar-ink);
+  font-family: var(--font);
+  font-size: var(--t-xs);
+  font-weight: var(--w-medium);
+  line-height: 1.3;
+}
+
+.top__end {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s1);
+}
+
+.top__icon {
+  display: grid;
+  place-items: center;
+  width: var(--ctl-h);
+  height: var(--ctl-h);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--topbar-ink);
+  cursor: pointer;
+}
+
+.top__icon:hover {
+  background: rgb(255 255 255 / 0.12);
+  color: var(--topbar-ink-strong);
+}
+
+.top__icon > svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* ONE STORE, SO NO STORE CONTROL. The reference admin's right-hand chip is a
+   store *switcher*; this admin has exactly one store and the wordmark already
+   names it. What remains on the right is the bell and the person: a plain
+   initials disc whose menu holds sign-out. */
+.top__user {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: none;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--t-xs);
+  font-weight: var(--w-bold);
+  letter-spacing: 0.02em;
+}
+
+/* ═══ BODY ════════════════════════════════════════════════════════════════
+   The rounded light panel inset into the dark chrome. The radius on the top
+   corners is the whole reason the topbar reads as a frame rather than as a
+   stripe. */
+.shell__body {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  min-height: 0;
+  background: var(--bg);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  overflow: hidden;
+}
+
+@media (max-width: 60rem) {
+  .shell__body {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ═══ SIDEBAR ═════════════════════════════════════════════════════════════ */
+.side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: var(--s3) var(--s3) var(--s6);
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+}
+
+@media (max-width: 60rem) {
+  .side {
+    display: none;
+  }
+
+  .side.is-open {
+    display: flex;
+    position: fixed;
+    inset: var(--topbar-h) auto 0 0;
+    z-index: 50;
+    width: var(--sidebar-w);
+    background: var(--bg);
+    box-shadow: var(--shadow-pop);
+  }
+}
+
+.side__link {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  height: var(--ctl-h-lg);
+  padding: 0 var(--s2);
+  border-radius: var(--r-md);
+  color: var(--ink);
+  font-size: var(--t-md);
+  font-weight: var(--w-medium);
+}
+
+.side__link:hover {
+  background: var(--surface-active);
+  text-decoration: none;
+}
+
+/* ONE PILL ON THE RAIL, EVER -- the reference's rule, learned by diffing
+   against it. The white pill marks the row you are ON. When that row is a
+   CHILD, the child alone carries it; the parent drops to plain dark text
+   (`is-section`), because two pills say "you are in two places". The parent
+   keeps its pill only while it is itself the screen -- including its own
+   detail pages, which belong to no child. */
+.side__link.is-active {
+  background: var(--surface);
+  color: var(--ink-strong);
+  font-weight: var(--w-semi);
+  box-shadow: var(--shadow-card);
+}
+
+/* The section you are inside, named but not pilled. */
+.side__link.is-section {
+  color: var(--ink-strong);
+  font-weight: var(--w-semi);
+}
+
+.side__link > svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--ink-sub);
+}
+
+.side__link.is-active > svg,
+.side__link.is-section > svg {
+  color: var(--ink-strong);
+}
+
+.side__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A "not built yet" marker on a nav item. It is a dot rather than a word: the
+   rail is 240px wide and "Coming soon" beside six labels is more chrome than
+   navigation. The title attribute carries the meaning for a pointer, and the
+   sr-only span carries it for a screen reader. */
+.side__soon {
+  margin-left: auto;
+  width: 5px;
+  height: 5px;
+  flex: none;
+  border-radius: 50%;
+  background: #d9a514;
+}
+
+/* CHILDREN, THE WAY THE REFERENCE DRAWS THEM. Full-width pills — NOT an
+   indented sub-column — with every child's text at one fixed x that lines up
+   under the parent's LABEL (2.375rem = the parent's pad + icon + gap). The
+   indent gap is where the connector lives, and THE CONNECTOR IS EXACTLY AS
+   LONG AS IT NEEDS TO BE: it starts under the parent's icon and runs down
+   only as far as the ACTIVE child, where the ↳ is its terminal elbow --
+   active child two rows down, two rows of line; five rows down, five. Rows
+   below the active one get no line at all, and when the parent itself is the
+   screen there is no line anywhere. A rail-length line (the previous pass)
+   reads as decoration; a line that ends in the arrow reads as "you are HERE".
+
+   Mechanics: each row before the active one draws a full-height segment via
+   `:has(~ .is-active)`, the active row draws a stub that stops at the icon's
+   own vertical stroke, and the segments over-shoot 1px each way to bridge the
+   1px row gap. In a browser without :has() only the active stub renders --
+   a shorter hint, never a wrong one. */
+.side__sub {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 0 var(--s1);
+}
+
+/* x aligns with the vertical stroke of the 13px ↳ glyph (its stem sits at
+   4/24 of the viewBox from its left edge). */
+.side__sublink::before {
+  content: '';
+  position: absolute;
+  left: calc(1.0625rem + 1.5px);
+  width: 1.5px;
+  border-radius: 1px;
+  background: var(--border-strong);
+  opacity: 0.55;
+  display: none;
+}
+
+.side__sublink:has(~ .side__sublink.is-active)::before {
+  display: block;
+  top: -1px;
+  bottom: -1px;
+}
+
+.side__sublink:first-child:has(~ .side__sublink.is-active)::before {
+  top: -4px;
+}
+
+.side__sublink.is-active::before {
+  display: block;
+  top: -3px;
+  height: 10px;
+}
+
+.side__sublink.is-active:first-child::before {
+  top: -4px;
+  height: 11px;
+}
+
+.side__sublink {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 1.75rem;
+  padding: 0 var(--s2) 0 2.375rem;
+  border-radius: var(--r-md);
+  color: var(--ink-sub);
+  font-size: var(--t-md);
+  font-weight: var(--w-medium);
+}
+
+.side__sublink .side__arrow {
+  position: absolute;
+  left: 1.0625rem;
+  width: 13px;
+  height: 13px;
+  color: var(--ink-muted);
+  opacity: 0;
+  transition: opacity 100ms var(--ease);
+}
+
+.side__sublink:hover {
+  background: var(--surface-active);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.side__sublink:hover .side__arrow {
+  opacity: 0.55;
+}
+
+.side__sublink.is-active {
+  background: var(--surface);
+  color: var(--ink-strong);
+  font-weight: var(--w-semi);
+  box-shadow: var(--shadow-card);
+}
+
+.side__sublink.is-active .side__arrow {
+  opacity: 1;
+  color: var(--ink-strong);
+}
+
+.side__group {
+  margin-top: var(--s4);
+  padding: 0 var(--s2) var(--s1);
+  font-size: var(--t-sm);
+  font-weight: var(--w-semi);
+  color: var(--ink-sub);
+}
+
+.side__foot {
+  margin-top: auto;
+  padding-top: var(--s4);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* ═══ MAIN ════════════════════════════════════════════════════════════════ */
+.main {
+  overflow-y: auto;
+  min-width: 0;
+}
+
+/* ═══ SIGN-IN ═════════════════════════════════════════════════════════════
+   v1's sign-in, restated in v2's system: same artwork, same lede, same error
+   taxonomy, none of v1's CSS. The card floats on a faint wash of the brand
+   indigo — the one place in the admin the accent is allowed to be atmosphere
+   rather than meaning, because there is no data here to compete with. */
+.signin {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+  padding: var(--s8) var(--s4);
+  background:
+    radial-gradient(52rem 30rem at 50% -8rem, rgb(46 42 107 / 0.07), transparent 68%),
+    var(--bg);
+}
+
+.signin__col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s5);
+  width: 100%;
+  max-width: 24.5rem;
+}
+
+.signin__logo {
+  display: block;
+  height: 2.375rem;
+  width: auto;
+}
+
+.signin__card {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  padding: var(--s6);
+  background: var(--surface);
+  border-radius: 1rem;
+  box-shadow: var(--shadow-pop);
+}
+
+.signin__title {
+  font-size: var(--t-xl);
+  font-weight: var(--w-semi);
+  letter-spacing: -0.01em;
+}
+
+.signin__lede {
+  margin-top: calc(var(--s2) * -1);
+  font-size: var(--t-md);
+  color: var(--ink-sub);
+  line-height: 1.6;
+}
+
+/* Login fields are the one oversized control in the system: nothing shares
+   their row, and a person may be typing this on a phone held in one hand. */
+.signin__card .input {
+  min-height: 2.625rem;
+}
+
+.signin__error {
+  margin: 0;
+  font-size: var(--t-md);
+  font-weight: var(--w-medium);
+  color: var(--critical);
+}
+
+.signin__foot {
+  font-size: var(--t-sm);
+  color: var(--ink-muted);
+  text-align: center;
+}
