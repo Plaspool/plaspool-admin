@@ -260,6 +260,13 @@
                         "when":  1786600002900,
                         "tag":  "0520_product_seo_defaults",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  37,
+                        "version":  "7",
+                        "when":  1786600003000,
+                        "tag":  "0540_product_seo_defaults_fix",
+                        "breakpoints":  true
                     }
                 ]
 }
