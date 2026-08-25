@@ -71,8 +71,8 @@ export const NAV: NavEntry[] = [
     icon: <FileText />,
     children: [
       { to: '/content/posts', label: 'Blog posts' },
-      { to: '/content/featured', label: 'Featured', soon: true },
-      { to: '/content/banners', label: 'Banners', soon: true },
+      { to: '/content/featured', label: 'Featured' },
+      { to: '/content/banners', label: 'Banners' },
     ],
   },
   { to: '/marketing', label: 'Marketing', icon: <Megaphone />, soon: true },

@@ -73,31 +73,50 @@
   margin-left: auto;
 }
 
-/* The back link above a detail page title. Small, quiet, and above rather than
-   beside the heading — beside it, it competes for the first fixation. */
-.page__back {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s1);
-  align-self: flex-start;
-  height: 1.5rem;
-  padding: 0 var(--s2) 0 var(--s1);
-  margin-bottom: var(--s1);
-  border-radius: var(--r-sm);
+/* THE BREADCRUMB, the reference's anatomy: the parent section is an ICON
+   CHIP on the title row — a small machined key you can click — then a
+   chevron, then this page's own title. It replaced a "← Back" line above the
+   heading: the crumb says where you are AND takes you up, in one object,
+   without spending a row. */
+.page__crumb {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: none;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--bevel);
   color: var(--ink-sub);
-  font-size: var(--t-md);
-  font-weight: var(--w-medium);
+  transition: background-color 140ms var(--ease), box-shadow 140ms var(--ease),
+    transform 140ms var(--ease);
 }
 
-.page__back:hover {
-  background: var(--surface-hover);
+.page__crumb:hover {
+  background: var(--surface-sub);
   color: var(--ink);
   text-decoration: none;
 }
 
-.page__back > svg {
+/* Same press physics as every key: instant, one pixel. */
+.page__crumb:active {
+  transition: none;
+  transform: translateY(1px);
+  box-shadow: var(--bevel-pressed);
+}
+
+.page__title .page__crumb > svg {
+  width: 15px;
+  height: 15px;
+  color: inherit;
+}
+
+.page__title .page__crumbsep {
   width: 16px;
   height: 16px;
+  margin: 0 calc(var(--s1) * -0.5);
+  color: var(--ink-disabled);
+  flex: none;
 }
 
 /* ═══ ANALYTICS BAR ═══════════════════════════════════════════════════════

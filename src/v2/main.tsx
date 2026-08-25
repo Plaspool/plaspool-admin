@@ -1,16 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createHashRouter, Navigate, RouterProvider } from 'react-router-dom';
-import {
-  BarChart3,
-  FileText,
-  LayoutTemplate,
-  Mail,
-  Megaphone,
-  Settings,
-  Star,
-  Truck,
-} from 'lucide-react';
+import { BarChart3, FileText, Mail, Megaphone, Settings, Truck } from 'lucide-react';
 
 import './styles/tokens.css';
 import './styles/base.css';
@@ -33,6 +24,8 @@ import Reviews from './routes/Reviews';
 import DeliveryAreas from './routes/DeliveryAreas';
 import Categories from './routes/Categories';
 import Customers from './routes/Customers';
+import Featured from './routes/Featured';
+import Banners from './routes/Banners';
 import Posts from './routes/Posts';
 import Discounts from './routes/Discounts';
 import DiscountNew from './routes/DiscountNew';
@@ -152,36 +145,8 @@ const router = createHashRouter([
           />
         ),
       },
-      {
-        path: '/content/featured',
-        element: (
-          <Soon
-            title="Featured"
-            icon={<Star />}
-            what="Featured is the curated rail the storefront shows first."
-            todos={[
-              'The ordered rail with drag-to-reorder',
-              'Adding and removing a post',
-              'The read-only view a writer sees',
-            ]}
-          />
-        ),
-      },
-      {
-        path: '/content/banners',
-        element: (
-          <Soon
-            title="Banners"
-            icon={<LayoutTemplate />}
-            what="Banners are the promotional strips at the top of the storefront."
-            todos={[
-              'The banner list with draft, live and archived states',
-              'The editor, with its CTA pair',
-              'Scheduling a banner window',
-            ]}
-          />
-        ),
-      },
+      { path: '/content/featured', element: <Featured /> },
+      { path: '/content/banners', element: <Banners /> },
 
       /* ── sections with no v2 screen at all yet ───────────────────────── */
       {

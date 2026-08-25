@@ -32,6 +32,7 @@ import { CouponArt, ReceiptArt, SpoolTiles } from '../ui/illustrations';
 import { Defs } from '../ui/Defs';
 import { PopEdit, PopEditFoot } from '../ui/PopEdit';
 import { RichText } from '../ui/RichText';
+import { SearchSelect } from '../ui/SearchSelect';
 import { StatusPicker } from '../ui/StatusPicker';
 import { TagInput } from '../ui/TagInput';
 import { Timeline } from '../ui/Timeline';
@@ -134,6 +135,33 @@ function StatusSpecimen() {
           description: 'Off the storefront, kept for the record.',
         },
       ]}
+    />
+  );
+}
+
+function StateSpecimen() {
+  const [state, setState] = useState('Abuja (FCT)');
+  const STATES: { name: string; on: number; total: number }[] = [
+    { name: 'Abia', on: 0, total: 17 },
+    { name: 'Abuja (FCT)', on: 6, total: 6 },
+    { name: 'Adamawa', on: 0, total: 21 },
+    { name: 'Akwa Ibom', on: 2, total: 31 },
+    { name: 'Anambra', on: 0, total: 21 },
+    { name: 'Lagos', on: 20, total: 20 },
+    { name: 'Rivers', on: 1, total: 23 },
+  ];
+  return (
+    <SearchSelect
+      label="State"
+      value={state}
+      onChange={setState}
+      placeholder="Search states…"
+      emptyText="No state matches that."
+      options={STATES.map((s) => ({
+        value: s.name,
+        label: s.name,
+        meta: `${s.on} of ${s.total}`,
+      }))}
     />
   );
 }
@@ -600,10 +628,36 @@ export default function DesignGallery() {
           </p>
         </Section>
 
+        <Section title="Breadcrumb — the parent page is an icon chip, not a Back line">
+          <PageHeader
+            icon={<Package />}
+            title="PLA Spool — Forest 1kg"
+            titleBadge={<Badge tone="ok">Active</Badge>}
+            subtitle="Storefront path: /products/pla-spool-forest"
+            backTo="/design"
+            backLabel="Products"
+            actions={<Button size="lg">Secondary</Button>}
+          />
+          <p className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+            The chip carries the section icon, presses like every key, and takes you up a level.
+            The chevron and title finish the crumb — no row spent on “← Back”.
+          </p>
+        </Section>
+
         <Section title="Status picker — a state is a sentence, not a word">
           <div style={{ maxWidth: '16rem' }}>
             <StatusSpecimen />
           </div>
+        </Section>
+
+        <Section title="Search select — a list too long to scan">
+          <div style={{ maxWidth: '16rem' }}>
+            <StateSpecimen />
+          </div>
+          <p className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+            Thirty-seven states don’t fit in a tab strip. Type to narrow, arrow to the row, Enter
+            to pick — each row carries the figure that is usually WHY you’re looking.
+          </p>
         </Section>
 
         <Section title="Definition list — the payment card's grammar">
