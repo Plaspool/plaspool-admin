@@ -34,9 +34,11 @@ import { useToast } from '../ui/Toast';
  * district with NO shop row delivers at its state's zone rate, the pre-0300
  * behaviour and the default this screen renders.
  *
- * THE HONEST CAVEAT, ON SCREEN: the storefront checkout does not send a
- * district yet, so nothing prices from these rows today. Rates authored here
- * arm the moment it does.
+ * CHECKOUT PRICES FROM THESE ROWS since migration 0460: an address naming a
+ * district takes its rate override on every delivery option and its frozen
+ * total, and a switched-off district is refused outright. An address naming
+ * none — every address, until the storefront's district picker ships —
+ * prices at the state's zone. The on-screen note states the same.
  */
 
 /* TODO(tests): none — skipped this session, recorded in CLAUDE.md. Worth
@@ -241,9 +243,10 @@ export default function DeliveryAreas() {
         }
       />
 
-      <Banner tone="info" title="The storefront doesn’t send a district yet">
-        These rows arm the moment checkout sends one; until then the state’s zone prices delivery.
-        Authoring here is safe and takes effect automatically.
+      <Banner tone="info" title="How these rows price delivery">
+        Checkout prices by the district the customer picks: a rate here replaces the state’s zone
+        price, and a switched-off district is refused at checkout. Customers who don’t pick one pay
+        the state’s zone rate.
       </Banner>
 
       {loadError ? (
