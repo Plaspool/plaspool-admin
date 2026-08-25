@@ -49,7 +49,7 @@ export const NAV: NavEntry[] = [
     label: 'Orders',
     icon: <ShoppingBag />,
     children: [
-      { to: '/orders/returns', label: 'Returns', soon: true },
+      { to: '/orders/returns', label: 'Returns' },
       { to: '/orders/delivery', label: 'Delivery areas' },
     ],
   },
@@ -75,11 +75,20 @@ export const NAV: NavEntry[] = [
       { to: '/content/banners', label: 'Banners' },
     ],
   },
-  { to: '/marketing', label: 'Marketing', icon: <Megaphone />, soon: true },
-  { to: '/emails', label: 'Emails', icon: <Mail />, soon: true },
+  { to: '/marketing', label: 'Marketing', icon: <Megaphone /> },
+  {
+    to: '/emails',
+    label: 'Emails',
+    icon: <Mail />,
+    children: [
+      { to: '/emails/broadcasts', label: 'Broadcasts' },
+      { to: '/emails/templates', label: 'Templates' },
+      { to: '/emails/subscribers', label: 'Subscribers' },
+    ],
+  },
   { to: '/analytics', label: 'Analytics', icon: <BarChart3 />, soon: true },
 ];
 
 export const NAV_FOOT: NavEntry[] = [
-  { to: '/settings', label: 'Settings', icon: <Settings />, soon: true },
+  { to: '/settings', label: 'Settings', icon: <Settings /> },
 ];

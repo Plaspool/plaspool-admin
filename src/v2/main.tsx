@@ -1,7 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createHashRouter, Navigate, RouterProvider } from 'react-router-dom';
-import { BarChart3, FileText, Mail, Megaphone, Settings, Truck } from 'lucide-react';
+import { BarChart3, FileText } from 'lucide-react';
 
 import './styles/tokens.css';
 import './styles/base.css';
@@ -26,6 +26,12 @@ import Categories from './routes/Categories';
 import Customers from './routes/Customers';
 import Featured from './routes/Featured';
 import Banners from './routes/Banners';
+import Returns from './routes/Returns';
+import Marketing from './routes/Marketing';
+import Settings from './routes/Settings';
+import EmailBroadcasts from './routes/EmailBroadcasts';
+import EmailTemplates from './routes/EmailTemplates';
+import EmailSubscribers from './routes/EmailSubscribers';
 import Posts from './routes/Posts';
 import Discounts from './routes/Discounts';
 import DiscountNew from './routes/DiscountNew';
@@ -93,22 +99,7 @@ const router = createHashRouter([
       /* ── orders ──────────────────────────────────────────────────────── */
       { path: '/orders', element: <Orders /> },
       { path: '/orders/:id', element: <OrderDetail /> },
-      {
-        path: '/orders/returns',
-        element: (
-          <Soon
-            title="Returns"
-            icon={<Truck />}
-            what="Returns is the pickup queue — request, schedule, collect, inspect, award."
-            todos={[
-              'The queue with its five views and real counts per tab',
-              'The district board and the out-of-area footer',
-              'Schedule a pickup with driver name and phone',
-              'Inspection, and the points award that follows it',
-            ]}
-          />
-        ),
-      },
+      { path: '/orders/returns', element: <Returns /> },
       { path: '/orders/delivery', element: <DeliveryAreas /> },
 
       /* ── products ────────────────────────────────────────────────────── */
@@ -148,39 +139,12 @@ const router = createHashRouter([
       { path: '/content/featured', element: <Featured /> },
       { path: '/content/banners', element: <Banners /> },
 
-      /* ── sections with no v2 screen at all yet ───────────────────────── */
-      {
-        path: '/marketing',
-        element: (
-          <Soon
-            title="Marketing"
-            icon={<Megaphone />}
-            what="Marketing is the points programme, the ledger and the reward settings."
-            todos={[
-              'The overview tiles and the oldest open returns',
-              'Programmes, and the rename-safe key that ledger rows point at',
-              'The points ledger per customer',
-              'Redemption settings: rate, minimum, and the cart cap',
-            ]}
-          />
-        ),
-      },
-      {
-        path: '/emails',
-        element: (
-          <Soon
-            title="Emails"
-            icon={<Mail />}
-            what="Emails is the template set, the broadcasts and the subscriber list."
-            todos={[
-              'Templates, with the variables each one accepts',
-              'Broadcasts and their send state',
-              'Subscribers, and unsubscribes',
-              'Surfacing stuck intents — mail that is out of retries',
-            ]}
-          />
-        ),
-      },
+      /* ── marketing, emails ───────────────────────────────────────────── */
+      { path: '/marketing', element: <Marketing /> },
+      { path: '/emails', element: <Navigate to="/emails/broadcasts" replace /> },
+      { path: '/emails/broadcasts', element: <EmailBroadcasts /> },
+      { path: '/emails/templates', element: <EmailTemplates /> },
+      { path: '/emails/subscribers', element: <EmailSubscribers /> },
       {
         path: '/analytics',
         element: (
@@ -197,22 +161,7 @@ const router = createHashRouter([
           />
         ),
       },
-      {
-        path: '/settings',
-        element: (
-          <Soon
-            title="Settings"
-            icon={<Settings />}
-            what="Settings is the store profile, the team, shipping zones and the brand."
-            todos={[
-              'Store profile and the brand accent',
-              'Team members and invites',
-              'Shipping zones — exactly one fallback zone must exist',
-              'Tax rate, which is 0 and unconfirmed against Nigerian VAT',
-            ]}
-          />
-        ),
-      },
+      { path: '/settings', element: <Settings /> },
 
       /* A typo lands on Home rather than on a blank. `replace`, so Back does
          not return to the URL that matched nothing. */
