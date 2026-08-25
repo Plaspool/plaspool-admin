@@ -82,7 +82,7 @@ export default function Orders() {
     },
     { key: 'date', header: 'Date', label: 'Date', render: ({ order }) => shortDate(order.placedAt) },
     {
-      key: 'status',
+      key: 'status', mobile: 'keep',
       header: 'Status',
       label: 'Status',
       tight: true,
@@ -102,7 +102,7 @@ export default function Orders() {
       render: ({ order }) => <span className="muted">{shortAddress(order.shippingAddress)}</span>,
     },
     {
-      key: 'total',
+      key: 'total', mobile: 'keep',
       header: 'Total',
       label: 'Total',
       numeric: true,

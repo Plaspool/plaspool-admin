@@ -171,7 +171,7 @@ export default function Returns() {
       ),
     },
     {
-      key: 'status',
+      key: 'status', mobile: 'keep',
       header: 'Status',
       label: 'Status',
       tight: true,

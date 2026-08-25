@@ -157,7 +157,7 @@ export default function Banners() {
       render: ({ banner: b }) => <Badge>{PLACEMENT_LABEL[b.placement]}</Badge>,
     },
     {
-      key: 'status',
+      key: 'status', mobile: 'keep',
       header: 'Status',
       label: 'Status',
       tight: true,

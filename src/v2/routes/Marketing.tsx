@@ -155,7 +155,7 @@ export default function Marketing() {
       render: (p) => <span className="num">{p.awardedTotal}</span>,
     },
     {
-      key: 'status',
+      key: 'status', mobile: 'keep',
       header: 'Status',
       label: 'Status',
       tight: true,

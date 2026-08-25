@@ -31,6 +31,7 @@ import EmailTemplates from './routes/EmailTemplates';
 import EmailSubscribers from './routes/EmailSubscribers';
 import Posts from './routes/Posts';
 import PostEditor from './routes/PostEditor';
+import PostEditorAdvanced from './routes/PostEditorAdvanced';
 import Analytics from './routes/Analytics';
 import Discounts from './routes/Discounts';
 import DiscountNew from './routes/DiscountNew';
@@ -121,6 +122,10 @@ const router = createHashRouter([
       { path: '/content/posts', element: <Posts /> },
       { path: '/content/posts/new', element: <PostEditor create /> },
       { path: '/content/posts/:id', element: <PostEditor /> },
+      /* The v1 writing studio, ported under src/v2/advanced — reachable from
+         the quick editor's More actions, or as the device default (Settings →
+         Writing). */
+      { path: '/content/posts/:id/advanced', element: <PostEditorAdvanced /> },
       { path: '/content/featured', element: <Featured /> },
       { path: '/content/banners', element: <Banners /> },
 

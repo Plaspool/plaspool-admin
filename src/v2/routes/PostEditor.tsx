@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { ArchiveRestore, Copy, FileText, Trash2, Upload, X } from 'lucide-react';
+import { Navigate, useNavigate, useParams } from 'react-router-dom';
+import { ArchiveRestore, Copy, FileText, PenLine, Trash2, Upload, X } from 'lucide-react';
+import { advancedByDefault } from '../lib/editorPref';
 import type { CoverImage, Post, PostPatch, PostStatus, ReadingTemplate } from '../../../shared/types';
 import { api } from '../../data/api';
 import { categoriesApi, type CategorySummary } from '../../data/api-categories';
@@ -240,6 +241,15 @@ export default function PostEditor({ create = false }: { create?: boolean }) {
     }
   }
 
+  /* The device's chosen editor wins the route. AFTER the hooks (order must
+     hold) and BEFORE any fetch result is awaited on screen — the id is in the
+     URL, so nothing needs to load before handing over. `create` stays here:
+     the advanced editor edits existing posts, and a new draft lands on
+     `/content/posts/:id` after create, where this line takes over. */
+  if (!create && advancedByDefault()) {
+    return <Navigate to={`/content/posts/${id}/advanced`} replace />;
+  }
+
   if (loadError) {
     return (
       <div className="page">
@@ -291,6 +301,19 @@ export default function PostEditor({ create = false }: { create?: boolean }) {
             ? undefined
             : (close) => (
                 <>
+                  {/* The v1 writing studio, back by the owner's request —
+                      slash menu, autosave, revisions, find. Settings can make
+                      it the default; this entry is the door either way. */}
+                  <MenuItem
+                    icon={<PenLine aria-hidden="true" />}
+                    onSelect={() => {
+                      close();
+                      navigate(`/content/posts/${post!.id}/advanced`);
+                    }}
+                  >
+                    Open in advanced editor
+                  </MenuItem>
+                  <MenuSeparator />
                   <MenuItem
                     icon={<Copy aria-hidden="true" />}
                     onSelect={() => {

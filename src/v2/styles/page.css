@@ -38,19 +38,6 @@
   min-height: var(--ctl-h-lg);
 }
 
-/* On a phone the title keeps the row and the actions may take the next one —
-   wrapping beats a truncated "Add produ…" key. The actions keep their own
-   right edge so a lone primary key still lands where the thumb expects it. */
-@media (max-width: 48rem) {
-  .page__head {
-    flex-wrap: wrap;
-  }
-
-  .page__actions {
-    flex-wrap: wrap;
-    justify-content: flex-end;
-  }
-}
 
 .page__titles {
   display: flex;
@@ -164,6 +151,63 @@
   margin: 0 calc(var(--s1) * -0.5);
   color: var(--ink-disabled);
   flex: none;
+}
+
+/* ═══ THE PHONE HEADER ════════════════════════════════════════════════════
+   BELOW every header base rule on purpose — three of these override
+   properties the bases declare, and at equal specificity source order is the
+   whole contest (this block lost it once from higher up the file).
+
+   THE FROZEN HEADER (owner's second round): the title row pins to the top of
+   the scroll while the list runs under it, so a screen never loses its own
+   name; the subtitle and actions scroll away with the page, because a sticky
+   block three rows tall would spend the very height a phone is short of.
+
+   THE WRAPPERS DISSOLVE FIRST (`display: contents`): a sticky element
+   travels only within its parent's box, and headwrap/head/titles are each
+   exactly title-height — measured, the first cut computed `sticky` and still
+   scrolled clean off. Dissolved, the h1's parent is the tall `.page` column:
+   the whole scroll's worth of travel. */
+@media (max-width: 48rem) {
+  .page__headwrap,
+  .page__head,
+  .page__titles {
+    display: contents;
+  }
+
+  .page__title {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    background: var(--bg);
+    padding: var(--s2) 0;
+    margin: calc(var(--s2) * -1) 0;
+  }
+
+  /* The dissolved chain hands spacing to `.page`'s own gap (s4); the
+     subtitle used to sit 2px under its title, so pull it back up, and the
+     actions keep their right edge as a full-width row of their own. */
+  .page__sub {
+    margin-top: calc(var(--s3) * -1);
+  }
+
+  .page__actions {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  /* A four-line title is a screen with no list left (the owner's post-editor
+     screenshot). Two lines, then ellipsis — the sheet of chrome stays a
+     header. */
+  .page__titletext {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    line-clamp: 2;
+    overflow: hidden;
+    min-width: 0;
+  }
 }
 
 /* ═══ ANALYTICS BAR ═══════════════════════════════════════════════════════
@@ -419,6 +463,20 @@
 .tview {
   position: relative;
   flex: none;
+}
+
+/* On a phone the card decides what shows (keep/sheet), so a per-column eye
+   list is a control over a layout that no longer exists — the panel keeps
+   sort alone, and a table with no sort loses the button entirely (the
+   owner's Broadcasts screenshot: a panel of nothing over an empty state). */
+@media (max-width: 48rem) {
+  .tview__cols {
+    display: none;
+  }
+
+  .tview--nosort {
+    display: none;
+  }
 }
 
 .tview__panel {
@@ -721,11 +779,13 @@ a.idcell__title:hover {
   }
 
   /* Identity first — always, whatever its source order — sharing the top
-     line with the bulk checkbox when one exists. */
+     line with the bulk checkbox when one exists. Padded clear of the corner
+     keys so a long title wraps early rather than sliding under them. */
   .table td.cell--primary {
     order: -1;
     flex: 1 1 70%;
     min-width: 0;
+    padding-right: 2.25rem;
   }
 
   /* The bulk checkbox — the one tight cell that carries no label — rides
@@ -738,37 +798,52 @@ a.idcell__title:hover {
     padding: var(--s1) 0 0;
   }
 
-  /* Every labelled cell is a small fact: its column's name over its value,
-     tiling two to a line. The label comes from the same string the view
-     control uses, so the card and the column picker never disagree. */
+  /* ═══ THE COLLAPSED CARD (owner's second round) ═══ A card that repeats
+     every column is a table wearing a card's clothes — six labelled facts
+     under each title made the list unreadable on a phone. So the card keeps
+     the identity plus the one or two GOVERNING facts a screen marks
+     (`mobile: 'keep'` — status, a total, an inline editor that must stay a
+     tap away), and everything else lives behind the expand key in a per-row
+     details sheet. A kept fact is a full-width defs row — label left, value
+     right — which is also what fixed the ragged right edge the owner
+     photographed on Delivery areas: a half-width toggle column left the
+     card's right half dead. */
   .table td[data-label] {
-    flex: 1 1 calc(50% - var(--s4));
-    width: auto;
-    min-width: calc(50% - var(--s4));
+    display: none;
+  }
+
+  .table td[data-mobile='keep'] {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s4);
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
     font-variant-numeric: tabular-nums;
+  }
+
+  .table td[data-mobile='keep']::before {
+    content: attr(data-label);
+    font-size: var(--t-md);
+    font-variant-numeric: normal;
+    color: var(--ink-sub);
+    flex: none;
   }
 
   .table td.cell--num {
     text-align: left;
   }
 
-  .table td[data-label]::before {
-    content: attr(data-label);
-    display: block;
-    margin-bottom: 1px;
-    font-size: var(--t-xs);
-    font-weight: var(--w-medium);
-    font-variant-numeric: normal;
-    color: var(--ink-sub);
-  }
-
   /* A cell whose column has no name — a per-row ⋯, a lone action — floats to
-     the card's top corner instead of pretending to be a fact. */
+     the card's corner, beside the expand key. */
   .table td[data-label=''] {
+    display: block;
     position: absolute;
     top: var(--s2);
-    right: var(--s2);
+    right: calc(var(--s2) + 2rem);
     flex: none;
+    width: auto;
     min-width: 0;
   }
 
@@ -776,11 +851,67 @@ a.idcell__title:hover {
     display: none;
   }
 
-  /* Skeleton rows card up the same way; their unlabelled cells read as bars. */
-  .table td:not([data-label]):not(.cell--primary):not(.cell--tight) {
-    flex: 1 1 calc(50% - var(--s4));
-    min-width: calc(50% - var(--s4));
+  /* The expand key itself: quiet until pressed, top-right, exactly where the
+     thumb expects "more". */
+  .table td.cell--expand {
+    display: block;
+    position: absolute;
+    top: var(--s2);
+    right: var(--s2);
+    width: auto;
   }
+
+  /* Skeleton rows collapse the same way: identity bars only — the wait shows
+     the shape the CARD will land in, not the shape the desktop table would. */
+  .table td:not([data-label]):not(.cell--primary):not(.cell--tight):not(.cell--expand) {
+    display: none;
+  }
+}
+
+/* Desktop never renders the expand key — the whole column disappears, so the
+   header count still matches the body. */
+.cell--expand {
+  display: none;
+}
+
+.trowx {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--ink-sub);
+  cursor: pointer;
+}
+
+.trowx:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+.trowx:active {
+  background: var(--surface-active);
+  transform: translateY(1px);
+}
+
+.trowx > svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* The sheet's own two pieces: the identity block above the facts, and a
+   little extra breathing room per fact row than the payment card uses —
+   these rows can carry live controls, not just text. */
+.rsheet__id {
+  padding-bottom: var(--s2);
+  border-bottom: 1px solid var(--border-sub);
+}
+
+.rsheet__defs .defs__row {
+  min-height: 1.75rem;
+  align-items: center;
 }
 
 /* === BULK SELECTION ======================================================

@@ -1,0 +1,264 @@
+/*
+ * v2 port: scoped copy of src/components/dialog.css.
+ * Every rule is wrapped in one `.advx { ... }` block (native CSS nesting)
+ * so the v1 editor look cannot leak into the v2 shell; @keyframes are
+ * hoisted to the top level because keyframes are invalid inside a nested
+ * rule. No declarations were changed.
+ */
+
+/* v2 port: hoisted @keyframes (animation names are global). */
+@keyframes sheet-in {
+    from {
+      transform: translateY(100%);
+    }
+  }
+
+@keyframes sheet-out {
+    to {
+      transform: translateY(100%);
+    }
+  }
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+}
+
+@keyframes dialog-out {
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+}
+
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.advx {
+.dialog {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  max-width: 100vw;
+  max-height: 100dvh;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  display: grid;
+  place-items: center;
+}
+.dialog:not([open]) {
+  display: none;
+}
+.dialog::backdrop {
+  background: rgba(22, 21, 15, 0.32);
+  backdrop-filter: blur(3px);
+  animation: fade-in var(--dur-2) var(--ease);
+}
+
+.dialog__panel {
+  color: var(--ink);
+  width: min(var(--dialog-w, 28rem), calc(100vw - 2rem));
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-l);
+  box-shadow: var(--shadow-3);
+  padding: var(--s5);
+  margin: var(--s4) 0;
+  animation: dialog-in var(--dur-3) var(--ease-out);
+  /* A dialog taller than the window scrolled as one piece, taking its title and
+     its Close button off-screen with it — fine for the short dialogs that
+     existed before, useless for the shortcut sheet. Cap the panel and let only
+     the body scroll, so what the dialog is and how to leave it stay put.
+     No-ops for every dialog that already fits. */
+  max-height: calc(100dvh - var(--s6));
+  display: flex;
+  flex-direction: column;
+}
+.dialog__panel > .dialog__body {
+  overflow-y: auto;
+  /* Without this a flex child refuses to shrink below its content height and
+     the cap above does nothing. */
+  min-height: 0;
+}
+
+.dialog__title {
+  font-family: var(--font-display);
+  font-size: var(--step-3);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.dialog__desc {
+  margin-top: var(--s2);
+  color: var(--ink-3);
+  font-size: var(--step--1);
+  line-height: 1.6;
+}
+
+.dialog__body {
+  margin-top: var(--s5);
+  display: grid;
+  gap: var(--s4);
+}
+
+.dialog__footer {
+  margin-top: var(--s5);
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+/* A SUBMIT THAT IS REFUSING, WHICH IS NOT THE SAME THING AS ONE THAT IS GONE.
+
+   `base.css` greys `.btn:disabled`, and inside a dialog that attribute is the
+   wrong tool: `disabled` takes the control out of the tab order, so the one
+   button a keyboard operator is trying to reach becomes the one they cannot
+   land on, and the sentence explaining why it will not fire — the thing they
+   actually need — is attached to a node they can never focus. `aria-disabled`
+   keeps it reachable and readable and still refuses the click, which is what
+   the shipment form uses. The cost is that `:disabled` no longer matches, so
+   the greying has to follow the ARIA state instead; these are `base.css`'s own
+   two declarations, said again about the attribute that is actually set. */
+.dialog .btn[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* --------------------------------------------------------------- sheet
+
+   A dialog that rises from the bottom edge on a phone, opted into per call
+   site (`<Dialog sheet />`). It exists for the dialogs an operator opens with
+   one hand while holding something else — scheduling a pickup, counting a
+   quantity — where a centred panel puts the fields under the thumb and the
+   buttons out of reach.
+
+   ONLY BELOW 640px. Above it the class is inert and the dialog is the centred
+   panel it has always been, because a sheet on a desktop is just a panel that
+   has wandered to the bottom of the screen. Nothing here is a second dialog:
+   same element, same native focus trap, same top layer — the panel is being
+   told where to sit and how to arrive. */
+@media (max-width: 640px) {
+  .dialog--sheet {
+    place-items: end stretch;
+  }
+  .dialog--sheet .dialog__panel {
+    width: 100%;
+    margin: 0;
+    /* Square at the floor, rounded at the top: the panel reads as attached to
+       the bottom edge rather than as a card that stopped short of it. */
+    border-radius: var(--radius-l) var(--radius-l) 0 0;
+    border-bottom: 0;
+    /* The home indicator sits over the last ~20px on a modern iPhone, and a
+       confirm button underneath it is a button that takes two tries. */
+    padding-bottom: calc(var(--s5) + env(safe-area-inset-bottom));
+    max-height: calc(100dvh - var(--s7));
+    animation: sheet-in var(--dur-3) var(--ease-out);
+  }
+  .dialog--sheet.dialog--leaving .dialog__panel {
+    animation: sheet-out var(--dur-2) var(--ease) forwards;
+  }
+}
+
+/* Closing plays the entrance in reverse before the element is removed. */
+.dialog--leaving .dialog__panel {
+  animation: dialog-out var(--dur-2) var(--ease) forwards;
+}
+.dialog--leaving::backdrop {
+  animation: fade-out var(--dur-2) var(--ease) forwards;
+}
+
+/* ------------------------------------------------- keyboard cheatsheet */
+
+/* Two columns where there is room, because the list is long enough that one
+   column pushes Formatting below the fold on a laptop — and a cheatsheet you
+   have to scroll is one you close and guess instead. Groups never split across
+   a column break. */
+.keys {
+  columns: 2;
+  column-gap: var(--s6);
+}
+.keys__group {
+  break-inside: avoid;
+  margin-bottom: var(--s5);
+}
+.keys__title {
+  font-size: var(--step--2);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: var(--s2);
+}
+.keys__list {
+  display: grid;
+  gap: var(--s1);
+}
+.keys__row {
+  display: grid;
+  /* A fixed key column keeps every label on the same left edge, so the list
+     reads as a table rather than as ragged prose. */
+  grid-template-columns: 8.5rem 1fr;
+  gap: var(--s3);
+  align-items: baseline;
+}
+.keys__combo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  align-items: center;
+}
+/* A keycap has to read as a keycap. On --paper-raised, a --paper-sunken chip
+   measured 1.07:1 against the panel it sits on and its --rule-strong border
+   1.74:1 against itself — so the "key" was monospace text in a rectangle
+   nobody could see, in both themes. --paper-inset separates it from the panel
+   and --ink-5 draws an edge that is actually an edge. */
+.keys__kbd {
+  font-family: var(--font-mono);
+  font-size: var(--step--2);
+  line-height: 1.5;
+  color: var(--ink-2);
+  background: var(--paper-inset);
+  border: 1px solid var(--ink-5);
+  /* The heavier bottom edge is the whole trick: it reads as depth without a
+     shadow, and survives both themes because it is the same ink either way. */
+  border-bottom-width: 2px;
+  border-radius: var(--radius-s);
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.keys__then {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+}
+.keys__label {
+  font-size: var(--step--1);
+  color: var(--ink-2);
+  line-height: 1.45;
+}
+.keys__note {
+  color: var(--ink-4);
+}
+
+@media (max-width: 640px) {
+  .keys {
+    columns: 1;
+  }
+  .keys__row {
+    grid-template-columns: 7rem 1fr;
+  }
+}
+
+}

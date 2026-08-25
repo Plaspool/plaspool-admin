@@ -74,10 +74,10 @@ export default function Customers() {
       render: (b) =>
         b.customerId ? <Badge tone="info">Registered</Badge> : <Badge>Guest</Badge>,
     },
-    { key: 'orders', header: 'Orders', label: 'Orders', numeric: true, render: (b) => b.orderCount },
+    { key: 'orders', mobile: 'keep', header: 'Orders', label: 'Orders', numeric: true, render: (b) => b.orderCount },
     { key: 'paid', header: 'Paid', label: 'Paid', numeric: true, render: (b) => b.paidCount },
     {
-      key: 'spent',
+      key: 'spent', mobile: 'keep',
       header: 'Spent',
       label: 'Spent',
       numeric: true,
