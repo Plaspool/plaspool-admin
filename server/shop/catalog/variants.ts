@@ -98,6 +98,28 @@ export interface CreateVariantInput {
   imageId?: string | null;
   /** The colour code of this option (migration 0010). Stored lowercase. */
   colorHex?: string | null;
+  /** The struck-through "was" price, minor units (migration 0400). */
+  compareAtMinor?: number | null;
+  /** What the shop pays per unit, minor units (migration 0420). Admin-only. */
+  costMinor?: number | null;
+}
+
+/**
+ * A non-negative integer of minor units, `null`, or a 400 that names the field.
+ *
+ * The same shape check `weightGrams` gets inline, hoisted because two fields
+ * now share it. The route's Zod refuses the same things first; this is the
+ * backstop for any caller that is not that route, and it is what turns a
+ * `19.99` into a 400 rather than letting the driver round or the CHECK 500.
+ */
+function checkedMinor(
+  value: number | null,
+  field: 'compareAtMinor' | 'costMinor',
+): number | null {
+  if (value !== null && (!Number.isInteger(value) || value < 0)) {
+    throw new BadRequestError(field);
+  }
+  return value;
 }
 
 /**
@@ -331,6 +353,8 @@ export async function createVariant(
   }
   const onHand = input.onHand ?? 0;
   if (!Number.isInteger(onHand) || onHand < 0) throw new BadRequestError('onHand');
+  const compareAtMinor = checkedMinor(input.compareAtMinor ?? null, 'compareAtMinor');
+  const costMinor = checkedMinor(input.costMinor ?? null, 'costMinor');
   await checkVariantImage(db, input.imageId);
 
   /*
@@ -352,11 +376,12 @@ export async function createVariant(
       ), ins AS (
         INSERT INTO shop_variants (id, product_id, sku, option_values, position,
                                    weight_grams, status, image_id, color_hex,
+                                   compare_at_minor, cost_minor,
                                    created_at, updated_at)
         SELECT ${id}, prod.id, ${sku},
                ${JSON.stringify(options)}::jsonb, ${position},
                ${input.weightGrams ?? null}, 'active', ${input.imageId || null},
-               ${colorHex}, ${now}, ${now}
+               ${colorHex}, ${compareAtMinor}, ${costMinor}, ${now}, ${now}
           FROM prod
         RETURNING ${sql.raw(VARIANT_COLUMNS.join(', '))}
       ), inv AS (
@@ -382,7 +407,9 @@ export async function createVariant(
 }
 
 /**
- * Update a variant's merchandising fields.
+ * Update a variant's merchandising fields — plus `backorderable`, which is an
+ * inventory POLICY and rides into `shop_inventory` in the same statement (the
+ * gap the owner queued 2026-08-25: the flag was create-only through this API).
  *
  * `status` IS PATCHABLE HERE, unlike a product's. Discontinuing a variant is not
  * a lifecycle transition with an inverse that can be lost in a race — it is a
@@ -443,16 +470,60 @@ export async function updateVariant(
   if (patch.colorHex !== undefined) {
     assignments.push(sql`color_hex = ${normalizeColorHex(patch.colorHex)}`);
   }
+  if (patch.compareAtMinor !== undefined) {
+    assignments.push(sql`compare_at_minor = ${checkedMinor(patch.compareAtMinor, 'compareAtMinor')}`);
+  }
+  if (patch.costMinor !== undefined) {
+    assignments.push(sql`cost_minor = ${checkedMinor(patch.costMinor, 'costMinor')}`);
+  }
 
   // An empty patch is a 400, not a no-op that reports success. A caller sending
   // `{}` has misunderstood something, and answering 200 confirms the mistake.
-  if (assignments.length === 0) throw new BadRequestError('patch');
+  // A patch carrying ONLY `backorderable` is not empty — it just has nothing
+  // for `shop_variants`.
+  if (assignments.length === 0 && patch.backorderable === undefined) {
+    throw new BadRequestError('patch');
+  }
+
+  const now = Date.now();
+
+  /*
+   * `backorderable` LIVES ON `shop_inventory`, AND THE FLIP RIDES IN THE SAME
+   * STATEMENT — the two-table shape `createVariant` already established, and
+   * for the same reason: no `db.transaction` exists to wrap two. The CTE is
+   * data-modifying, so Postgres executes it whether or not anything selects
+   * from it. When the patch touches ONLY the flag, there is no `shop_variants`
+   * UPDATE at all — the variant's own `updated_at` records merchandising
+   * edits, and an inventory-policy flip is not one (`adjustInventory` moves
+   * only the inventory row's clock for the same reason).
+   *
+   * A variant with no inventory row matches nothing here, silently — that
+   * state is unreachable through this API (`createVariant` writes the row in
+   * the same statement), and the NotFound below still answers for a variant
+   * that does not exist at all.
+   */
+  const inv =
+    patch.backorderable === undefined
+      ? null
+      : sql`UPDATE shop_inventory
+               SET backorderable = ${patch.backorderable}, updated_at = ${now}
+             WHERE variant_id = ${id}`;
+
+  const statement =
+    assignments.length > 0
+      ? sql`
+        WITH ${inv ? sql`inv AS (${inv}), ` : sql``}upd AS (
+          UPDATE shop_variants SET ${sql.join(assignments, sql`, `)}, updated_at = ${now}
+           WHERE id = ${id}
+          RETURNING ${sql.raw(VARIANT_COLUMNS.join(', '))}
+        )
+        SELECT ${sql.raw(VARIANT_COLUMNS.join(', '))} FROM upd`
+      : sql`
+        WITH inv AS (${inv!})
+        SELECT ${sql.raw(VARIANT_COLUMNS.join(', '))} FROM shop_variants WHERE id = ${id}`;
 
   const row = await db
-    .execute(sql`
-      UPDATE shop_variants SET ${sql.join(assignments, sql`, `)}, updated_at = ${Date.now()}
-       WHERE id = ${id}
-      RETURNING ${sql.raw(VARIANT_COLUMNS.join(', '))}`)
+    .execute(statement)
     .then((res) => res.rows[0])
     .catch((err: unknown) => {
       if (uniqueViolation(err) === 'shop_variants_sku_unique') {

@@ -348,6 +348,13 @@ export interface ShopProduct {
   updatedAt: number;
   publishedAt: number | null;
   deletedAt: number | null;
+  /**
+   * Hand-written search-listing copy (migration 0440). `null` means the
+   * storefront falls back to the title / trimmed description. `''` never
+   * arrives — the server normalises it to `null` on write.
+   */
+  seoTitle: string | null;
+  seoDescription: string | null;
   authorId: string;
   /** The CAS token. Every save carries the revision it derived from. */
   revision: number;
@@ -386,7 +393,7 @@ export interface AuditEntry {
  *
  * `server/shop/catalog/types.ts` declares `Variant` and `VariantWithPrice` as
  * two types on purpose, and `mapping.ts` has two mappers to match: `rowToVariant`
- * builds the eleven fields below, `rowToVariantWithPrice` spreads it and adds the
+ * builds the thirteen fields below, `rowToVariantWithPrice` spreads it and adds the
  * four `ShopVariant` adds. Which one a route uses is not a detail — the extra
  * four come from LEFT JOINs onto `shop_prices` and `shop_inventory` and from an
  * EXISTS over `shop_order_lines`, none of which a write statement performs.
@@ -432,13 +439,26 @@ export interface ShopVariantBase {
    * swatch the rail draws while a variant has no photograph yet.
    */
   colorHex: string | null;
+  /**
+   * The struck-through "was" price, minor units (migration 0400). `null` means
+   * "not on sale". The storefront draws the line through it only when it
+   * exceeds the current price — a value at or below the price is stored
+   * honestly and simply never renders as a sale. Currency is the price row's.
+   */
+  compareAtMinor: number | null;
+  /**
+   * What the shop pays per unit, minor units (migration 0420). `null` means
+   * "never recorded". ADMIN-ONLY: present here because this client only ever
+   * speaks to admin routes — the storefront wire strips it server-side.
+   */
+  costMinor: number | null;
 }
 
 /**
  * A variant AS THE LIST ROUTE SENDS IT — the row above plus the three joins and
  * the one EXISTS that only `rowToVariantWithPrice` performs.
  *
- * `extends` rather than a second field list, so the eleven shared members cannot
+ * `extends` rather than a second field list, so the thirteen shared members cannot
  * drift apart the way two copies of a shape in one file always eventually do.
  */
 export interface ShopVariant extends ShopVariantBase {
@@ -467,6 +487,9 @@ export interface ShopProductPatch {
   tags?: string[];
   coverImageId?: string | null;
   imageIds?: string[];
+  /** `null` or `''` clears back to "use the defaults"; absent leaves it alone. */
+  seoTitle?: string | null;
+  seoDescription?: string | null;
 }
 
 export interface Page<T> {
@@ -1057,6 +1080,9 @@ export const shopApi = {
       imageId?: string | null;
       /** The colour code of this option. The server lowercases it. */
       colorHex?: string | null;
+      /** Minor units; the caller has already converted via `parseMajor`. */
+      compareAtMinor?: number | null;
+      costMinor?: number | null;
     },
   ): Promise<ShopVariantBase> {
     const res = await shopFetch<{ variant: ShopVariantBase }>(
@@ -1079,6 +1105,17 @@ export const shopApi = {
       imageId?: string | null;
       /** `null` clears the colour code; `#rrggbb` sets it. */
       colorHex?: string | null;
+      /** `null` clears — "no longer on sale". Minor units, via `parseMajor`. */
+      compareAtMinor?: number | null;
+      /** `null` clears. Minor units. Admin-only; never reaches the storefront. */
+      costMinor?: number | null;
+      /**
+       * No longer create-only (owner's queue, 2026-08-25): the server lands the
+       * flag on `shop_inventory` inside `updateVariant`'s one statement. NOTE
+       * the response is still `ShopVariantBase` — the flag it reports lives on
+       * another table, so re-read the product to see it, as with price/stock.
+       */
+      backorderable?: boolean;
     },
   ): Promise<ShopVariantBase> {
     const res = await shopFetch<{ variant: ShopVariantBase }>(`${BASE}/variants/${seg(id)}`, {

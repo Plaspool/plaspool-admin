@@ -290,6 +290,8 @@ describe('toStorefrontProduct', () => {
     updatedAt: 0,
     publishedAt: null,
     deletedAt: null,
+    seoTitle: null,
+    seoDescription: null,
     authorId: 'u',
     revision: 1,
   };
@@ -360,13 +362,15 @@ describe('toStorefrontVariant', () => {
     status: 'active',
     imageId: null,
     colorHex: '#000000',
+    compareAtMinor: null,
+    costMinor: null,
     createdAt: 0,
     updatedAt: 0,
     price: null,
     available: null,
-    /* Neither is what this test is about — it exercises image resolution — but
-       `VariantWithPrice` requires both, so the fixture states them rather than
-       leaving the file failing `tsc -b`. */
+    /* None of these is what this test is about — it exercises image resolution —
+       but `VariantWithPrice` requires them, so the fixture states them rather
+       than leaving the file failing `tsc -b`. */
     backorderable: false,
     everOrdered: false,
   };
@@ -393,10 +397,22 @@ describe('toStorefrontVariant', () => {
     expect(toStorefrontVariant({ ...variant, imageId: '' }).imageUrl).toBeNull();
   });
 
-  it('adds exactly one field and changes nothing else', () => {
-    const out = toStorefrontVariant({ ...variant, imageId: 'img_black' });
-    expect(out).toMatchObject({ ...variant, imageId: 'img_black' });
-    expect(Object.keys(out).sort()).toEqual([...Object.keys(variant), 'imageUrl'].sort());
+  it('adds imageUrl, REMOVES costMinor, and changes nothing else', () => {
+    /*
+     * This test used to say "adds exactly one field" — migration 0420 amends
+     * the contract on purpose. What the shop pays per unit is admin-only, and
+     * this projection is the one place it leaves the wire; `compareAtMinor`
+     * stays, because the sale strikethrough is the reason it exists.
+     */
+    const input = { ...variant, imageId: 'img_black', compareAtMinor: 2500, costMinor: 1200 };
+    const out = toStorefrontVariant(input);
+    const { costMinor: _hidden, ...visible } = input;
+    expect(out).toMatchObject(visible);
+    expect(out.compareAtMinor).toBe(2500);
+    expect('costMinor' in out).toBe(false);
+    expect(Object.keys(out).sort()).toEqual(
+      [...Object.keys(variant).filter((k) => k !== 'costMinor'), 'imageUrl'].sort(),
+    );
   });
 });
 

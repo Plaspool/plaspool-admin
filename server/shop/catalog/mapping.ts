@@ -79,6 +79,10 @@ export const PRODUCT_COLUMNS: string[] = [
   'updated_at',
   'published_at',
   'deleted_at',
+  /** Migration 0440. In LIST selects too — a pair of short strings per row,
+   *  nothing like the whole-`DocNode` weight that exiles `description`. */
+  'seo_title',
+  'seo_description',
   'author_id',
   'revision',
 ];
@@ -107,6 +111,8 @@ export const VARIANT_COLUMNS: string[] = [
   'status',
   'image_id',
   'color_hex',
+  'compare_at_minor',
+  'cost_minor',
   'created_at',
   'updated_at',
 ];
@@ -157,6 +163,9 @@ export function rowToProduct(row: Record<string, unknown>): Product {
     updatedAt: toEpochMs(row.updated_at),
     publishedAt: toEpochMsOrNull(row.published_at),
     deletedAt: toEpochMsOrNull(row.deleted_at),
+    /** Migration 0440. NULL means "use the defaults", never ''. */
+    seoTitle: row.seo_title == null ? null : String(row.seo_title),
+    seoDescription: row.seo_description == null ? null : String(row.seo_description),
     authorId: String(row.author_id),
     revision: Number(row.revision),
   };
@@ -207,10 +216,19 @@ export function toStorefrontProduct(product: Product): StorefrontProduct {
  * gives at length — the id is stored both bare and `asset:`/`idb:`-prefixed,
  * and `/api/public/images/` is a different route rather than that route with a
  * bad id.
+ *
+ * `costMinor` IS REMOVED HERE, AND THE DESTRUCTURE IS THE MECHANISM. What the
+ * shop pays per unit (migration 0420) is commercial information with no
+ * storefront use; `StorefrontVariant` omits it at the type level, and this is
+ * the one place the runtime value is actually dropped — a spread that kept it
+ * would satisfy the type and leak anyway, which is why the key is pulled off
+ * before the spread rather than trusted to `Omit`. `compareAtMinor` passes
+ * through on purpose: the sale strikethrough is its whole job.
  */
 export function toStorefrontVariant(variant: VariantWithPrice): StorefrontVariant {
+  const { costMinor: _costMinor, ...pub } = variant;
   const id = variant.imageId == null ? '' : normalizeBlobId(variant.imageId);
-  return { ...variant, imageUrl: id === '' ? null : publicImageUrl(id) };
+  return { ...pub, imageUrl: id === '' ? null : publicImageUrl(id) };
 }
 
 export function rowToVariant(row: Record<string, unknown>): Variant {
@@ -226,6 +244,10 @@ export function rowToVariant(row: Record<string, unknown>): Variant {
     imageId: row.image_id == null ? null : String(row.image_id),
     /** Migration 0010. NULL until a colour option carries a code. */
     colorHex: row.color_hex == null ? null : String(row.color_hex),
+    /** Migration 0400. NULL means "not on sale". */
+    compareAtMinor: row.compare_at_minor == null ? null : Number(row.compare_at_minor),
+    /** Migration 0420. NULL means "never recorded". Stripped for the storefront. */
+    costMinor: row.cost_minor == null ? null : Number(row.cost_minor),
     createdAt: toEpochMs(row.created_at),
     updatedAt: toEpochMs(row.updated_at),
   };
