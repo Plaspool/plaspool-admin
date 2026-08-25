@@ -430,8 +430,10 @@ describe('the checkout flow, end to end', () => {
     expect(frozen.status).toBe(200);
     const totals = (await json<{ totals: { grandTotal: { amount: number } } }>(frozen)).totals;
     // 2 x ₦19.99-in-old-units item price (1999) + ₦10,000 Lagos delivery
-    // (1_000_000 minor units) + 0 tax (taxRateBps is 0 for every NG zone).
-    expect(totals.grandTotal.amount).toBe(3998 + 1_000_000);
+    // (1_000_000 minor units) + 7.5% VAT on the goods (migration 0560 — the
+    // owner's registered-for-VAT decision; delivery stays untaxed, per the
+    // zones' own shipping_taxable). 0.075 × 3998 = 299.85, half-up 300.
+    expect(totals.grandTotal.amount).toBe(3998 + 1_000_000 + 300);
 
     // And the frozen number is what a re-render sees.
     const reread = await client.get('/api/shop/checkout/totals');

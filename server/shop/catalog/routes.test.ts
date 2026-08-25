@@ -448,6 +448,45 @@ describe('deleting a variant (issue #18)', () => {
     expect(inventory.rows).toHaveLength(0);
   });
 
+  it('releases a HELD reservation on delete, and leaves settled ones alone', async () => {
+    /*
+     * `shop_reservations` is Cart's table (R3) with NO FK to `shop_variants`
+     * — unlike `shop_inventory_holds`, which cascades away with the row. Left
+     * alone, a `held` reservation would outlive the variant it names, and
+     * `releaseHold` — which matches by `reservation_id` against a holds row
+     * that is by then gone — could never clear it: a permanent orphan the
+     * sweeper revisits forever. `deleteVariant`'s `rel_resv` CTE moves it to
+     * `released`, and ONLY from `held`: `committed` and the other settled
+     * states are terminal records of what actually happened, which a catalog
+     * delete has no business rewriting.
+     */
+    const created = await createProduct('Delete With Hold');
+    const variantRes = await http.post(`/api/shop/admin/products/${created.id}/variants`, {
+      sku: 'DELETE-HOLD-1',
+    });
+    const { variant } = await json<{ variant: { id: string } }>(variantRes);
+
+    const now = Date.now();
+    const cartId = `cart_hold_${variant.id}`;
+    await ctx.db.execute(sql`
+      INSERT INTO shop_carts (id, currency, status, created_at, updated_at, expires_at, revision)
+      VALUES (${cartId}, 'GBP', 'open', ${now}, ${now}, ${now + 86_400_000}, 1)`);
+    await ctx.db.execute(sql`
+      INSERT INTO shop_reservations (id, cart_id, variant_id, qty, created_at, expires_at, state)
+      VALUES (${`resv_comm_${variant.id}`}, ${cartId}, ${variant.id}, 1, ${now}, ${now + 900_000}, 'committed'),
+             (${`resv_held_${variant.id}`}, ${cartId}, ${variant.id}, 1, ${now}, ${now + 900_000}, 'held')`);
+
+    const res = await http.del(`/api/shop/admin/variants/${variant.id}`);
+    expect(res.status).toBe(200);
+
+    const states = await ctx.db.execute(sql`
+      SELECT id, state FROM shop_reservations WHERE cart_id = ${cartId} ORDER BY id`);
+    expect(states.rows).toEqual([
+      { id: `resv_comm_${variant.id}`, state: 'committed' },
+      { id: `resv_held_${variant.id}`, state: 'released' },
+    ]);
+  });
+
   it('cascades a never-ordered variant out of an open cart line', async () => {
     const created = await createProduct('Delete With Cart');
     const variantRes = await http.post(`/api/shop/admin/products/${created.id}/variants`, {
