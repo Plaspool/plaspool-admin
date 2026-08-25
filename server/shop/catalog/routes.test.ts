@@ -586,3 +586,203 @@ describe('the price history', () => {
     expect((await http.get('/api/shop/admin/variants/var_x/prices')).status).toBe(401);
   });
 });
+
+describe('compare-at, cost and SEO (owner queue 2026-08-25; migrations 0400/0420/0440)', () => {
+  beforeAll(login);
+
+  it('carries compare-at to the storefront and KEEPS COST OFF IT', async () => {
+    /*
+     * The one assertion in this suite that is about a LEAK rather than a
+     * behaviour. `types.ts` records that the storefront product shape is
+     * allow-listed by nothing — the next field added joins the public wire
+     * silently. Cost is the first field where that would be commercially wrong,
+     * so `toStorefrontVariant` strips it; this drives both public serialisers
+     * (detail and list) and fails the day anyone widens the shape back.
+     */
+    const created = await createProduct('Sale Spool');
+    const variantRes = await http.post(`/api/shop/admin/products/${created.id}/variants`, {
+      sku: 'SALE-1',
+      onHand: 3,
+      compareAtMinor: 2_500_00,
+      costMinor: 900_00,
+    });
+    expect(variantRes.status).toBe(201);
+    const { variant } = await json<{
+      variant: { id: string; compareAtMinor: number | null; costMinor: number | null };
+    }>(variantRes);
+    // The write response is the ADMIN wire: both fields, as written.
+    expect(variant).toMatchObject({ compareAtMinor: 250_000, costMinor: 90_000 });
+
+    expect(
+      (
+        await http.request(`/api/shop/admin/variants/${variant.id}/price`, {
+          method: 'PUT',
+          headers: { origin: TEST_ORIGIN, 'content-type': 'application/json' },
+          body: JSON.stringify({ amount: 190_000, currency: 'NGN' }),
+        })
+      ).status,
+    ).toBe(200);
+    expect((await http.post(`/api/shop/admin/products/${created.id}/publish`)).status).toBe(200);
+
+    // The admin read keeps cost: the margin column is what it exists for.
+    const adminDetail = await json<{
+      product: { variants: { compareAtMinor: number; costMinor: number }[] };
+    }>(await http.get(`/api/shop/admin/products/${created.id}`));
+    expect(adminDetail.product.variants[0]).toMatchObject({
+      compareAtMinor: 250_000,
+      costMinor: 90_000,
+    });
+
+    // The storefront page: the strikethrough figure present, cost ABSENT —
+    // absent as a KEY, not null, so a client cannot even see that it exists.
+    const page = await json<{ product: { variants: Record<string, unknown>[] } }>(
+      await http.get(`/api/shop/products/${created.slug}`),
+    );
+    expect(page.product.variants[0]).toMatchObject({ compareAtMinor: 250_000 });
+    expect('costMinor' in page.product.variants[0]).toBe(false);
+
+    // And the storefront LIST, which serialises through the same mapper.
+    const list = await json<{ items: { id: string; variants: Record<string, unknown>[] }[] }>(
+      await http.get('/api/shop/products'),
+    );
+    const listed = list.items.find((p) => p.id === created.id);
+    expect(listed).toBeDefined();
+    expect(listed!.variants[0]).toMatchObject({ compareAtMinor: 250_000 });
+    expect('costMinor' in listed!.variants[0]).toBe(false);
+  });
+
+  it('sets and clears both variant fields through PATCH, refusing junk', async () => {
+    const created = await createProduct('Margins');
+    const { variant } = await json<{ variant: { id: string } }>(
+      await http.post(`/api/shop/admin/products/${created.id}/variants`, { sku: 'MARGIN-1' }),
+    );
+
+    const set = await http.patch(`/api/shop/admin/variants/${variant.id}`, {
+      compareAtMinor: 120_000,
+      costMinor: 45_000,
+    });
+    expect(set.status).toBe(200);
+    expect(await json(set)).toMatchObject({
+      variant: { compareAtMinor: 120_000, costMinor: 45_000 },
+    });
+
+    // `null` clears — "no longer on sale" / "cost unknown again".
+    const cleared = await http.patch(`/api/shop/admin/variants/${variant.id}`, {
+      compareAtMinor: null,
+      costMinor: null,
+    });
+    expect(cleared.status).toBe(200);
+    expect(await json(cleared)).toMatchObject({
+      variant: { compareAtMinor: null, costMinor: null },
+    });
+
+    // No floats for money and no negatives — 400s at the boundary, exactly as
+    // the price route refuses them (contract §10).
+    for (const body of [
+      { compareAtMinor: 19.99 },
+      { compareAtMinor: -1 },
+      { costMinor: 19.99 },
+      { costMinor: -1 },
+    ]) {
+      const res = await http.patch(`/api/shop/admin/variants/${variant.id}`, body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+    }
+  });
+
+  it('flips backorderable through the variant PATCH — the flag stops being create-only', async () => {
+    const created = await createProduct('Backorder Flip');
+    const { variant } = await json<{ variant: { id: string } }>(
+      await http.post(`/api/shop/admin/products/${created.id}/variants`, { sku: 'FLIP-1' }),
+    );
+
+    // Created default-false; the availability read is the public truth of it.
+    expect(
+      await json(await http.get(`/api/shop/variants/${variant.id}/availability`)),
+    ).toMatchObject({ backorderable: false });
+
+    // A patch carrying ONLY the flag is a valid patch, not the empty-patch 400.
+    const flip = await http.patch(`/api/shop/admin/variants/${variant.id}`, {
+      backorderable: true,
+    });
+    expect(flip.status).toBe(200);
+    expect(
+      await json(await http.get(`/api/shop/variants/${variant.id}/availability`)),
+    ).toMatchObject({ backorderable: true });
+
+    // Alongside a merchandising field, the one statement still lands both.
+    const both = await http.patch(`/api/shop/admin/variants/${variant.id}`, {
+      backorderable: false,
+      weightGrams: 750,
+    });
+    expect(both.status).toBe(200);
+    expect(await json(both)).toMatchObject({ variant: { weightGrams: 750 } });
+    expect(
+      await json(await http.get(`/api/shop/variants/${variant.id}/availability`)),
+    ).toMatchObject({ backorderable: false });
+
+    // The genuinely empty patch is still refused.
+    expect((await http.patch(`/api/shop/admin/variants/${variant.id}`, {})).status).toBe(400);
+  });
+
+  it('saves, serves and clears SEO copy, normalising the empty string to NULL', async () => {
+    const createRes = await http.post('/api/shop/admin/products', {
+      title: 'Meta Spool',
+      seoTitle: '  PLA that prints clean | PlaSpool  ',
+      seoDescription: 'Premium PLA filament, delivered across Nigeria.',
+    });
+    expect(createRes.status).toBe(201);
+    const { product } = await json<{
+      product: {
+        id: string;
+        slug: string;
+        revision: number;
+        seoTitle: string | null;
+        seoDescription: string | null;
+      };
+    }>(createRes);
+    // Trimmed on the way in — a meta tag with stray whitespace was never intended.
+    expect(product.seoTitle).toBe('PLA that prints clean | PlaSpool');
+    expect(product.seoDescription).toBe('Premium PLA filament, delivered across Nigeria.');
+
+    // An absent key is "leave it alone", not "clear" — the ProductPatch rule.
+    const renamed = await http.patch(`/api/shop/admin/products/${product.id}`, {
+      patch: { title: 'Meta Spool Renamed' },
+      baseRevision: product.revision,
+    });
+    expect(renamed.status).toBe(200);
+    const afterRename = await json<{
+      product: { revision: number; seoTitle: string | null };
+    }>(renamed);
+    expect(afterRename.product.seoTitle).toBe('PLA that prints clean | PlaSpool');
+
+    // Deliberately public: rendering the meta tags is the entire point.
+    const published = await json<{ product: { revision: number } }>(
+      await http.post(`/api/shop/admin/products/${product.id}/publish`),
+    );
+    const page = await json<{
+      product: { seoTitle: string | null; seoDescription: string | null };
+    }>(await http.get(`/api/shop/products/${product.slug}`));
+    expect(page.product.seoTitle).toBe('PLA that prints clean | PlaSpool');
+    expect(page.product.seoDescription).toBe(
+      'Premium PLA filament, delivered across Nigeria.',
+    );
+
+    // '' clears exactly as null does — a cleared input box arrives as ''.
+    const clearedRes = await http.patch(`/api/shop/admin/products/${product.id}`, {
+      patch: { seoTitle: '', seoDescription: null },
+      baseRevision: published.product.revision,
+    });
+    expect(clearedRes.status).toBe(200);
+    const cleared = await json<{
+      product: { seoTitle: string | null; seoDescription: string | null };
+    }>(clearedRes);
+    expect(cleared.product.seoTitle).toBeNull();
+    expect(cleared.product.seoDescription).toBeNull();
+
+    // The route bound is a 400 that names no other field's business.
+    const tooLong = await http.patch(`/api/shop/admin/products/${product.id}`, {
+      patch: { seoTitle: 'x'.repeat(301) },
+    });
+    expect(tooLong.status).toBe(400);
+  });
+});

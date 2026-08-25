@@ -29,7 +29,7 @@ import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, EmptyState } from '../ui/primitives';
 import { Card } from '../ui/Card';
 import { Defs } from '../ui/Defs';
-import { AffixField, Checkbox, SelectField, TextField } from '../ui/Field';
+import { AffixField, Checkbox, SelectField, TextArea, TextField } from '../ui/Field';
 import { StoredImg, MediaManager, type MediaValue } from '../ui/Img';
 import { Menu, MenuItem, MenuSeparator } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
@@ -66,10 +66,12 @@ import { useToast } from '../ui/Toast';
  * control staying ABSENT for an everOrdered variant, and description
  * omission when the editor never mounted.
  *
- * TODO(fields, queued by the owner 2026-08-25): compare-at price, cost per
- * item, and SEO title/description do not exist in the schema yet. They are
- * backend work (migration 0340+, catalog routes, api-shop) before any UI —
- * this screen gains a Pricing card and an SEO card when they land.
+ * The owner's queued fields (2026-08-25) landed with migrations 0400/0420/0440:
+ * compare-at and cost per item live in the variant modal's Pricing section
+ * (cost is admin-only — the storefront wire strips it server-side), the SEO
+ * pair in the Search engine listing card, and `backorderable` is editable on
+ * an existing variant at last. The server routes and tests are in
+ * `server/shop/catalog/`; this screen stays untested by the same rule as above.
  */
 
 /** The store currency, for a variant that has never been priced yet. Every
@@ -119,6 +121,8 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
   const [namingCategory, setNamingCategory] = useState(false);
   const [tags, setTags] = useState<string[]>([]);
   const [media, setMedia] = useState<MediaValue>({ coverImageId: null, imageIds: [] });
+  const [seoTitle, setSeoTitle] = useState('');
+  const [seoDescription, setSeoDescription] = useState('');
   const [description, setDescription] = useState<unknown>(null);
   const [descDirty, setDescDirty] = useState(false);
   /* Remounting the editor is how a discard rehydrates it. */
@@ -139,6 +143,8 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
     setNamingCategory(false);
     setTags(next?.tags ?? []);
     setMedia({ coverImageId: next?.coverImageId ?? null, imageIds: next?.imageIds ?? [] });
+    setSeoTitle(next?.seoTitle ?? '');
+    setSeoDescription(next?.seoDescription ?? '');
     setDescription(next?.description ?? null);
     setDescDirty(false);
     setEditorKey((k) => k + 1);
@@ -202,6 +208,8 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
       tags.length > 0 ||
       media.coverImageId !== null ||
       media.imageIds.length > 0 ||
+      seoTitle.trim() !== '' ||
+      seoDescription.trim() !== '' ||
       descDirty
     : product
       ? title !== product.title ||
@@ -209,6 +217,8 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
         tags.join('\0') !== product.tags.join('\0') ||
         media.coverImageId !== product.coverImageId ||
         media.imageIds.join('\0') !== product.imageIds.join('\0') ||
+        seoTitle !== (product.seoTitle ?? '') ||
+        seoDescription !== (product.seoDescription ?? '') ||
         descDirty
       : false;
 
@@ -218,6 +228,10 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
     tags,
     coverImageId: media.coverImageId,
     imageIds: media.imageIds,
+    /* Sent as typed; the server trims and stores `''` as NULL, so a cleared
+       box and a never-filled one converge on "use the defaults". */
+    seoTitle,
+    seoDescription,
     /* `null` is an editor that never mounted or hydrated — omitting the key
        leaves the stored description alone, v1's own rule. */
     ...(description === null ? {} : { description }),
@@ -462,6 +476,40 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
             />
           )}
 
+          <Card title="Search engine listing">
+            <TextField
+              label="SEO title"
+              value={seoTitle}
+              placeholder={title.trim() || 'Falls back to the product title'}
+              hint={seoCountHint(seoTitle, 70)}
+              onChange={(e) => setSeoTitle(e.target.value)}
+            />
+            <TextArea
+              label="SEO description"
+              value={seoDescription}
+              rows={3}
+              placeholder="Falls back to the first lines of the description"
+              hint={seoCountHint(seoDescription, 160)}
+              onChange={(e) => setSeoDescription(e.target.value)}
+            />
+            {title.trim() || seoTitle.trim() ? (
+              <div className="stack stack--tight" aria-hidden="true">
+                <span className="field__label">Preview</span>
+                <span style={{ color: 'var(--accent)', fontSize: 'var(--t-md)', fontWeight: 600 }}>
+                  {seoTitle.trim() || title.trim()}
+                </span>
+                {product?.slug ? (
+                  <span className="muted mono" style={{ fontSize: 'var(--t-xs)' }}>
+                    /products/{product.slug}
+                  </span>
+                ) : null}
+                <span className="muted" style={{ fontSize: 'var(--t-sm)', lineHeight: 1.5 }}>
+                  {seoDescription.trim() || 'The description text stands in while this is empty.'}
+                </span>
+              </div>
+            ) : null}
+          </Card>
+
           {create ? null : (
             <Card
               title="History"
@@ -637,6 +685,13 @@ function messageFor(cause: unknown): string {
     return 'That description was refused as unsafe.';
   }
   return cause instanceof Error && cause.message ? cause.message : 'Something went wrong.';
+}
+
+/** The ~70/~160 guidance search engines actually render — guidance, not a cap. */
+function seoCountHint(value: string, ideal: number): string {
+  const length = value.trim().length;
+  if (length === 0) return `Search results show about ${ideal} characters.`;
+  return `${length} of the ~${ideal} characters a search result shows.`;
 }
 
 /* ═══════════════════════════════════════════════════════════ VARIANTS ════ */
@@ -827,12 +882,27 @@ function PriceCell({ variant, onWrite }: { variant: ShopVariant; onWrite: () => 
     }
   }
 
+  /* The sale state at a glance: the struck-through compare-at sits beside the
+     price exactly as the storefront will draw it — and only while it is
+     genuinely higher, the same render-time rule the storefront applies. */
+  const onSale =
+    variant.price !== null &&
+    variant.compareAtMinor !== null &&
+    variant.compareAtMinor > variant.price.amount;
+
   return (
     <PopEdit
       ariaLabel={`Edit price of ${variant.sku}`}
       value={
         variant.price ? (
-          <span className="num">{money(variant.price.amount, currency)}</span>
+          <span className="num">
+            {money(variant.price.amount, currency)}
+            {onSale ? (
+              <s className="muted" style={{ fontSize: 'var(--t-sm)', marginLeft: 'var(--s2)' }}>
+                {money(variant.compareAtMinor!, currency)}
+              </s>
+            ) : null}
+          </span>
         ) : (
           <span className="muted">Not priced</span>
         )
@@ -1000,7 +1070,18 @@ function VariantModal({
   );
   const [colorHex, setColorHex] = useState(variant?.colorHex ?? '');
   const [imageId, setImageId] = useState<string | null>(variant?.imageId ?? null);
-  const [backorderable, setBackorderable] = useState(false);
+  /* The variant's own currency where it has a price; the store's for a new one.
+     Compare-at and cost render beside that price, so they share its currency. */
+  const currency = variant?.price?.currency ?? STORE_CURRENCY;
+  const [compareAt, setCompareAt] = useState(() =>
+    variant?.compareAtMinor != null ? plainMajor(variant.compareAtMinor, currency) : '',
+  );
+  const [cost, setCost] = useState(() =>
+    variant?.costMinor != null ? plainMajor(variant.costMinor, currency) : '',
+  );
+  /* No longer create-only (owner's queue, 2026-08-25): editing initialises
+     from the row and the PATCH carries the flag when it changes. */
+  const [backorderable, setBackorderable] = useState(variant?.backorderable ?? false);
   const [onHand, setOnHand] = useState('0');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1009,6 +1090,26 @@ function VariantModal({
     ...(product.coverImageId ? [product.coverImageId] : []),
     ...product.imageIds,
   ];
+
+  /* Live economics beside the cost box. Price is set from the variants table
+     (that path carries the reason into the audit trail), so here it is only
+     read — margin against it is the whole point of recording cost at all. */
+  const price = variant?.price ?? null;
+  const costParsed = cost.trim() === '' ? null : parseMajor(cost, currency);
+  const marginHint = (() => {
+    if (!price) return 'Margin shows once the variant is priced from the variants table.';
+    if (costParsed === null || !costParsed.ok || price.amount === 0) {
+      return `Against the current price of ${money(price.amount, currency)}.`;
+    }
+    const profit = price.amount - costParsed.minor;
+    const pct = Math.round(((profit / price.amount) * 1000)) / 10;
+    return `Margin ${pct}% · profit ${money(profit, currency)}`;
+  })();
+  const compareParsed = compareAt.trim() === '' ? null : parseMajor(compareAt, currency);
+  const compareHint =
+    price && compareParsed?.ok && compareParsed.minor <= price.amount
+      ? 'At or below the current price — the storefront will not show a sale.'
+      : 'Struck through on the storefront while it is above the price.';
 
   function buildOptionValues(): Record<string, string> {
     const out: Record<string, string> = {};
@@ -1030,6 +1131,18 @@ function VariantModal({
       setError('Colour is a six-digit hex code like #8b5a2b, or empty.');
       return;
     }
+    /* Empty clears — "not on sale" / "cost unknown" are real states, so the
+       fields parse only when there is something to parse. */
+    const compareAtMinor = compareAt.trim() === '' ? null : parseMajor(compareAt, currency);
+    if (compareAtMinor !== null && !compareAtMinor.ok) {
+      setError(`Compare-at: ${moneyRefusalMessage(compareAtMinor.reason, currency)}`);
+      return;
+    }
+    const costMinor = cost.trim() === '' ? null : parseMajor(cost, currency);
+    if (costMinor !== null && !costMinor.ok) {
+      setError(`Cost per item: ${moneyRefusalMessage(costMinor.reason, currency)}`);
+      return;
+    }
     const stock = Number(onHand);
     if (creating && (!Number.isInteger(stock) || stock < 0)) {
       setError('Initial stock is a whole number of zero or more.');
@@ -1046,6 +1159,8 @@ function VariantModal({
           imageId,
           backorderable,
           onHand: stock,
+          compareAtMinor: compareAtMinor === null ? null : compareAtMinor.minor,
+          costMinor: costMinor === null ? null : costMinor.minor,
         });
         toast.show(`${created.sku} added`);
       } else {
@@ -1055,6 +1170,11 @@ function VariantModal({
           weightGrams,
           colorHex: color,
           imageId,
+          compareAtMinor: compareAtMinor === null ? null : compareAtMinor.minor,
+          costMinor: costMinor === null ? null : costMinor.minor,
+          /* Only when it moved: the flag lands on the inventory row, and a
+             no-op write would still bump that row's clock. */
+          ...(backorderable !== variant.backorderable ? { backorderable } : {}),
         });
         toast.show(`${sku.trim() || variant.sku} updated`);
       }
@@ -1155,6 +1275,38 @@ function VariantModal({
           </div>
         </div>
 
+        <div className="stack stack--tight">
+          <span className="field__label">Pricing</span>
+          <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
+            <div style={{ flex: 1 }}>
+              <AffixField
+                label="Compare-at price"
+                prefix={currency}
+                inputMode="decimal"
+                value={compareAt}
+                hint={compareHint}
+                onChange={(e) => {
+                  setCompareAt(e.target.value);
+                  setError(null);
+                }}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <AffixField
+                label="Cost per item"
+                prefix={currency}
+                inputMode="decimal"
+                value={cost}
+                hint={marginHint}
+                onChange={(e) => {
+                  setCost(e.target.value);
+                  setError(null);
+                }}
+              />
+            </div>
+          </div>
+        </div>
+
         {productImages.length > 0 ? (
           <div className="stack stack--tight">
             <span className="field__label">Variant photo</span>
@@ -1227,13 +1379,22 @@ function VariantModal({
             </div>
           </div>
         ) : (
-          /* TODO(v2): `updateVariant` has no `backorderable` in its body — the
-             flag is create-time only through this client. Flipping it later
-             needs the PATCH route to accept it; queued as backend work. */
-          <span className="field__hint">
-            Stock moves through the Available column’s adjuster, never here — every change carries
-            its reason into the audit trail.
-          </span>
+          <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
+            <div style={{ flex: 1 }}>
+              <Checkbox
+                label="Backorderable"
+                hint="Keeps selling below zero on purpose."
+                checked={backorderable}
+                onChange={setBackorderable}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <span className="field__hint">
+                Stock moves through the Available column’s adjuster, never here — every change
+                carries its reason into the audit trail.
+              </span>
+            </div>
+          </div>
         )}
 
         {error ? (

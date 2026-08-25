@@ -120,6 +120,8 @@ export async function createProduct(
   const description = validatedOrThrow(input.description ?? { type: 'doc', content: [] });
   checkMeta({ title: input.title, category: input.category, tags: input.tags });
   await checkImageRefs(db, input);
+  const seoTitle = normalizeSeo(input.seoTitle) ?? null;
+  const seoDescription = normalizeSeo(input.seoDescription) ?? null;
 
   /*
    * AFTER `checkMeta`, so validation always judges what the caller typed — and
@@ -142,12 +144,14 @@ export async function createProduct(
       WITH ins AS (
         INSERT INTO shop_products (id, slug, title, description, description_text, status,
                                    category, tags, cover_image_id, image_ids,
+                                   seo_title, seo_description,
                                    created_at, updated_at, published_at, deleted_at,
                                    author_id, revision)
         VALUES (${id}, ${slug}, ${title}, ${JSON.stringify(description)}::jsonb,
                 ${docToText(description)}, 'draft',
                 ${category}, ${sql.param(tags)},
                 ${input.coverImageId ?? null}, ${sql.param(input.imageIds ?? [])},
+                ${seoTitle}, ${seoDescription},
                 ${now}, ${now}, NULL, NULL, ${author.id}, 1)
         RETURNING ${sql.raw(PRODUCT_COLUMNS.join(', '))}
       ), rev AS (
@@ -243,6 +247,17 @@ export async function saveProduct(
     coverImageId:
       patch.coverImageId !== undefined ? patch.coverImageId : current.coverImageId,
     imageIds: patch.imageIds ?? current.imageIds,
+    /*
+     * `!== undefined`, never `??` — `null` (and `''`, which normalises to it)
+     * is the CLEAR instruction, and `??` would silently turn a clear into
+     * "keep whatever was there", the exact bug `coverImageId` avoids above.
+     */
+    seoTitle:
+      patch.seoTitle !== undefined ? (normalizeSeo(patch.seoTitle) ?? null) : current.seoTitle,
+    seoDescription:
+      patch.seoDescription !== undefined
+        ? (normalizeSeo(patch.seoDescription) ?? null)
+        : current.seoDescription,
   };
 
   const now = Date.now();
@@ -275,6 +290,8 @@ export async function saveProduct(
                tags = ${sql.param(next.tags)},
                cover_image_id = ${next.coverImageId},
                image_ids = ${sql.param(next.imageIds)},
+               seo_title = ${next.seoTitle},
+               seo_description = ${next.seoDescription},
                revision = revision + 1, updated_at = ${now}
          WHERE id = ${id} AND revision = ${base}
         RETURNING ${sql.raw(PRODUCT_COLUMNS.join(', '))}
@@ -617,6 +634,19 @@ function validatedOrThrow(description: unknown): DocNode {
   const result = validateDoc(description);
   if (!result.ok) throw new InvalidDocumentError(result.violation);
   return result.doc;
+}
+
+/**
+ * `''` is not SEO copy (migration 0440). `null` is how "use the defaults" is
+ * stored, and a cleared input box arrives as the empty string — the same
+ * empty-string decision `cover_image_id` documents. Trimmed, because a meta
+ * tag with stray whitespace was never anyone's intent. `undefined` passes
+ * through so an absent key stays "leave it alone".
+ */
+function normalizeSeo(value: string | null | undefined): string | null | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value === null ? '' : value.trim();
+  return trimmed === '' ? null : trimmed;
 }
 
 /**
