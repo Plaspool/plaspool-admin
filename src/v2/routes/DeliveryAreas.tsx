@@ -203,14 +203,14 @@ export default function DeliveryAreas() {
         area.active ? <Badge tone="ok">Active</Badge> : <Badge>Off the board</Badge>,
     },
     {
-      key: 'delivers',
+      key: 'delivers', mobile: 'keep',
       header: 'Delivers',
       label: 'Delivers',
       tight: true,
       render: (row) => <DeliversCell row={row} onWrite={write} />,
     },
     {
-      key: 'rate',
+      key: 'rate', mobile: 'keep',
       header: 'Delivery rate',
       label: 'Delivery rate',
       numeric: true,

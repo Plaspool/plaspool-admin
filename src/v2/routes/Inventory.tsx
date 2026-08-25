@@ -108,7 +108,7 @@ export default function Inventory() {
         ),
     },
     {
-      key: 'onHand',
+      key: 'onHand', mobile: 'keep',
       header: 'On hand',
       label: 'On hand',
       numeric: true,
@@ -122,7 +122,7 @@ export default function Inventory() {
       render: (r) => <span className="num muted">{r.reserved}</span>,
     },
     {
-      key: 'available',
+      key: 'available', mobile: 'keep',
       header: 'Available',
       label: 'Available',
       numeric: true,

@@ -130,7 +130,7 @@ export default function Discounts() {
       ),
     },
     {
-      key: 'state',
+      key: 'state', mobile: 'keep',
       header: 'Status',
       tight: true,
       render: (d) => {
@@ -149,7 +149,7 @@ export default function Discounts() {
       ),
     },
     {
-      key: 'used',
+      key: 'used', mobile: 'keep',
       header: 'Used',
       numeric: true,
       render: (d) => (

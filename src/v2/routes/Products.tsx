@@ -128,7 +128,7 @@ export default function Products() {
       ),
     },
     {
-      key: 'status',
+      key: 'status', mobile: 'keep',
       header: 'Status',
       label: 'Status',
       tight: true,

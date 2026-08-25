@@ -1,8 +1,19 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowUpDown, Columns3, Eye, EyeOff, GripVertical, MoreHorizontal, Search } from 'lucide-react';
+import {
+  ArrowUpDown,
+  ArrowUpRight,
+  Columns3,
+  Eye,
+  EyeOff,
+  GripVertical,
+  Maximize2,
+  MoreHorizontal,
+  Search,
+} from 'lucide-react';
 import { Toggle } from './Field';
 import { Button } from './primitives';
+import { Modal } from './Modal';
 
 /**
  * THE table. Singular, deliberately — see the header of `page.css`.
@@ -29,6 +40,17 @@ export interface Column<T> {
   /** The identity column: thumbnail treatment, may wrap, and is the one
    *  column the view control refuses to hide. */
   primary?: boolean;
+  /**
+   * Where this column lives on a PHONE (the owner's second mobile round):
+   * `'keep'` stays on the collapsed card as a label-left / value-right row —
+   * for the one or two facts that govern a scan, and for inline editors that
+   * must stay a tap away. `'sheet'` (the default) moves to the per-row
+   * details sheet behind the card's expand key, because a card carrying
+   * every column is a table wearing a card's clothes. When a screen marks
+   * nothing, the FIRST non-primary column is kept, so an untouched screen
+   * still shows one fact rather than a bare title.
+   */
+  mobile?: 'keep' | 'sheet';
   render: (row: T) => ReactNode;
 }
 
@@ -191,6 +213,31 @@ export function DataTable<T, V extends string = string>({
      the identity labels itself. */
   const cardLabel = (c: Column<T>): string | undefined =>
     c.primary ? undefined : (c.label ?? (typeof c.header === 'string' ? c.header : ''));
+
+  /* Which columns survive on the collapsed card. Explicit marks win; with
+     none, the first non-primary visible column is kept — one governing fact,
+     never zero. Unnamed action columns are corner-floated by CSS and are
+     neither kept nor sheeted. */
+  const explicitKeeps = visible.some((c) => c.mobile === 'keep');
+  const firstFact = visible.find((c) => !c.primary && cardLabel(c) !== '');
+  const cardMobile = (c: Column<T>): 'keep' | 'sheet' | undefined => {
+    if (c.primary || cardLabel(c) === '') return undefined;
+    if (c.mobile) return c.mobile;
+    return !explicitKeeps && c === firstFact ? 'keep' : 'sheet';
+  };
+
+  /* The per-row details sheet (mobile only — its expand key exists only in
+     the card layout). Values are LIVE renders, so an inline editor works the
+     same in the sheet as it does in a desktop cell. */
+  const [sheetRow, setSheetRow] = useState<T | null>(null);
+  useEffect(() => {
+    /* Rows changed under the sheet (a save re-read the list): re-point at the
+       same row by key, or close if it is gone. */
+    setSheetRow((was) => {
+      if (was === null) return was;
+      return rows.find((r) => rowKey(r) === rowKey(was)) ?? null;
+    });
+  }, [rows, rowKey]);
   const hasViewMenu = Boolean(sort) || hideable.length > 0;
   const hasHead = Boolean(tabs) || Boolean(search) || hasViewMenu;
 
@@ -347,6 +394,7 @@ export function DataTable<T, V extends string = string>({
                         <td
                           key={c.key}
                           data-label={cardLabel(c)}
+                          data-mobile={cardMobile(c)}
                           className={[
                             c.numeric ? 'cell--num' : '',
                             c.tight ? 'cell--tight' : '',
@@ -358,6 +406,20 @@ export function DataTable<T, V extends string = string>({
                           {c.render(row)}
                         </td>
                       ))}
+                      {/* The card's expand key — a real cell so the row stays
+                          valid HTML; display:none above the breakpoint, so
+                          desktop's table never sees an extra column. */}
+                      <td className="cell--expand">
+                        <button
+                          type="button"
+                          className="trowx"
+                          aria-label="Show all details"
+                          aria-haspopup="dialog"
+                          onClick={() => setSheetRow(row)}
+                        >
+                          <Maximize2 aria-hidden="true" />
+                        </button>
+                      </td>
                     </tr>
                   );
                 })}
@@ -367,6 +429,46 @@ export function DataTable<T, V extends string = string>({
           {footer}
         </>
       )}
+
+      {sheetRow !== null ? (
+        <Modal title="Details" onClose={() => setSheetRow(null)}>
+          <div className="stack stack--tight">
+            {/* The identity leads, exactly as it does on the card. */}
+            <div className="rsheet__id">
+              {visible.find((c) => c.primary)?.render(sheetRow)}
+            </div>
+            {/* Every column, one fact per row — the defs grammar, so the
+                sheet reads like the payment card rather than like a second
+                table. Renders are live: a toggle or an inline editor works
+                here exactly as it does in a desktop cell. */}
+            <div className="defs rsheet__defs">
+              {visible
+                .filter((c) => !c.primary)
+                .map((c) => (
+                  <div className="defs__row" key={c.key}>
+                    <span className="defs__label">{cardLabel(c) || 'Actions'}</span>
+                    <span className="defs__value">{c.render(sheetRow)}</span>
+                  </div>
+                ))}
+            </div>
+            {(hrefFor || onRowClick) && (
+              <Button
+                tone="default"
+                onClick={() => {
+                  const row = sheetRow;
+                  setSheetRow(null);
+                  const href = hrefFor?.(row);
+                  if (href) navigate(href);
+                  else onRowClick?.(row);
+                }}
+              >
+                <ArrowUpRight aria-hidden="true" />
+                Open
+              </Button>
+            )}
+          </div>
+        </Modal>
+      ) : null}
     </div>
   );
 }
@@ -551,7 +653,7 @@ function ViewControl({
   }, [open]);
 
   return (
-    <div className="tview" ref={root}>
+    <div className={sort ? 'tview' : 'tview tview--nosort'} ref={root}>
       <button
         ref={trigger}
         type="button"
@@ -588,7 +690,9 @@ function ViewControl({
             </label>
           ) : null}
           {columns.length ? (
-            <>
+            /* Wrapped so the phone layout can drop the column eyes while the
+               sort stays — the card decides its own columns there. */
+            <div className="tview__cols">
               <div className="tview__label">Columns</div>
               {columns.map((c) => {
                 const off = hidden.has(c.key);
@@ -610,7 +714,7 @@ function ViewControl({
                   </div>
                 );
               })}
-            </>
+            </div>
           ) : null}
         </div>
       ) : null}

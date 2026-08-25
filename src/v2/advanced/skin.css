@@ -1,0 +1,550 @@
+/*
+ * v2 port: the v1 design system, scoped to `.advx` so the advanced editor can
+ * keep its own skin inside the v2 shell without either leaking into the other.
+ *
+ *  - tokens: src/styles/tokens.css `:root` LIGHT values, selector changed to
+ *    `.advx`. The `@media (prefers-color-scheme: dark)` override is REMOVED on
+ *    purpose — the advanced editor must render light inside the light v2 shell
+ *    even on a dark OS. The `[data-theme]` blocks are kept (inert: nothing in
+ *    v2 sets that attribute).
+ *  - fonts: the side-effect imports the v1 editor's type depends on, from
+ *    src/styles/base.css (Inter Variable and JetBrains Mono Variable are
+ *    already loaded by v2's own base.css). Spectral 700 is included because
+ *    prose.css (`.prose strong`) and editor.css (title) use weight 700.
+ *  - prose: `@import './prose.css'` — the scoped copy of src/styles/prose.css,
+ *    which v1 loaded globally from main.tsx.
+ *  - base subset: the src/styles/base.css primitives the copied markup uses
+ *    (.btn family, .input, .chip, .label, .notice family, .skeleton,
+ *    .visually-hidden, the element resets, focus ring and ::selection),
+ *    verbatim, nested under `.advx`. The webkit scrollbar chrome and the
+ *    html/body/#root height rules are deliberately NOT carried over — those
+ *    are the host page's business and v2 has its own.
+ */
+@import '@fontsource-variable/roboto-mono';
+@import '@fontsource/spectral/400.css';
+@import '@fontsource/spectral/400-italic.css';
+@import '@fontsource/spectral/600.css';
+@import '@fontsource/spectral/700.css';
+@import './prose.css';
+
+/* ---------------------------------------------------------------
+   Design system — the single source of truth.
+   Any third-party UI (TipTap, dialogs) is restyled to these tokens.
+   Warm paper + ink, one accent, generous type scale.
+----------------------------------------------------------------- */
+
+.advx {
+  /* v2 port: was `light dark` on v1's :root. Pinned to light because the dark
+     token set is not carried over — `light dark` would hand native controls a
+     dark palette on light paper on a dark-OS machine. */
+  color-scheme: light;
+
+  /* surfaces */
+  --paper: #fbfaf7;
+  --paper-raised: #ffffff;
+  --paper-sunken: #f2f0ea;
+  --paper-inset: #e8e5da;
+
+  /* ink — every value below is >= 4.5:1 on --paper except --ink-5,
+     which is decorative only (rules, disabled glyphs, never body copy). */
+  --ink: #16150f; /* 17.6:1 */
+  --ink-2: #3a372d; /* 10.4:1 */
+  --ink-3: #5c584a; /*  6.4:1 */
+  --ink-4: #64604f; /*  5.4:1 on paper, 4.6:1 on the deepest inset */
+  --ink-5: #9a9384; /*  2.9:1 — decorative only */
+
+  /* lines */
+  --rule: #e2ded2;
+  --rule-strong: #c7c0ae;
+
+  /*
+   * THE PRESSABLE CARD — a hard edge and a hard offset shadow, no blur.
+   *
+   * Neobrutalism in one place so it can be turned up or down in one place. A
+   * blurred shadow says "this floats"; an unblurred one at an offset says
+   * "this is a solid thing sitting on the page", and that is the claim a card
+   * has to make before pressing it down on click reads as physics rather than
+   * as a glitch. The line is warm near-black rather than `--ink` itself so it
+   * belongs to the paper it sits on.
+   *
+   * `--card-paper` is the cream: cards are WARMER than the page here, which
+   * inverts the usual raised-is-lighter rule on purpose — on a near-white page
+   * a white card is a card with no edges.
+   */
+  --card-paper: #fbf7ec;
+  --card-line: #1f1d14;
+  --card-lift: 3px;
+  /*
+   * The shadow is composed at the CARD, not here, and that is a correctness
+   * point rather than a style one: a custom property's `var()`s are substituted
+   * where the property is DECLARED, so a `--card-shadow` written on `:root`
+   * would bake in `:root`'s `--card-line` and keep the dark theme's colour when
+   * the light theme swapped the token underneath it. Measured, in that order.
+   */
+
+  /* The scrollbar thumb, and it is ink at low alpha rather than a flat grey on
+     purpose: these bars sit on four different surfaces — paper, raised panels,
+     sunken insets, the near-black code block — and a solid colour that reads as
+     "barely there" on one of them reads as a smear on another. Alpha inherits
+     whatever it is lying on. See the block in `base.css`. */
+  --scroll-thumb: rgb(22 21 15 / 0.16);
+  --scroll-thumb-hover: rgb(22 21 15 / 0.3);
+  --scroll-thumb-active: rgb(22 21 15 / 0.42);
+
+  /* accent — deep botanical green */
+  --accent: #1c6b4b;
+  --accent-hover: #17573d;
+  --accent-soft: #e4efe9;
+  --accent-line: #b6d4c5;
+  --accent-ink: #ffffff;
+
+  /* state */
+  --danger: #962c1c;
+  --danger-soft: #f8ebe8;
+  --warn: #7a5610;
+  --warn-soft: #f6eeda;
+
+  /* Code has its own surface. Using --ink as a background inverted in dark
+     mode and produced light text on a light block — the exact unreadable
+     case the rest of this file exists to prevent. */
+  --code-bg: #1b1a14;
+  --code-ink: #ece9dc;
+
+  /* Syntax scopes. Declared once, not per theme, because --code-bg is dark in
+     BOTH themes — that is the whole reason it exists — so one ramp is correct
+     everywhere and a second copy could only drift out of sync.
+
+     The existing ink ramp cannot be borrowed here: against the light theme's
+     --code-bg, --accent measures 2.70:1 and --ink-4 2.76:1. These are their own
+     values, each measured against the darker of the two code surfaces:
+       --code-kw    10.04:1 light / 11.14:1 dark
+       --code-str    9.21:1       /  10.22:1
+       --code-num    8.51:1       /   9.44:1
+       --code-fn     9.70:1       /  10.76:1
+       --code-punc   8.99:1       /   9.97:1
+       --code-com    6.37:1       /   7.06:1   <- the floor, still well over AA
+     Hue does the separating, not brightness, so the block stays legible for a
+     reader who cannot tell the hues apart. */
+  --code-kw: #8fd3ae;
+  --code-str: #d9b87c;
+  --code-num: #e3a97f;
+  --code-fn: #9fc7dd;
+  --code-punc: #c0baa8;
+  --code-com: #a39c88;
+
+  /* type */
+  --font-display: 'Spectral', 'Iowan Old Style', 'Palatino Linotype', Palatino,
+    Georgia, 'Times New Roman', serif;
+  --font-ui: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* A real ramp: ~1.2 minor third through the UI range, widening for display.
+     No two adjacent steps sit inside 1px of each other. */
+  --step--2: 0.6875rem; /* 11 */
+  --step--1: 0.8125rem; /* 13 */
+  --step-0: 0.9375rem; /* 15 */
+  --step-1: 1.125rem; /* 18 */
+  --step-2: 1.375rem; /* 22 */
+  --step-3: 1.6875rem; /* 27 */
+  --step-4: 2.125rem; /* 34 */
+  --step-5: 2.625rem; /* 42 */
+  --step-6: clamp(2.5rem, 1.6rem + 3.6vw, 4rem);
+
+  /* space — 4px base */
+  --s1: 0.25rem;
+  --s2: 0.5rem;
+  --s3: 0.75rem;
+  --s4: 1rem;
+  --s5: 1.5rem;
+  --s6: 2rem;
+  --s7: 3rem;
+  --s8: 4rem;
+  --s9: 6rem;
+
+  /* controls — ONE height for every pill/field on a row, on the 4px grid.
+     Every control derives its padding from these; no per-component numbers. */
+  --ctl-h: 2rem; /* 32 */
+  --ctl-h-lg: 2.25rem; /* 36 */
+  --ctl-pad-x: 0.75rem;
+  --ctl-pad-x-lg: 1rem;
+  /* Coarse pointers get a 44px hit area without changing the visual box. */
+  --tap-min: 2.75rem;
+
+  --radius-s: 6px;
+  --radius-m: 10px;
+  --radius-l: 16px;
+  --radius-full: 999px;
+
+  --shadow-1: 0 1px 2px rgba(22, 21, 15, 0.05), 0 1px 1px rgba(22, 21, 15, 0.03);
+  --shadow-2: 0 4px 16px -4px rgba(22, 21, 15, 0.1), 0 2px 4px rgba(22, 21, 15, 0.04);
+  --shadow-3: 0 24px 60px -12px rgba(22, 21, 15, 0.22),
+    0 8px 20px -8px rgba(22, 21, 15, 0.12);
+
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 340ms;
+
+  --measure: 42rem;
+  --shell-max: 76rem;
+
+  /* v2 port: v1 set these on `body` (src/styles/base.css); mirrored here so
+     the copied UI does not inherit the v2 shell's ambient type instead. */
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: var(--step-0);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-wrap: anywhere;
+}
+
+/* v2 port: v1's `@media (prefers-color-scheme: dark)` token override is not
+   carried over — the advanced editor renders light inside the light v2 shell
+   regardless of the OS theme. The forced-theme blocks below are kept verbatim
+   (selector changed from :root to .advx); nothing in v2 sets `data-theme`, so
+   they are inert. */
+
+.advx[data-theme='light'] {
+  color-scheme: light;
+}
+
+.advx[data-theme='dark'] {
+  color-scheme: dark;
+  --paper: #14140f;
+  --paper-raised: #1c1c16;
+  --paper-sunken: #232219;
+  --paper-inset: #2c2a20;
+
+  --ink: #f4f1e6;
+  --ink-2: #ddd8c8;
+  --ink-3: #b3ad9b;
+  --ink-4: #9d9784;
+  --ink-5: #6b6659;
+
+  --rule: #33322a;
+  --rule-strong: #4a483d;
+
+  --card-paper: #1e1e17;
+  --card-line: #4f4d40;
+
+  --scroll-thumb: rgb(244 241 230 / 0.16);
+  --scroll-thumb-hover: rgb(244 241 230 / 0.3);
+  --scroll-thumb-active: rgb(244 241 230 / 0.42);
+
+  --accent: #5cbd90;
+  --accent-hover: #75cba3;
+  --accent-soft: #1c2c25;
+  --accent-line: #2f4c3e;
+  --accent-ink: #0d1b14;
+
+  --danger: #e88b78;
+  --danger-soft: #2e1d18;
+  --warn: #d9b164;
+  --warn-soft: #2b2418;
+
+  --code-bg: #0e0e0a;
+  --code-ink: #e6e2d4;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 4px 16px -4px rgba(0, 0, 0, 0.5), 0 2px 4px rgba(0, 0, 0, 0.3);
+  --shadow-3: 0 24px 60px -12px rgba(0, 0, 0, 0.6), 0 8px 20px -8px rgba(0, 0, 0, 0.4);
+}
+
+/* v2 port: hoisted @keyframes from the base.css subset below (animation names
+   are global; keyframes are invalid inside a nested rule). */
+@keyframes notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* v2 port: the src/styles/base.css primitives the copied markup uses, verbatim,
+   nested under .advx (native CSS nesting). */
+.advx {
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure,
+blockquote,
+ul,
+ol {
+  margin: 0;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-s);
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+/* ------------------------------------------------------------- primitives */
+
+/* Every pill/field control derives its box from --ctl-* so a row of mixed
+   controls lines up exactly, instead of landing on 32.9 / 34.9 / 35.3px. */
+.btn,
+.input,
+.tabs__tab,
+.searchbox,
+.select select {
+  height: var(--ctl-h-lg);
+  box-sizing: border-box;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-m);
+  padding: 0 var(--ctl-pad-x-lg);
+  font-size: var(--step--1);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  background: transparent;
+  position: relative;
+  transition:
+    background var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease),
+    transform var(--dur-1) var(--ease);
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* Hit area reaches the 44px minimum on touch without inflating the visual box. */
+@media (pointer: coarse) {
+  .btn::after,
+  .tabs__tab::after,
+  .bubble__btn::after,
+  .card__act::after {
+    content: '';
+    position: absolute;
+    inset: 50% 0 auto;
+    translate: 0 -50%;
+    height: var(--tap-min);
+    min-width: var(--tap-min);
+  }
+  .bubble__btn,
+  .blockmenu__plus,
+  .card__act,
+  .tabs__tab {
+    position: relative;
+  }
+}
+.btn:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.btn--primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn--ghost {
+  color: var(--ink-2);
+}
+.btn--ghost:hover:not(:disabled) {
+  background: var(--paper-sunken);
+  color: var(--ink);
+}
+
+.btn--outline {
+  border-color: var(--rule-strong);
+  color: var(--ink-2);
+  background: var(--paper-raised);
+}
+.btn--outline:hover:not(:disabled) {
+  border-color: var(--ink-4);
+  color: var(--ink);
+}
+
+.btn--danger {
+  color: var(--danger);
+}
+.btn--danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+
+.btn--sm {
+  height: var(--ctl-h);
+  padding: 0 var(--ctl-pad-x);
+  font-size: var(--step--1);
+}
+
+.input {
+  width: 100%;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  padding: 0 var(--ctl-pad-x);
+  font-size: var(--step-0);
+  transition: border-color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+}
+.input::placeholder {
+  color: var(--ink-4);
+}
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  border-radius: var(--radius-s);
+  padding: var(--s1) var(--s2);
+  font-size: var(--step--2);
+  text-transform: uppercase;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  background: var(--paper-sunken);
+  color: var(--ink-3);
+  border: 1px solid transparent;
+}
+.chip--draft {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.chip--published {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+.chip--archived {
+  background: var(--paper-inset);
+  color: var(--ink-3);
+}
+
+.label {
+  display: block;
+  font-size: var(--step--2);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: var(--s2);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Inline, non-blocking status band. Used for conflicts and storage trouble —
+   anything the writer must know but that must not interrupt typing. */
+.notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  flex-wrap: wrap;
+  margin: var(--s4) auto;
+  max-width: var(--shell-max);
+  padding: var(--s3) var(--s4);
+  border-radius: var(--radius-m);
+  border: 1px solid var(--rule);
+  font-size: var(--step--1);
+  line-height: 1.5;
+  animation: notice-in var(--dur-3) var(--ease-out);
+}
+.notice--warn {
+  background: var(--warn-soft);
+  border-color: color-mix(in srgb, var(--warn) 30%, transparent);
+  color: var(--ink-2);
+}
+.notice--info {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--ink-2);
+  display: block;
+}
+.notice--danger {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 28%, transparent);
+  color: var(--ink-2);
+}
+.notice__actions {
+  display: flex;
+  gap: var(--s2);
+  flex: none;
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--paper-sunken) 0%,
+    var(--paper-inset) 50%,
+    var(--paper-sunken) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s var(--ease) infinite;
+  border-radius: var(--radius-s);
+}
+
+/* v2 port: from src/styles/tokens.css, scoped — the motion kill-switch rides
+   with the skin rather than being left behind. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+}

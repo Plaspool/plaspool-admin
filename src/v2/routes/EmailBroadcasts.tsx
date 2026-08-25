@@ -127,7 +127,7 @@ export default function EmailBroadcasts() {
       ),
     },
     {
-      key: 'status',
+      key: 'status', mobile: 'keep',
       header: 'Status',
       label: 'Status',
       tight: true,

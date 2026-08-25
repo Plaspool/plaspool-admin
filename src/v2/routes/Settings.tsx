@@ -12,7 +12,9 @@ import { money } from '../lib/format';
 import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, EmptyState } from '../ui/primitives';
 import { DataTable, IdCell, type Column } from '../ui/DataTable';
-import { AffixField, Checkbox, TextField } from '../ui/Field';
+import { AffixField, Checkbox, TextField, Toggle } from '../ui/Field';
+import { Card } from '../ui/Card';
+import { advancedByDefault, setAdvancedByDefault } from '../lib/editorPref';
 import { Menu, MenuItem, MenuSeparator } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
 import { TagInput } from '../ui/TagInput';
@@ -45,6 +47,7 @@ export default function Settings() {
   const [editing, setEditing] = useState<'closed' | 'new' | ShopShippingZone>('closed');
   const [optionsFor, setOptionsFor] = useState<ShopShippingZone | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ShopShippingZone | null>(null);
+  const [advancedDefault, setAdvancedDefault] = useState(() => advancedByDefault());
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -242,6 +245,32 @@ export default function Settings() {
         An order's address matches on its region — Abuja, Lagos and the rest are all NG. Exactly
         one fallback zone must exist; it catches every region the named zones don't.
       </p>
+
+      {/* ═══ WRITING ═══ Which post editor a post opens in. A DEVICE
+          preference (see editorPref.ts), so no CAS, no server round trip —
+          the toggle is the whole transaction. */}
+      <Card title="Writing">
+        <div className="stack stack--tight">
+          <Toggle
+            label="Open posts in the advanced editor"
+            checked={advancedDefault}
+            onChange={(next) => {
+              setAdvancedDefault(next);
+              setAdvancedByDefault(next);
+              toast.show(
+                next
+                  ? 'Posts open in the advanced editor on this device'
+                  : 'Posts open in the quick editor on this device',
+              );
+            }}
+          />
+          <span className="field__hint">
+            The advanced editor is the full writing studio — slash commands, autosave with
+            revisions, find and replace. The quick editor stays one tap away either way, and this
+            choice is per device.
+          </span>
+        </div>
+      </Card>
 
       {editing !== 'closed' ? (
         <ZoneModal

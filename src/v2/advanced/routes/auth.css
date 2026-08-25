@@ -1,0 +1,375 @@
+/*
+ * v2 port: scoped copy of src/routes/auth.css.
+ * Every rule is wrapped in one `.advx { ... }` block (native CSS nesting)
+ * so the v1 editor look cannot leak into the v2 shell; @keyframes are
+ * hoisted to the top level because keyframes are invalid inside a nested
+ * rule. No declarations were changed.
+ */
+
+/* v2 port: hoisted @keyframes (animation names are global). */
+@keyframes reauth-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+.advx {
+/* ---------------------------------------------------------------
+   The signed-out and can't-open-this surfaces: login, invite,
+   the mid-session prompt, the post gate and the recovery list.
+
+   No new visual vocabulary. Every value below is a token from
+   styles/tokens.css, every button is base.css's .btn, every
+   status band borrows .empty / .notice / .chip, and nothing here
+   names a colour — which is what keeps all of it legible in both
+   themes without a second set of rules to keep in sync.
+----------------------------------------------------------------- */
+
+/* ------------------------------------------------- login / accept invite */
+
+.authpage {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: var(--s6) var(--s4);
+}
+
+.authpage__card {
+  width: 100%;
+  max-width: 26rem;
+  display: grid;
+  justify-items: center;
+  gap: var(--s3);
+  text-align: center;
+  padding: var(--s7) var(--s5);
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-l);
+  box-shadow: var(--shadow-2);
+}
+
+/* .empty sets its own generous padding for a full page; inside a card it
+   would push the actions below the fold on a laptop. */
+.authpage__card.empty {
+  padding: var(--s6) var(--s5);
+}
+
+.authpage__title {
+  font-family: var(--font-display);
+  font-size: var(--step-3);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+.authpage__logo {
+  /* The variable `brand.css` reads; a misspelling here silently falls back to
+     its 1.75rem default rather than failing anywhere visible. */
+  --brand-logo-h: 2.25rem;
+  max-width: min(16rem, 60vw);
+}
+
+.authpage__mark {
+  width: 2rem;
+  height: 2rem;
+  color: var(--ink-4);
+}
+
+.authpage__lede {
+  max-width: 34ch;
+  font-size: var(--step--1);
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
+/* ------------------------------------------------------------------ form */
+
+.authform {
+  width: 100%;
+  display: grid;
+  gap: var(--s2);
+  text-align: left;
+  margin-top: var(--s3);
+}
+
+/* The uppercase .label carries its own bottom margin; the grid gap plus that
+   margin is too much air between fields, so later labels get the space back. */
+.authform__label {
+  margin-top: var(--s3);
+}
+
+.authform__hint {
+  font-size: var(--step--2);
+  line-height: 1.5;
+  color: var(--ink-4);
+}
+
+.authform__error {
+  font-size: var(--step--1);
+  line-height: 1.5;
+  color: var(--ink-2);
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+  border-radius: var(--radius-m);
+  padding: var(--s2) var(--s3);
+}
+
+.authform__submit {
+  margin-top: var(--s3);
+  width: 100%;
+}
+
+/* --------------------------------------------------- mid-session re-auth */
+
+/*
+  Fixed to the top of the viewport and NOT a full-screen scrim, deliberately.
+  The route underneath stays mounted and keeps taking keystrokes while this is
+  up — every one of them still autosaves, fails on the expired session and
+  lands in `pending`. A scrim that swallowed typing would turn a recoverable
+  session expiry into lost writing, which is exactly what this part of the app
+  claims to beat.
+*/
+.reauth {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 60;
+  display: flex;
+  justify-content: center;
+  padding: var(--s4);
+  pointer-events: none;
+}
+
+.reauth__panel {
+  pointer-events: auto;
+  width: 100%;
+  max-width: 26rem;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-l);
+  box-shadow: var(--shadow-3);
+  padding: var(--s5);
+  animation: reauth-in var(--dur-3) var(--ease-out);
+}
+
+.reauth__title {
+  font-family: var(--font-display);
+  font-size: var(--step-2);
+  font-weight: 600;
+  margin-bottom: var(--s2);
+}
+
+.reauth__body {
+  font-size: var(--step--1);
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
+.reauth__alt {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--s3);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--rule);
+}
+
+/* ------------------------------------------------------------- post gate */
+
+.gate {
+  min-height: 100%;
+  display: grid;
+  place-items: start center;
+  padding: var(--s7) var(--s4);
+}
+
+.gate__card {
+  width: 100%;
+  max-width: 34rem;
+}
+
+.gate__card--wide {
+  max-width: var(--shell-max);
+}
+
+.gate__mark {
+  width: 2.5rem;
+  height: 2.5rem;
+  color: var(--ink-5);
+}
+
+.gate__title {
+  font-family: var(--font-display);
+  font-size: var(--step-4);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.gate__body {
+  max-width: 60ch;
+  margin-top: var(--s3);
+  font-size: var(--step-0);
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
+.gate__reason {
+  margin-top: var(--s4);
+  padding: var(--s3) var(--s4);
+  border-radius: var(--radius-m);
+  background: var(--warn-soft);
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+  font-size: var(--step--1);
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+/* Side by side where there is room; stacked where there is not. Never a
+   horizontal scroll — comparing two documents you have to swipe between is
+   how the wrong one gets chosen. */
+.gate__versions {
+  display: grid;
+  gap: var(--s4);
+  margin-top: var(--s5);
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+}
+
+.gate__version {
+  min-width: 0;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  padding: var(--s4);
+}
+
+.gate__vtitle {
+  font-size: var(--step-0);
+  font-weight: 600;
+}
+
+.gate__vmeta {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+  margin-top: var(--s1);
+}
+
+/* A bounded window rather than the whole document: the point of this screen is
+   choosing between two versions, and a 4000-word post would push the buttons
+   somewhere neither can be seen. */
+.gate__doc {
+  margin-top: var(--s3);
+  max-height: 22rem;
+  overflow: auto;
+  font-size: var(--step--1);
+}
+
+.gate__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin-top: var(--s5);
+}
+
+/* ---------------------------------------------------------------- recover */
+
+.recover {
+  min-height: 100%;
+}
+
+.recover__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--rule);
+  position: sticky;
+  top: 0;
+  background: var(--paper);
+  z-index: 10;
+}
+
+.recover__barTitle {
+  font-size: var(--step--1);
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.recover__page {
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  padding: var(--s6) var(--s4) var(--s8);
+  display: grid;
+  gap: var(--s4);
+}
+
+.recover__title {
+  font-family: var(--font-display);
+  font-size: var(--step-4);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.recover__lede {
+  max-width: 60ch;
+  font-size: var(--step-0);
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
+.recrow {
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  padding: var(--s4);
+  box-shadow: var(--shadow-1);
+}
+
+.recrow__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+}
+
+.recrow__title {
+  font-family: var(--font-display);
+  font-size: var(--step-2);
+  font-weight: 600;
+  min-width: 0;
+}
+
+.recrow__meta {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+  margin-top: var(--s1);
+}
+
+.recrow__reason {
+  margin-top: var(--s3);
+  padding: var(--s3);
+  border-radius: var(--radius-s);
+  background: var(--warn-soft);
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+  font-size: var(--step--1);
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+.recrow__doc {
+  margin-top: var(--s3);
+  padding: var(--s3);
+  border-radius: var(--radius-s);
+  background: var(--paper-sunken);
+  max-height: 16rem;
+  overflow: auto;
+  font-size: var(--step--1);
+}
+
+.recrow__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin-top: var(--s4);
+}
+
+}

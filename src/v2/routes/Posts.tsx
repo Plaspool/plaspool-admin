@@ -101,7 +101,7 @@ export default function Posts() {
       ),
     },
     {
-      key: 'status',
+      key: 'status', mobile: 'keep',
       header: 'Status',
       tight: true,
       render: (p) =>
@@ -195,7 +195,8 @@ export default function Posts() {
       />
 
       <p className="page__learn">
-        Writing and editing still happen on the v1 editor — it is untouched and returns on revert.
+        Open a post to edit it — the quick editor by default, or the advanced editor from More
+        actions (make it your default in Settings).
       </p>
     </div>
   );

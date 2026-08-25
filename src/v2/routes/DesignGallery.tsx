@@ -329,10 +329,12 @@ export default function DesignGallery() {
               transforms — every specimen on this page demonstrates its own below it:
             </p>
             <p>
-              <strong style={{ color: 'var(--ink)' }}>Tables become cards.</strong> The header row
-              stands down; each cell carries its column's name (from the same string the view
-              control uses), the identity leads at full width, facts tile two-up, an unnamed
-              action column floats to the card's corner.
+              <strong style={{ color: 'var(--ink)' }}>Tables become collapsed cards.</strong> The
+              identity leads; only the one or two GOVERNING facts a screen marks (status, a
+              total, an inline editor) stay on the card, each a full-width label-left /
+              value-right row. Everything else lives behind the card's expand key in a per-row
+              details sheet — live renders, so inline editors work there too — with Open at the
+              bottom. Unnamed action columns float to the card's corner.
             </p>
             <p>
               <strong style={{ color: 'var(--ink)' }}>Modals become bottom sheets</strong> — pinned,

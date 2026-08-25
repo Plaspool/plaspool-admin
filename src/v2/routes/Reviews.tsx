@@ -147,7 +147,7 @@ export default function Reviews() {
       render: (r) => <span className="mono">/{r.productSlug}</span>,
     },
     {
-      key: 'status',
+      key: 'status', mobile: 'keep',
       header: 'Status',
       label: 'Status',
       tight: true,

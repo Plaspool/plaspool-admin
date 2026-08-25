@@ -124,7 +124,11 @@ export function PageHeader({
   }, [peek]);
 
   return (
-    <div>
+    /* Classed so the phone layout can dissolve it (display: contents): a
+       sticky title can only travel inside its parent's box, and every wrapper
+       between the h1 and the tall `.page` column is exactly title-height —
+       zero travel. Dissolving the chain makes `.page` the containing block. */
+    <div className="page__headwrap">
       <div className="page__head">
         <div className="page__titles">
           <h1 className="page__title">
@@ -157,7 +161,9 @@ export function PageHeader({
             ) : (
               icon
             )}
-            {title}
+            {/* Its own span so a phone can clamp a long title to two lines —
+                a bare text node cannot be line-clamped. */}
+            <span className="page__titletext">{title}</span>
             {titleBadge}
           </h1>
           {subtitle ? <p className="page__sub">{subtitle}</p> : null}

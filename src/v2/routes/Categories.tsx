@@ -87,7 +87,7 @@ export default function Categories() {
         ),
     },
     { key: 'position', header: 'Position', numeric: true, render: (c) => c.position },
-    { key: 'count', header: 'Products', numeric: true, render: (c) => c.count },
+    { key: 'count', mobile: 'keep', header: 'Products', numeric: true, render: (c) => c.count },
   ];
 
   const unmanaged = all.filter((c) => !c.managed).length;
