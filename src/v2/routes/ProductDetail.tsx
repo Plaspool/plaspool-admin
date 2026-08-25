@@ -1111,6 +1111,14 @@ function VariantModal({
       ? 'At or below the current price — the storefront will not show a sale.'
       : 'Struck through on the storefront while it is above the price.';
 
+  /* The owner's quick-fill rules (2026-08-25): compare-at offers price +20%,
+     cost offers price −15%, both rounded to the whole naira — the same 85%
+     figure migration 0500 backfilled. Offers, never values: the keycap or Tab
+     types the digits out for editing, and an untouched field stays empty. */
+  const roundNaira = (minor: number) => Math.round(minor / 100) * 100;
+  const compareSuggest = price ? plainMajor(roundNaira(price.amount * 1.2), currency) : undefined;
+  const costSuggest = price ? plainMajor(roundNaira(price.amount * 0.85), currency) : undefined;
+
   function buildOptionValues(): Record<string, string> {
     const out: Record<string, string> = {};
     for (const { k, v } of pairs) {
@@ -1285,6 +1293,11 @@ function VariantModal({
                 inputMode="decimal"
                 value={compareAt}
                 hint={compareHint}
+                suggestion={compareSuggest}
+                onSuggest={(v) => {
+                  setCompareAt(v);
+                  setError(null);
+                }}
                 onChange={(e) => {
                   setCompareAt(e.target.value);
                   setError(null);
@@ -1298,6 +1311,11 @@ function VariantModal({
                 inputMode="decimal"
                 value={cost}
                 hint={marginHint}
+                suggestion={costSuggest}
+                onSuggest={(v) => {
+                  setCost(v);
+                  setError(null);
+                }}
                 onChange={(e) => {
                   setCost(e.target.value);
                   setError(null);
