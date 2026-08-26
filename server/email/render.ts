@@ -1,4 +1,5 @@
 import { BadRequestError } from '../repo/errors';
+import { isTemplateVariable, placeholderPattern } from '../../shared/email/variables';
 
 /**
  * Variable substitution, SERVER-SIDE (HANDOFF §2 A6).
@@ -11,37 +12,27 @@ import { BadRequestError } from '../repo/errors';
  * an unrecognised placeholder is a 400 on the SAVE, naming the field it appeared
  * in, and the send path can then substitute without deciding anything.
  *
- * ONE REGEX FOR BOTH JOBS. `assertKnownVariables` scans with the same pattern
- * `render` substitutes with, so "what is refused" and "what is replaced" cannot
- * drift apart — the failure that would otherwise appear here is a validator that
- * misses `{{ name }}` (with spaces) and a renderer that also misses it, leaving a
- * template that passes every check and ships braces to the reader.
+ * ONE PATTERN FOR EVERY JOB, AND IT NOW LIVES IN `shared/`.
+ * `assertKnownVariables` scans with the same pattern `render` substitutes with, so
+ * "what is refused" and "what is replaced" cannot drift apart — the failure that
+ * would otherwise appear here is a validator that misses `{{ name }}` (with spaces)
+ * and a renderer that also misses it, leaving a template that passes every check
+ * and ships braces to the reader.
+ *
+ * The admin UI is a THIRD reader of the same rule, and it had drifted in exactly
+ * that way: it scanned for the literal `{{unsubscribe_url}}` and warned about
+ * perfectly good templates written `{{ unsubscribe_url }}`. So the vocabulary, the
+ * pattern and the unsubscribe gate moved to `shared/email/variables.ts`, which both
+ * codebases import. What stayed here is only what needs a server error to say.
  */
-
-/** Everything this server knows how to put in a message. */
-export const TEMPLATE_VARIABLES = ['name', 'unsubscribe_url'] as const;
-
-export type TemplateVariable = (typeof TEMPLATE_VARIABLES)[number];
 
 /**
- * `{{…}}` WITH NO NESTED BRACE, which bounds what one placeholder can be.
- *
- * An unclosed `{{` therefore cannot swallow the document as far as the next `}}` a
- * hundred lines below it: the pattern simply does not match, and `{{name` stays in
- * the message as literal text. A stray extra brace, `{{{name}}}`, substitutes the
- * inner placeholder and leaves the outer braces alone, so the reader sees `{Ada}`.
- *
- * NEITHER OF THOSE IS SILENT, and that is the property being bought rather than a
- * limitation being apologised for. Every way of mistyping a placeholder ends up
- * VISIBLE in the message — which is the failure mode that gets reported and fixed,
- * as against a renderer that swallows the mistake and produces a message that reads
- * fine and says the wrong thing.
+ * Re-exported so this module remains the server's one door to the vocabulary: the
+ * routes and the suites import from here and do not need to know the rule is now
+ * shared with the browser.
  */
-const PLACEHOLDER = /\{\{([^{}]*)\}\}/g;
-
-function isKnown(name: string): name is TemplateVariable {
-  return (TEMPLATE_VARIABLES as readonly string[]).includes(name);
-}
+export { TEMPLATE_VARIABLES, hasUnsubscribeVariable } from '../../shared/email/variables';
+export type { TemplateVariable } from '../../shared/email/variables';
 
 /**
  * Throw `BadRequestError(field)` if `source` uses a variable this server cannot
@@ -50,18 +41,9 @@ function isKnown(name: string): name is TemplateVariable {
  * `server/middleware/errors.ts` states for every `detail`.
  */
 export function assertKnownVariables(source: string, field: string): void {
-  for (const match of source.matchAll(PLACEHOLDER)) {
-    if (!isKnown(match[1].trim())) throw new BadRequestError(field);
+  for (const match of source.matchAll(placeholderPattern())) {
+    if (!isTemplateVariable(match[1].trim())) throw new BadRequestError(field);
   }
-}
-
-/** True if `{{unsubscribe_url}}` appears at all. Whitespace-tolerant, like the
- * renderer. */
-export function hasUnsubscribeVariable(source: string): boolean {
-  for (const match of source.matchAll(PLACEHOLDER)) {
-    if (match[1].trim() === 'unsubscribe_url') return true;
-  }
-  return false;
 }
 
 export interface TemplateValues {
@@ -127,7 +109,7 @@ function substitute(
   values: TemplateValues,
   encode: (value: string) => string,
 ): string {
-  return template.replaceAll(PLACEHOLDER, (whole, raw: string) => {
+  return template.replaceAll(placeholderPattern(), (whole, raw: string) => {
     const name = raw.trim();
     if (name === 'name') return encode(values.name);
     if (name === 'unsubscribe_url') return encode(values.unsubscribeUrl);

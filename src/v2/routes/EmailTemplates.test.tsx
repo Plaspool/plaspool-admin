@@ -7,11 +7,11 @@ import { MemoryRouter } from 'react-router-dom';
  * The templates screen, pinned on the one rule that decides whether mass mail
  * may leave at all: `missingUnsubscribe`.
  *
- * The client's copy of the rule (`src/data/api-email.ts`) exists so the refusal
- * is visible WHILE the template is written rather than at the moment somebody
- * reaches for Send — which means the thing to test is that the copy actually
- * matches the server's rule (`server/routes/email.ts` `assertSendable`) instead
- * of a plausible approximation of it. The fixture set is built to defeat each
+ * The screen asks the rule (`src/data/api-email.ts`) so the refusal is visible
+ * WHILE the template is written rather than at the moment somebody reaches for
+ * Send — which means the thing to test is that the screen actually matches the
+ * server's rule (`server/routes/email.ts` `assertSendable`) instead of a
+ * plausible approximation of it. The fixture set is built to defeat each
  * approximation separately:
  *
  *  - **"Either body is enough."** `htmlOnly` carries the link in its HTML part
@@ -25,6 +25,12 @@ import { MemoryRouter } from 'react-router-dom';
  *  - **"ALL system templates are exempt."** `welcome` is `account.welcome`
  *    with no link, and it must STILL flag: it is the one system template that
  *    genuinely subscribes, and an owner who edits the link out has to see so.
+ *  - **"The literal spelling IS the rule."** `spaced` writes the variable
+ *    `{{ unsubscribe_url }}`. The renderer trims the capture, so that is the
+ *    same variable, it substitutes a working URL, and the server would send it
+ *    — the row must read Ready. Scanning for the exact literal instead is the
+ *    approximation this screen actually shipped with, and it put a red badge on
+ *    a sound template that the operator had no way to clear.
  *
  * `fetch` IS STUBBED, NOT `../../data/api-email`, per the section's canonical
  * harness (`src/routes/MarketingRewards.test.tsx`): the path, the method and
@@ -142,8 +148,15 @@ afterEach(() => {
 
 const NOW = Date.UTC(2026, 7, 26, 12, 0, 0);
 
-/** The variable, spelled once — the same literal the client rule scans for. */
+/** The variable as it is usually typed. */
 const UNSUB = '{{unsubscribe_url}}';
+
+/**
+ * The SAME VARIABLE, spelled the other legal way. The renderer trims the
+ * capture, so this substitutes identically — which is why the screen may not
+ * read the two differently.
+ */
+const UNSUB_SPACED = '{{ unsubscribe_url }}';
 
 const tpl = (
   over: Partial<EmailTemplate> & Pick<EmailTemplate, 'id' | 'name'>,
@@ -195,7 +208,16 @@ const welcome = tpl({
   systemKey: 'account.welcome',
 });
 
-const templates = [ready, htmlOnly, confirmation, welcome];
+/** The link in both bodies, written with spaces inside the braces. Sendable. */
+const spaced = tpl({
+  id: 'tpl_spaced',
+  name: 'Rainy Season Notice',
+  subject: 'Deliveries in the rains',
+  html: `<p>Hello {{ name }}</p><p><a href="${UNSUB_SPACED}">Unsubscribe</a></p>`,
+  text: `Hello {{ name }}\n\nUnsubscribe: ${UNSUB_SPACED}`,
+});
+
+const templates = [ready, htmlOnly, confirmation, welcome, spaced];
 
 const TEMPLATES = '/api/admin/email/templates';
 
@@ -229,11 +251,13 @@ describe('the email templates screen', () => {
     await screen.findByText('August Restock News');
 
     /*
-     * TWO FLAGS, and they sit on `htmlOnly` and `welcome` — not on the row
-     * that merely lacks the link (`confirmation` lacks it too and is exempt),
-     * and not sparing the row whose systemKey looks exempt-ish (`welcome`).
-     * An implementation that checked one body, skipped the exemption, or
-     * exempted every systemKey draws a different set of badges here.
+     * TWO FLAGS out of five rows, and they sit on `htmlOnly` and `welcome` —
+     * not on the row that merely lacks the link (`confirmation` lacks it too
+     * and is exempt), not sparing the row whose systemKey looks exempt-ish
+     * (`welcome`), and not on the row that spells the variable with spaces
+     * (`spaced`, which the server would send). An implementation that checked
+     * one body, skipped the exemption, exempted every systemKey, or matched the
+     * literal draws a different set of badges here.
      */
     expect(screen.getAllByText('No unsubscribe link')).toHaveLength(2);
     expect(within(rowOf(htmlOnly)).getByText('No unsubscribe link')).toBeTruthy();
@@ -241,6 +265,37 @@ describe('the email templates screen', () => {
 
     expect(within(rowOf(ready)).getByText('Ready')).toBeTruthy();
     expect(within(rowOf(confirmation)).getByText('Ready')).toBeTruthy();
+    expect(within(rowOf(spaced)).getByText('Ready')).toBeTruthy();
+  });
+
+  it('reads {{ unsubscribe_url }} as the link it is, in the list and live in the editor', async () => {
+    const user = userEvent.setup();
+    withTemplates();
+    mount();
+
+    /*
+     * THE SAME VARIABLE, NOT A NEAR MISS. `substitute` trims the capture before
+     * it dispatches, so this template mails a working unsubscribe URL and
+     * `assertSendable` passes it — the two are one rule and now one predicate
+     * (`shared/email/variables.ts`), imported by this screen and by the server.
+     *
+     * The failure this pins is not a bad send: the server is the gate and it was
+     * always the tolerant reader, so the old client rule could only ever warn
+     * about a template that was FINE. That is its own harm — a red badge nothing
+     * the operator types will clear is a badge they stop reading, including on
+     * `htmlOnly` and `welcome` above, where it is the only thing standing
+     * between them and a broadcast with no way out of the list.
+     */
+    await screen.findByText(spaced.name);
+    expect(within(rowOf(spaced)).getByText('Ready')).toBeTruthy();
+
+    await user.click(screen.getByText(spaced.name));
+    await screen.findByRole('dialog');
+    expect(screen.queryByText('Not broadcastable yet')).toBeNull();
+
+    // Deciding this needed no server: one list read, no writes.
+    expect(writes()).toHaveLength(0);
+    expect(reads(TEMPLATES)).toBe(1);
   });
 
   it('warns live in the editor when one body loses the link, and clears when it returns — with nothing saved', async () => {
