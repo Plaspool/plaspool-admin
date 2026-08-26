@@ -85,3 +85,88 @@ export function destroyReview(id: string): Promise<{ ok: true }> {
     method: 'DELETE',
   });
 }
+
+// ------------------------------------------------- replies + reactions (0620)
+
+export type ReplyAuthorKind = 'owner' | 'customer';
+
+/**
+ * One reply as the ADMIN sees it — the public shape plus the moderation state
+ * and the attribution the public never gets.
+ *
+ * `staffUserId` is why this is a different type from what the storefront
+ * receives: publicly the shop replies as the shop, but "which of us answered
+ * this angry review" is a question the owner will eventually ask.
+ */
+export interface AdminReply {
+  id: string;
+  parentId: string | null;
+  /** 0 replies to the review; 1 replies to a reply. There is no 2. */
+  depth: number;
+  body: string;
+  authorKind: ReplyAuthorKind;
+  /** For an owner reply this is the SHOP's name, never the staff member's. */
+  authorName: string;
+  status: ReviewStatus;
+  customerId: string | null;
+  staffUserId: string | null;
+  createdAt: number;
+  updatedAt: number;
+  moderatedAt: number | null;
+  moderatedBy: string | null;
+}
+
+/** Counts for one review. `unhelpful` exists ONLY here — never on the public
+ *  wire, where a dislike tally would be a scoreboard for brigading. */
+export interface ReactionCounts {
+  helpful: number;
+  unhelpful: number;
+}
+
+export interface ReviewThread {
+  replies: AdminReply[];
+  reactions: ReactionCounts;
+}
+
+/**
+ * The whole moderation panel in ONE read: every reply whatever its status, and
+ * both reaction counts. Two requests here would mean two loading states for
+ * one panel.
+ */
+export function loadThread(reviewId: string): Promise<ReviewThread> {
+  return apiFetch<ReviewThread>(`/shop/reviews/${encodeURIComponent(reviewId)}/replies`);
+}
+
+/**
+ * Post the shop's reply. It is `approved` the moment it lands — the server
+ * decides that, not this call, because queueing staff writing for staff
+ * approval is theatre.
+ *
+ * There is no `authorName` parameter on purpose: the byline is the shop's and
+ * is set server-side, so an admin cannot accidentally sign a reply with their
+ * own name on a stranger's screen.
+ */
+export async function replyAsOwner(
+  reviewId: string,
+  body: string,
+  parentId: string | null = null,
+): Promise<AdminReply> {
+  const { reply } = await apiFetch<{ reply: AdminReply }>(
+    `/shop/reviews/${encodeURIComponent(reviewId)}/staff-replies`,
+    { method: 'POST', body: { body, parentId } },
+  );
+  return reply;
+}
+
+export async function moderateReply(id: string, status: ReviewStatus): Promise<AdminReply> {
+  const { reply } = await apiFetch<{ reply: AdminReply }>(
+    `/shop/replies/${encodeURIComponent(id)}`,
+    { method: 'PATCH', body: { status } },
+  );
+  return reply;
+}
+
+/** Owner-only at the server; the UI hides it from everyone else. */
+export function destroyReply(id: string): Promise<{ ok: true }> {
+  return apiFetch<{ ok: true }>(`/shop/replies/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}

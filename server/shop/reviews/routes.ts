@@ -10,7 +10,7 @@ import {
   readQuery,
   str,
 } from '../../middleware/errors';
-import { BadRequestError } from '../../repo/errors';
+import { BadRequestError, NotFoundError } from '../../repo/errors';
 import { clientIp, limit } from '../../middleware/ratelimit';
 import { requireAuth } from '../../middleware/session';
 import { currentDb, currentUser } from '../../app-env';
@@ -21,6 +21,17 @@ import {
   listReviewsAdmin,
   moderateReview,
 } from './repo';
+import {
+  OWNER_BYLINE,
+  clearReaction,
+  createReply,
+  destroyReply,
+  moderateReply,
+  reactionCounts,
+  reactionsOf,
+  repliesForAdmin,
+  setReaction,
+} from './threads';
 import type { AppEnv } from '../../app-env';
 
 /**
@@ -82,6 +93,13 @@ const INTAKE_IP_LIMIT = 10;
  *  (a correction, a second product); the fourth is a script. */
 const INTAKE_EMAIL_LIMIT = 3;
 const INTAKE_WINDOW_MS = 15 * 60 * 1000;
+/** Replies are cheaper to write than reviews and a thread is a conversation,
+ *  so the budget is looser — but still a budget. */
+const REPLY_IP_LIMIT = 30;
+const REPLY_CUSTOMER_LIMIT = 10;
+/** A reaction is one click. The ceiling is here to bound a script, not a
+ *  shopper working down a product page. */
+const REACTION_IP_LIMIT = 120;
 
 // -------------------------------------------------------------------- schemas
 
@@ -128,6 +146,56 @@ const SubmitBody = z.object({
 const ModerateBody = z.object({
   status: z.enum(['pending', 'approved', 'rejected', 'flagged']),
 });
+
+/** A customer's reply (migration 0620). Identity is NOT in here — see below. */
+const ReplyBody = z.object({
+  /** Absent or null replies to the REVIEW; an id replies to that reply. */
+  parentId: str().max(100).nullish(),
+  body: str().trim().min(2).max(2000),
+  /** The byline, on the same terms as a review's: the account's display name
+   *  wins, and this is the fallback for an account that has none. */
+  authorName: str().trim().min(1).max(120).optional(),
+});
+
+/** The owner's reply. No byline field at all — the shop replies as the shop. */
+const StaffReplyBody = z.object({
+  parentId: str().max(100).nullish(),
+  body: str().trim().min(2).max(2000),
+});
+
+/** `null` clears the reaction. There is no `kind: 'none'` state to store. */
+const ReactionBody = z.object({
+  kind: z.enum(['helpful', 'unhelpful']).nullable(),
+});
+
+const MineQuery = z.object({ reviews: str().max(4000) }).strict();
+/** The page size the storefront lists, with room to spare. */
+const MAX_BULK_REVIEWS = 100;
+
+/**
+ * Turn a `createReply` refusal into the response it deserves.
+ *
+ * EACH REASON GETS ITS OWN ANSWER because each is a different thing to tell
+ * somebody: the review is gone, the review is not public, you replied to a
+ * reply that does not exist, you replied too deep. Collapsing them into one
+ * 400 would make the storefront guess.
+ */
+function replyRefusal(reason: string): Error {
+  switch (reason) {
+    case 'review_missing':
+    case 'review_not_approved':
+      /* NOT FOUND for both, deliberately: answering differently would tell an
+         anonymous caller which pending reviews exist. */
+      return new NotFoundError('review');
+    case 'parent_missing':
+    case 'parent_mismatch':
+      return new NotFoundError('parent');
+    case 'too_deep':
+      return new BadRequestError('parentId');
+    default:
+      return new BadRequestError('reply');
+  }
+}
 
 const AdminListQuery = z.object({
   status: z.enum(['pending', 'approved', 'rejected', 'flagged']).optional(),
@@ -371,6 +439,236 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
     if (currentUser(c).role !== 'owner') throw new ForbiddenError();
     const id = pathParam(c, 'id');
     await destroyReview(currentDb(c), id);
+    return c.json({ ok: true });
+  });
+
+
+  // ------------------------------------------------- replies + reactions (0620)
+
+  /**
+   * A CUSTOMER's reply, on a review or on another reply.
+   *
+   * SAME AUTH RULE AS THE INTAKE, AND FOR THE SAME REASONS: a customer session
+   * is required, identity is read from it, and the row lands `pending` and is
+   * invisible until a human approves it. The body says what was written and
+   * where it hangs — never who wrote it.
+   *
+   * REGISTRATION ORDER IS NOT LOAD-BEARING HERE, unlike `submit`. That one had
+   * to precede `/reviews/:id` because `submit` is a legal `:id` value and Hono
+   * resolves by registration order. These paths carry three segments where the
+   * staff routes carry two, so nothing above can swallow them and they sit at
+   * the end of the file where they were added.
+   *
+   * The exception worth watching is `/reviews/reactions/mine`: `reactions` is a
+   * legal `:id` too, so if anyone ever adds a two-segment `GET /reviews/:id/*`
+   * wildcard above it, that ordering becomes load-bearing after all.
+   *
+   * SHARES `shopCors` WITH THE INTAKE. Same cross-origin browser, same
+   * credentialed POST, so the same preflight and the same origin permission.
+   */
+  routes.use('/reviews/:id/replies', shopCors<AppEnv>());
+  routes.options('/reviews/:id/replies', (c) =>
+    c.body(null, 204, {
+      'access-control-allow-methods': 'POST',
+      'access-control-allow-headers': 'content-type',
+      'access-control-max-age': '86400',
+    }),
+  );
+
+  routes.post('/reviews/:id/replies', async (c) => {
+    const ip = clientIp(c);
+    await limit(c, `rplsub:${ip}`, REPLY_IP_LIMIT, INTAKE_WINDOW_MS);
+
+    const reviewId = pathParam(c, 'id');
+    const body = await readJson(c, ReplyBody);
+    const customer = await resolveCustomer(c);
+    if (!customer) throw new UnauthenticatedError();
+
+    /* The narrow budget keys on the customer, not on anything they can vary —
+       the same strengthening the review intake got. */
+    await limit(c, `rplsub:${ip}|${customer.id}`, REPLY_CUSTOMER_LIMIT, INTAKE_WINDOW_MS);
+
+    const authorName = customer.displayName ?? body.authorName;
+    if (!authorName) throw new BadRequestError('authorName');
+
+    const result = await createReply(currentDb(c), {
+      reviewId,
+      parentId: body.parentId ?? null,
+      body: body.body,
+      authorKind: 'customer',
+      authorName,
+      customerId: customer.id,
+      staffUserId: null,
+      now: Date.now(),
+    });
+
+    if (!result.ok) throw replyRefusal(result.reason);
+
+    /*
+     * NARROW, LIKE THE INTAKE'S ANSWER. The id and the status, so the
+     * storefront can say "we have it, it appears after moderation" honestly.
+     * Not the row — there is nothing on it a cross-origin caller needs, and
+     * `customerId` travelling back would be pointless.
+     */
+    return c.json({ replyId: result.reply.id, status: result.reply.status }, 201);
+  });
+
+  /**
+   * A CUSTOMER's reaction. `PUT`, not `POST`, because it is idempotent: the
+   * body names the state you want, not an event to append. Sending `helpful`
+   * twice leaves one helpful vote.
+   *
+   * THE TOGGLE IS THE CLIENT'S, NOT THE SERVER'S. "Clicking helpful twice
+   * clears it" is a UI affordance, and a server that flipped state based on
+   * what it found would make two clicks from two tabs land on whichever order
+   * they arrived in. The client sends `null` to clear.
+   */
+  routes.use('/reviews/:id/reactions', shopCors<AppEnv>());
+  routes.options('/reviews/:id/reactions', (c) =>
+    c.body(null, 204, {
+      'access-control-allow-methods': 'PUT',
+      'access-control-allow-headers': 'content-type',
+      'access-control-max-age': '86400',
+    }),
+  );
+
+  routes.put('/reviews/:id/reactions', async (c) => {
+    const ip = clientIp(c);
+    await limit(c, `rct:${ip}`, REACTION_IP_LIMIT, INTAKE_WINDOW_MS);
+
+    const reviewId = pathParam(c, 'id');
+    const body = await readJson(c, ReactionBody);
+    const customer = await resolveCustomer(c);
+    if (!customer) throw new UnauthenticatedError();
+
+    const db = currentDb(c);
+    /* The review must exist AND be approved: reacting to a pending review is a
+       way to learn that one exists, and there is nothing public to react to. */
+    const review = await getReview(db, reviewId);
+    if (!review || review.status !== 'approved') throw new NotFoundError(reviewId);
+
+    if (body.kind === null) {
+      await clearReaction(db, reviewId, customer.id);
+    } else {
+      await setReaction(db, reviewId, customer.id, body.kind, Date.now());
+    }
+
+    /* The new counts in the same answer, so a click needs no follow-up read.
+       `helpful` only — the public never sees the dislike tally (0620). */
+    const counts = await reactionCounts(db, [reviewId]);
+    return c.json({
+      reviewId,
+      viewerReaction: body.kind,
+      helpfulCount: counts.get(reviewId)?.helpful ?? 0,
+    });
+  });
+
+  /**
+   * WHICH REVIEWS THIS VIEWER HAS REACTED TO — the one piece of reaction state
+   * that varies by reader.
+   *
+   * IT IS HERE AND NOT ON `/api/public/reviews`, AND THAT PLACEMENT IS THE
+   * WHOLE REASON THIS ROUTE EXISTS. The public reviews router is mounted ABOVE
+   * `sessionMiddleware` and every response there carries `Cache-Control:
+   * public`, so a shared cache may hand one reader's copy to another. A
+   * per-viewer field on such a response is threat T6 exactly — one shopper
+   * seeing another's votes. Everything cacheable (the replies, the helpful
+   * count) rides the public route; this, which cannot be cached, does not.
+   *
+   * An absent session is an EMPTY MAP rather than a 401: a logged-out shopper
+   * reading a product page is not an error, and the storefront should render
+   * unfilled buttons rather than handle a refusal on a read.
+   */
+  routes.use('/reviews/reactions/mine', shopCors<AppEnv>());
+  routes.get('/reviews/reactions/mine', async (c) => {
+    const q = readQuery(c, MineQuery);
+    const ids = q.reviews
+      .split(',')
+      .map((id) => id.trim())
+      .filter((id) => id.length > 0);
+    if (ids.length === 0 || ids.length > MAX_BULK_REVIEWS) throw new BadRequestError('reviews');
+
+    const customer = await resolveCustomer(c);
+    if (!customer) return c.json({ reactions: {} });
+
+    const mine = await reactionsOf(currentDb(c), ids, customer.id);
+    /* Only the ids that HAVE a reaction appear. An absent key is "no vote",
+       which is what the storefront renders by default anyway. */
+    return c.json({ reactions: Object.fromEntries(mine) });
+  });
+
+  // ------------------------------------------------------------ staff: replies
+
+  /**
+   * THE OWNER'S REPLY. Staff auth, and it is `approved` the moment it is
+   * written — queueing staff writing for staff approval is theatre, and
+   * `createReply` enforces that rather than this route.
+   *
+   * `authorName` IS NOT TAKEN FROM THE BODY. Publicly the shop replies as the
+   * shop, so the byline is the constant `OWNER_BYLINE` and the storefront
+   * renders the logomark beside it. WHO actually typed it is recorded in
+   * `staff_user_id` and stays admin-only — "which of us answered this angry
+   * review" is a question the owner will eventually ask, and a public name on
+   * it is a staff member's name on a stranger's screen.
+   */
+  routes.post('/reviews/:id/staff-replies', auth, async (c) => {
+    const reviewId = pathParam(c, 'id');
+    const body = await readJson(c, StaffReplyBody);
+    const result = await createReply(currentDb(c), {
+      reviewId,
+      parentId: body.parentId ?? null,
+      body: body.body,
+      authorKind: 'owner',
+      authorName: OWNER_BYLINE,
+      customerId: null,
+      staffUserId: currentUser(c).id,
+      now: Date.now(),
+    });
+    if (!result.ok) throw replyRefusal(result.reason);
+    return c.json({ reply: result.reply }, 201);
+  });
+
+  /**
+   * Every reply on one review whatever its status, PLUS both reaction counts —
+   * the whole moderation panel in one read.
+   *
+   * `unhelpful` IS HERE AND IS NOWHERE PUBLIC. That asymmetry is the feature:
+   * a public dislike tally is a scoreboard for brigading, and the owner still
+   * wants to know a review is landing badly. This route is behind `auth`, so
+   * this is the surface where the number belongs.
+   */
+  routes.get('/reviews/:id/replies', auth, async (c) => {
+    const db = currentDb(c);
+    const reviewId = pathParam(c, 'id');
+    const [replies, counts] = await Promise.all([
+      repliesForAdmin(db, reviewId),
+      reactionCounts(db, [reviewId]),
+    ]);
+    return c.json({
+      replies,
+      reactions: counts.get(reviewId) ?? { helpful: 0, unhelpful: 0 },
+    });
+  });
+
+  routes.patch('/replies/:id', auth, async (c) => {
+    const id = pathParam(c, 'id');
+    const body = await readJson(c, ModerateBody);
+    const reply = await moderateReply(
+      currentDb(c),
+      id,
+      body.status,
+      currentUser(c),
+      Date.now(),
+    );
+    if (!reply) throw new NotFoundError(id);
+    return c.json({ reply });
+  });
+
+  /** Owner-only, matching review deletion: it is for removal requests. */
+  routes.delete('/replies/:id', auth, async (c) => {
+    if (currentUser(c).role !== 'owner') throw new ForbiddenError();
+    const id = pathParam(c, 'id');
+    if (!(await destroyReply(currentDb(c), id))) throw new NotFoundError(id);
     return c.json({ ok: true });
   });
 

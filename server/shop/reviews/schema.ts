@@ -27,7 +27,18 @@
  * "verified purchase" order — is an UPDATE, not a migration.
  */
 import { sql } from 'drizzle-orm';
-import { bigint, check, index, pgTable, text, integer } from 'drizzle-orm/pg-core';
+import {
+  bigint,
+  check,
+  index,
+  pgTable,
+  primaryKey,
+  text,
+  integer,
+  uuid,
+} from 'drizzle-orm/pg-core';
+import { users } from '../../db/schema';
+import { shopCustomers } from '../cart/schema';
 
 export const shopReviews = pgTable(
   'shop_reviews',
@@ -93,3 +104,116 @@ export const shopReviews = pgTable(
 );
 
 export type DbShopReview = typeof shopReviews.$inferSelect;
+
+/**
+ * REPLIES (migration 0620). Two levels: a reply to a review, and a reply to
+ * that. Anything deeper is unstorable, not merely discouraged.
+ *
+ * `depth` IS STORED RATHER THAN WALKED. Deriving it from the `parent_id` chain
+ * costs a recursive CTE on every read and makes "is this too deep" a question
+ * the application asks instead of one the database refuses.
+ *
+ * `authorKind` IS A COLUMN, NOT AN INFERENCE. The storefront renders an owner
+ * reply differently — the shop's logomark instead of an initial — and a
+ * renderer should read a field rather than reverse-engineer the rule from
+ * which id happens to be null.
+ */
+export const shopReviewReplies = pgTable(
+  'shop_review_replies',
+  {
+    id: text('id').primaryKey(),
+    reviewId: text('review_id')
+      .notNull()
+      .references(() => shopReviews.id, { onDelete: 'cascade' }),
+    /** NULL is top level. Self-referential, so deleting a reply takes the
+     *  replies to it rather than orphaning them. */
+    parentId: text('parent_id'),
+    depth: integer('depth').notNull(),
+    body: text('body').notNull(),
+    authorKind: text('author_kind').$type<'owner' | 'customer'>().notNull(),
+    /** What the public sees. For an owner reply this is the SHOP's name, never
+     *  the staff member's — that lives in `staffUserId` and stays admin-only. */
+    authorName: text('author_name').notNull(),
+    customerId: text('customer_id').references(() => shopCustomers.id, {
+      onDelete: 'set null',
+    }),
+    /** Who actually typed an owner reply. Never on the public wire. */
+    staffUserId: uuid('staff_user_id').references(() => users.id),
+    /** Customer replies land `pending`; owner replies are inserted `approved`,
+     *  because queueing staff writing for staff approval is theatre. */
+    status: text('status')
+      .$type<'pending' | 'approved' | 'rejected' | 'flagged'>()
+      .notNull()
+      .default('pending'),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
+    moderatedAt: bigint('moderated_at', { mode: 'number' }),
+    moderatedBy: text('moderated_by'),
+  },
+  (t) => [
+    index('shop_review_replies_review_idx').on(t.reviewId, t.status, t.id),
+    index('shop_review_replies_status_idx').on(t.status, t.id),
+    index('shop_review_replies_parent_idx').on(t.parentId),
+    check(
+      'shop_review_replies_status_ck',
+      sql`${t.status} IN ('pending', 'approved', 'rejected', 'flagged')`,
+    ),
+    check('shop_review_replies_kind_ck', sql`${t.authorKind} IN ('owner', 'customer')`),
+    check('shop_review_replies_depth_ck', sql`${t.depth} IN (0, 1)`),
+    /* THE PAIRING IS THE POINT. Either column alone is satisfiable by a row
+       that makes no sense — a depth-0 row with a parent, a depth-1 orphan — and
+       both render as a broken thread rather than as an error. */
+    check(
+      'shop_review_replies_depth_parent_ck',
+      sql`(${t.depth} = 0 AND ${t.parentId} IS NULL) OR (${t.depth} = 1 AND ${t.parentId} IS NOT NULL)`,
+    ),
+    /* `customerId` is ON DELETE SET NULL, so a deleted customer leaves the
+       reply standing with its byline — which is why the customer arm does not
+       assert `IS NOT NULL`. */
+    check(
+      'shop_review_replies_author_ck',
+      sql`(${t.authorKind} = 'owner' AND ${t.staffUserId} IS NOT NULL AND ${t.customerId} IS NULL) OR (${t.authorKind} = 'customer' AND ${t.staffUserId} IS NULL)`,
+    ),
+  ],
+);
+
+/**
+ * REACTIONS (migration 0620).
+ *
+ * THE PRIMARY KEY IS THE WHOLE RULE. "One vote per customer per review" is
+ * enforced by the composite key, not by a route that checks first — a
+ * check-then-insert is a race, and the race is two tabs turning one person
+ * into two votes.
+ *
+ * There is no `kind = 'none'`: clearing a vote DELETES the row, because a row
+ * recording no opinion is a row every count has to filter out forever.
+ *
+ * NO DENORMALISED COUNTER. `shopReviews` gains no `helpfulCount`, and there is
+ * no trigger — the counts are aggregated on read and therefore cannot drift
+ * from the rows they describe.
+ */
+export const shopReviewReactions = pgTable(
+  'shop_review_reactions',
+  {
+    reviewId: text('review_id')
+      .notNull()
+      .references(() => shopReviews.id, { onDelete: 'cascade' }),
+    customerId: text('customer_id')
+      .notNull()
+      .references(() => shopCustomers.id, { onDelete: 'cascade' }),
+    /** `helpful` is public as a count; `unhelpful` is admin-only. A public
+     *  dislike tally is a scoreboard for brigading, and the owner still wants
+     *  the signal. Enforced by the public projection's allow-list. */
+    kind: text('kind').$type<'helpful' | 'unhelpful'>().notNull(),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
+  },
+  (t) => [
+    primaryKey({ name: 'shop_review_reactions_pk', columns: [t.reviewId, t.customerId] }),
+    index('shop_review_reactions_review_kind_idx').on(t.reviewId, t.kind),
+    check('shop_review_reactions_kind_ck', sql`${t.kind} IN ('helpful', 'unhelpful')`),
+  ],
+);
+
+export type DbShopReviewReply = typeof shopReviewReplies.$inferSelect;
+export type DbShopReviewReaction = typeof shopReviewReactions.$inferSelect;

@@ -1601,3 +1601,99 @@ a.idcell__title:hover {
   justify-content: space-between;
   gap: var(--s3);
 }
+
+/* ── review threads (migration 0620) ───────────────────────────────────────
+   Reuses the token scale and `.field__hint`; declares only what a threaded
+   list genuinely needs that nothing else in v2 already expresses. */
+.thread {
+  display: grid;
+  gap: var(--s4);
+  border-top: 1px solid var(--border-sub);
+  padding-top: var(--s4);
+}
+
+.thread__counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.thread__list {
+  display: grid;
+  gap: var(--s3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.thread__item {
+  display: grid;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 1px solid var(--border-sub);
+  border-radius: var(--r2, 8px);
+}
+
+/* One level of nesting, because there is exactly one level. The rule is a
+   border rather than a wide indent so a long thread does not walk off a
+   narrow modal. */
+.thread__item--nested {
+  margin-inline-start: var(--s6);
+  border-inline-start: 2px solid var(--border-strong);
+}
+
+/* A reply awaiting moderation is SHOWN, not hidden — this is the queue — but
+   it must not read as though it is already live on the storefront. */
+.thread__item--muted {
+  opacity: 0.72;
+  background: var(--neutral-bg);
+}
+
+.thread__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.thread__avatar {
+  inline-size: 1.5rem;
+  block-size: 1.5rem;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+
+.thread__avatar--initial {
+  display: grid;
+  place-items: center;
+  background: var(--neutral-bg);
+  color: var(--ink-sub);
+  font-size: var(--t-sm, 0.8125rem);
+  font-weight: 600;
+}
+
+.thread__body {
+  margin: 0;
+  line-height: 1.6;
+  /* Replies are plain text and arrive with the newlines their author typed. */
+  white-space: pre-wrap;
+}
+
+.thread__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.thread__composer {
+  display: grid;
+  gap: var(--s2);
+}
+
+.thread__composer-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+}

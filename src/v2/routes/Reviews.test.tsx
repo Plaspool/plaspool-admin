@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -239,5 +239,200 @@ describe('the reviews queue', () => {
     const patches = bodiesOf(`${REVIEWS}/${pendingReview.id}`, 'PATCH');
     expect(patches).toHaveLength(2);
     expect(patches[1]).toEqual({ status: 'rejected' });
+  });
+});
+
+// -------------------------------------------------- the thread panel (0620)
+
+/** An APPROVED review — the thread only opens on one, by design. */
+const approvedReview: AdminReview = {
+  ...pendingReview,
+  id: 'rev_ok',
+  title: 'Approved review',
+  status: 'approved',
+};
+
+const ownerReply = {
+  id: 'rpl_owner',
+  parentId: null,
+  depth: 0,
+  body: 'Thanks Ada — glad it printed well.',
+  authorKind: 'owner' as const,
+  authorName: 'PlaSpool',
+  status: 'approved' as const,
+  customerId: null,
+  staffUserId: 'u_owner',
+  createdAt: NOW - 3_600_000,
+  updatedAt: NOW - 3_600_000,
+  moderatedAt: NOW - 3_600_000,
+  moderatedBy: 'u_owner',
+};
+
+const pendingCustomerReply = {
+  id: 'rpl_cust',
+  parentId: 'rpl_owner',
+  depth: 1,
+  body: 'Mine arrived quickly too.',
+  authorKind: 'customer' as const,
+  authorName: 'Tunde',
+  status: 'pending' as const,
+  customerId: 'cus_2',
+  staffUserId: null,
+  createdAt: NOW - 1_800_000,
+  updatedAt: NOW - 1_800_000,
+  moderatedAt: null,
+  moderatedBy: null,
+};
+
+function withThread(
+  replies: unknown[] = [ownerReply, pendingCustomerReply],
+  reactions = { helpful: 3, unhelpful: 1 },
+): void {
+  when(REVIEWS, { items: [approvedReview], nextCursor: null });
+  when(`${REVIEWS}/${approvedReview.id}/replies`, { replies, reactions });
+}
+
+const openApproved = async (user: ReturnType<typeof userEvent.setup>) => {
+  await user.click(await screen.findByText(approvedReview.title!));
+  return screen.findByRole('dialog', { name: approvedReview.title! });
+};
+
+describe('the review thread', () => {
+  it('shows BOTH reaction counts — the only surface that does', async () => {
+    /*
+     * The asymmetry 0620 exists for: publicly there is no dislike tally to
+     * organise around, and here the owner gets the signal. If this ever starts
+     * matching the public response, one of the two is wrong.
+     */
+    const user = userEvent.setup();
+    withThread();
+    mount();
+    const modal = await openApproved(user);
+
+    expect(await within(modal).findByText('3 found this helpful')).toBeTruthy();
+    expect(within(modal).getByText(/1 did not/)).toBeTruthy();
+  });
+
+  it('badges the shop reply and gives it the brand mark, not an initial', async () => {
+    const user = userEvent.setup();
+    withThread();
+    mount();
+    const modal = await openApproved(user);
+
+    expect(await within(modal).findByText('PlaSpool')).toBeTruthy();
+    expect(within(modal).getByText('Shop')).toBeTruthy();
+    // The customer gets an initial instead.
+    expect(within(modal).getByText('T')).toBeTruthy();
+  });
+
+  it('SHOWS a pending reply rather than hiding it — this is the queue', async () => {
+    const user = userEvent.setup();
+    withThread();
+    mount();
+    const modal = await openApproved(user);
+
+    expect(await within(modal).findByText('Mine arrived quickly too.')).toBeTruthy();
+    expect(within(modal).getByText('pending')).toBeTruthy();
+    // And it can be acted on.
+    expect(within(modal).getByRole('button', { name: 'Approve' })).toBeTruthy();
+  });
+
+  it('offers moderation on CUSTOMER replies only — an owner reply is approved at birth', async () => {
+    const user = userEvent.setup();
+    withThread([ownerReply], { helpful: 0, unhelpful: 0 });
+    mount();
+    const modal = await openApproved(user);
+
+    await within(modal).findByText('PlaSpool');
+    /* SCOPED TO THE REPLY'S OWN ROW, not to the modal. The modal footer carries
+       the REVIEW's moderation buttons, and asserting over the whole dialog
+       would conflate the two — which is exactly what the first draft of this
+       test did, and it failed for that reason rather than a real one. */
+    const row = within(modal).getByRole('listitem');
+    expect(within(row).queryByRole('button', { name: 'Approve' })).toBeNull();
+    expect(within(row).queryByRole('button', { name: 'Reject' })).toBeNull();
+    // The reply button IS offered — the row is not simply actionless.
+    expect(within(row).getByRole('button', { name: 'Reply' })).toBeTruthy();
+  });
+
+  it('hides Reply at depth 1, rather than offering what the server refuses', async () => {
+    // Two levels is the ceiling. A button that produced a 400 naming `parentId`
+    // would make the refusal the user's first hint that a rule exists.
+    const user = userEvent.setup();
+    withThread();
+    mount();
+    const modal = await openApproved(user);
+
+    await within(modal).findByText('Mine arrived quickly too.');
+    // One Reply button — the depth-0 owner reply's — and not two.
+    expect(within(modal).getAllByRole('button', { name: 'Reply' })).toHaveLength(1);
+  });
+
+  it('posts to the STAFF endpoint with no byline, and reloads the thread', async () => {
+    const user = userEvent.setup();
+    withThread([], { helpful: 0, unhelpful: 0 });
+    when(`${REVIEWS}/${approvedReview.id}/staff-replies`, { reply: ownerReply }, 201);
+    mount();
+    const modal = await openApproved(user);
+
+    await user.type(
+      await within(modal).findByLabelText('Reply as the shop'),
+      'Thanks for the kind words.',
+    );
+    await user.click(within(modal).getByRole('button', { name: 'Post reply' }));
+
+    await waitFor(() =>
+      expect(bodiesOf(`${REVIEWS}/${approvedReview.id}/staff-replies`, 'POST').at(-1)).toEqual({
+        body: 'Thanks for the kind words.',
+        // Top level, and NO authorName — the shop's byline is the server's to
+        // set, so an admin cannot sign a reply with their own name.
+        parentId: null,
+      }),
+    );
+  });
+
+  it('threads a reply under the one it is answering', async () => {
+    const user = userEvent.setup();
+    withThread();
+    when(`${REVIEWS}/${approvedReview.id}/staff-replies`, { reply: ownerReply }, 201);
+    mount();
+    const modal = await openApproved(user);
+
+    await user.click(await within(modal).findByRole('button', { name: 'Reply' }));
+    expect(within(modal).getByLabelText('Replying to PlaSpool')).toBeTruthy();
+
+    await user.type(within(modal).getByLabelText('Replying to PlaSpool'), 'Following up.');
+    await user.click(within(modal).getByRole('button', { name: 'Post reply' }));
+
+    await waitFor(() =>
+      expect(bodiesOf(`${REVIEWS}/${approvedReview.id}/staff-replies`, 'POST').at(-1)).toMatchObject({
+        parentId: 'rpl_owner',
+      }),
+    );
+  });
+
+  it('does not open a composer on a review that is not approved yet', async () => {
+    // Nothing public to reply to, and the server refuses on the same rule — so
+    // a composer here would be a control that 404s.
+    const user = userEvent.setup();
+    when(REVIEWS, { items: [pendingReview], nextCursor: null });
+    mount();
+    const modal = await openModal(user);
+
+    expect(within(modal).queryByLabelText('Reply as the shop')).toBeNull();
+    expect(within(modal).getByText(/Replies open once this review is approved/)).toBeTruthy();
+  });
+
+  it('survives a thread that will not load, rather than breaking the modal', async () => {
+    // The panel is an adjunct to the review. A modal that refused to open
+    // because the replies 500'd would be worse than one without them.
+    const user = userEvent.setup();
+    when(REVIEWS, { items: [approvedReview], nextCursor: null });
+    when(`${REVIEWS}/${approvedReview.id}/replies`, { error: 'boom' }, 500);
+    mount();
+    const modal = await openApproved(user);
+
+    expect(await within(modal).findByText('No replies yet.')).toBeTruthy();
+    expect(within(modal).getByLabelText('Reply as the shop')).toBeTruthy();
   });
 });

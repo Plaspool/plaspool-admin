@@ -1,12 +1,21 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { MessageSquare, Star, Trash2 } from 'lucide-react';
 import {
+  destroyReply,
   destroyReview,
   listReviews,
+  loadThread,
+  moderateReply,
   moderateReview,
+  replyAsOwner,
+  type AdminReply,
   type AdminReview,
   type ReviewStatus,
+  type ReviewThread,
 } from '../../data/api-reviews';
+import { ApiError } from '../../data/errors';
+import { BrandLogo } from '../../components/BrandLogo';
+import { TextArea } from '../ui/Field';
 import { getSession } from '../../data/session';
 import { useAsync } from '../lib/useAsync';
 import { dateTime, shortDate } from '../lib/format';
@@ -303,6 +312,21 @@ export default function Reviews() {
                   : []),
               ]}
             />
+            {/* The thread. Only for an APPROVED review: nothing can be replied
+                to until it is public, and the server refuses on the same rule —
+                so offering a composer here would be a control that 404s. */}
+            {openReview.status === 'approved' ? (
+              <ThreadPanel
+                review={openReview}
+                isOwner={isOwner}
+                onError={(message) => toast.show(message)}
+              />
+            ) : (
+              <p className="field__hint">
+                Replies open once this review is approved — there is nothing public
+                to reply to before that.
+              </p>
+            )}
           </div>
         </Modal>
       ) : null}
@@ -326,6 +350,206 @@ export default function Reviews() {
           </p>
         </Modal>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The thread under one review: every reply whatever its status, the shop's
+ * composer, and both reaction counts.
+ *
+ * ITS OWN COMPONENT, AND ITS OWN FETCH. The list route does not carry replies —
+ * a reply query per row would be an N+1 on a moderation table nobody reads
+ * threads from — so the panel loads when the modal opens and owns that state.
+ *
+ * PENDING REPLIES ARE SHOWN, GREYED AND BADGED. This is the moderation
+ * surface: a queue that hid what it was queueing would be useless.
+ */
+function ThreadPanel({
+  review,
+  isOwner,
+  onError,
+}: {
+  review: AdminReview;
+  isOwner: boolean;
+  onError: (message: string) => void;
+}) {
+  const [thread, setThread] = useState<ReviewThread | null>(null);
+  const [draft, setDraft] = useState('');
+  /** Which reply the composer is answering, or null for the review itself. */
+  const [replyTo, setReplyTo] = useState<AdminReply | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    loadThread(review.id)
+      .then((t) => {
+        if (live) setThread(t);
+      })
+      .catch(() => {
+        /* Swallowed to an empty thread rather than surfaced: the panel is an
+           adjunct to the review, and a modal that refused to open because the
+           replies could not be fetched would be worse than one without them. */
+        if (live) setThread({ replies: [], reactions: { helpful: 0, unhelpful: 0 } });
+      });
+    return () => {
+      live = false;
+    };
+  }, [review.id]);
+
+  async function send() {
+    const body = draft.trim();
+    if (body.length < 2 || busy) return;
+    setBusy(true);
+    try {
+      /* `replyTo?.id ?? null` — replying to a reply nests one level; replying to
+         the review itself is top level. The server refuses a third level with a
+         400 naming `parentId`, so the button below is hidden at depth 1 rather
+         than the refusal being the user's first hint. */
+      await replyAsOwner(review.id, body, replyTo?.id ?? null);
+      setDraft('');
+      setReplyTo(null);
+      setThread(await loadThread(review.id));
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : 'Could not post the reply.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function setStatus(reply: AdminReply, status: ReviewStatus) {
+    setBusy(true);
+    try {
+      await moderateReply(reply.id, status);
+      setThread(await loadThread(review.id));
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : 'Could not update the reply.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(reply: AdminReply) {
+    setBusy(true);
+    try {
+      await destroyReply(reply.id);
+      setThread(await loadThread(review.id));
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : 'Could not delete the reply.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (thread === null) return <p className="field__hint">Loading the thread…</p>;
+
+  return (
+    <div className="thread">
+      <div className="thread__counts">
+        {/* The asymmetry is deliberate and this is the only surface that shows
+            both — see 0620. Publicly there is no dislike number to organise
+            around; here the owner gets the signal. */}
+        <Badge tone="neutral">{thread.reactions.helpful} found this helpful</Badge>
+        {thread.reactions.unhelpful > 0 ? (
+          <Badge tone="warn">{thread.reactions.unhelpful} did not · staff only</Badge>
+        ) : null}
+      </div>
+
+      {thread.replies.length === 0 ? (
+        <p className="field__hint">No replies yet.</p>
+      ) : (
+        <ul className="thread__list">
+          {thread.replies.map((reply) => (
+            <li
+              key={reply.id}
+              className={`thread__item${reply.depth === 1 ? ' thread__item--nested' : ''}${
+                reply.status === 'approved' ? '' : ' thread__item--muted'
+              }`}
+            >
+              <div className="thread__head">
+                {/* The shop's own replies wear the logomark, which is exactly
+                    what the storefront does — one visual rule, both surfaces. */}
+                {reply.authorKind === 'owner' ? (
+                  <BrandLogo variant="mark" className="thread__avatar" />
+                ) : (
+                  <span className="thread__avatar thread__avatar--initial" aria-hidden="true">
+                    {reply.authorName.slice(0, 1).toUpperCase()}
+                  </span>
+                )}
+                <strong>{reply.authorName}</strong>
+                {reply.authorKind === 'owner' ? <Badge tone="info">Shop</Badge> : null}
+                {reply.status !== 'approved' ? (
+                  <Badge tone={STATUS_TONE[reply.status]}>{reply.status}</Badge>
+                ) : null}
+                <span className="spacer" />
+                <span className="field__hint">{dateTime(reply.createdAt)}</span>
+              </div>
+
+              <p className="thread__body">{reply.body}</p>
+
+              <div className="thread__actions">
+                {/* Only CUSTOMER replies are moderated. An owner reply is
+                    approved at birth, and offering to approve our own writing
+                    would be a control with nothing behind it. */}
+                {reply.authorKind === 'customer' && reply.status !== 'approved' ? (
+                  <Button tone="primary" onClick={() => void setStatus(reply, 'approved')} disabled={busy}>
+                    Approve
+                  </Button>
+                ) : null}
+                {reply.authorKind === 'customer' && reply.status !== 'rejected' ? (
+                  <Button tone="plain" onClick={() => void setStatus(reply, 'rejected')} disabled={busy}>
+                    Reject
+                  </Button>
+                ) : null}
+                {/* Depth 1 is the ceiling, so the reply button disappears there
+                    rather than offering an action the server would refuse. */}
+                {reply.depth === 0 ? (
+                  <Button tone="plain" onClick={() => setReplyTo(reply)} disabled={busy}>
+                    Reply
+                  </Button>
+                ) : null}
+                {isOwner ? (
+                  <Button
+                    tone="plain"
+                    aria-label={`Delete reply by ${reply.authorName}`}
+                    onClick={() => void remove(reply)}
+                    disabled={busy}
+                  >
+                    <Trash2 aria-hidden="true" />
+                  </Button>
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="thread__composer">
+        <TextArea
+          label={replyTo ? `Replying to ${replyTo.authorName}` : 'Reply as the shop'}
+          value={draft}
+          rows={3}
+          placeholder="Answer as PlaSpool. This is public the moment you post it."
+          onChange={(e) => setDraft(e.target.value)}
+        />
+        <div className="thread__composer-foot">
+          {replyTo ? (
+            <Button tone="plain" onClick={() => setReplyTo(null)} disabled={busy}>
+              Reply to the review instead
+            </Button>
+          ) : (
+            <span />
+          )}
+          <Button
+            tone="primary"
+            busy={busy}
+            disabled={draft.trim().length < 2}
+            onClick={() => void send()}
+          >
+            Post reply
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

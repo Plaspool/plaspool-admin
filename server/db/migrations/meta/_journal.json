@@ -288,6 +288,13 @@
                         "when":  1786600003300,
                         "tag":  "0600_bulk_discount_tiers",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  41,
+                        "version":  "7",
+                        "when":  1786600003400,
+                        "tag":  "0620_review_replies_and_reactions",
+                        "breakpoints":  true
                     }
                 ]
 }
