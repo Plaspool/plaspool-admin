@@ -836,15 +836,21 @@ a.idcell__title:hover {
   }
 
   /* A cell whose column has no name — a per-row ⋯, a lone action — floats to
-     the card's corner, beside the expand key. */
+     the card's corner: beside the expand key where one follows (the shared
+     DataTable), at the edge itself in a hand-rolled table with no expand
+     (the variants card, where the reserved gap read as a misplaced button). */
   .table td[data-label=''] {
     display: block;
     position: absolute;
     top: var(--s2);
-    right: calc(var(--s2) + 2rem);
+    right: var(--s2);
     flex: none;
     width: auto;
     min-width: 0;
+  }
+
+  .table td[data-label='']:has(~ .cell--expand) {
+    right: calc(var(--s2) + 2rem);
   }
 
   .table td[data-label='']::before {
@@ -872,6 +878,46 @@ a.idcell__title:hover {
    header count still matches the body. */
 .cell--expand {
   display: none;
+}
+
+/* ═══ PINNED ACTIONS (owner's third round) ═══ A wide table clips at its
+   card's edge, and the first thing the clip swallowed was the one column a
+   row cannot work without — its ⋯ (the Marketing screenshot). Pinned cells
+   ride the scroll's right edge: sticky inside `.tscroll`, painted, with a
+   soft left fade so rows visibly continue underneath. Hover keeps the row's
+   own tint. Phone layouts position these cells themselves, so the pin is
+   desktop-only. */
+@media (min-width: 48.001rem) {
+  .table td.cell--pin,
+  .table th.th--pin {
+    position: sticky;
+    right: 0;
+    background: var(--surface);
+  }
+
+  .table th.th--pin {
+    background: var(--surface-sub);
+    z-index: 2;
+  }
+
+  .table td.cell--pin::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -12px;
+    width: 12px;
+    background: linear-gradient(to right, transparent, rgb(26 26 26 / 0.05));
+    pointer-events: none;
+  }
+
+  .table tbody tr.is-clickable:hover .cell--pin {
+    background: var(--surface-sub);
+  }
+
+  .table tbody tr.is-selected .cell--pin {
+    background: var(--accent-soft);
+  }
 }
 
 .trowx {

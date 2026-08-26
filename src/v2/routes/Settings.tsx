@@ -140,7 +140,7 @@ export default function Settings() {
       },
     },
     {
-      key: 'act',
+      key: 'act', pin: true,
       header: <span className="sr">Actions</span>,
       label: 'Actions',
       tight: true,

@@ -22,6 +22,21 @@ body,
   height: 100%;
 }
 
+/* ═══ THE WINDOW NEVER SCROLLS (owner's report: a second, outer scrollbar
+   that "hides the black stuff" — the topbar — and reveals a void below).
+   This is an application frame: `.main` is THE scroller, `.side` scrolls
+   itself, and every overlay is fixed. Whatever nudges the document taller on
+   a given OS/zoom/scrollbar-metrics combination (it reproduced on the
+   owner's machine and on no geometry tried here), the document is simply not
+   a scroll surface — locking it removes the class of bug rather than the
+   sighting. `overscroll-behavior` stops the rubber-band from re-inventing
+   the same visual at the edges. */
+html,
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 body {
   margin: 0;
   background: var(--bg);

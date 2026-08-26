@@ -177,7 +177,7 @@ export default function Banners() {
       render: ({ banner: b }) => <span className="num">{b.priority}</span>,
     },
     {
-      key: 'act',
+      key: 'act', pin: true,
       header: <span className="sr">Actions</span>,
       label: 'Actions',
       tight: true,

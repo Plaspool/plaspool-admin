@@ -156,7 +156,7 @@ export default function EmailTemplates() {
       ),
     },
     {
-      key: 'act',
+      key: 'act', pin: true,
       header: <span className="sr">Actions</span>,
       label: 'Actions',
       tight: true,

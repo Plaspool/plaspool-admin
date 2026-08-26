@@ -42,11 +42,49 @@ export function Menu({
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
+  /*
+   * ═══ THE PANEL IS FIXED, NOT ABSOLUTE (owner's third round) ═══
+   * An absolute panel is clipped by any overflowing ancestor, and menus live
+   * inside two of them: `.tscroll` (a per-row ⋯ in a wide table — the
+   * Marketing screenshot, where the open menu forced the table to scroll and
+   * cut itself off) and the mobile card (the variants ⋯, cut at the card
+   * edge). Fixed positioning measures the trigger on open and renders at the
+   * viewport level, above every overflow. The cost is that a fixed panel does
+   * not ride along when something scrolls — so ANY scroll closes it, which is
+   * also what a menu should do: the thing it was anchored to just moved.
+   */
+  const [pos, setPos] = useState<{ top: number; left?: number; right?: number } | null>(null);
+  const panel = useRef<HTMLDivElement>(null);
+
+  function openAtTrigger() {
+    const rect = trigger.current?.getBoundingClientRect();
+    if (!rect) return;
+    setPos(
+      align === 'left'
+        ? { top: rect.bottom + 8, left: Math.max(8, rect.left) }
+        : { top: rect.bottom + 8, right: Math.max(8, window.innerWidth - rect.right) },
+    );
+    setOpen(true);
+  }
+
+  /* If the panel would run off the bottom, sit it above the trigger instead —
+     measured after mount, because the panel's height is its content's. */
+  useEffect(() => {
+    if (!open || !panel.current || !trigger.current || pos === null) return;
+    const panelRect = panel.current.getBoundingClientRect();
+    const triggerRect = trigger.current.getBoundingClientRect();
+    if (panelRect.bottom > window.innerHeight - 8) {
+      const above = triggerRect.top - 8 - panelRect.height;
+      setPos((was) => (was ? { ...was, top: Math.max(8, above) } : was));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- position once per open
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
     function onDown(event: PointerEvent) {
       if (root.current?.contains(event.target as Node)) return;
+      if (panel.current?.contains(event.target as Node)) return;
       setOpen(false);
     }
     function onKey(event: KeyboardEvent) {
@@ -54,11 +92,20 @@ export function Menu({
       setOpen(false);
       trigger.current?.focus();
     }
+    function onScroll() {
+      setOpen(false);
+    }
     document.addEventListener('pointerdown', onDown);
     document.addEventListener('keydown', onKey);
+    /* Capture phase, because the scrolling element is `.main` or `.tscroll`,
+       not the window — bubbling scroll events never reach the document. */
+    document.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onScroll);
     return () => {
       document.removeEventListener('pointerdown', onDown);
       document.removeEventListener('keydown', onKey);
+      document.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onScroll);
     };
   }, [open]);
 
@@ -73,13 +120,18 @@ export function Menu({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={buttonLabel}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => (open ? setOpen(false) : openAtTrigger())}
       >
         {label}
         {chrome === 'bare' ? null : <ChevronDown aria-hidden="true" />}
       </button>
-      {open ? (
-        <div className={align === 'left' ? 'menu__panel menu__panel--left' : 'menu__panel'} role="menu">
+      {open && pos ? (
+        <div
+          ref={panel}
+          className="menu__panel menu__panel--fixed"
+          style={{ top: pos.top, left: pos.left, right: pos.right }}
+          role="menu"
+        >
           {children(() => setOpen(false))}
         </div>
       ) : null}

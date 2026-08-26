@@ -160,7 +160,7 @@ export default function Discounts() {
       ),
     },
     {
-      key: 'actions',
+      key: 'actions', pin: true,
       header: <span className="sr">Actions</span>,
       tight: true,
       render: (d) => (
