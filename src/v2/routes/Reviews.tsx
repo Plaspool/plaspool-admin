@@ -27,10 +27,6 @@ import { useToast } from '../ui/Toast';
  * hides it, and both say so.
  */
 
-/* TODO(tests): none — skipped this session, recorded in CLAUDE.md. Worth
- * pinning: destroy stays hidden for a writer role, and moderation never
- * touches the review's words. */
-
 const TABS: { value: ReviewStatus | 'all'; label: string }[] = [
   { value: 'pending', label: 'Pending' },
   { value: 'approved', label: 'Approved' },

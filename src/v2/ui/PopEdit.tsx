@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
+import { Float } from './Float';
 
 /**
  * The inline cell editor. The value in the table renders as a quiet button —
@@ -10,6 +11,12 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
  * records why a price moved; `adjustInventory` refuses a change without one).
  * An inline input has nowhere to put the reason, which is how "quick edit"
  * designs end up padding `reason: 'edit'` into an audit trail.
+ *
+ * The panel rides `Float`: it lives in table cells and in the phone's
+ * details sheet, which are exactly the two clipping ancestors (`.tscroll`,
+ * `.modal__body`) the shared mechanism exists to escape. Float also stops
+ * clicks reaching the clickable row behind it, and its capture-phase Escape
+ * closes the editor without taking a surrounding modal down with it.
  */
 export function PopEdit({
   value,
@@ -27,36 +34,15 @@ export function PopEdit({
   children: (close: () => void) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const root = useRef<HTMLSpanElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function onDown(event: PointerEvent) {
-      if (root.current?.contains(event.target as Node)) return;
-      setOpen(false);
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key !== 'Escape') return;
-      event.stopPropagation();
-      setOpen(false);
-      trigger.current?.focus();
-    }
-    document.addEventListener('pointerdown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('pointerdown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
 
   if (disabled) return <>{value}</>;
 
   return (
-    /* Clicks inside must never reach a clickable table row behind this —
+    /* The trigger's own click must never reach a clickable table row —
        stopping propagation here is what lets the editor live in a row that
-       navigates. */
-    <span className="popedit" ref={root} onClick={(e) => e.stopPropagation()}>
+       navigates. (Float does the same for the panel.) */
+    <span className="popedit" onClick={(e) => e.stopPropagation()}>
       <button
         ref={trigger}
         type="button"
@@ -67,15 +53,20 @@ export function PopEdit({
       >
         {value}
       </button>
-      {open ? (
-        <div
-          className={align === 'left' ? 'popedit__panel popedit__panel--left' : 'popedit__panel'}
-          role="dialog"
-          aria-label={ariaLabel}
-        >
-          {children(() => setOpen(false))}
-        </div>
-      ) : null}
+      <Float
+        open={open}
+        anchor={trigger}
+        align={align}
+        className="popedit__panel"
+        role="dialog"
+        ariaLabel={ariaLabel}
+        onClose={(opts) => {
+          setOpen(false);
+          if (opts?.refocus) trigger.current?.focus();
+        }}
+      >
+        {children(() => setOpen(false))}
+      </Float>
     </span>
   );
 }

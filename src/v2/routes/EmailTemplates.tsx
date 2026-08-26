@@ -30,10 +30,6 @@ import { useToast } from '../ui/Toast';
  * send from a template carrying {{unsubscribe_url}} in BOTH bodies. System
  * transactional templates are exempt — an order confirmation is not
  * marketing — except account.welcome, the one that genuinely subscribes.
- *
- * TODO(tests): none — skipped this session, recorded in CLAUDE.md. Worth
- * pinning: the live missingUnsubscribe warning matching the server's rule,
- * and system rows offering no Delete.
  */
 
 function OwnerOnly() {

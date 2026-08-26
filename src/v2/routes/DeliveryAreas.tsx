@@ -41,10 +41,6 @@ import { useToast } from '../ui/Toast';
  * prices at the state's zone. The on-screen note states the same.
  */
 
-/* TODO(tests): none — skipped this session, recorded in CLAUDE.md. Worth
- * pinning: `rateMinor: null` clears the override while ABSENT leaves it, and
- * a CAS miss re-reads instead of retrying blind. */
-
 const STORE_CURRENCY = 'NGN';
 
 interface Row {

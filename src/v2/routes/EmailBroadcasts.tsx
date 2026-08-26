@@ -28,10 +28,6 @@ import { useToast } from '../ui/Toast';
  *
  * The daily sweep drains a started broadcast; "Continue sending" exists for
  * the operator who does not want to wait until tomorrow.
- *
- * TODO(tests): none — skipped this session, recorded in CLAUDE.md. Worth
- * pinning: the send confirmation naming `recipientCount` (never a page
- * length), and templates without the unsubscribe link staying unpickable.
  */
 
 const STATUS_TONE: Record<BroadcastStatus, BadgeTone> = {

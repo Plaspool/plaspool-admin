@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Check, ChevronsUpDown, Search } from 'lucide-react';
+import { Float } from './Float';
 
 export interface SearchSelectOption<T extends string> {
   value: T;
@@ -38,7 +39,6 @@ export function SearchSelect<T extends string>({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [hot, setHot] = useState(0);
-  const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -52,24 +52,9 @@ export function SearchSelect<T extends string>({
     if (!open) return;
     setQuery('');
     /* Open on the CURRENT row, not the top — you usually open this to move a
-       step away from where you are, not to start over. */
+       step away from where you are, not to start over. (Dismissal lives in
+       Float; this effect is only the open-time snapshot.) */
     setHot(Math.max(0, options.findIndex((o) => o.value === value)));
-
-    function onDown(event: PointerEvent) {
-      if (root.current?.contains(event.target as Node)) return;
-      setOpen(false);
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key !== 'Escape') return;
-      setOpen(false);
-      trigger.current?.focus();
-    }
-    document.addEventListener('pointerdown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('pointerdown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- open-time snapshot
   }, [open]);
 
@@ -90,7 +75,7 @@ export function SearchSelect<T extends string>({
   const current = options.find((o) => o.value === value);
 
   return (
-    <div className="sselect" ref={root}>
+    <div className="sselect">
       <button
         ref={trigger}
         type="button"
@@ -104,8 +89,20 @@ export function SearchSelect<T extends string>({
         {current?.label ?? value}
         <ChevronsUpDown aria-hidden="true" />
       </button>
-      {open ? (
-        <div className={align === 'right' ? 'sselect__panel sselect__panel--right' : 'sselect__panel'}>
+      {/* Floated: these pickers sit inside cards and modal bodies, both of
+          which clip. The panel keeps at least the trigger's width through
+          `--float-anchor-w` (the old `min-width: 100%` would resolve against
+          the viewport once fixed). */}
+      <Float
+        open={open}
+        anchor={trigger}
+        align={align === 'right' ? 'right' : 'left'}
+        className="sselect__panel"
+        onClose={(opts) => {
+          setOpen(false);
+          if (opts?.refocus) trigger.current?.focus();
+        }}
+      >
           <div className="sselect__search">
             <Search aria-hidden="true" />
             <input
@@ -152,8 +149,7 @@ export function SearchSelect<T extends string>({
               ))
             )}
           </div>
-        </div>
-      ) : null}
+      </Float>
     </div>
   );
 }

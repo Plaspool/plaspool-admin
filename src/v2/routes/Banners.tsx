@@ -28,11 +28,6 @@ import { useToast } from '../ui/Toast';
  *
  * THERE IS NO DELETE. A banner that ran is a thing that happened; archiving
  * is the way off the list.
- *
- * TODO(tests): none — skipped this session, recorded in CLAUDE.md. Worth
- * pinning: the derived-status filter (a stored-live row shows under
- * "scheduled" before its window), and the CAS patch carrying
- * expectedRevision.
  */
 
 const STATUS_TONE: Record<DerivedBannerStatus, BadgeTone> = {
