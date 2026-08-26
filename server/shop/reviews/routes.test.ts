@@ -40,8 +40,11 @@ function submission(over: Partial<Record<string, unknown>> = {}) {
     productSlug: 'pla-basic',
     rating: 5,
     body: 'Prints clean, great colour, would recommend to anyone.',
+    /* `authorName` stays — it is the BYLINE, not identity, and the session's
+       `displayName` overrides it when the account has one. `authorEmail` is
+       gone from every fixture because the schema no longer accepts it: the
+       address is read from the session and from nowhere else. */
     authorName: 'Dara',
-    authorEmail: `dara+${Math.random().toString(36).slice(2, 8)}@example.com`,
     ...over,
   };
 }
@@ -61,7 +64,7 @@ function fromFreshIp(): { headers: Record<string, string> } {
 
 /** Submit and approve in one motion — the fixture most read tests need. */
 async function approved(over: Partial<Record<string, unknown>> = {}): Promise<string> {
-  const res = await anon.post(SUBMIT, submission(over), fromFreshIp());
+  const res = await anon.post(SUBMIT, submission(over), asShopper());
   expect(res.status).toBe(201);
   const { reviewId } = (await res.json()) as { reviewId: string };
   const mod = await owner.patch(`${ADMIN}/${reviewId}`, { status: 'approved' });
@@ -69,11 +72,38 @@ async function approved(over: Partial<Record<string, unknown>> = {}): Promise<st
   return reviewId;
 }
 
+/**
+ * A signed-in shopper, because the intake now REQUIRES a customer session.
+ *
+ * Module-scope and created once: every submission fixture in this file needs
+ * one, and the narrow rate budget keys on (ip, email) — `fromFreshIp()` already
+ * varies the address, so one shared account cannot exhaust it.
+ */
+let shopper: { id: string; cookie: string };
+
+async function signedInCustomer(
+  email: string | null,
+  displayName: string | null,
+): Promise<{ id: string; cookie: string }> {
+  const customer = await createCustomer(ctx.db, { email, displayName });
+  const session = await createCustomerSession(ctx.db, customer.id);
+  return { id: customer.id, cookie: `${SHOP_SESSION_COOKIE}=${session.token}` };
+}
+
+/** A fresh address plus a cookie — the two headers every submit needs. */
+function withCookie(cookie: string): { headers: Record<string, string> } {
+  return { headers: { ...fromFreshIp().headers, cookie } };
+}
+
+/** The default shopper's headers. What `fromFreshIp()` used to be for submits. */
+const asShopper = (): { headers: Record<string, string> } => withCookie(shopper.cookie);
+
 beforeAll(async () => {
   ctx = await freshDb();
   owner = await login(ctx.users.owner);
   writer = await login(ctx.users.writer);
   anon = httpClient(ctx.db);
+  shopper = await signedInCustomer('dara@example.com', null);
 });
 
 afterAll(async () => {
@@ -82,7 +112,7 @@ afterAll(async () => {
 
 describe('the customer intake', () => {
   it('accepts an anonymous submission, answers narrow, and attaches sentiment', async () => {
-    const res = await anon.post(SUBMIT, submission(), fromFreshIp());
+    const res = await anon.post(SUBMIT, submission(), asShopper());
     expect(res.status).toBe(201);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.reviewId).toMatch(/^rev_/);
@@ -93,9 +123,9 @@ describe('the customer intake', () => {
   });
 
   it('rejects a rating outside 1–5 and a body below the floor', async () => {
-    expect((await anon.post(SUBMIT, submission({ rating: 6 }), fromFreshIp())).status).toBe(400);
-    expect((await anon.post(SUBMIT, submission({ rating: 0 }), fromFreshIp())).status).toBe(400);
-    expect((await anon.post(SUBMIT, submission({ body: 'short' }), fromFreshIp())).status).toBe(400);
+    expect((await anon.post(SUBMIT, submission({ rating: 6 }), asShopper())).status).toBe(400);
+    expect((await anon.post(SUBMIT, submission({ rating: 0 }), asShopper())).status).toBe(400);
+    expect((await anon.post(SUBMIT, submission({ body: 'short' }), asShopper())).status).toBe(400);
   });
 
   it('answers the preflight for an allow-listed origin', async () => {
@@ -126,27 +156,29 @@ describe('the customer intake', () => {
   });
 
   it('answers a real submission WITH CREDENTIALS too', async () => {
-    const res = await anon.post(SUBMIT, submission(), fromFreshIp());
+    const res = await anon.post(SUBMIT, submission(), asShopper());
     expect(res.status).toBe(201);
     expect(res.headers.get('access-control-allow-credentials')).toBe('true');
   });
 
   it('holds the per-email budget: the fourth submission from one address 429s', async () => {
-    const ip = { headers: { 'x-real-ip': '198.51.100.77' } };
-    const email = 'budget@example.com';
+    /*
+     * THE BUDGET IS NOW STRONGER THAN THIS TEST USED TO PROVE. It used to vary
+     * `authorEmail` in the BODY, which meant the identity it keyed on was
+     * whatever the caller typed — so a script could buy a fresh budget by
+     * changing one string. The address is the session's now, so the only way to
+     * a new bucket is a new account.
+     *
+     * Case-folding is no longer asserted here and does not need to be: the
+     * value never comes from user input, and `shop_customers.email` is unique,
+     * so DARA@ and dara@ cannot be two rows to begin with.
+     */
+    const budgeted = await signedInCustomer('budget@example.com', null);
+    const ip = { headers: { 'x-real-ip': '198.51.100.77', cookie: budgeted.cookie } };
     for (let i = 0; i < 3; i += 1) {
-      const res = await anon.post(SUBMIT, submission({ authorEmail: email }), ip);
-      expect(res.status).toBe(201);
+      expect((await anon.post(SUBMIT, submission(), ip)).status).toBe(201);
     }
-    const fourth = await anon.post(SUBMIT, submission({ authorEmail: email }), ip);
-    expect(fourth.status).toBe(429);
-    // Case-folding shares the budget: DARA@ and dara@ are one identity.
-    const folded = await anon.post(
-      SUBMIT,
-      submission({ authorEmail: 'BUDGET@example.com' }),
-      ip,
-    );
-    expect(folded.status).toBe(429);
+    expect((await anon.post(SUBMIT, submission(), ip)).status).toBe(429);
   });
 
   it('grants nothing on the preflight to an origin off the list', async () => {
@@ -170,34 +202,55 @@ describe('a signed-in customer, through the REAL composition root', () => {
    * `server/shop/composition.test.ts` uses for Orders, after the identical
    * bug shipped there once.
    */
-  async function signedInCustomer(
-    email: string | null,
-    displayName: string | null,
-  ): Promise<{ id: string; cookie: string }> {
-    const customer = await createCustomer(ctx.db, { email, displayName });
-    const session = await createCustomerSession(ctx.db, customer.id);
-    return { id: customer.id, cookie: `${SHOP_SESSION_COOKIE}=${session.token}` };
-  }
-
-  /** One `x-real-ip` header plus a cookie header, computed exactly once. */
-  function withCookie(cookie: string): { headers: Record<string, string> } {
-    return { headers: { ...fromFreshIp().headers, cookie } };
-  }
-
-  it('leaves customer_id null and behaves exactly as a guest submission when there is no session', async () => {
+  it('REFUSES a submission with no customer session', async () => {
+    /*
+     * The behaviour change. This route used to accept anyone and write the name
+     * and address out of the request body, so a review could be attributed to
+     * any address somebody typed. The security half was already right for
+     * SIGNED-IN callers — the session overrode the body — but the body still had
+     * to carry both, which is why the storefront asked every logged-in customer
+     * for two things the handler then discarded.
+     *
+     * 401 and not 403: there is no session to be forbidden, and `originGuard`
+     * has already passed by this point.
+     */
     const res = await anon.post(SUBMIT, submission(), fromFreshIp());
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: 'unauthenticated' });
+  });
+
+  it('refuses a STAFF session too — the intake wants a customer, not an admin', async () => {
+    // Two populations, two tables. `owner` is signed in to the admin and has no
+    // `shop_customers` row, so it is anonymous as far as this route is concerned.
+    expect((await owner.post(SUBMIT, submission(), fromFreshIp())).status).toBe(401);
+  });
+
+  it('ignores an authorEmail in the body rather than refusing it', async () => {
+    /*
+     * The schema is deliberately NOT `.strict()` here, so the storefront can
+     * keep sending the old field until it ships its own change — Zod strips it.
+     * Refusing would couple the two repositories to the same deploy minute.
+     */
+    const res = await anon.post(
+      SUBMIT,
+      { ...submission(), authorEmail: 'ignored@example.com' },
+      asShopper(),
+    );
     expect(res.status).toBe(201);
     const { reviewId } = (await res.json()) as { reviewId: string };
     const admin = await owner.get(`${ADMIN}/${reviewId}`);
-    const { review } = (await admin.json()) as { review: { customerId: string | null } };
-    expect(review.customerId).toBeNull();
+    const { review } = (await admin.json()) as { review: { authorEmail: string } };
+    // The session's address, not the one in the body.
+    expect(review.authorEmail).toBe('dara@example.com');
   });
 
-  it('sets customer_id and stores the SESSION email, even when the body carries a different one', async () => {
+  it('sets customer_id and stores the SESSION email and display name', async () => {
     const { id, cookie } = await signedInCustomer('session-owner@example.com', 'Session Name');
     const res = await anon.post(
       SUBMIT,
-      submission({ authorEmail: 'body-address@example.com', authorName: 'Body Name' }),
+      /* The body cannot carry an address any more; the name is a byline and
+         the session's `displayName` still outranks it. */
+      submission({ authorName: 'Body Name' }),
       withCookie(cookie),
     );
     expect(res.status).toBe(201);
@@ -228,24 +281,35 @@ describe('a signed-in customer, through the REAL composition root', () => {
     expect(review.authorName).toBe('Body Supplied Name');
   });
 
-  it("falls back to the body's authorEmail when the customer row has no email", async () => {
-    // A guest row that never claimed an address — a signed-in guest must
-    // still be able to review.
-    const { id, cookie } = await signedInCustomer(null, null);
-    const res = await anon.post(
-      SUBMIT,
-      submission({ authorEmail: 'body-fallback@example.com' }),
-      withCookie(cookie),
-    );
-    expect(res.status).toBe(201);
-    const { reviewId } = (await res.json()) as { reviewId: string };
+  it('refuses a signed-in customer whose account carries no email', async () => {
+    /*
+     * `shop_customers.email` is NULLABLE and `shop_reviews.author_email` is NOT
+     * NULL, so this case has to be answered somewhere. It used to fall back to
+     * the body; with the body no longer carrying an address, the honest answer
+     * is a refusal that names what is missing rather than a 23502 from the
+     * driver.
+     *
+     * ZERO OF FOUR production customers are in this state (measured
+     * 2026-08-26) — the guard exists because the column permits it, not because
+     * anybody is hitting it.
+     */
+    const { cookie } = await signedInCustomer(null, null);
+    const res = await anon.post(SUBMIT, submission(), withCookie(cookie));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'bad_request', detail: 'account_email' });
+  });
 
-    const admin = await owner.get(`${ADMIN}/${reviewId}`);
-    const { review } = (await admin.json()) as {
-      review: { customerId: string | null; authorEmail: string };
-    };
-    expect(review.customerId).toBe(id);
-    expect(review.authorEmail).toBe('body-fallback@example.com');
+  it('refuses when neither the account nor the body supplies a byline', async () => {
+    // `author_name` is NOT NULL and is rendered publicly, and three of four
+    // customers have no display name — so the body's value is a real path.
+    // Deriving one from the email would publish half of an address the public
+    // projection deliberately never returns.
+    const { cookie } = await signedInCustomer('nameless@example.com', null);
+    const { authorName: _drop, ...noName } = submission();
+    void _drop;
+    const res = await anon.post(SUBMIT, noName, withCookie(cookie));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'bad_request', detail: 'authorName' });
   });
 
   it('keys the per-email rate budget on the RESOLVED email, not the body one', async () => {
@@ -271,7 +335,7 @@ describe('a signed-in customer, through the REAL composition root', () => {
 describe('moderation gates every public surface', () => {
   it('a pending review is invisible to the public list and aggregate', async () => {
     const slug = 'petg-basic';
-    const res = await anon.post(SUBMIT, submission({ productSlug: slug }), fromFreshIp());
+    const res = await anon.post(SUBMIT, submission({ productSlug: slug }), asShopper());
     expect(res.status).toBe(201);
 
     const list = (await (await anon.get(`${PUBLIC_LIST}?product=${slug}`)).json()) as {
@@ -335,7 +399,7 @@ describe('the staff surface', () => {
   it('requires a session to list, and a writer can moderate', async () => {
     expect((await anon.get(ADMIN)).status).toBe(401);
 
-    const res = await anon.post(SUBMIT, submission({ productSlug: 'abs-basic' }), fromFreshIp());
+    const res = await anon.post(SUBMIT, submission({ productSlug: 'abs-basic' }), asShopper());
     const { reviewId } = (await res.json()) as { reviewId: string };
     const mod = await writer.patch(`${ADMIN}/${reviewId}`, { status: 'flagged' });
     expect(mod.status).toBe(200);
@@ -355,7 +419,7 @@ describe('the staff surface', () => {
   });
 
   it('destroy is owner-only', async () => {
-    const res = await anon.post(SUBMIT, submission({ productSlug: 'pla-silk' }), fromFreshIp());
+    const res = await anon.post(SUBMIT, submission({ productSlug: 'pla-silk' }), asShopper());
     const { reviewId } = (await res.json()) as { reviewId: string };
 
     expect((await writer.del(`${ADMIN}/${reviewId}`)).status).toBe(403);
@@ -375,7 +439,7 @@ describe('the aggregate', () => {
       body: 'Terrible spool, arrived broken and tangled. Waste of money.',
     });
     // A pending fourth review must not move any number below.
-    await anon.post(SUBMIT, submission({ productSlug: slug, rating: 5 }), fromFreshIp());
+    await anon.post(SUBMIT, submission({ productSlug: slug, rating: 5 }), asShopper());
 
     const { aggregate } = (await (await anon.get(`${PUBLIC_AGG}?product=${slug}`)).json()) as {
       aggregate: {

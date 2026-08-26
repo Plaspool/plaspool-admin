@@ -2,7 +2,15 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
 import { shopCors } from '../cart/cors';
-import { ForbiddenError, pathParam, readJson, readQuery, str } from '../../middleware/errors';
+import {
+  ForbiddenError,
+  UnauthenticatedError,
+  pathParam,
+  readJson,
+  readQuery,
+  str,
+} from '../../middleware/errors';
+import { BadRequestError } from '../../repo/errors';
 import { clientIp, limit } from '../../middleware/ratelimit';
 import { requireAuth } from '../../middleware/session';
 import { currentDb, currentUser } from '../../app-env';
@@ -20,8 +28,9 @@ import type { AppEnv } from '../../app-env';
  *
  * Mounted into the shop app (`/api/shop`), below `originGuard` and
  * `sessionMiddleware`, exactly like the returns desk: the staff routes take
- * `auth`, the customer intake takes none — a customer session is optional,
- * and its absence still leaves the guest path exactly as it always worked.
+ * `auth`, and the customer intake takes a CUSTOMER session — not a staff one.
+ * It is not `requireAuth()`; it is `resolveCustomer` plus a 401, because the
+ * two are different populations signing in through different tables.
  */
 
 /** The narrow shape this subsystem needs from a resolved customer. */
@@ -46,9 +55,15 @@ export interface ReviewsCustomer {
 export type ReviewsCustomerResolver = (c: Context<AppEnv>) => Promise<ReviewsCustomer | null>;
 
 /**
- * The default: nobody is signed in. A deployment that forgets to wire the
- * real resolver degrades to today's guest-only behaviour rather than 500ing —
- * the same choice Orders makes with `NO_CUSTOMER`.
+ * The default: nobody is signed in.
+ *
+ * ITS CONSEQUENCE REVERSED WHEN THE INTAKE STARTED REQUIRING A SESSION. This
+ * used to mean "degrade to the guest path"; it now means "401 every
+ * submission", because the route refuses an unresolved customer. That is the
+ * right direction for an auth check — a deployment that forgets to wire the
+ * resolver takes reviews down loudly instead of quietly writing rows with
+ * nobody attached — but it is a louder failure than the old default implied,
+ * and `server/shop/app.ts` is still the only caller that wires the real one.
  */
 const NO_CUSTOMER: ReviewsCustomerResolver = () => Promise.resolve(null);
 
@@ -77,9 +92,38 @@ const SubmitBody = z.object({
   /** Ten characters is not quality control, it is "the field was not left
    *  holding a single character by accident". Moderation is quality control. */
   body: str().trim().min(10).max(5000),
-  authorName: str().trim().min(1).max(120),
-  authorEmail: str().trim().toLowerCase().email().max(254),
+  /**
+   * THE BYLINE, AND THE ONLY THING ABOUT THE AUTHOR THE BODY MAY STILL SAY.
+   *
+   * OPTIONAL, because the session's `displayName` supplies it whenever the
+   * account has one. It stays accepted at all because `shop_customers.display_name`
+   * is NULLABLE while `shop_reviews.author_name` is NOT NULL — measured
+   * 2026-08-26, THREE OF FOUR customers in production have no display name, so
+   * a session-only rule would refuse most of the shop.
+   *
+   * It is not identity and cannot be forged into anything: `customer_id` and
+   * `author_email` both come from the token now, so the worst a caller can do
+   * with this field is choose how they are credited on their own review.
+   *
+   * DERIVING IT FROM THE EMAIL WAS THE OTHER OPTION AND IS REFUSED:
+   * `author_name` is rendered publicly (`listReviewsPublic` selects it), so
+   * "nathaniel" out of "nathaniel@…" would publish half of an address the
+   * projection deliberately never returns.
+   */
+  authorName: str().trim().min(1).max(120).optional(),
 });
+
+/*
+ * `authorEmail` IS GONE FROM THIS SCHEMA ON PURPOSE — it is not optional, it is
+ * not accepted. The address written to the row and used as the rate-limit key
+ * comes from the session and from nowhere else.
+ *
+ * The schema is NOT `.strict()`, which makes the change safe to deploy ahead of
+ * the storefront: a client still sending `authorEmail` has it silently stripped
+ * by Zod rather than refused, so the two repositories do not have to ship in the
+ * same minute. That leniency is deliberate here and is not a licence to relax
+ * the query schemas, which are strict so a mistyped FILTER is a refusal.
+ */
 
 const ModerateBody = z.object({
   status: z.enum(['pending', 'approved', 'rejected', 'flagged']),
@@ -176,22 +220,24 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
    * every storefront submission. The same argument, and the same shape, as the
    * returns desk's intake.
    *
-   * NO `auth`, still, but not because accounts don't exist — they do. A
-   * customer session is OPTIONAL here the same way it is on the storefront's
-   * checkout: `originGuard` above this mount (a cross-origin POST from an
+   * NOT `auth`, WHICH IS THE STAFF GUARD — a CUSTOMER session, resolved through
+   * `resolveCustomer` and refused with a 401 when absent. Two different
+   * populations sign in through two different tables, and `requireAuth()` here
+   * would demand an admin account from a shopper.
+   *
+   * IT USED TO ACCEPT GUESTS, and the identity came from the request body. The
+   * security half was already right — a resolved session overrode the body, so
+   * nobody could review as somebody else — but the body still had to CARRY a
+   * name and an email, which meant the storefront asked every signed-in
+   * customer for two things this handler then discarded. That is the wrongness
+   * being fixed: identity is read from the token and the body no longer
+   * mentions an address at all.
+   *
+   * `originGuard` above this mount still applies (a cross-origin POST from an
    * origin outside `APP_ORIGINS` is a 403 before this handler runs — DEPLOY
    * NOTE: the storefront's origin must be in `APP_ORIGINS` or every customer
-   * sees one), the two rate budgets, and the fact that the row this writes is
-   * `pending` are what stand in place of a hard auth requirement — it grants
-   * nothing and appears nowhere public until a human approves it.
-   *
-   * WHEN A SESSION RESOLVES, THE SESSION WINS. `customer_id` is set, and the
-   * stored email is the session's — never the body's — so a signed-in
-   * customer cannot attribute a review to somebody else's address by editing
-   * the request. The session's `displayName` wins over the body's
-   * `authorName` when it has one. A customer whose own `email` is null (a
-   * guest row that never claimed an address) falls back to the body's email,
-   * so a signed-in guest can still review.
+   * sees one), as do both rate budgets and the fact that the row is written
+   * `pending` and appears nowhere public until a human approves it.
    * ═══════════════════════════════════════════════════════════════════════
    */
   routes.post('/reviews/submit', async (c) => {
@@ -203,17 +249,48 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
     const body = await readJson(c, SubmitBody);
     const customer = await resolveCustomer(c);
 
-    /* The session's email, when it has one, is what gets written and what the
-       rate limit keys on — never the body's, once a session resolves. A
-       customer whose row has no email (a guest who never claimed one) still
-       falls back to the body, or a signed-in guest could never review. */
-    const authorEmail = customer?.email ?? body.authorEmail;
-    const authorName = customer?.displayName ?? body.authorName;
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * A SESSION IS NOW REQUIRED, AND THIS IS THE ONLY PLACE IDENTITY IS DECIDED.
+     *
+     * It used to fall back to the body when no session resolved, so a guest
+     * could review under any address they typed. The security half was already
+     * right — a signed-in customer's session overrode the body — but the body
+     * still HAD to carry a name and an email, so the storefront asked every
+     * signed-in customer for two things the server then threw away.
+     *
+     * FAIL-CLOSED, AND THAT REVERSES THE `NO_CUSTOMER` DEFAULT'S INTENT. A
+     * deployment that forgets to wire `customer` now 401s every submission
+     * instead of accepting everything as a guest. That is the right direction
+     * for an auth check — a wiring mistake takes the feature down loudly rather
+     * than quietly writing unattributed rows — but it IS a behaviour change for
+     * that misconfiguration, and `server/shop/app.ts` is still the only caller
+     * that wires the real resolver.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    if (!customer) throw new UnauthenticatedError();
+
+    /*
+     * The address is the SESSION'S, always. Nullable on `shop_customers` and
+     * NOT NULL on `shop_reviews`, so the impossible case is refused here rather
+     * than as a 23502 from the driver. Zero of four production customers are in
+     * this state today; the guard exists because the column permits it.
+     */
+    const authorEmail = customer.email;
+    if (!authorEmail) {
+      throw new BadRequestError('account_email');
+    }
+
+    /* The byline: the account's display name when it has one, else what the
+       reviewer typed. Three of four customers have no display name, so the
+       body's value is a real path and not a legacy branch. */
+    const authorName = customer.displayName ?? body.authorName;
+    if (!authorName) throw new BadRequestError('authorName');
 
     /* The narrow bucket cannot move above the parse — it keys on the email
-       actually being written, so a signed-in customer cannot get a fresh
-       budget by varying the body. Already lower-cased by the schema when it
-       comes from the body; the session's is normalised at write time. */
+       actually being written. STRONGER THAN IT WAS: the address is now always
+       the session's, so varying the body cannot buy a fresh budget at all,
+       where before a guest could simply type a different one. */
     await limit(c, `revsub:${ip}|${authorEmail}`, INTAKE_EMAIL_LIMIT, INTAKE_WINDOW_MS);
 
     const review = await createReview(currentDb(c), {
