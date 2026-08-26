@@ -21,6 +21,7 @@
  * the recipient's browser and not to the admin app.
  */
 import { apiFetch, type Page } from './api';
+import { hasUnsubscribeVariable } from '../../shared/email/variables';
 
 const seg = (value: string): string => encodeURIComponent(value);
 
@@ -101,14 +102,21 @@ export const UNSUBSCRIBE_VAR = '{{unsubscribe_url}}';
 export const EMAIL_VARIABLES = [NAME_VAR, UNSUBSCRIBE_VAR] as const;
 
 /**
- * The client's copy of the server's activation rule (§2 A6: "require the latter
- * present in html+text to activate a broadcast").
+ * The server's activation rule (§2 A6: "require the latter present in html+text
+ * to activate a broadcast"), asked from the screen's side.
  *
- * DUPLICATED ON PURPOSE, and it must stay identical. The server refuses the
- * send; this exists so the refusal is visible while the template is being
- * written rather than at the moment someone reaches for a button that then
- * 409s. If the two ever disagree the server wins — this one only decides what
- * the screen says.
+ * THE SERVER REFUSES THE SEND; this exists so the refusal is visible while the
+ * template is being written rather than at the moment someone reaches for a
+ * button that then 409s. If the two ever disagree the server wins — this one
+ * only decides what the screen says.
+ *
+ * NOT A SECOND COPY OF THE PREDICATE ANY MORE. It used to scan for the literal
+ * `{{unsubscribe_url}}` while the server scanned with the whitespace-tolerant
+ * pattern it substitutes with, so a template written `{{ unsubscribe_url }}`
+ * rendered a working link, would have sent, and still wore a red "no unsubscribe
+ * link" badge the operator had no way to clear. The gate itself now comes from
+ * `shared/email/variables.ts`; what stays local is the exemption below, which is
+ * a statement about this SCREEN and has no counterpart on the wire.
  */
 export function missingUnsubscribe(body: {
   html: string;
@@ -131,7 +139,7 @@ export function missingUnsubscribe(body: {
    */
   const key = body.systemKey;
   if (typeof key === 'string' && key !== '' && key !== 'account.welcome') return false;
-  return !body.html.includes(UNSUBSCRIBE_VAR) || !body.text.includes(UNSUBSCRIBE_VAR);
+  return !hasUnsubscribeVariable(body.html) || !hasUnsubscribeVariable(body.text);
 }
 
 // --------------------------------------------------------------- subscribers
