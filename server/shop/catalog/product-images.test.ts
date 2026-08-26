@@ -340,12 +340,24 @@ describe('toStorefrontProduct', () => {
   it('leaves every other field exactly as it found it', () => {
     // It is additive, not a projection that filters: the storefront contract
     // this suite inherits is "the product, plus URLs".
+    //
+    // `overview` IS THE ONE EXCEPTION, and it is deliberate rather than a leak.
+    // Migration 0580 makes the storefront's `overview` a RESOLVED string —
+    // hand-written, else the stored summary, else derived — so that the
+    // storefront owns no fallback logic. `Product.overview` is `string | null`
+    // and `StorefrontProduct.overview` is `string`; a null passing through
+    // unchanged would be the bug.
     const input: Product = { ...base, coverImageId: 'img_cover', imageIds: ['img_one'] };
     const out = toStorefrontProduct(input, NO_TIERS);
-    expect(out).toMatchObject(input);
-    // And the two additions are the ONLY additions.
+    const { overview: _resolved, ...passthrough } = input;
+    expect(out).toMatchObject(passthrough);
+    expect(input.overview).toBeNull();
+    expect(out.overview).toBe('');
+    // And the additions are the ONLY additions. `overview` is not among them:
+    // it is already a key of `Product`, and the projection RESOLVES it in place
+    // rather than adding a field beside it.
     expect(Object.keys(out).sort()).toEqual(
-      [...Object.keys(input), 'coverImageUrl', 'imageUrls'].sort(),
+      [...Object.keys(input), 'coverImageUrl', 'imageUrls', 'bulkTiers'].sort(),
     );
   });
 });

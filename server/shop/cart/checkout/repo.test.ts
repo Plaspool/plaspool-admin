@@ -367,6 +367,12 @@ describe('freezeCheckout', () => {
         variantId: 'var_tee',
         qty: 2,
         unit: { amount: 1999, currency: CURRENCY },
+        /* Migration 0600. This fake catalog seeds no ladder, so the line is
+           undiscounted and `effectiveUnit` is the list price — which is exactly
+           what every frozen total looked like before bulk pricing existed. */
+        bulkQty: 2,
+        bulkPercentBps: 0,
+        effectiveUnit: { amount: 1999, currency: CURRENCY },
         lineTotal: { amount: 3998, currency: CURRENCY },
         taxable: true,
         taxAmount: { amount: 800, currency: CURRENCY },
