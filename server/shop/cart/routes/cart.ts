@@ -296,8 +296,11 @@ async function view(
     currency: current.currency,
     lines: quoted.map(({ line, quote }) => ({
       variantId: line.variantId,
+      // See the note in `checkout/repo.ts`: variantId, never ''.
+      productId: quote?.productId ?? line.variantId,
       qty: line.qty,
       unit: quote ? quote.price : null,
+      bulkTiers: quote?.bulkTiers ?? [],
     })),
     shipping: null,
     tax: unknownZoneTaxRate(),

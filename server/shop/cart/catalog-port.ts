@@ -2,6 +2,7 @@ import type { Db } from '../../db/client';
 import type { CatalogPort as SharedCatalogPort } from '../../../shared/commerce/catalog-port';
 
 export type {
+  BulkTier,
   ReservationRequest,
   ReservationResult,
   VariantQuote,

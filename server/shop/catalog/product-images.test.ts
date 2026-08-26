@@ -275,6 +275,11 @@ describe('saveProduct validates the PATCH and never the merge', () => {
 
 // ------------------------------------------------------- the URL projection
 
+/* This suite is about the IMAGE URL projection. Every call passes the same
+   empty ladder so the new argument never varies — bulk pricing is covered in
+   `bulk-tiers.test.ts` and `compute.test.ts`, where it is the subject. */
+const NO_TIERS = { bulkTiers: [] };
+
 describe('toStorefrontProduct', () => {
   const base: Product = {
     id: 'prd_x',
@@ -286,6 +291,9 @@ describe('toStorefrontProduct', () => {
     tags: [],
     coverImageId: null,
     imageIds: [],
+    overview: null,
+    overviewFallback: '',
+    bulkDiscountEnabled: true,
     createdAt: 0,
     updatedAt: 0,
     publishedAt: null,
@@ -301,7 +309,7 @@ describe('toStorefrontProduct', () => {
       ...base,
       coverImageId: 'img_cover',
       imageIds: ['img_one', 'img_two'],
-    });
+    }, NO_TIERS);
     expect(out.coverImageUrl).toBe('/api/public/images/img_cover');
     expect(out.imageUrls).toEqual([
       '/api/public/images/img_one',
@@ -316,15 +324,15 @@ describe('toStorefrontProduct', () => {
       ...base,
       coverImageId: 'asset:img_cover',
       imageIds: ['idb:img_one'],
-    });
+    }, NO_TIERS);
     expect(out.coverImageUrl).toBe('/api/public/images/img_cover');
     expect(out.imageUrls).toEqual(['/api/public/images/img_one']);
   });
 
   it('is null for no cover, and drops empty gallery entries', () => {
-    expect(toStorefrontProduct(base).coverImageUrl).toBeNull();
-    expect(toStorefrontProduct({ ...base, coverImageId: '' }).coverImageUrl).toBeNull();
-    expect(toStorefrontProduct({ ...base, imageIds: ['', 'img_one'] }).imageUrls).toEqual([
+    expect(toStorefrontProduct(base, NO_TIERS).coverImageUrl).toBeNull();
+    expect(toStorefrontProduct({ ...base, coverImageId: '' }, NO_TIERS).coverImageUrl).toBeNull();
+    expect(toStorefrontProduct({ ...base, imageIds: ['', 'img_one'] }, NO_TIERS).imageUrls).toEqual([
       '/api/public/images/img_one',
     ]);
   });
@@ -332,12 +340,24 @@ describe('toStorefrontProduct', () => {
   it('leaves every other field exactly as it found it', () => {
     // It is additive, not a projection that filters: the storefront contract
     // this suite inherits is "the product, plus URLs".
+    //
+    // `overview` IS THE ONE EXCEPTION, and it is deliberate rather than a leak.
+    // Migration 0580 makes the storefront's `overview` a RESOLVED string —
+    // hand-written, else the stored summary, else derived — so that the
+    // storefront owns no fallback logic. `Product.overview` is `string | null`
+    // and `StorefrontProduct.overview` is `string`; a null passing through
+    // unchanged would be the bug.
     const input: Product = { ...base, coverImageId: 'img_cover', imageIds: ['img_one'] };
-    const out = toStorefrontProduct(input);
-    expect(out).toMatchObject(input);
-    // And the two additions are the ONLY additions.
+    const out = toStorefrontProduct(input, NO_TIERS);
+    const { overview: _resolved, ...passthrough } = input;
+    expect(out).toMatchObject(passthrough);
+    expect(input.overview).toBeNull();
+    expect(out.overview).toBe('');
+    // And the additions are the ONLY additions. `overview` is not among them:
+    // it is already a key of `Product`, and the projection RESOLVES it in place
+    // rather than adding a field beside it.
     expect(Object.keys(out).sort()).toEqual(
-      [...Object.keys(input), 'coverImageUrl', 'imageUrls'].sort(),
+      [...Object.keys(input), 'coverImageUrl', 'imageUrls', 'bulkTiers'].sort(),
     );
   });
 });

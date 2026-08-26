@@ -140,14 +140,43 @@ import type { Money, RoundingMode } from './money';
 export interface TotalsLine {
   variantId: string;
   qty: number;
-  /** The LIVE price at the moment of freezing. Never read from a cart line —
-   * a cart stores no prices (brief §3). */
+  /** The LIVE LIST price at the moment of freezing. Never read from a cart line —
+   * a cart stores no prices (brief §3). Kept alongside `effectiveUnit` so an
+   * invoice can show what was struck through. */
   unit: Money;
-  /** `unit × qty`, exact: both are integers, so no rounding happens here. */
+  /**
+   * The quantity the bulk ladder was evaluated at (migration 0600) — the total
+   * across every line of the SAME PRODUCT, not this line's `qty`.
+   *
+   * On the wire so a receipt can explain itself: a line reading "2 × black at
+   * 10% off" is otherwise inexplicable until you notice the three white ones
+   * further down.
+   */
+  bulkQty: number;
+  /** The rung that applied, in basis points. `0` means no bulk discount. */
+  bulkPercentBps: number;
+  /**
+   * `unit` less `bulkPercentBps`, ROUNDED ONCE HERE. This is the number the
+   * customer is charged per item and the one a receipt prints.
+   *
+   * The rounding is on the UNIT and not on the line: discounting `lineTotal`
+   * instead yields a per-unit price with a fraction of a kobo in it, which no
+   * receipt can display and which makes `lineTotal ÷ qty` disagree with the
+   * price shown beside it.
+   */
+  effectiveUnit: Money;
+  /** `effectiveUnit × qty`, exact: both are integers, so no rounding here. */
   lineTotal: Money;
   /** Whether this line was taxed at all. False makes `taxAmount` zero. */
   taxable: boolean;
-  /** Rounded ONCE, on this line, before any summing (brief §5). */
+  /**
+   * Rounded ONCE, on this line, before any summing (brief §5).
+   *
+   * COMPUTED ON THE DISCOUNTED `lineTotal`, which is the entire reason bulk
+   * pricing is a unit reduction rather than an `Adjustment`: adjustments apply
+   * after tax, so a discount expressed as one would charge VAT on money the
+   * customer never spent. See the header of `0600_bulk_discount_tiers.sql`.
+   */
   taxAmount: Money;
 }
 

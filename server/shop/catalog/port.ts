@@ -7,6 +7,7 @@ import type {
   VariantQuote,
 } from '../../../shared/commerce/catalog-port';
 import { commitHold, releaseHold, reserve } from './inventory';
+import { resolveTiersFor } from './bulk-tiers';
 
 /**
  * The real `CatalogPort` (contract §5). Consumed by Cart, and by Payments for
@@ -80,6 +81,17 @@ async function quote(db: Db, variantId: string): Promise<VariantQuote | null> {
      */
     available: Number(row.available),
     backorderable: row.backorderable === true,
+    /*
+     * The ladder rides the quote so Cart never imports Catalog (contract §5).
+     * A SECOND QUERY AND NOT A JOIN: joining the tiers onto the row above would
+     * multiply it by the number of rungs, turning one variant into three and
+     * making `res.rows[0]` a coin toss over which rung's row won.
+     *
+     * `resolveTiersFor` applies `bulk_discount_enabled` in its own predicate, so
+     * a disabled product short-circuits to an empty ladder with no second rule
+     * here and no extra column on the select above.
+     */
+    bulkTiers: await resolveTiersFor(db, String(row.product_id)),
   };
 }
 

@@ -409,6 +409,21 @@ export interface FrozenTotalsShape {
     variantId: string;
     qty: number;
     unit: AmountFields;
+    /**
+     * OPTIONAL, AND THAT IS NOT LAZINESS — it is the compatibility contract.
+     *
+     * `FrozenTotals` is stored as `jsonb` and is COPIED, NEVER RECOMPUTED, so
+     * every checkout and order frozen before migration 0600 has a payload with
+     * these three keys absent and always will. Required here, `parseFrozenTotals`
+     * would refuse every one of them and reading any historical order would 500.
+     *
+     * `parseFrozenTotals` substitutes `bulkQty = qty`, `bulkPercentBps = 0`,
+     * `effectiveUnit = unit` when they are missing, which is exactly what those
+     * orders meant.
+     */
+    bulkQty?: number;
+    bulkPercentBps?: number;
+    effectiveUnit?: AmountFields;
     lineTotal: AmountFields;
     taxable: boolean;
     taxAmount: AmountFields;
