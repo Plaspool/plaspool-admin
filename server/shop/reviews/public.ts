@@ -4,6 +4,7 @@ import { readQuery, str } from '../../middleware/errors';
 import { BadRequestError } from '../../repo/errors';
 import { currentDb } from '../../app-env';
 import { listReviewsPublic, productAggregate, productAggregates } from './repo';
+import { reactionCounts, repliesFor } from './threads';
 import type { AppEnv } from '../../app-env';
 
 /**
@@ -81,13 +82,48 @@ export function createReviewPublicRoutes(): Hono<AppEnv> {
    */
   routes.get('/public/reviews', async (c) => {
     const q = readQuery(c, ListQuery);
-    const page = await listReviewsPublic(currentDb(c), q.product, {
+    const db = currentDb(c);
+    const page = await listReviewsPublic(db, q.product, {
       cursor: q.cursor,
       limit: q.limit,
     });
+
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * REPLIES AND THE HELPFUL COUNT RIDE ALONG; `viewerReaction` DOES NOT, AND
+     * THAT OMISSION IS THE POINT.
+     *
+     * This router is mounted ABOVE `sessionMiddleware` and every response
+     * carries `Cache-Control: public` — see the header of this file. A shared
+     * cache may therefore store one of these and hand it to a different reader.
+     * Both fields added here are the same for everybody: the approved replies
+     * on a review, and how many people found it helpful. Neither varies by who
+     * is asking, so neither can leak across readers.
+     *
+     * "Did I vote on this" DOES vary by reader, and putting it here would make
+     * a cacheable response reader-specific — threat T6, exactly. It lives on
+     * `GET /api/shop/reviews/reactions` instead, below `sessionMiddleware`,
+     * uncached, in the shop app where a cookie is legal.
+     *
+     * `unhelpful` is not selected AT ALL. A public dislike tally is a
+     * scoreboard for brigading (0620's header); the count exists in the admin.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    const ids = page.items.map((r) => r.id);
+    /* Two statements, batched across the page rather than per review — a reply
+       query per row is the N+1 `listVariantsForProducts` exists to avoid. */
+    const [replies, counts] = await Promise.all([repliesFor(db, ids), reactionCounts(db, ids)]);
+
     c.header('cache-control', CACHE);
     c.header(CORS_HEADER, CORS_VALUE);
-    return c.json(page);
+    return c.json({
+      ...page,
+      items: page.items.map((review) => ({
+        ...review,
+        replies: replies.get(review.id) ?? [],
+        helpfulCount: counts.get(review.id)?.helpful ?? 0,
+      })),
+    });
   });
 
   /**
