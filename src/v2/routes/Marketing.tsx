@@ -14,7 +14,15 @@ import {
 import { ApiError } from '../../data/errors';
 import { getSession } from '../../data/session';
 import { dateTime, humanise, money } from '../lib/format';
-import { PageHeader } from '../ui/Page';
+import {
+  AnalyticsBar,
+  AnalyticsMenuItem,
+  PageHeader,
+  RevealMenuItem,
+  useAnalyticsBar,
+  useRevealPanel,
+  type Metric,
+} from '../ui/Page';
 import { Badge, Banner, Button, EmptyState } from '../ui/primitives';
 import { Card } from '../ui/Card';
 import { DataTable, IdCell, type Column } from '../ui/DataTable';
@@ -57,6 +65,11 @@ export default function Marketing() {
   const [editing, setEditing] = useState<'closed' | 'new' | Program>('closed');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [crediting, setCrediting] = useState(false);
+  /* Both start HIDDEN (owner's ask): the screen opens on the programmes and
+     the redemption card — the numbers and the feed are a More-actions reveal,
+     remembered for the session like every analytics bar. */
+  const [barShown, toggleBar] = useAnalyticsBar('marketing');
+  const [activityShown, toggleActivity] = useRevealPanel('marketing-activity', 'Latest activity');
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -165,7 +178,7 @@ export default function Marketing() {
     ...(isOwner
       ? [
           {
-            key: 'act',
+            key: 'act', pin: true,
             header: <span className="sr">Actions</span>,
             label: 'Actions',
             tight: true,
@@ -208,12 +221,51 @@ export default function Marketing() {
 
   const words = settings ? settingsLabels(settings) : null;
 
+  /* The bar's numbers come from what the screen already loaded — nothing is
+     fetched for a panel that is hidden by default. No deltas and no series:
+     these are standings, not a window, and a fabricated sparkline under a
+     real number is the thing the bar must never do. */
+  const metrics: Metric[] = [
+    { label: 'Programmes', value: String((programs ?? []).length) },
+    {
+      label: 'Active',
+      value: String((programs ?? []).filter((p) => p.status === 'active').length),
+    },
+    {
+      label: 'Open returns',
+      value: String((programs ?? []).reduce((n, p) => n + p.openReturns, 0)),
+    },
+    {
+      label: 'Points awarded',
+      value: (programs ?? []).reduce((n, p) => n + p.awardedTotal, 0).toLocaleString(),
+    },
+    ...(settings && settings.redemptionEnabled
+      ? [
+          {
+            label: 'Point worth',
+            value: `${settings.redemptionRatePoints} = ${money(settings.redemptionRateMinor, settings.redemptionCurrency)}`,
+          },
+        ]
+      : []),
+  ];
+
   return (
     <div className="page">
       <PageHeader
         icon={<Megaphone />}
         title="Marketing"
         subtitle="The points programmes, what they pay, and what points are worth at checkout."
+        menu={(close) => (
+          <>
+            <AnalyticsMenuItem shown={barShown} onToggle={toggleBar} close={close} />
+            <RevealMenuItem
+              shown={activityShown}
+              onToggle={toggleActivity}
+              close={close}
+              noun="latest activity"
+            />
+          </>
+        )}
         actions={
           isOwner ? (
             <Button tone="primary" size="lg" onClick={() => setEditing('new')}>
@@ -223,6 +275,8 @@ export default function Marketing() {
           ) : undefined
         }
       />
+
+      {barShown ? <AnalyticsBar range="Store total" metrics={metrics} /> : null}
 
       {loadError ? (
         <Banner tone="critical" title="Couldn’t load marketing" action={<Button onClick={() => void load()}>Retry</Button>}>
@@ -249,6 +303,7 @@ export default function Marketing() {
             footer={null}
           />
 
+          {activityShown ? (
           <Card title="Latest activity">
             {latest === null ? (
               <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
@@ -288,6 +343,7 @@ export default function Marketing() {
               </div>
             )}
           </Card>
+          ) : null}
         </div>
 
         <aside className="form2__side">

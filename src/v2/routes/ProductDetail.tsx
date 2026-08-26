@@ -753,7 +753,7 @@ function VariantsCard({
                 <th scope="col" className="th--num">Price</th>
                 <th scope="col" className="th--num">Available</th>
                 <th scope="col" className="th--tight">Status</th>
-                <th scope="col" className="th--tight">
+                <th scope="col" className="th--tight th--pin">
                   <span className="sr">Actions</span>
                 </th>
               </tr>
@@ -778,20 +778,26 @@ function VariantsCard({
                       </span>
                     </span>
                   </td>
-                  <td className="cell--num">
+                  {/* The card attributes by hand — this table predates the
+                      shared DataTable and rolls its own rows, so the phone
+                      layout's contract (data-label names the fact, keep stays
+                      on the card, '' floats to the corner) is stated here
+                      explicitly. Price and Available are the working surface
+                      and Status the scan, so all three stay on the card. */}
+                  <td className="cell--num" data-label="Price" data-mobile="keep">
                     {/* Keyed by the live value so a refresh restates the
                         editor's draft from what the server now holds. */}
                     <PriceCell key={`p${v.price?.amount ?? 'none'}`} variant={v} onWrite={onWrite} />
                   </td>
-                  <td className="cell--num">
+                  <td className="cell--num" data-label="Available" data-mobile="keep">
                     <StockCell key={`s${v.available ?? 'none'}`} variant={v} onWrite={onWrite} />
                   </td>
-                  <td className="cell--tight">
+                  <td className="cell--tight" data-label="Status" data-mobile="keep">
                     <Badge tone={v.status === 'active' ? 'ok' : 'neutral'}>
                       {humanise(v.status)}
                     </Badge>
                   </td>
-                  <td className="cell--tight">
+                  <td className="cell--tight cell--pin" data-label="">
                     <Menu
                       chrome="bare"
                       buttonLabel={`Actions for ${v.sku}`}

@@ -51,6 +51,10 @@ export interface Column<T> {
    * still shows one fact rather than a bare title.
    */
   mobile?: 'keep' | 'sheet';
+  /** Sticks the column to the scroll's right edge on DESKTOP, so a wide
+   *  table's clip can never swallow it — for the per-row ⋯ and lone action
+   *  keys, which a row cannot work without. Phones lay these out themselves. */
+  pin?: boolean;
   render: (row: T) => ReactNode;
 }
 
@@ -344,7 +348,11 @@ export function DataTable<T, V extends string = string>({
                       <th
                         key={c.key}
                         scope="col"
-                        className={[c.numeric ? 'th--num' : '', c.tight ? 'th--tight' : '']
+                        className={[
+                          c.numeric ? 'th--num' : '',
+                          c.tight ? 'th--tight' : '',
+                          c.pin ? 'th--pin' : '',
+                        ]
                           .filter(Boolean)
                           .join(' ')}
                       >
@@ -399,6 +407,7 @@ export function DataTable<T, V extends string = string>({
                             c.numeric ? 'cell--num' : '',
                             c.tight ? 'cell--tight' : '',
                             c.primary ? 'cell--primary' : '',
+                            c.pin ? 'cell--pin' : '',
                           ]
                             .filter(Boolean)
                             .join(' ')}

@@ -220,7 +220,7 @@ export default function Returns() {
         r.pickupScheduledAt ? dateTime(r.pickupScheduledAt) : <span className="muted">—</span>,
     },
     {
-      key: 'act',
+      key: 'act', pin: true,
       header: <span className="sr">Next step</span>,
       label: 'Next step',
       tight: true,

@@ -167,7 +167,7 @@ export default function Reviews() {
       render: (r) => shortDate(r.createdAt),
     },
     {
-      key: 'act',
+      key: 'act', pin: true,
       header: <span className="sr">Actions</span>,
       label: 'Quick actions',
       tight: true,

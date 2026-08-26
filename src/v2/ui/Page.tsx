@@ -32,7 +32,14 @@ import { useToast } from './Toast';
 
 const STORE_PREFIX = 'plaspool.v2.analytics.';
 
-export function useAnalyticsBar(screen: string): [boolean, () => void] {
+/**
+ * A panel that starts HIDDEN and is revealed from More actions — the
+ * analytics bar was the first (Rule 1 above); Marketing's activity feed is
+ * the second. Same contract for every one: off on a fresh visit, remembered
+ * per screen for the browser session, announced by a toast that names the
+ * panel rather than a generic "shown".
+ */
+export function useRevealPanel(screen: string, noun: string): [boolean, () => void] {
   const toast = useToast();
   const key = STORE_PREFIX + screen;
 
@@ -55,12 +62,16 @@ export function useAnalyticsBar(screen: string): [boolean, () => void] {
       } catch {
         /* Not remembering the choice is survivable; failing to make it is not. */
       }
-      toast.show(next ? 'Analytics bar shown' : 'Analytics bar hidden');
+      toast.show(next ? `${noun} shown` : `${noun} hidden`);
       return next;
     });
-  }, [key, toast]);
+  }, [key, noun, toast]);
 
   return [shown, toggle];
+}
+
+export function useAnalyticsBar(screen: string): [boolean, () => void] {
+  return useRevealPanel(screen, 'Analytics bar');
 }
 
 /* ══════════════════════════════════════════════════════════ PAGE HEADER ══ */
@@ -177,17 +188,19 @@ export function PageHeader({
   );
 }
 
-/** The one More actions entry every list screen shares. Kept here rather than
- *  retyped per screen so the label always matches the state it describes —
- *  "Show" when hidden, "Hide" when shown. */
-export function AnalyticsMenuItem({
+/** The More actions entry a revealable panel gets — the label always matches
+ *  the state it describes: "Show" when hidden, "Hide" when shown. */
+export function RevealMenuItem({
   shown,
   onToggle,
   close,
+  noun,
 }: {
   shown: boolean;
   onToggle: () => void;
   close: () => void;
+  /** Lowercase, as it reads mid-sentence: "Show latest activity". */
+  noun: string;
 }) {
   return (
     <MenuItem
@@ -197,9 +210,18 @@ export function AnalyticsMenuItem({
         close();
       }}
     >
-      {shown ? 'Hide analytics bar' : 'Show analytics bar'}
+      {shown ? `Hide ${noun}` : `Show ${noun}`}
     </MenuItem>
   );
+}
+
+/** The one every list screen shares. */
+export function AnalyticsMenuItem(props: {
+  shown: boolean;
+  onToggle: () => void;
+  close: () => void;
+}) {
+  return <RevealMenuItem {...props} noun="analytics bar" />;
 }
 
 /* ═════════════════════════════════════════════════════════ ANALYTICS BAR ══ */

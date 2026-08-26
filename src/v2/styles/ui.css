@@ -309,6 +309,14 @@
   left: 0;
 }
 
+/* Positioned by measurement (Menu.tsx): viewport-fixed, above any clipping
+   ancestor — a wide table's scroller, a card's rounded overflow. Inline
+   top/left/right carry the numbers; any scroll closes it. */
+.menu__panel--fixed {
+  position: fixed;
+  z-index: 70;
+}
+
 @keyframes v2-pop {
   from {
     opacity: 0;
@@ -644,9 +652,16 @@
   letter-spacing: -0.01em;
 }
 
+/* THE BODY IS THE SCROLL, ON EVERY VIEWPORT (owner's third round). The modal
+   is height-capped, so a form taller than the cap must scroll INSIDE it —
+   the first cut only said so for the phone sheet, and on desktop the variant
+   form poured straight past the panel's bottom edge onto the scrim. Head and
+   foot stay put; Cancel/Save are always reachable without scrolling. */
 .modal__body {
   padding: var(--s4) var(--s5) var(--s5);
   min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* An inline link inside running copy must be visibly a link at rest — in a
@@ -690,11 +705,6 @@
     max-height: calc(100dvh - var(--topbar-h));
     border-radius: var(--r-lg) var(--r-lg) 0 0;
     animation: v2-sheet 260ms var(--ease-out);
-  }
-
-  .modal__body {
-    overflow-y: auto;
-    overscroll-behavior: contain;
   }
 
   .modal__foot {
