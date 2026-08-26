@@ -111,9 +111,23 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
   const [seoDescription, setSeoDescription] = useState('');
   const [overview, setOverview] = useState('');
   const [bulkEnabled, setBulkEnabled] = useState(true);
-  /* The shop-wide ladder, read once for the preview table. Read-only here: this
-     screen decides WHETHER the ladder applies, not what it says. */
+  /* The shop-wide default, read once — the ladder shown while this product
+     inherits, and what "Use the shop default" reverts to. */
   const [bulkTiers, setBulkTiers] = useState<BulkTier[]>([]);
+  /**
+   * This product's OWN rungs, or `null` while it inherits.
+   *
+   * `null` and `[]` ARE DIFFERENT STATES and the whole editor turns on it:
+   * `null` is "follows the shop default", `[]` is "has its own ladder, which is
+   * empty — never discount this product by quantity". Collapsing them would make
+   * "Remove" on the last rung silently mean "start inheriting again", which is
+   * the opposite of what somebody clicking it intends.
+   */
+  const [tierOwn, setTierOwn] = useState<BulkTier[] | null>(null);
+  /** The last saved copy, so the Save button can tell dirty from pristine. */
+  const [tierSaved, setTierSaved] = useState<BulkTier[] | null>(null);
+  const [tierBusy, setTierBusy] = useState(false);
+  const [tierError, setTierError] = useState<string | null>(null);
   const [description, setDescription] = useState<unknown>(null);
   const [descDirty, setDescDirty] = useState(false);
   /* Remounting the editor is how a discard rehydrates it. */
@@ -219,6 +233,128 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
       });
     return () => controller.abort();
   }, []);
+
+  /* ── the bulk ladder ─────────────────────────────────────────────────── */
+
+  /** Overriding when the product owns rows; inheriting otherwise. */
+  const overriding = tierOwn !== null;
+  /** What the table draws: this product's rungs, else the inherited default. */
+  const tierRows = tierOwn ?? bulkTiers;
+  const tiersDirty = JSON.stringify(tierOwn) !== JSON.stringify(tierSaved);
+
+  /* Seeded from the shop default rather than from nothing: "set a different
+     ladder" almost always means "the usual one, adjusted", and an empty table
+     with an Add button makes the common case the most work. */
+  const beginOverride = () => {
+    setTierError(null);
+    setTierOwn(bulkTiers.map((t) => ({ ...t })));
+  };
+
+  const editRung = (i: number, patch: Partial<BulkTier>) => {
+    setTierError(null);
+    setTierOwn((rows) => (rows ?? []).map((r, n) => (n === i ? { ...r, ...patch } : r)));
+  };
+
+  const removeRung = (i: number) => {
+    setTierError(null);
+    setTierOwn((rows) => (rows ?? []).filter((_, n) => n !== i));
+  };
+
+  /* The next rung starts above the highest one so a fresh row is valid on
+     arrival — `minQty` must be ≥ 2 and unique, and a duplicate would come back
+     from the server as a refusal the user did not cause. */
+  const addRung = () => {
+    setTierError(null);
+    setTierOwn((rows) => {
+      const cur = rows ?? [];
+      const top = cur.reduce((n, r) => Math.max(n, r.minQty), 1);
+      return [...cur, { minQty: Math.max(2, top + 1), percentBps: 500 }];
+    });
+  };
+
+  async function saveTiers() {
+    if (!product?.id || tierBusy || tierOwn === null) return;
+    /* Validated HERE as well as by the route's Zod, because a 400 naming
+       `tiers.1.minQty` is not a sentence anybody can act on. */
+    const seen = new Set<number>();
+    for (const r of tierOwn) {
+      if (!Number.isInteger(r.minQty) || r.minQty < 2) {
+        setTierError('Every rung needs a quantity of 2 or more.');
+        return;
+      }
+      if (seen.has(r.minQty)) {
+        setTierError(`Two rungs both start at ${r.minQty}. Each quantity can appear once.`);
+        return;
+      }
+      seen.add(r.minQty);
+      if (!Number.isInteger(r.percentBps) || r.percentBps < 1 || r.percentBps > 5000) {
+        setTierError('Every discount must be between 0.01% and 50%.');
+        return;
+      }
+    }
+    setTierBusy(true);
+    setTierError(null);
+    try {
+      const next = await shopApi.saveProductBulkTiers(product.id, tierOwn);
+      /* Trust the SERVER's copy, not the draft: it sorts and de-duplicates, so
+         echoing the draft back would leave the table in an order the next reload
+         would silently change. */
+      const rows = next.inherited ? null : next.tiers;
+      setTierOwn(rows);
+      setTierSaved(rows);
+      toast.show(next.inherited ? 'Back to the shop default' : 'Bulk ladder saved');
+    } catch (err) {
+      setTierError(err instanceof ApiError ? err.message : 'Could not save the ladder.');
+    } finally {
+      setTierBusy(false);
+    }
+  }
+
+  /* Reset is an empty PUT, which the server reads as "delete this product's own
+     rows" — the one spelling that returns it to inheriting. It is not a DELETE
+     route because "no ladder of my own" and "no ladder at all" are different
+     states and only the first is expressible. */
+  async function resetTiers() {
+    if (!product?.id || tierBusy) return;
+    setTierBusy(true);
+    setTierError(null);
+    try {
+      await shopApi.saveProductBulkTiers(product.id, []);
+      setTierOwn(null);
+      setTierSaved(null);
+      toast.show('Back to the shop default');
+    } catch (err) {
+      setTierError(err instanceof ApiError ? err.message : 'Could not reset the ladder.');
+    } finally {
+      setTierBusy(false);
+    }
+  }
+
+  /* This product's stored rungs. Separate from the shop-default read above
+     because the two answer different questions, and `inherited` is the only
+     thing that distinguishes "no rows" from "rows equal to the default". */
+  useEffect(() => {
+    if (!product?.id) return;
+    const controller = new AbortController();
+    shopApi
+      .productBulkTiers(product.id)
+      .then((set) => {
+        if (controller.signal.aborted) return;
+        const rows = set.inherited ? null : set.tiers;
+        setTierOwn(rows);
+        setTierSaved(rows);
+      })
+      .catch(() => {
+        /* Swallowed to "inheriting" rather than surfaced: the ladder is an
+           adjunct to this screen, and a product page that refused to load
+           because of it would be worse than one showing the default. */
+        if (!controller.signal.aborted) {
+          setTierOwn(null);
+          setTierSaved(null);
+        }
+      });
+    return () => controller.abort();
+  }, [product?.id]);
 
   /* ── audit trail ─────────────────────────────────────────────────────── */
   const [audit, setAudit] = useState<AuditEntry[] | null>(null);
@@ -499,29 +635,6 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                 }}
               />
             </div>
-          </Card>
-
-          <Card title="Media">
-            <MediaManager value={media} onChange={setMedia} alt={title || 'Product image'} />
-          </Card>
-
-          {create ? (
-            <Card title="Variants">
-              <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
-                Save the product first — variants, prices and stock attach to a saved product.
-              </p>
-            </Card>
-          ) : (
-            <VariantsCard
-              product={product!}
-              onAdd={() => setVariantModal('new')}
-              onEdit={(v) => setVariantModal(v)}
-              onDelete={(v) => setConfirmDeleteVariant(v)}
-              onWrite={afterVariantWrite}
-            />
-          )}
-
-          <Card title="Overview">
             <TextArea
               label="Overview"
               value={overview}
@@ -549,6 +662,26 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
             />
           </Card>
 
+          <Card title="Media">
+            <MediaManager value={media} onChange={setMedia} alt={title || 'Product image'} />
+          </Card>
+
+          {create ? (
+            <Card title="Variants">
+              <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
+                Save the product first — variants, prices and stock attach to a saved product.
+              </p>
+            </Card>
+          ) : (
+            <VariantsCard
+              product={product!}
+              onAdd={() => setVariantModal('new')}
+              onEdit={(v) => setVariantModal(v)}
+              onDelete={(v) => setConfirmDeleteVariant(v)}
+              onWrite={afterVariantWrite}
+            />
+          )}
+
           <Card title="Bulk discount">
             <Checkbox
               label="Offer a quantity discount on this product"
@@ -558,45 +691,150 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
             />
             {bulkEnabled ? (
               <div className="pd__tiers">
-                {bulkTiers.length === 0 ? (
-                  <p className="field__hint">No ladder is set up for the shop yet.</p>
+                {/*
+                 * THE LADDER SHOWN IS ALWAYS THE ONE THAT APPLIES, and the
+                 * heading says which of the two it is.
+                 *
+                 * That distinction is not cosmetic. A product whose rows HAPPEN
+                 * to equal the shop default still stops following it the moment
+                 * the default changes — so "inherited" and "identical" have to
+                 * be told apart, and the table alone cannot do it.
+                 */}
+                <div className="pd__tiers-head">
+                  <span className="field__label">
+                    {overriding ? 'This product only' : 'Shop default'}
+                  </span>
+                  {create ? null : overriding ? (
+                    <Button tone="plain" onClick={() => void resetTiers()} disabled={tierBusy}>
+                      Use the shop default
+                    </Button>
+                  ) : (
+                    <Button tone="plain" onClick={beginOverride} disabled={tierBusy}>
+                      Set a different ladder
+                    </Button>
+                  )}
+                </div>
+
+                {tierRows.length === 0 ? (
+                  <p className="field__hint">
+                    {overriding
+                      ? 'No rungs — this product sells at full price whatever the quantity.'
+                      : 'No ladder is set up for the shop yet.'}
+                  </p>
                 ) : (
-                  <table className="tbl tbl--compact">
+                  <table className="table pd__tiers-table">
                     <thead>
                       <tr>
-                        <th>Quantity</th>
+                        <th>Buy at least</th>
                         <th>Discount</th>
                         <th>Price each</th>
+                        {overriding ? <th aria-label="Remove rung" /> : null}
                       </tr>
                     </thead>
                     <tbody>
-                      {bulkTiers.map((t) => (
-                        <tr key={t.minQty}>
-                          <td>{t.minQty} or more</td>
-                          {/* bps → percent. 1000 is 10%. */}
-                          <td>{t.percentBps / 100}% off</td>
+                      {tierRows.map((t, i) => (
+                        <tr key={overriding ? i : t.minQty}>
+                          <td>
+                            {overriding ? (
+                              <input
+                                className="input input--tiny"
+                                type="number"
+                                min={2}
+                                aria-label={'Minimum quantity for rung ' + (i + 1)}
+                                value={t.minQty}
+                                onChange={(e) => editRung(i, { minQty: Number(e.target.value) })}
+                              />
+                            ) : (
+                              t.minQty + ' or more'
+                            )}
+                          </td>
+                          <td>
+                            {overriding ? (
+                              <span className="pd__pct">
+                                <input
+                                  className="input input--tiny"
+                                  type="number"
+                                  min={1}
+                                  max={50}
+                                  step={0.5}
+                                  aria-label={'Discount for rung ' + (i + 1)}
+                                  /* bps ↔ percent converted at the BOUNDARY only.
+                                     The wire and the engine are basis points; a
+                                     percent held in state would round-trip 12.5%
+                                     into 12 the first time it re-rendered. */
+                                  value={t.percentBps / 100}
+                                  onChange={(e) =>
+                                    editRung(i, {
+                                      percentBps: Math.round(Number(e.target.value) * 100),
+                                    })
+                                  }
+                                />
+                                <span>%</span>
+                              </span>
+                            ) : (
+                              t.percentBps / 100 + '% off'
+                            )}
+                          </td>
                           <td>
                             {cheapest === null
                               ? '—'
                               : money(
                                   /* Round the UNIT, matching the totals engine
                                      exactly — a preview that rounded differently
-                                     from the charge would be worse than none. */
-                                  Math.round(
-                                    (cheapest.amount * (10_000 - t.percentBps)) / 10_000,
-                                  ),
+                                     from what is charged is worse than none. */
+                                  Math.round((cheapest.amount * (10_000 - t.percentBps)) / 10_000),
                                   cheapest.currency,
                                 )}
                           </td>
+                          {overriding ? (
+                            <td>
+                              <Button
+                                tone="plain"
+                                aria-label={'Remove rung ' + (i + 1)}
+                                onClick={() => removeRung(i)}
+                                disabled={tierBusy}
+                              >
+                                Remove
+                              </Button>
+                            </td>
+                          ) : null}
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 )}
-                <p className="field__hint">
-                  This is the shop-wide ladder. Changing it for every product is a
-                  settings change; this switch only decides whether it applies here.
-                </p>
+
+                {overriding ? (
+                  <>
+                    {tierError ? <Banner tone="critical">{tierError}</Banner> : null}
+                    <div className="pd__tiers-foot">
+                      <Button tone="plain" onClick={addRung} disabled={tierBusy}>
+                        Add a rung
+                      </Button>
+                      {/* `busy` and NOT a swapped label: primitives.tsx says
+                          why — replacing the text with "Saving…" resizes the
+                          button under the cursor mid-press. */}
+                      <Button
+                        tone="primary"
+                        busy={tierBusy}
+                        onClick={() => void saveTiers()}
+                        disabled={!tiersDirty}
+                      >
+                        Save ladder
+                      </Button>
+                    </div>
+                    <p className="field__hint">
+                      Saved on its own, not with the product — it is a separate
+                      record on a separate endpoint, and half a saved price is
+                      worse than two buttons.
+                    </p>
+                  </>
+                ) : (
+                  <p className="field__hint">
+                    Inherited, so it follows the shop default if that changes. The
+                    switch above only decides whether a ladder applies here at all.
+                  </p>
+                )}
               </div>
             ) : null}
           </Card>

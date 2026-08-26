@@ -1554,3 +1554,50 @@ a.idcell__title:hover {
   border-radius: 50%;
   background: var(--ink-muted);
 }
+
+/* ── the bulk quantity ladder (migration 0600) ─────────────────────────────
+   Reuses `.table` and `.input` rather than declaring a parallel compact set:
+   a second table dialect is a second thing to keep in step with the tokens. */
+.pd__tiers {
+  display: grid;
+  gap: var(--s3);
+}
+
+.pd__tiers-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  /* The heading and its one action sit on a row; wrapping rather than
+     shrinking keeps the label readable in the narrow right column. */
+  flex-wrap: wrap;
+}
+
+/* The rungs table is narrow by nature — three or four short columns — so it
+   does not need the horizontal scroller the variants table earns. */
+.pd__tiers-table td,
+.pd__tiers-table th {
+  white-space: nowrap;
+}
+
+/* Numeric cells: wide enough for "10 000" and a stepper, no wider. A full-width
+   input in a 4-column table pushes the price column off the card. */
+.input--tiny {
+  width: 7ch;
+  padding-inline: var(--s2);
+  text-align: right;
+}
+
+/* The percent sign rides with its input so the pair reads as one control. */
+.pd__pct {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--s1);
+}
+
+.pd__tiers-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+}

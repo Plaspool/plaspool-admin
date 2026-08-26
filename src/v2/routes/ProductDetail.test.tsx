@@ -201,6 +201,11 @@ const spool: ShopProductDetail = {
   deletedAt: null,
   seoTitle: 'Stored SEO title',
   seoDescription: 'Stored SEO description',
+  /* Migration 0580: no hand-written overview, so the box is EMPTY and the
+     derived text is its placeholder. Migration 0600: on, like every product. */
+  overview: null,
+  overviewFallback: 'Wound from recycled PETG, a kilogram to the reel.',
+  bulkDiscountEnabled: true,
   authorId: 'u_owner',
   revision: 3,
   variants: [orderedVariant, freshVariant],
@@ -280,7 +285,27 @@ function withProduct(row: ShopProductDetail, write?: Responder): void {
   when('/api/shop/admin/categories', { items: categories });
   when('/api/shop/admin/tags', { items: [{ name: 'petg', count: 2 }] });
   when('/api/shop/admin/audit', { items: [], nextCursor: null });
+  /* Migration 0600's two reads. Registered by default and overridable per test,
+     because an unregistered path answers 404 and the screen would silently fall
+     back to "inheriting" — which is a real branch, and not the one under test. */
+  if (!handlers.has('/api/shop/admin/bulk-tiers')) {
+    when('/api/shop/admin/bulk-tiers', { tiers: DEFAULT_LADDER });
+  }
+  if (!handlers.has(`${productPath(row.id)}/bulk-tiers`)) {
+    when(`${productPath(row.id)}/bulk-tiers`, {
+      tiers: [],
+      inherited: true,
+      effective: DEFAULT_LADDER,
+    });
+  }
 }
+
+/** The ladder migration 0600 seeds: 5% at three, 10% at five, 15% at ten. */
+const DEFAULT_LADDER = [
+  { minQty: 3, percentBps: 500 },
+  { minQty: 5, percentBps: 1000 },
+  { minQty: 10, percentBps: 1500 },
+];
 
 /** Mounted the way `src/v2/main.tsx` mounts it: ToastHost, router, `:id`. */
 function mountAt(id: string) {
@@ -365,6 +390,11 @@ describe('the product editor', () => {
         imageIds: [],
         seoTitle: 'Stored SEO title',
         seoDescription: 'Stored SEO description',
+        /* Untouched boxes restate what was stored — the same discipline the
+           SEO pair follows, so an absent key never means "unchanged". The
+           fixture stores no overview, so '' is the honest restatement. */
+        overview: '',
+        bulkDiscountEnabled: true,
       },
     });
 
@@ -443,9 +473,16 @@ describe('the product editor', () => {
        `description: undefined` — this body crossed JSON, absent is absent.
        Omitting the key is what leaves the stored description alone. */
     expect(Object.keys(bare).sort()).toEqual([
+      /* Migration 0600. A boolean has no "clear" spelling, so it always
+         travels — absence is the server's "leave it alone". */
+      'bulkDiscountEnabled',
       'category',
       'coverImageId',
       'imageIds',
+      /* Migration 0580. Travels for the same reason the SEO pair does: '' is
+         the wire form of "go back to deriving it", so an emptied box must be
+         distinguishable from an untouched one. */
+      'overview',
       'seoDescription',
       'seoTitle',
       'tags',
@@ -559,5 +596,149 @@ describe('the product editor', () => {
         backorderable: true,
       }),
     );
+  });
+});
+
+// ------------------------------------------------------ the bulk ladder (0600)
+
+describe('the bulk quantity ladder', () => {
+  it('shows the inherited shop default, and says that is what it is', async () => {
+    withProduct(spool);
+    mountAt(spool.id);
+
+    expect(await screen.findByText('Shop default')).toBeTruthy();
+    // The three seeded rungs, rendered as percentages rather than basis points.
+    expect(screen.getByText('3 or more')).toBeTruthy();
+    expect(screen.getByText('5% off')).toBeTruthy();
+    expect(screen.getByText('10% off')).toBeTruthy();
+    expect(screen.getByText('15% off')).toBeTruthy();
+    // Inherited means no editing controls at all.
+    expect(screen.queryByLabelText('Minimum quantity for rung 1')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save ladder' })).toBeNull();
+  });
+
+  it('prices each rung off the CHEAPEST variant, rounded the way the engine rounds', async () => {
+    withProduct(spool);
+    mountAt(spool.id);
+    await screen.findByText('Shop default');
+    // Both variants are 2 300 000 minor. 10% off is 2 070 000 — round the UNIT
+    // and then multiply, exactly as `computeTotals` does, so the preview and the
+    // charge cannot disagree.
+    expect(screen.getByText(/20,700/)).toBeTruthy();
+  });
+
+  it('seeds an override FROM the default rather than from an empty table', async () => {
+    // "Set a different ladder" almost always means "the usual one, adjusted";
+    // an empty table with an Add button makes the common case the most work.
+    const user = userEvent.setup();
+    withProduct(spool);
+    mountAt(spool.id);
+
+    await user.click(await screen.findByRole('button', { name: 'Set a different ladder' }));
+    expect(screen.getByText('This product only')).toBeTruthy();
+    expect((screen.getByLabelText('Minimum quantity for rung 1') as HTMLInputElement).value).toBe(
+      '3',
+    );
+    expect((screen.getByLabelText('Discount for rung 2') as HTMLInputElement).value).toBe('10');
+  });
+
+  it('PUTs basis points, not percent, on its own endpoint', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    when(productPath(spool.id) + '/bulk-tiers', (_url, init) =>
+      (init.method ?? 'GET') === 'GET'
+        ? { body: { tiers: [], inherited: true, effective: DEFAULT_LADDER } }
+        : {
+            body: {
+              tiers: [{ minQty: 4, percentBps: 1250 }],
+              inherited: false,
+              effective: [{ minQty: 4, percentBps: 1250 }],
+            },
+          },
+    );
+    mountAt(spool.id);
+
+    await user.click(await screen.findByRole('button', { name: 'Set a different ladder' }));
+    // Rungs 3 and 2 go first, so the assertion is about one row and not three.
+    await user.click(screen.getByRole('button', { name: 'Remove rung 3' }));
+    await user.click(screen.getByRole('button', { name: 'Remove rung 2' }));
+    await retype(user, 'Minimum quantity for rung 1', '4');
+    await retype(user, 'Discount for rung 1', '12.5');
+    await user.click(screen.getByRole('button', { name: 'Save ladder' }));
+
+    await waitFor(() =>
+      expect(sent(productPath(spool.id) + '/bulk-tiers', 'PUT')).toEqual({
+        // 12.5% is 1250 bps. Holding percent in state would have lost the .5.
+        tiers: [{ minQty: 4, percentBps: 1250 }],
+      }),
+    );
+    // A LADDER SAVE IS NOT A PRODUCT SAVE — separate record, separate endpoint.
+    expect(writes()).not.toContain(productPath(spool.id));
+  });
+
+  it('refuses a rung below 2 in the screen, naming the rule rather than the field path', async () => {
+    // The route answers 400 `tiers.0.minQty`, which is not a sentence anybody
+    // can act on. The refusal happens here and nothing is sent.
+    const user = userEvent.setup();
+    withProduct(spool);
+    mountAt(spool.id);
+
+    await user.click(await screen.findByRole('button', { name: 'Set a different ladder' }));
+    await retype(user, 'Minimum quantity for rung 1', '1');
+    await user.click(screen.getByRole('button', { name: 'Save ladder' }));
+
+    expect(await screen.findByText(/quantity of 2 or more/)).toBeTruthy();
+    expect(writes()).not.toContain(productPath(spool.id) + '/bulk-tiers');
+  });
+
+  it('refuses two rungs at the same quantity, and says which one', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    mountAt(spool.id);
+
+    await user.click(await screen.findByRole('button', { name: 'Set a different ladder' }));
+    await retype(user, 'Minimum quantity for rung 2', '3');
+    await user.click(screen.getByRole('button', { name: 'Save ladder' }));
+
+    expect(await screen.findByText(/Two rungs both start at 3/)).toBeTruthy();
+    expect(writes()).not.toContain(productPath(spool.id) + '/bulk-tiers');
+  });
+
+  it('resets with an EMPTY put — the one spelling that means "inherit again"', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    when(productPath(spool.id) + '/bulk-tiers', (_url, init) =>
+      (init.method ?? 'GET') === 'GET'
+        ? {
+            body: {
+              tiers: [{ minQty: 6, percentBps: 800 }],
+              inherited: false,
+              effective: [{ minQty: 6, percentBps: 800 }],
+            },
+          }
+        : { body: { tiers: [], inherited: true, effective: DEFAULT_LADDER } },
+    );
+    mountAt(spool.id);
+
+    // It arrives OVERRIDING, because the server said `inherited: false`.
+    expect(await screen.findByText('This product only')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Use the shop default' }));
+
+    await waitFor(() =>
+      expect(sent(productPath(spool.id) + '/bulk-tiers', 'PUT')).toEqual({ tiers: [] }),
+    );
+    expect(await screen.findByText('Shop default')).toBeTruthy();
+  });
+
+  it('hides the whole ladder when the product has bulk discounts switched off', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    mountAt(spool.id);
+
+    await screen.findByText('Shop default');
+    await user.click(screen.getByRole('checkbox', { name: /quantity discount on this product/ }));
+    expect(screen.queryByText('Shop default')).toBeNull();
+    expect(screen.queryByText('3 or more')).toBeNull();
   });
 });
