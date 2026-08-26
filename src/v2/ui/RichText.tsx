@@ -173,6 +173,33 @@ export function RichText({
      "empty → whole description" on the stack and one Ctrl+Z blanks the field. */
   useEffect(() => {
     if (!editor || hydrated.current || value == null) return;
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * AN EMPTY DOCUMENT IS NEVER HYDRATED, AND SKIPPING IT IS THE WHOLE FIX.
+     *
+     * `{ type: 'doc', content: [] }` is what `createProduct` stores for every
+     * new product (`server/shop/catalog/products.ts`) — and it is INVALID under
+     * ProseMirror's schema, where `doc` is `block+` and therefore requires at
+     * least one block. Handed to `setContent` with `enableContentCheck` on, it
+     * fired `onContentError`, which locked the editor and showed "part of this
+     * description uses blocks v2 cannot edit yet".
+     *
+     * So every newly created product had an UNEDITABLE description, and the
+     * banner blamed unsupported blocks for a document that had no blocks at all.
+     * Measured 2026-08-26: three of the five products in production were in this
+     * state.
+     *
+     * There is nothing to hydrate here — a fresh editor is already an empty
+     * document with the placeholder showing, which is exactly what an empty
+     * description should look like. `hydrated` is still latched so that a later
+     * real value does not overwrite what the user has since typed.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    const doc = value as { content?: unknown[] } | null;
+    if (!doc || !Array.isArray(doc.content) || doc.content.length === 0) {
+      hydrated.current = true;
+      return;
+    }
     hydrated.current = true;
     try {
       editor

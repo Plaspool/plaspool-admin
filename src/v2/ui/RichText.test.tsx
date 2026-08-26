@@ -69,6 +69,38 @@ afterEach(cleanup);
 // ============================================================================
 
 describe('the v2 description editor', () => {
+  it('EDITS an empty document rather than locking it as unsupported', async () => {
+    /*
+     * The regression. `createProduct` stores `{ type: 'doc', content: [] }` for
+     * every new product, and that is INVALID under ProseMirror's schema, where
+     * `doc` is `block+` and needs at least one block. With `enableContentCheck`
+     * on, hydrating it fired `onContentError` — so every newly created product
+     * had an UNEDITABLE description, under a banner blaming unsupported blocks
+     * for a document that had no blocks at all. Three of the five products in
+     * production were in this state when it was found.
+     *
+     * An empty document is not hydrated at all now: a fresh editor already IS
+     * an empty document with the placeholder showing.
+     */
+    render(<RichText value={{ type: 'doc', content: [] }} onChange={vi.fn()} />);
+
+    // No lock notice — `queryByRole` because absence is the assertion.
+    await waitFor(() =>
+      expect(screen.getByLabelText('Description').getAttribute('contenteditable')).toBe('true'),
+    );
+    expect(screen.queryByRole('status')).toBeNull();
+    // And the tools are live, so somebody can actually write the description.
+    expect(screen.getByRole('button', { name: 'Bold' })).toHaveProperty('disabled', false);
+  });
+
+  it('treats a document with no content key the same way', async () => {
+    render(<RichText value={{ type: 'doc' }} onChange={vi.fn()} />);
+    await waitFor(() =>
+      expect(screen.getByLabelText('Description').getAttribute('contenteditable')).toBe('true'),
+    );
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
   it('locks editing over a node outside the schema instead of letting a save strip it', async () => {
     /*
      * A node type neither v1 nor v2 defines. With `enableContentCheck` the
