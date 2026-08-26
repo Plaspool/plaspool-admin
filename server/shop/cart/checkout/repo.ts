@@ -446,8 +446,15 @@ export async function freezeCheckout(
 
   const totalsLines: TotalsInputLine[] = quotes.map(({ line, quote }) => ({
     variantId: line.variantId,
+    /* Falls back to the VARIANT id, never to '': an unresolvable line is refused
+       by the engine before the ladder is consulted, but a shared '' would group
+       every unresolvable line into one phantom product on the way there. */
+    productId: quote?.productId ?? line.variantId,
     qty: line.qty,
     unit: quote ? { amount: quote.price.amount, currency: quote.price.currency } : null,
+    /* Frozen with the totals, so the ladder that applied at checkout is the one
+       on the invoice even if the admin edits it an hour later. */
+    bulkTiers: quote?.bulkTiers ?? [],
   }));
 
   /*

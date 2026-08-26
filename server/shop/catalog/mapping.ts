@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { toEpochMs, toEpochMsOrNull } from '../../db/client';
 import { normalizeBlobId, publicImageUrl } from '../../repo/public-projection';
+import { summarise } from '../../../shared/doc';
 import type { DocNode } from '../../../shared/types';
 import type {
   HoldState,
@@ -8,6 +9,7 @@ import type {
   VariantStatus,
 } from '../../../shared/commerce/catalog-port';
 import type {
+  BulkTier,
   InventoryHold,
   InventoryLevel,
   Product,
@@ -83,6 +85,13 @@ export const PRODUCT_COLUMNS: string[] = [
    *  nothing like the whole-`DocNode` weight that exiles `description`. */
   'seo_title',
   'seo_description',
+  /** Migration 0580. Both, and in LIST selects too — short strings, and the
+   *  list is precisely where `overview_fallback` is not optional, because
+   *  `description` is filtered out below and cannot be derived from there. */
+  'overview',
+  'overview_fallback',
+  /** Migration 0600. */
+  'bulk_discount_enabled',
   'author_id',
   'revision',
 ];
@@ -166,6 +175,20 @@ export function rowToProduct(row: Record<string, unknown>): Product {
     /** Migration 0440. NULL means "use the defaults", never ''. */
     seoTitle: row.seo_title == null ? null : String(row.seo_title),
     seoDescription: row.seo_description == null ? null : String(row.seo_description),
+    /** Migration 0580. NULL means "derive it", never ''. */
+    overview: row.overview == null ? null : String(row.overview),
+    /* NULL only for rows written before 0580's backfill script ran; `''` is the
+       honest reading of "we have not computed one", and the projection falls
+       through to a live `summarise(description)` when the document is present. */
+    overviewFallback: row.overview_fallback == null ? '' : String(row.overview_fallback),
+    /*
+     * Migration 0600. `Boolean(row.bulk_discount_enabled)` and NOT a bare cast:
+     * the column is `NOT NULL DEFAULT true`, but PGlite hands booleans back as
+     * booleans while some drivers report `'t'`/`'f'` — and `Boolean('f')` is
+     * `true`, which would turn the discount ON for every product that had it
+     * switched off. The explicit comparison refuses to be clever about it.
+     */
+    bulkDiscountEnabled: row.bulk_discount_enabled === true || row.bulk_discount_enabled === 't',
     authorId: String(row.author_id),
     revision: Number(row.revision),
   };
@@ -196,7 +219,17 @@ export function rowToProduct(row: Record<string, unknown>): Product {
  * pre-flighted every id would be a query per image on the storefront's hottest
  * response, and it would still be a guess by the time the browser asked.
  */
-export function toStorefrontProduct(product: Product): StorefrontProduct {
+export function toStorefrontProduct(
+  product: Product,
+  /*
+   * REQUIRED, NOT OPTIONAL, AND THAT IS DELIBERATE. The ladder is something a
+   * call site must go and fetch from `resolveTiers`. Defaulting it would let a
+   * route that forgot ship `bulkTiers: []`, which reads on the wire as "this
+   * product has no bulk discount" rather than as the bug it is. A required
+   * argument makes forgetting a compile error.
+   */
+  extras: { bulkTiers: BulkTier[] },
+): StorefrontProduct {
   const cover = product.coverImageId == null ? '' : normalizeBlobId(product.coverImageId);
   return {
     ...product,
@@ -205,6 +238,31 @@ export function toStorefrontProduct(product: Product): StorefrontProduct {
       .map(normalizeBlobId)
       .filter((id) => id !== '')
       .map(publicImageUrl),
+    /*
+     * THREE SOURCES, IN THIS ORDER, AND THE LAST ONE IS NOT DEAD CODE.
+     *
+     * 1. the hand-written column;
+     * 2. the stored `summarise(description)` on the product, which is the only
+     *    source the LIST route has, because `description` is not in
+     *    `LIST_PRODUCT_COLUMNS`;
+     * 3. `summarise(product.description)` live — which covers exactly one real
+     *    case: a row written BEFORE 0580's backfill script ran, read through the
+     *    DETAIL route where the document is present. On the list route the
+     *    document is the empty doc and this yields `''`, which is honest.
+     *
+     * TWO DIFFERENT OPERATORS, AND THE MIX IS DELIBERATE.
+     *
+     * `??` on `overview`, because NULL is the only "unset" — a hand-written
+     * overview is normalised to NULL at the write boundary and can never be ''.
+     *
+     * `||` on `overviewFallback`, because there '' IS the unset value:
+     * `rowToProduct` maps a NULL column to '' rather than null, so `??` would
+     * accept the empty string as an answer and step 3 would be unreachable —
+     * which is precisely the pre-backfill case step 3 exists for.
+     */
+    overview:
+      product.overview ?? (product.overviewFallback || summarise(product.description)),
+    bulkTiers: extras.bulkTiers,
   };
 }
 

@@ -275,6 +275,11 @@ describe('saveProduct validates the PATCH and never the merge', () => {
 
 // ------------------------------------------------------- the URL projection
 
+/* This suite is about the IMAGE URL projection. Every call passes the same
+   empty ladder so the new argument never varies — bulk pricing is covered in
+   `bulk-tiers.test.ts` and `compute.test.ts`, where it is the subject. */
+const NO_TIERS = { bulkTiers: [] };
+
 describe('toStorefrontProduct', () => {
   const base: Product = {
     id: 'prd_x',
@@ -286,6 +291,9 @@ describe('toStorefrontProduct', () => {
     tags: [],
     coverImageId: null,
     imageIds: [],
+    overview: null,
+    overviewFallback: '',
+    bulkDiscountEnabled: true,
     createdAt: 0,
     updatedAt: 0,
     publishedAt: null,
@@ -301,7 +309,7 @@ describe('toStorefrontProduct', () => {
       ...base,
       coverImageId: 'img_cover',
       imageIds: ['img_one', 'img_two'],
-    });
+    }, NO_TIERS);
     expect(out.coverImageUrl).toBe('/api/public/images/img_cover');
     expect(out.imageUrls).toEqual([
       '/api/public/images/img_one',
@@ -316,15 +324,15 @@ describe('toStorefrontProduct', () => {
       ...base,
       coverImageId: 'asset:img_cover',
       imageIds: ['idb:img_one'],
-    });
+    }, NO_TIERS);
     expect(out.coverImageUrl).toBe('/api/public/images/img_cover');
     expect(out.imageUrls).toEqual(['/api/public/images/img_one']);
   });
 
   it('is null for no cover, and drops empty gallery entries', () => {
-    expect(toStorefrontProduct(base).coverImageUrl).toBeNull();
-    expect(toStorefrontProduct({ ...base, coverImageId: '' }).coverImageUrl).toBeNull();
-    expect(toStorefrontProduct({ ...base, imageIds: ['', 'img_one'] }).imageUrls).toEqual([
+    expect(toStorefrontProduct(base, NO_TIERS).coverImageUrl).toBeNull();
+    expect(toStorefrontProduct({ ...base, coverImageId: '' }, NO_TIERS).coverImageUrl).toBeNull();
+    expect(toStorefrontProduct({ ...base, imageIds: ['', 'img_one'] }, NO_TIERS).imageUrls).toEqual([
       '/api/public/images/img_one',
     ]);
   });
@@ -333,7 +341,7 @@ describe('toStorefrontProduct', () => {
     // It is additive, not a projection that filters: the storefront contract
     // this suite inherits is "the product, plus URLs".
     const input: Product = { ...base, coverImageId: 'img_cover', imageIds: ['img_one'] };
-    const out = toStorefrontProduct(input);
+    const out = toStorefrontProduct(input, NO_TIERS);
     expect(out).toMatchObject(input);
     // And the two additions are the ONLY additions.
     expect(Object.keys(out).sort()).toEqual(

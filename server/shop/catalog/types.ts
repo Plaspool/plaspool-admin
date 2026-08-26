@@ -1,9 +1,21 @@
 import type { DocNode } from '../../../shared/types';
 import type {
+  BulkTier,
   HoldState,
   ProductStatus,
   VariantStatus,
 } from '../../../shared/commerce/catalog-port';
+
+/**
+ * One rung of a quantity ladder (migration 0600).
+ *
+ * RE-EXPORTED, NOT REDECLARED. The definition lives in
+ * `shared/commerce/catalog-port.ts` — Catalog's own shared file — because the
+ * totals engine needs it and that module is forbidden from importing anything
+ * under `server/`. A second declaration here would be a second thing to keep in
+ * step with the wire format.
+ */
+export type { BulkTier };
 
 /**
  * Catalog's domain types — what a route returns and what a repo hands back.
@@ -43,10 +55,33 @@ export interface Product {
    */
   seoTitle: string | null;
   seoDescription: string | null;
+  /**
+   * The card/summary line (migration 0580). `null` means "derive it": the
+   * storefront projection falls back to the first non-empty block of the
+   * description. Admin surfaces see the `null` and render the derived value as
+   * a PLACEHOLDER, so "inherited" and "set" stay visually distinct.
+   */
+  overview: string | null;
+  /**
+   * `summarise(description)`, derived on write (migration 0580) — ALWAYS a
+   * string, never null once the backfill has run.
+   *
+   * ON `Product` even though `descriptionText` deliberately is not, and the
+   * difference is that this one has two consumers that cannot work without it.
+   * `LIST_PRODUCT_COLUMNS` excludes `description`, so the storefront list has no
+   * document to derive from and must read this. And the admin editor renders it
+   * as the overview input's PLACEHOLDER, which is what keeps "inherited" and
+   * "set" visually distinct. `descriptionText` is a whole-document blob nothing
+   * reads; this is a short string two screens depend on.
+   */
+  overviewFallback: string;
+  /** Whether the quantity ladder applies here (migration 0600). Default true. */
+  bulkDiscountEnabled: boolean;
   authorId: string;
   /** The CAS token. Every write carries the revision it derived from. */
   revision: number;
 }
+
 
 /**
  * A product as an ANONYMOUS CUSTOMER sees it: the row, plus its image ids
@@ -89,6 +124,23 @@ export interface StorefrontProduct extends Product {
    * but the collection route with a trailing slash.
    */
   imageUrls: string[];
+  /**
+   * RESOLVED, AND THEREFORE NEVER `null` — unlike `Product.overview`.
+   *
+   * `toStorefrontProduct` substitutes `summarise(description)` when the column
+   * is NULL, so the storefront renders this string and owns no fallback logic
+   * of its own. That is the whole point of the field: the derivation used to
+   * live on the far side of the network, where it could disagree with what the
+   * admin previewed.
+   */
+  overview: string;
+  /**
+   * The ladder that actually applies to this product, already resolved through
+   * `bulkDiscountEnabled` and the store-wide default — so an EMPTY ARRAY means
+   * "no bulk discount here", and the storefront needs no second rule to decide.
+   * Ascending by `minQty`.
+   */
+  bulkTiers: BulkTier[];
 }
 
 /**
@@ -217,6 +269,10 @@ export interface ProductPatch {
   /** `null` (or `''`, normalised) clears back to "use the defaults". */
   seoTitle?: string | null;
   seoDescription?: string | null;
+  /** `null` (or `''`, normalised) clears back to "derive from the description". */
+  overview?: string | null;
+  /** Absent leaves it alone; the column's own default is `true`. */
+  bulkDiscountEnabled?: boolean;
 }
 
 /** The patchable half of a variant. `productId` is absent: a variant does not

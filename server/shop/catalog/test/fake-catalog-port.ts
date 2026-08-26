@@ -47,16 +47,26 @@ import type { Db } from '../../../db/client';
 import type {
   CatalogPort,
   ReservationRequest,
+  BulkTier,
   ReservationResult,
   VariantQuote,
 } from '../../../../shared/commerce/catalog-port';
 
 /** One variant's worth of world, as the fake holds it. */
-export interface FakeVariant extends Omit<VariantQuote, 'available'> {
+export interface FakeVariant extends Omit<VariantQuote, 'available' | 'bulkTiers'> {
   onHand: number;
   reserved: number;
   /** False makes `quote` return null and `reserve` answer `not_sellable`. */
   sellable?: boolean;
+  /**
+   * OPTIONAL HERE THOUGH REQUIRED ON `VariantQuote`, which is why it is pulled
+   * out of the `Omit` above rather than inherited.
+   *
+   * Every fixture written before migration 0600 describes a world with no bulk
+   * ladder, and making them all name an empty array would be churn that asserts
+   * nothing. `quote` substitutes `[]`, which is exactly what those fixtures mean.
+   */
+  bulkTiers?: BulkTier[];
 }
 
 interface Hold {
@@ -113,7 +123,12 @@ export function fakeCatalogPort(seedWith: readonly FakeVariant[] = []): FakeCata
       const v = variants.get(variantId);
       if (!v || v.sellable === false) return Promise.resolve(null);
       const { onHand: _onHand, reserved: _reserved, sellable: _sellable, ...rest } = v;
-      return Promise.resolve({ ...rest, available: availableOf(v) });
+      return Promise.resolve({
+        ...rest,
+        available: availableOf(v),
+        // `?? []` — the port promises an array, and an absent ladder is none.
+        bulkTiers: v.bulkTiers ?? [],
+      });
     },
 
     reserve: (_db: Db, req: ReservationRequest): Promise<ReservationResult> => {

@@ -1,0 +1,74 @@
+-- PRODUCT OVERVIEW — THE ONE-LINE SUMMARY (range 0580-0599; owner's queue,
+-- 2026-08-26).
+--
+-- HAND-WRITTEN IN FULL — `drizzle.config.ts` declares only `server/db/schema.ts`,
+-- so drizzle-kit has never seen `shop_products`. Declared in
+-- `server/shop/catalog/schema.ts`; `schema-parity.test.ts` reconciles the two.
+--
+-- WHAT IT REPLACES. The storefront derived a product's overview from the first
+-- line of the description and had no way to say anything else. That is a fine
+-- default and a bad ceiling: the opening sentence of a description is written
+-- to be read after the title, not instead of it, and on a card it frequently
+-- reads as a fragment. This column is the override.
+--
+-- NULLABLE, AND NULL MEANS "DERIVE IT" — the same contract `seo_title` and
+-- `seo_description` signed in 0440, for the same reason: every existing product
+-- genuinely has no hand-written overview, and inventing one would put words in
+-- the owner's mouth on every card in the shop. `''` normalises to NULL at the
+-- write boundary (`products.ts`), as `cover_image_id` already does for empty
+-- strings that provably mean nothing.
+--
+-- THERE IS NO BACKFILL, AND THAT IS THE POINT. 0520 backfilled `seo_description`
+-- by extracting from the TipTap document in SQL, and lax jsonpath silently
+-- doubled every value — `$.**.text` collected each text node twice, once via
+-- auto-unwrap of the `content` array and once via the node itself — so every row
+-- in production read as its own first paragraph concatenated with itself until
+-- 0540 repaired it. The fallback here is computed in TypeScript at read time by
+-- `firstBlockText()` in `shared/doc.ts`, which is unit-tested and cannot be
+-- wrong in only production. A column with no data migration has no data
+-- migration to get wrong.
+--
+-- NO LENGTH CHECK IN THE SCHEMA, matching `seo_title`/`seo_description` and
+-- `title`. `shop_products` feeds no generated tsvector — the 54000 cliff that
+-- forced byte ceilings on `posts` does not exist here — so the bound lives where
+-- the caller can be told which field to fix: the route's Zod caps this at 500
+-- characters with a 400 naming the field.
+--
+-- KNOWN AND ACCEPTED: `shop_product_revisions` does not capture this column,
+-- exactly as it does not capture `tags`, `category`, the images or the SEO pair.
+-- The revision table is the CAS's document history (title/description/status),
+-- not a full row snapshot. An overview edit still bumps `revision` through the
+-- ordinary save path, so concurrent edits still conflict honestly.
+ALTER TABLE shop_products
+  ADD COLUMN overview text;--> statement-breakpoint
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- AND THE DERIVED HALF, WHICH IS NOT OPTIONAL AND IS NOT OBVIOUS.
+--
+-- `LIST_PRODUCT_COLUMNS` in `mapping.ts` deliberately excludes `description`: a
+-- whole `DocNode` per row is exactly the weight a card grid must not carry. So
+-- on the LIST route there is no document to derive a fallback FROM, and a
+-- projection that computed one there would return `''` for every product whose
+-- `overview` is NULL — which is every product on the day this ships.
+--
+-- The fix is the pattern this table already uses one column to the left:
+-- `description_text` is `docToText(description)` maintained on write. This is
+-- `summarise(description)` maintained on write, by the same two statements in
+-- `products.ts`, and it is read by both the list and the detail projection.
+--
+-- STILL NO EXTRACTION IN SQL. The value is computed by `summarise()` in
+-- TypeScript — unit-tested, and the same function on the write path and in the
+-- backfill — never by `jsonb_path_query`. That is 0520's lesson kept.
+--
+-- NULLABLE, because the backfill is a SCRIPT AND NOT A STATEMENT IN THIS FILE
+-- (`scripts/backfill-overview-fallback.ts`). Rows written before it runs read
+-- NULL, and the projection falls through to `summarise(description)` when the
+-- document is present — so the detail route is correct immediately and the list
+-- route becomes correct when the script runs. A migration that cannot express
+-- the computation honestly should not pretend to.
+-- ═══════════════════════════════════════════════════════════════════════════
+ALTER TABLE shop_products
+  ADD COLUMN overview_fallback text;--> statement-breakpoint
+
+-- NO INDEX ON EITHER. Read only on rows already fetched by id, slug or the
+-- list's own predicate; nothing searches over overview copy.

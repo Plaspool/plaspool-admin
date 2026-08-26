@@ -23,6 +23,7 @@ import {
   type ShopTag,
   type ShopVariant,
 } from '../../data/api-shop';
+import type { BulkTier } from '../../data/api-shop';
 import { ApiError } from '../../data/errors';
 import { dateTime, humanise, money, productTone, shortDate } from '../lib/format';
 import { PageHeader } from '../ui/Page';
@@ -108,6 +109,11 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
   const [media, setMedia] = useState<MediaValue>({ coverImageId: null, imageIds: [] });
   const [seoTitle, setSeoTitle] = useState('');
   const [seoDescription, setSeoDescription] = useState('');
+  const [overview, setOverview] = useState('');
+  const [bulkEnabled, setBulkEnabled] = useState(true);
+  /* The shop-wide ladder, read once for the preview table. Read-only here: this
+     screen decides WHETHER the ladder applies, not what it says. */
+  const [bulkTiers, setBulkTiers] = useState<BulkTier[]>([]);
   const [description, setDescription] = useState<unknown>(null);
   const [descDirty, setDescDirty] = useState(false);
   /* Remounting the editor is how a discard rehydrates it. */
@@ -122,6 +128,23 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
 
   const product = bundle?.product ?? null;
 
+  /*
+   * The cheapest live variant price, so the table can show what each rung
+   * actually costs rather than an abstract percentage. `null` for a product with
+   * no priced variant yet, which renders as an em dash rather than as ₦0.00 —
+   * "we have not priced this" and "this is free" are different claims.
+   */
+  const cheapest =
+    product?.variants?.reduce<{ amount: number; currency: string } | null>((low, v) => {
+      /* Narrowed on the whole object, not on `amount`: an unpriced variant is a
+         real state (a draft nobody has costed), and `v.price` is null there. */
+      const price = v.price;
+      if (!price || typeof price.amount !== 'number') return low;
+      return low === null || price.amount < low.amount
+        ? { amount: price.amount, currency: price.currency }
+        : low;
+    }, null) ?? null;
+
   const adoptDrafts = useCallback((next: ShopProductDetail | null) => {
     setTitle(next?.title ?? '');
     setCategory(next?.category ?? '');
@@ -130,6 +153,12 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
     setMedia({ coverImageId: next?.coverImageId ?? null, imageIds: next?.imageIds ?? [] });
     setSeoTitle(next?.seoTitle ?? '');
     setSeoDescription(next?.seoDescription ?? '');
+    /* `?? ''` — a NULL overview is an EMPTY box, never the derived text. Putting
+       the fallback in the value would make every save promote a derived summary
+       into a hand-written one, and the product would silently stop tracking its
+       own description. It goes in the placeholder instead. */
+    setOverview(next?.overview ?? '');
+    setBulkEnabled(next?.bulkDiscountEnabled ?? true);
     setDescription(next?.description ?? null);
     setDescDirty(false);
     setEditorKey((k) => k + 1);
@@ -168,6 +197,29 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
     return () => controller.abort();
   }, [load]);
 
+  /*
+   * The shop-wide ladder, for the preview table. Fetched ONCE per mount and not
+   * per product: it is the same rows for every screen, and re-reading it on
+   * every save would put a request on the path of an edit that cannot change it.
+   *
+   * A failure is swallowed to an empty ladder rather than surfaced. The table is
+   * an explanation of a switch, not the switch itself — a product page that
+   * refused to load because a preview table could not be drawn would be a worse
+   * screen than one showing the checkbox alone.
+   */
+  useEffect(() => {
+    const controller = new AbortController();
+    shopApi
+      .defaultBulkTiers()
+      .then((tiers) => {
+        if (!controller.signal.aborted) setBulkTiers(tiers);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setBulkTiers([]);
+      });
+    return () => controller.abort();
+  }, []);
+
   /* ── audit trail ─────────────────────────────────────────────────────── */
   const [audit, setAudit] = useState<AuditEntry[] | null>(null);
   const [auditNonce, setAuditNonce] = useState(0);
@@ -195,6 +247,8 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
       media.imageIds.length > 0 ||
       seoTitle.trim() !== '' ||
       seoDescription.trim() !== '' ||
+      overview.trim() !== '' ||
+      !bulkEnabled ||
       descDirty
     : product
       ? title !== product.title ||
@@ -204,6 +258,8 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
         media.imageIds.join('\0') !== product.imageIds.join('\0') ||
         seoTitle !== (product.seoTitle ?? '') ||
         seoDescription !== (product.seoDescription ?? '') ||
+        overview !== (product.overview ?? '') ||
+        bulkEnabled !== product.bulkDiscountEnabled ||
         descDirty
       : false;
 
@@ -217,6 +273,10 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
        box and a never-filled one converge on "use the defaults". */
     seoTitle,
     seoDescription,
+    /* Sent as typed, like the SEO pair: an emptied box is `''`, which the server
+       stores as NULL, which means "go back to deriving it". */
+    overview,
+    bulkDiscountEnabled: bulkEnabled,
     /* `null` is an editor that never mounted or hydrated — omitting the key
        leaves the stored description alone, v1's own rule. */
     ...(description === null ? {} : { description }),
@@ -460,6 +520,86 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
               onWrite={afterVariantWrite}
             />
           )}
+
+          <Card title="Overview">
+            <TextArea
+              label="Overview"
+              value={overview}
+              rows={3}
+              /*
+               * THE DERIVED TEXT IS THE PLACEHOLDER, NEVER THE VALUE.
+               *
+               * Putting it in `value` would make every save promote a derived
+               * summary into a hand-written one, and the product would silently
+               * stop tracking its own description forever after. As a
+               * placeholder it shows exactly what the storefront will render
+               * while the box is empty, which is the whole question the editor
+               * is trying to answer.
+               */
+              placeholder={
+                product?.overviewFallback?.trim() ||
+                'Falls back to the first paragraph of the description'
+              }
+              hint={
+                overview.trim() === ''
+                  ? 'Empty — the storefront shows the first paragraph of the description.'
+                  : seoCountHint(overview, 160)
+              }
+              onChange={(e) => setOverview(e.target.value)}
+            />
+          </Card>
+
+          <Card title="Bulk discount">
+            <Checkbox
+              label="Offer a quantity discount on this product"
+              hint="Customers buying several get a lower price per item. Quantity counts across every variant of this product, so three black plus two white is five."
+              checked={bulkEnabled}
+              onChange={setBulkEnabled}
+            />
+            {bulkEnabled ? (
+              <div className="pd__tiers">
+                {bulkTiers.length === 0 ? (
+                  <p className="field__hint">No ladder is set up for the shop yet.</p>
+                ) : (
+                  <table className="tbl tbl--compact">
+                    <thead>
+                      <tr>
+                        <th>Quantity</th>
+                        <th>Discount</th>
+                        <th>Price each</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bulkTiers.map((t) => (
+                        <tr key={t.minQty}>
+                          <td>{t.minQty} or more</td>
+                          {/* bps → percent. 1000 is 10%. */}
+                          <td>{t.percentBps / 100}% off</td>
+                          <td>
+                            {cheapest === null
+                              ? '—'
+                              : money(
+                                  /* Round the UNIT, matching the totals engine
+                                     exactly — a preview that rounded differently
+                                     from the charge would be worse than none. */
+                                  Math.round(
+                                    (cheapest.amount * (10_000 - t.percentBps)) / 10_000,
+                                  ),
+                                  cheapest.currency,
+                                )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                <p className="field__hint">
+                  This is the shop-wide ladder. Changing it for every product is a
+                  settings change; this switch only decides whether it applies here.
+                </p>
+              </div>
+            ) : null}
+          </Card>
 
           <Card title="Search engine listing">
             <TextField

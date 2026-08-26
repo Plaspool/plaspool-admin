@@ -20,6 +20,7 @@ import {
   unpublishProduct,
 } from './products';
 import { listProducts } from './query';
+import { listTiers, replaceTiers, resolveTiers, resolveTiersFor } from './bulk-tiers';
 import { toStorefrontProduct, toStorefrontVariant } from './mapping';
 import {
   createVariant,
@@ -112,6 +113,18 @@ const ProductPatchBody = z
      */
     seoTitle: str().max(300).nullable(),
     seoDescription: str().max(500).nullable(),
+    /**
+     * Migration 0580. `null` (or `''`, normalised in the repo) clears back to
+     * "derive it from the description".
+     *
+     * 500 is generous over the ~160 characters a card renders — that is UI
+     * guidance, not validity — and the cap lives here rather than in the schema
+     * because `shop_products` has no byte-ceiling machinery, so a route-level
+     * bound that NAMES the field is the whole defence. Matches 0440's reasoning.
+     */
+    overview: str().max(500).nullable(),
+    /** Migration 0600. Absent leaves it alone; there is no "clear". */
+    bulkDiscountEnabled: z.boolean(),
   })
   .partial()
   .strict();
@@ -145,6 +158,31 @@ const PatchBody = z
     note: str().max(400).optional(),
   })
   .strict();
+
+/**
+ * One ladder, as the admin editor PUTs it.
+ *
+ * WHOLE-LADDER REPLACEMENT AND NOT PER-RUNG CRUD. A ladder is read and reasoned
+ * about as a table — "5% at three, 10% at five" — so editing it a rung at a time
+ * would let a form submit land as three requests, two of which can fail, leaving
+ * a ladder nobody chose. One PUT is one intent.
+ *
+ * `.max(12)` because a ladder a customer cannot hold in their head is not a
+ * pricing policy, and because it bounds the statement `replaceTiers` builds.
+ *
+ * The BOUNDS ARE RESTATED HERE rather than left to the CHECK constraints: a
+ * 23514 surfaces as a 500 naming a constraint the caller has never heard of,
+ * and `minQty >= 2` needs to come back as a 400 that says so.
+ */
+const BulkTierBody = z
+  .object({
+    minQty: z.number().int().min(2).max(100_000),
+    /** Basis points. 10 000 is 100%, so the 5000 ceiling is 50%. */
+    percentBps: z.number().int().min(1).max(5000),
+  })
+  .strict();
+
+const BulkTiersBody = z.object({ tiers: z.array(BulkTierBody).max(12) }).strict();
 
 const ListQueryParams = z
   .object({
@@ -308,14 +346,18 @@ routes.get('/products', async (c) => {
   const db = currentDb(c);
   const q = readQuery(c, ListQueryParams);
   const page = await listProducts(db, q);
-  const variants = await listVariantsForProducts(
-    db,
-    page.items.map((p) => p.id),
-  );
+  const ids = page.items.map((p) => p.id);
+  /* Both fan-outs in ONE statement each, not one per card: a fifty-product
+     catalogue on Cloudflare Workers has a 50-subrequest ceiling, which is the
+     same reason `listVariantsForProducts` exists. */
+  const [variants, tiers] = await Promise.all([
+    listVariantsForProducts(db, ids),
+    resolveTiers(db, ids),
+  ]);
   return c.json({
     ...page,
     items: page.items.map((p) => ({
-      ...toStorefrontProduct(p),
+      ...toStorefrontProduct(p, { bulkTiers: tiers.get(p.id) ?? [] }),
       /* `?? []` and not the map's absence: a JSON response cannot have a
          `Map#get` miss, and a product with no variants is a real state that
          reads as an empty list on the wire. */
@@ -336,9 +378,15 @@ routes.get('/products/:slug', async (c) => {
   const slug = pathParam(c, 'slug');
   const product = await getActiveProductBySlug(db, slug);
   if (!product) throw new NotFoundError(slug);
-  const variants = await listVariantsWithPrices(db, product.id);
+  const [variants, bulkTiers] = await Promise.all([
+    listVariantsWithPrices(db, product.id),
+    resolveTiersFor(db, product.id),
+  ]);
   return c.json({
-    product: { ...toStorefrontProduct(product), variants: variants.map(toStorefrontVariant) },
+    product: {
+      ...toStorefrontProduct(product, { bulkTiers }),
+      variants: variants.map(toStorefrontVariant),
+    },
   });
 });
 
@@ -762,4 +810,72 @@ routes.post('/admin/inventory/:variantId/adjust', auth, async (c) => {
    */
   revalidateVariantProduct(db, variantId);
   return c.json({ inventory: level });
+});
+
+// ------------------------------------------------------------- bulk discounts
+
+/**
+ * The STORE-WIDE default ladder (migration 0600) — the one every product
+ * inherits unless it carries an override.
+ *
+ * `requireAuth()` AND NOT `requireOwner()`, matching `/admin/products`: whoever
+ * may publish a product and set its price may set the quantity ladder it sells
+ * on. Making this owner-only would put the shop's pricing behind a person who
+ * is often not the one running the shop that day.
+ */
+routes.get('/admin/bulk-tiers', auth, async (c) => {
+  readQuery(c, NoCategoryParams);
+  return c.json({ tiers: await listTiers(currentDb(c), null) });
+});
+
+routes.put('/admin/bulk-tiers', auth, async (c) => {
+  const body = await readJson(c, BulkTiersBody);
+  const tiers = await replaceTiers(currentDb(c), null, body.tiers, Date.now());
+  return c.json({ tiers });
+});
+
+/**
+ * ONE PRODUCT's override.
+ *
+ * READS THE STORED ROWS, NOT THE RESOLVED LADDER, and the difference is the
+ * whole reason this is not `resolveTiers`: the editor has to distinguish "this
+ * product has no rows and inherits the default" from "this product has rows that
+ * happen to equal the default", and a resolved ladder collapses both into the
+ * same answer. `inherited` says which it is, so the UI can grey the table and
+ * offer Override rather than guessing.
+ */
+routes.get('/admin/products/:id/bulk-tiers', auth, async (c) => {
+  readQuery(c, NoCategoryParams);
+  const db = currentDb(c);
+  const id = pathParam(c, 'id');
+  const own = await listTiers(db, id);
+  return c.json({
+    tiers: own,
+    inherited: own.length === 0,
+    /* The ladder that would apply either way, so the editor can render the
+       greyed inherited table without a second request. */
+    effective: await resolveTiersFor(db, id),
+  });
+});
+
+/**
+ * PUT the override. AN EMPTY `tiers` IS THE RESET — it deletes the product's own
+ * rows and returns it to inheriting the default, which is why this is not a
+ * DELETE route: "no ladder of my own" and "no ladder at all" are different
+ * states and only the first is expressible here.
+ */
+routes.put('/admin/products/:id/bulk-tiers', auth, async (c) => {
+  const db = currentDb(c);
+  const id = pathParam(c, 'id');
+  const body = await readJson(c, BulkTiersBody);
+  /* The product must exist before rows referencing it are written: the FK would
+     refuse anyway, but as a 23503 rather than as the 404 this deserves. */
+  const product = await getProduct(db, id);
+  if (!product) throw new NotFoundError(id);
+  await replaceTiers(db, id, body.tiers, Date.now());
+  return c.json({
+    tiers: await listTiers(db, id),
+    inherited: body.tiers.length === 0,
+    effective: await resolveTiersFor(db, id),
+  });
 });

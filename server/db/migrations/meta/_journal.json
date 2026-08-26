@@ -274,6 +274,20 @@
                         "when":  1786600003100,
                         "tag":  "0560_zone_vat",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  39,
+                        "version":  "7",
+                        "when":  1786600003200,
+                        "tag":  "0580_product_overview",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  40,
+                        "version":  "7",
+                        "when":  1786600003300,
+                        "tag":  "0600_bulk_discount_tiers",
+                        "breakpoints":  true
                     }
                 ]
 }

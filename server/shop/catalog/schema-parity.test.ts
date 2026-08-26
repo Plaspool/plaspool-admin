@@ -5,6 +5,7 @@ import type { PgTable } from 'drizzle-orm/pg-core';
 import { migratedDb } from '../../test/harness';
 import type { Db } from '../../db/client';
 import {
+  shopBulkTiers,
   shopInventory,
   shopInventoryHolds,
   shopPrices,
@@ -53,6 +54,10 @@ afterAll(async () => {
 
 const TABLES: [string, PgTable][] = [
   ['shop_products', shopProducts],
+  /* Migration 0600. Registered here so the declaration is reconciled against the
+     real DDL column by column — without this line the table is simply not
+     checked, which is the quiet way a description drifts from its authority. */
+  ['shop_bulk_tiers', shopBulkTiers],
   ['shop_product_revisions', shopProductRevisions],
   ['shop_variants', shopVariants],
   ['shop_prices', shopPrices],

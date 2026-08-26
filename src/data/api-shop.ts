@@ -355,6 +355,18 @@ export interface ShopProduct {
    */
   seoTitle: string | null;
   seoDescription: string | null;
+  /**
+   * The card/summary line (migration 0580). `null` means "derive it" and is what
+   * the editor shows as an EMPTY box — the derived text goes in the placeholder,
+   * which is how "inherited" and "set" stay visually distinct. `''` never
+   * arrives; the server normalises it to `null` on write.
+   */
+  overview: string | null;
+  /** `summarise(description)`, maintained server-side. Read-only here: it is
+   *  what the overview box renders as its placeholder. */
+  overviewFallback: string;
+  /** Whether the quantity ladder applies to this product (migration 0600). */
+  bulkDiscountEnabled: boolean;
   authorId: string;
   /** The CAS token. Every save carries the revision it derived from. */
   revision: number;
@@ -490,6 +502,29 @@ export interface ShopProductPatch {
   /** `null` or `''` clears back to "use the defaults"; absent leaves it alone. */
   seoTitle?: string | null;
   seoDescription?: string | null;
+  /** `null` or `''` clears back to "derive it from the description". */
+  overview?: string | null;
+  /** Absent leaves it alone — a boolean has no "clear" spelling. */
+  bulkDiscountEnabled?: boolean;
+}
+
+/** One rung of a quantity ladder (migration 0600). 10 000 bps is 100%. */
+export interface BulkTier {
+  minQty: number;
+  percentBps: number;
+}
+
+/**
+ * One scope's ladder as the editor reads it.
+ *
+ * `tiers` is what this scope STORES and `effective` is what actually applies —
+ * different whenever `inherited` is true, which is exactly the distinction the
+ * editor needs to grey the table and offer Override rather than guessing.
+ */
+export interface BulkTierSet {
+  tiers: BulkTier[];
+  inherited: boolean;
+  effective: BulkTier[];
 }
 
 export interface Page<T> {
@@ -1001,6 +1036,42 @@ export const shopApi = {
   },
 
   /** 201, not 200. */
+  // ------------------------------------------------------- bulk discounts
+
+  /** The store-wide default ladder every product inherits (migration 0600). */
+  async defaultBulkTiers(): Promise<BulkTier[]> {
+    return (await shopFetch<{ tiers: BulkTier[] }>(`${BASE}/bulk-tiers`, { subject: 'Bulk tiers' }))
+      .tiers;
+  },
+
+  async saveDefaultBulkTiers(tiers: BulkTier[]): Promise<BulkTier[]> {
+    return (
+      await shopFetch<{ tiers: BulkTier[] }>(`${BASE}/bulk-tiers`, {
+        method: 'PUT',
+        body: { tiers },
+        subject: 'Bulk tiers',
+      })
+    ).tiers;
+  },
+
+  /** One product's ladder, with `inherited` saying whether it has one at all. */
+  async productBulkTiers(id: string): Promise<BulkTierSet> {
+    return shopFetch<BulkTierSet>(`${BASE}/products/${id}/bulk-tiers`, { subject: 'Bulk tiers' });
+  },
+
+  /**
+   * PUT the product's ladder. AN EMPTY ARRAY IS THE RESET — it deletes the
+   * product's own rungs and returns it to inheriting the store default, which is
+   * why there is no delete method beside this one.
+   */
+  async saveProductBulkTiers(id: string, tiers: BulkTier[]): Promise<BulkTierSet> {
+    return shopFetch<BulkTierSet>(`${BASE}/products/${id}/bulk-tiers`, {
+      method: 'PUT',
+      body: { tiers },
+      subject: 'Bulk tiers',
+    });
+  },
+
   async createProduct(patch: ShopProductPatch = {}): Promise<ShopProduct> {
     const res = await shopFetch<{ product: ShopProduct }>(`${BASE}/products`, {
       method: 'POST',

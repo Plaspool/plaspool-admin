@@ -1,7 +1,9 @@
 import { add, money, multiply, scale, sum, zero } from '../../../../shared/commerce/money';
 import type { Money, RoundingMode } from '../../../../shared/commerce/money';
+import { pickTier } from '../../../../shared/commerce/ports';
 import type {
   Adjustment,
+  BulkTier,
   FrozenTotals,
   ShippingQuote,
   TaxRate,
@@ -64,6 +66,16 @@ const BPS = 10_000;
 
 export interface TotalsInputLine {
   variantId: string;
+  /**
+   * The product this variant belongs to (migration 0600) — the GROUPING KEY for
+   * the bulk ladder, and the reason it is on the input at all.
+   *
+   * The owner's rule is "qty per product, across variants": three black spools
+   * and two white ones are five spools of that product and reach the 10% rung
+   * together. Grouping by `variantId` instead would leave a customer who mixed
+   * colours worse off than one who did not, for no reason they could see.
+   */
+  productId: string;
   qty: number;
   /**
    * The live unit price, or `null` when `CatalogPort.quote()` could not resolve
@@ -82,6 +94,18 @@ export interface TotalsInputLine {
    * clothing) are a data change and not an engine change.
    */
   taxable?: boolean;
+  /**
+   * The RESOLVED ladder for this line's product (migration 0600) — already run
+   * through `bulkDiscountEnabled` and the store-wide default by
+   * `resolveTiers`, so an empty array or an absent field both mean "no bulk
+   * discount on this line" and the engine needs no second rule.
+   *
+   * Passed per line rather than per product on `TotalsInput` because a line is
+   * the only thing the caller is guaranteed to be holding, and a parallel
+   * product→ladder map would be one more thing that can be out of step with the
+   * lines it describes.
+   */
+  bulkTiers?: readonly BulkTier[];
 }
 
 export interface TotalsInput {
@@ -171,18 +195,56 @@ export function computeTotals(input: TotalsInput): TotalsResult {
 
   const rate = input.tax.rateBps;
 
-  // 1 and 2 — per line, in one pass, so the breakdown and the sums cannot drift.
+  /*
+   * 1a — THE BULK LADDER, and it runs BEFORE the per-line tax below. That
+   * ordering is the whole design (see `0600_bulk_discount_tiers.sql`): a
+   * quantity discount must reduce the TAXABLE BASE, and the `adjustments` path
+   * further down applies after tax, so expressing this as an adjustment would
+   * charge the customer VAT on money they did not spend.
+   *
+   * Quantity is summed PER PRODUCT across every line, so mixed variants of one
+   * product climb the ladder together.
+   */
+  const qtyByProduct = new Map<string, number>();
+  for (const line of input.lines) {
+    qtyByProduct.set(line.productId, (qtyByProduct.get(line.productId) ?? 0) + line.qty);
+  }
+
+  // 1b and 2 — per line, in one pass, so the breakdown and the sums cannot drift.
   const lines: TotalsLine[] = input.lines.map((line) => {
     // Non-null by the `unresolved` check above; narrowed for the type checker.
     const unit = line.unit as Money;
-    const lineTotal = multiply(unit, line.qty);
+    const bulkQty = qtyByProduct.get(line.productId) ?? line.qty;
+    const tier = pickTier(line.bulkTiers ?? [], bulkQty);
+    const bulkPercentBps = tier?.percentBps ?? 0;
+    /*
+     * ROUNDED ON THE UNIT, THEN MULTIPLIED — never `scale(lineTotal, …)`.
+     *
+     * Discounting the line total leaves a per-unit price carrying a fraction of
+     * a kobo, so the receipt's "₦21,150 each × 5" would not equal its own line
+     * total and nobody could tell which number was lying. Rounding once, here,
+     * makes `effectiveUnit × qty` exact by construction.
+     *
+     * `BPS - bulkPercentBps` rather than subtracting a computed discount: one
+     * rounding instead of two, and it cannot produce a negative unit because
+     * the column is checked `> 0 AND <= 5000`.
+     */
+    const effectiveUnit =
+      bulkPercentBps === 0
+        ? unit
+        : scale(unit, BPS - bulkPercentBps, BPS, TOTALS_ROUNDING);
+    const lineTotal = multiply(effectiveUnit, line.qty);
     const taxable = line.taxable !== false;
     return {
       variantId: line.variantId,
       qty: line.qty,
       unit,
+      bulkQty,
+      bulkPercentBps,
+      effectiveUnit,
       lineTotal,
       taxable,
+      // On the DISCOUNTED `lineTotal` — the correct taxable base.
       taxAmount: taxable ? scale(lineTotal, rate, BPS, TOTALS_ROUNDING) : zero(currency),
     };
   });
@@ -268,10 +330,34 @@ export function parseFrozenTotals(value: unknown): FrozenTotals | null {
     };
     const lines = (raw.lines as unknown[]).map((entry) => {
       const line = entry as Record<string, unknown>;
+      const qty = Number(line.qty);
+      const unit = m(line.unit);
+      /*
+       * ═══════════════════════════════════════════════════════════════════════
+       * THE THREE BULK FIELDS ARE READ DEFENSIVELY, AND THIS IS THE COMPATIBILITY
+       * SEAM FOR EVERY ORDER THAT ALREADY EXISTS.
+       *
+       * `FrozenTotals` is stored as `jsonb` and is copied, never recomputed — so
+       * every checkout and order frozen before migration 0600 has a payload with
+       * `bulkQty`, `bulkPercentBps` and `effectiveUnit` absent, permanently.
+       * Read them the way the fields above are read and `m(undefined)` throws,
+       * the `catch` below turns it into `null`, and the caller renders "these
+       * totals are corrupt" for every historical order in the shop.
+       *
+       * The substitutions are what those payloads meant: no ladder existed, so
+       * nothing was discounted, so the effective price WAS the list price.
+       * `bulkQty` falls back to the line's own `qty` rather than 0 — the ladder
+       * was evaluated at "just this line" by definition when there was no ladder.
+       * ═══════════════════════════════════════════════════════════════════════
+       */
+      const effectiveUnit = line.effectiveUnit === undefined ? unit : m(line.effectiveUnit);
       return {
         variantId: String(line.variantId),
-        qty: Number(line.qty),
-        unit: m(line.unit),
+        qty,
+        unit,
+        bulkQty: line.bulkQty === undefined ? qty : Number(line.bulkQty),
+        bulkPercentBps: line.bulkPercentBps === undefined ? 0 : Number(line.bulkPercentBps),
+        effectiveUnit,
         lineTotal: m(line.lineTotal),
         taxable: Boolean(line.taxable),
         taxAmount: m(line.taxAmount),

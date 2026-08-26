@@ -31,7 +31,7 @@ const STANDARD: TotalsInput['shipping'] = {
 function input(over: Partial<TotalsInput> = {}): TotalsInput {
   return {
     currency: GBP,
-    lines: [{ variantId: 'var_a', qty: 1, unit: gbp(1999) }],
+    lines: [{ variantId: 'var_a', productId: 'prd_var_a', qty: 1, unit: gbp(1999) }],
     shipping: null,
     tax: NO_TAX,
     adjustments: [],
@@ -48,7 +48,7 @@ function ok(over: Partial<TotalsInput> = {}) {
 
 describe('the arithmetic', () => {
   it('multiplies unit by quantity exactly — no rounding happens on a line total', () => {
-    const totals = ok({ lines: [{ variantId: 'var_a', qty: 3, unit: gbp(1999) }] });
+    const totals = ok({ lines: [{ variantId: 'var_a', productId: 'prd_var_a', qty: 3, unit: gbp(1999) }] });
     expect(totals.lines[0].lineTotal).toEqual(gbp(5997));
     expect(totals.subtotal).toEqual(gbp(5997));
   });
@@ -56,8 +56,8 @@ describe('the arithmetic', () => {
   it('sums several lines', () => {
     const totals = ok({
       lines: [
-        { variantId: 'var_a', qty: 2, unit: gbp(1999) },
-        { variantId: 'var_b', qty: 1, unit: gbp(500) },
+        { variantId: 'var_a', productId: 'prd_var_a', qty: 2, unit: gbp(1999) },
+        { variantId: 'var_b', productId: 'prd_var_b', qty: 1, unit: gbp(500) },
       ],
     });
     expect(totals.subtotal).toEqual(gbp(4498));
@@ -99,9 +99,9 @@ describe('tax — rounded PER LINE, then summed', () => {
      */
     const totals = ok({
       lines: [
-        { variantId: 'a', qty: 1, unit: gbp(333) },
-        { variantId: 'b', qty: 1, unit: gbp(333) },
-        { variantId: 'c', qty: 1, unit: gbp(333) },
+        { variantId: 'a', productId: 'prd_a', qty: 1, unit: gbp(333) },
+        { variantId: 'b', productId: 'prd_b', qty: 1, unit: gbp(333) },
+        { variantId: 'c', productId: 'prd_c', qty: 1, unit: gbp(333) },
       ],
       tax: VAT,
     });
@@ -113,7 +113,7 @@ describe('tax — rounded PER LINE, then summed', () => {
   it('taxes the LINE TOTAL, not the unit price times a rounded per-unit tax', () => {
     // 3 × 333 = 999; round(999 × 0.20) = 200. Taxing the unit and multiplying
     // would give 67 × 3 = 201 — a different, and wrong, answer for one line.
-    const totals = ok({ lines: [{ variantId: 'a', qty: 3, unit: gbp(333) }], tax: VAT });
+    const totals = ok({ lines: [{ variantId: 'a', productId: 'prd_a', qty: 3, unit: gbp(333) }], tax: VAT });
     expect(totals.lines[0].taxAmount).toEqual(gbp(200));
   });
 
@@ -141,8 +141,8 @@ describe('tax — rounded PER LINE, then summed', () => {
   it('marks a line non-taxable and charges it nothing', () => {
     const totals = ok({
       lines: [
-        { variantId: 'a', qty: 1, unit: gbp(1000) },
-        { variantId: 'b', qty: 1, unit: gbp(1000), taxable: false },
+        { variantId: 'a', productId: 'prd_a', qty: 1, unit: gbp(1000) },
+        { variantId: 'b', productId: 'prd_b', qty: 1, unit: gbp(1000), taxable: false },
       ],
       tax: VAT,
     });
@@ -167,7 +167,7 @@ describe('rounding edge cases', () => {
   for (const [lineTotal, rateBps, expected, why] of cases) {
     it(`${lineTotal}p at ${rateBps}bps is ${expected}p — ${why}`, () => {
       const totals = ok({
-        lines: [{ variantId: 'a', qty: 1, unit: gbp(lineTotal) }],
+        lines: [{ variantId: 'a', productId: 'prd_a', qty: 1, unit: gbp(lineTotal) }],
         tax: { zone: 'z', label: 'T', rateBps },
       });
       expect(totals.lines[0].taxAmount.amount).toBe(expected);
@@ -186,8 +186,8 @@ describe('rounding edge cases', () => {
         for (const qty of [1, 3, 7]) {
           const totals = ok({
             lines: [
-              { variantId: 'a', qty, unit: gbp(unit) },
-              { variantId: 'b', qty: 1, unit: gbp(unit * 2 + 1) },
+              { variantId: 'a', productId: 'prd_a', qty, unit: gbp(unit) },
+              { variantId: 'b', productId: 'prd_b', qty: 1, unit: gbp(unit * 2 + 1) },
             ],
             shipping: STANDARD,
             tax: { zone: 'z', label: 'T', rateBps },
@@ -231,8 +231,8 @@ describe('a line whose variant has vanished', () => {
     const result = computeTotals(
       input({
         lines: [
-          { variantId: 'var_a', qty: 1, unit: gbp(1999) },
-          { variantId: 'var_gone', qty: 2, unit: null },
+          { variantId: 'var_a', productId: 'prd_var_a', qty: 1, unit: gbp(1999) },
+          { variantId: 'var_gone', productId: 'prd_var_gone', qty: 2, unit: null },
         ],
       }),
     );
@@ -248,9 +248,9 @@ describe('a line whose variant has vanished', () => {
     const result = computeTotals(
       input({
         lines: [
-          { variantId: 'gone_1', qty: 1, unit: null },
-          { variantId: 'here', qty: 1, unit: gbp(100) },
-          { variantId: 'gone_2', qty: 1, unit: null },
+          { variantId: 'gone_1', productId: 'prd_gone_1', qty: 1, unit: null },
+          { variantId: 'here', productId: 'prd_here', qty: 1, unit: gbp(100) },
+          { variantId: 'gone_2', productId: 'prd_gone_2', qty: 1, unit: null },
         ],
       }),
     );
@@ -266,8 +266,8 @@ describe('a currency mismatch is REFUSED, never coerced', () => {
     const result = computeTotals(
       input({
         lines: [
-          { variantId: 'var_a', qty: 1, unit: gbp(1999) },
-          { variantId: 'var_eur', qty: 1, unit: money(1999, 'EUR') },
+          { variantId: 'var_a', productId: 'prd_var_a', qty: 1, unit: gbp(1999) },
+          { variantId: 'var_eur', productId: 'prd_var_eur', qty: 1, unit: money(1999, 'EUR') },
         ],
       }),
     );
@@ -322,7 +322,7 @@ describe('adjustments — the documented extension point, empty in v1', () => {
      * grand total and does NOT move the tax.
      */
     const totals = ok({
-      lines: [{ variantId: 'a', qty: 1, unit: gbp(1000) }],
+      lines: [{ variantId: 'a', productId: 'prd_a', qty: 1, unit: gbp(1000) }],
       tax: VAT,
       adjustments: [{ code: 'WELCOME', label: '£1 off', amount: gbp(-100) }],
     });

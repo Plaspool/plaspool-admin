@@ -5,7 +5,7 @@ import { BadRequestError, InvalidDocumentError, NotFoundError } from '../../repo
 import { committedImageIds } from '../../repo/images';
 import { normalizeBlobId } from '../../repo/public-projection';
 import { ProductPreconditionFailedError, StaleProductWriteError } from './errors';
-import { docToText, slugify } from '../../../shared/doc';
+import { docToText, slugify, summarise } from '../../../shared/doc';
 import { checkPostMeta, validateDoc } from '../../../shared/validate';
 import type { AuthUser, DocNode } from '../../../shared/types';
 import { SLUG_ATTEMPTS, uniqueProductSlug } from './slug';
@@ -122,6 +122,9 @@ export async function createProduct(
   await checkImageRefs(db, input);
   const seoTitle = normalizeSeo(input.seoTitle) ?? null;
   const seoDescription = normalizeSeo(input.seoDescription) ?? null;
+  /* Same normaliser as the SEO pair: '' means "derive it" and is stored as NULL,
+     so the projection's `??` has one spelling of "unset" to test rather than two. */
+  const overview = normalizeSeo(input.overview) ?? null;
 
   /*
    * AFTER `checkMeta`, so validation always judges what the caller typed — and
@@ -145,6 +148,7 @@ export async function createProduct(
         INSERT INTO shop_products (id, slug, title, description, description_text, status,
                                    category, tags, cover_image_id, image_ids,
                                    seo_title, seo_description,
+                                   overview, overview_fallback,
                                    created_at, updated_at, published_at, deleted_at,
                                    author_id, revision)
         VALUES (${id}, ${slug}, ${title}, ${JSON.stringify(description)}::jsonb,
@@ -152,6 +156,7 @@ export async function createProduct(
                 ${category}, ${sql.param(tags)},
                 ${input.coverImageId ?? null}, ${sql.param(input.imageIds ?? [])},
                 ${seoTitle}, ${seoDescription},
+                ${overview}, ${summarise(description)},
                 ${now}, ${now}, NULL, NULL, ${author.id}, 1)
         RETURNING ${sql.raw(PRODUCT_COLUMNS.join(', '))}
       ), rev AS (
@@ -258,6 +263,13 @@ export async function saveProduct(
       patch.seoDescription !== undefined
         ? (normalizeSeo(patch.seoDescription) ?? null)
         : current.seoDescription,
+    /* Migration 0580. Same `!== undefined` rule and the same normaliser: `null`
+       or `''` is "go back to deriving it from the description". */
+    overview:
+      patch.overview !== undefined ? (normalizeSeo(patch.overview) ?? null) : current.overview,
+    /* Migration 0600. A boolean has no "clear" spelling, so absence is the only
+       "leave it alone" and `??` is right here where it is wrong two fields up. */
+    bulkDiscountEnabled: patch.bulkDiscountEnabled ?? current.bulkDiscountEnabled,
   };
 
   const now = Date.now();
@@ -285,6 +297,10 @@ export async function saveProduct(
            SET title = ${next.title},
                description = ${JSON.stringify(description)}::jsonb,
                description_text = ${docToText(description)},
+               /* Recomputed on EVERY save, beside description_text and for the
+                  same reason: it is a projection of the document, so a stale one
+                  is a card describing a paragraph the product no longer has. */
+               overview_fallback = ${summarise(description)},
                slug = ${slug},
                category = ${next.category},
                tags = ${sql.param(next.tags)},
@@ -292,6 +308,8 @@ export async function saveProduct(
                image_ids = ${sql.param(next.imageIds)},
                seo_title = ${next.seoTitle},
                seo_description = ${next.seoDescription},
+               overview = ${next.overview},
+               bulk_discount_enabled = ${next.bulkDiscountEnabled},
                revision = revision + 1, updated_at = ${now}
          WHERE id = ${id} AND revision = ${base}
         RETURNING ${sql.raw(PRODUCT_COLUMNS.join(', '))}

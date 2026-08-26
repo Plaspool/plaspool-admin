@@ -21,6 +21,60 @@ export function docToText(doc: DocNode | null | undefined): string {
   return out.join('').replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * The text of the document's FIRST top-level block — the product overview
+ * fallback (migration 0580).
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * IT IS NOT `docToText(doc).split('\n')[0]`, AND THAT IS THE WHOLE REASON THIS
+ * FUNCTION EXISTS RATHER THAN A ONE-LINER AT THE CALL SITE.
+ *
+ * `docToText` above ends with `.replace(/\s+/g, ' ')`. Every newline in the
+ * document is already gone by the time it returns, so splitting its output on
+ * `\n` yields exactly one element: the ENTIRE description. The fallback would
+ * silently be the whole document on every product, which on a card renders as
+ * a wall of text and in a `<meta>` tag is worse — and it would look completely
+ * correct in any test whose fixture happened to have one paragraph.
+ *
+ * `content[0]` instead: ProseMirror's top-level children ARE the blocks, so the
+ * first one is the first paragraph or heading, and running the existing walker
+ * over just that node reuses the mark/nesting handling rather than reimplementing
+ * it. This is the same class of bug as migration 0520's lax-jsonpath doubling —
+ * an extractor that looked obviously right and was not — which is why this is a
+ * unit-tested TypeScript function and not an expression inside SQL.
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * A LEADING EMPTY BLOCK IS SKIPPED. The editor leaves an empty paragraph at the
+ * top of a document more often than anyone would like, and "the first block" of
+ * such a document is honestly the first one with words in it.
+ */
+export function firstBlockText(doc: DocNode | null | undefined): string {
+  if (!doc?.content) return '';
+  for (const block of doc.content) {
+    const text = docToText(block);
+    if (text !== '') return text;
+  }
+  return '';
+}
+
+/**
+ * `firstBlockText`, cut to `max` characters on a word boundary.
+ *
+ * The cut is at a SPACE and never mid-word, and the ellipsis is the single
+ * character `…` rather than three dots, because the three-dot spelling costs
+ * two more of the characters the caller was trying to save.
+ */
+export function summarise(doc: DocNode | null | undefined, max = 300): string {
+  const text = firstBlockText(doc);
+  if (text.length <= max) return text;
+  // `max - 1` leaves room for the ellipsis, so the result never exceeds `max`.
+  const cut = text.slice(0, max - 1);
+  const space = cut.lastIndexOf(' ');
+  // A single word longer than `max` has no space to cut at; hard-cut it rather
+  // than return the whole thing and break the caller's ceiling.
+  return `${(space > 0 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
 export function countWords(text: string): number {
   if (!text) return 0;
   return text.split(/\s+/).filter(Boolean).length;

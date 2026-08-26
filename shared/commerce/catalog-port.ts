@@ -63,6 +63,47 @@ export type HoldState = 'held' | 'released' | 'committed';
 export const HOLD_STATES: readonly HoldState[] = ['held', 'released', 'committed'];
 
 /**
+ * One rung of a bulk quantity ladder (migration 0600).
+ *
+ * IN THIS FILE, NOT UNDER `server/shop/catalog/`, AND THAT PLACEMENT IS FORCED.
+ * `server/shop/cart/totals/compute.ts` is a pure function that "imports nothing
+ * from `server/` at all" — a property its own header defends at length, because
+ * a totals engine that could reach a price is one whose answer depends on when
+ * it ran. It needs this type and `pickTier`, so both live here beside
+ * `TotalsLine` where Catalog and Cart can each import them without either
+ * depending on the other.
+ *
+ * `percentBps` is basis points, matching `TaxRate.rateBps`: 10 000 is 100%, so
+ * 1000 is 10%. An integer, because a rate stored as a float eventually renders
+ * as 9.999999%.
+ */
+export interface BulkTier {
+  minQty: number;
+  percentBps: number;
+}
+
+/**
+ * The rung that applies at `qty`, or `null` below the first one.
+ *
+ * PURE AND SEPARATELY TESTABLE, because this is the function whose boundary
+ * behaviour decides what a customer is charged.
+ *
+ * THE LADDER IS NOT ASSUMED SORTED. A caller handing these over unordered — an
+ * admin PUT, a hand-written fixture — would otherwise get whichever rung
+ * happened to come last rather than the highest one that qualifies.
+ *
+ * `minQty <= qty` is INCLUSIVE: a rung the shop advertises as "3+" that did not
+ * apply at exactly 3 would be a lie told in the shop's own UI.
+ */
+export function pickTier(tiers: readonly BulkTier[], qty: number): BulkTier | null {
+  let best: BulkTier | null = null;
+  for (const tier of tiers) {
+    if (tier.minQty <= qty && (best === null || tier.minQty > best.minQty)) best = tier;
+  }
+  return best;
+}
+
+/**
  * A priced, sellable snapshot of one variant AT THIS INSTANT.
  *
  * Everything a cart line needs to be built without asking Catalog a second
@@ -101,6 +142,35 @@ export interface VariantQuote {
   available: number;
   /** When true, `available <= 0` does not refuse a reservation. */
   backorderable: boolean;
+  /**
+   * The RESOLVED bulk ladder for this variant's product (migration 0600).
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * ON THE QUOTE, AND NOT FETCHED BY CART, BECAUSE OF CONTRACT §5.
+   *
+   * Cart reaches Catalog only through this injected port and never imports it,
+   * which is what lets both be built and tested independently. `resolveTiers`
+   * lives under `server/shop/catalog/`, so Cart calling it directly would be
+   * exactly the dependency the port exists to prevent.
+   *
+   * WHAT IT COSTS, HONESTLY: one extra statement per quoted line, because
+   * `resolveTiersFor` is its own query rather than a join. It is not free.
+   *
+   * A join onto the quote row would be free and is WRONG: the tiers are one-to-
+   * many, so joining them multiplies the variant row by the number of rungs and
+   * `res.rows[0]` becomes a coin toss over which rung's copy won. The honest
+   * alternatives are a batched resolve across the whole basket — which the port
+   * cannot express, since `quote` is per variant — or this. Cart baskets are
+   * small and both callers already fan out with `Promise.all`, so the added
+   * latency is one round trip, not N.
+   *
+   * ALREADY RESOLVED — `bulkDiscountEnabled` and the store-wide default are both
+   * applied before it gets here, so an EMPTY ARRAY means "no bulk discount on
+   * this product" and the totals engine needs no second rule. Ascending by
+   * `minQty`.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  bulkTiers: BulkTier[];
 }
 
 export interface ReservationRequest {

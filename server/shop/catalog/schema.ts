@@ -139,6 +139,37 @@ export const shopProducts = pgTable(
      */
     seoTitle: text('seo_title'),
     seoDescription: text('seo_description'),
+    /**
+     * The card/summary line (migration 0580). NULL means "derive it" — the
+     * projection falls back to `summarise(description)`, i.e. the first
+     * non-empty top-level block, and `''` is normalised to NULL at the write
+     * boundary exactly as the SEO pair above is.
+     *
+     * The fallback is computed in TypeScript, never in SQL, and 0580's header
+     * says why at length: 0520 extracted from this same jsonb column with lax
+     * jsonpath and doubled every value in production.
+     */
+    overview: text('overview'),
+    /**
+     * `summarise(description)`, derived on write — the same contract
+     * `descriptionText` two fields up signs, and for a sharper reason:
+     * `LIST_PRODUCT_COLUMNS` excludes `description`, so the list route has no
+     * document to derive a fallback from and MUST read a stored one.
+     *
+     * Nullable only because the backfill is a script rather than a statement in
+     * 0580; the projection falls through to `summarise(description)` when this
+     * is NULL and the document is present.
+     */
+    overviewFallback: text('overview_fallback'),
+    /**
+     * Whether the quantity ladder applies to this product (migration 0600).
+     *
+     * `NOT NULL DEFAULT true` and NOT a nullable boolean meaning "true when
+     * NULL": the latter obliges every reader to write `COALESCE(…, true)`, and
+     * the first one that forgets sells at full price forever while every test
+     * passes.
+     */
+    bulkDiscountEnabled: boolean('bulk_discount_enabled').notNull().default(true),
     authorId: uuid('author_id')
       .notNull()
       .references(() => users.id),
@@ -443,7 +474,50 @@ export const shopInventoryHolds = pgTable(
   ],
 );
 
+/**
+ * The bulk quantity ladder (migration 0600).
+ *
+ * ONE TABLE, TWO SCOPES, discriminated by `productId`: NULL is the store-wide
+ * default every product inherits; non-NULL overrides exactly one product.
+ *
+ * OVERRIDE IS FULL REPLACEMENT, NOT MERGE — `resolveTiers` enforces it. Merging
+ * an override into the default yields a combined ladder nobody can predict from
+ * reading either input, and makes "drop the 10+ tier for this one product"
+ * unexpressible.
+ *
+ * THE UNIQUE INDEX IS ON `COALESCE(product_id, '')` AND THAT IS LOAD-BEARING.
+ * Postgres treats NULLs as distinct in a UNIQUE index, so a bare
+ * `uniqueIndex().on(t.productId, t.minQty)` would permit twenty store-wide
+ * ladders all claiming qty 5 — the one scope the index exists to make singular.
+ */
+export const shopBulkTiers = pgTable(
+  'shop_bulk_tiers',
+  {
+    id: text('id').primaryKey(),
+    /** NULL = the store-wide default ladder. */
+    productId: text('product_id').references(() => shopProducts.id, { onDelete: 'cascade' }),
+    minQty: integer('min_qty').notNull(),
+    /** Basis points, matching `tax.rateBps`: 10 000 is 100%, so 1000 is 10%. */
+    percentBps: integer('percent_bps').notNull(),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
+  },
+  (t) => [
+    /* A tier at qty 1 is not a bulk discount, it is a price change, and that
+       belongs in `shop_prices` where the price history lives. */
+    check('shop_bulk_tiers_min_qty_ck', sql`${t.minQty} >= 2`),
+    /* The ceiling guards a mistyped 9000 selling at 10% of list. Not a policy. */
+    check('shop_bulk_tiers_percent_ck', sql`${t.percentBps} > 0 AND ${t.percentBps} <= 5000`),
+    uniqueIndex('shop_bulk_tiers_scope_qty_idx').on(
+      sql`COALESCE(${t.productId}, '')`,
+      t.minQty,
+    ),
+    index('shop_bulk_tiers_product_idx').on(t.productId),
+  ],
+);
+
 export type DbProduct = typeof shopProducts.$inferSelect;
+export type DbBulkTier = typeof shopBulkTiers.$inferSelect;
 export type DbVariant = typeof shopVariants.$inferSelect;
 export type DbPrice = typeof shopPrices.$inferSelect;
 export type DbInventory = typeof shopInventory.$inferSelect;

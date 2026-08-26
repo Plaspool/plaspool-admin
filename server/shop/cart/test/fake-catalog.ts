@@ -6,6 +6,7 @@ import type {
   ReservationResult,
   VariantQuote,
 } from '../catalog-port';
+import type { BulkTier } from '../catalog-port';
 
 /**
  * Cart's own `CatalogPort` fake (contract §11 puts it exactly here).
@@ -51,6 +52,9 @@ export interface FakeVariant {
   reserved?: number;
   /** False makes `quote` answer null and `reserve` answer `not_sellable`. */
   sellable?: boolean;
+  /** The resolved bulk ladder this variant's product carries (migration 0600).
+   *  Absent means none, which is what every pre-existing fixture wants. */
+  bulkTiers?: BulkTier[];
 }
 
 interface Held {
@@ -85,6 +89,7 @@ function filled(v: FakeVariant): Required<Omit<FakeVariant, 'weightGrams'>> & {
     onHand: v.onHand,
     reserved: v.reserved ?? 0,
     sellable: v.sellable ?? true,
+    bulkTiers: v.bulkTiers ?? [],
   };
 }
 
@@ -127,6 +132,9 @@ export function fakeCatalog(seedWith: readonly FakeVariant[] = []): CartFakeCata
         weightGrams: v.weightGrams,
         available: availableOf(v),
         backorderable: v.backorderable,
+        /* Seedable, so a cart test can drive the bulk ladder through the fake
+           without standing up Catalog. Defaults to none. */
+        bulkTiers: v.bulkTiers,
       });
     },
 
@@ -286,6 +294,10 @@ export function sqlFakeCatalog(db: Db): SqlFakeCatalog {
         weightGrams: null,
         available: Number(row.on_hand) - Number(row.reserved),
         backorderable: Boolean(row.backorderable),
+        /* The SQL-backed fake models inventory, not pricing policy. Bulk-ladder
+           behaviour is covered by `compute.test.ts` against the engine directly
+           and by the catalog suites against the real `resolveTiers`. */
+        bulkTiers: [],
       };
     },
 
