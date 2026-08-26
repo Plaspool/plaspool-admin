@@ -880,42 +880,79 @@ a.idcell__title:hover {
   display: none;
 }
 
-/* ═══ PINNED ACTIONS (owner's third round) ═══ A wide table clips at its
-   card's edge, and the first thing the clip swallowed was the one column a
-   row cannot work without — its ⋯ (the Marketing screenshot). Pinned cells
-   ride the scroll's right edge: sticky inside `.tscroll`, painted, with a
-   soft left fade so rows visibly continue underneath. Hover keeps the row's
-   own tint. Phone layouts position these cells themselves, so the pin is
-   desktop-only. */
+/* ═══ PINNED ACTIONS (owner's third round; paint reworked in the fourth) ═══
+   A wide table clips at its card's edge, and the first thing the clip
+   swallowed was the one column a row cannot work without — its ⋯ (the
+   Marketing screenshot). Pinned cells ride the scroll's right edge, sticky
+   inside `.tscroll` — but the PAINT IS EARNED, NOT WORN. `TableScroll`
+   writes what is true of the scroller and every seam ingredient hangs off
+   it:
+
+     no attribute      — the table fits. The pin is an ordinary column:
+                         transparent, seamless, indistinguishable. The first
+                         cut painted the strip unconditionally, and a table
+                         with nothing to hide wore a cut-and-joined edge.
+     [data-x-overflow] — the table genuinely clips. The pinned cell turns
+                         opaque so rows slide UNDER it rather than through.
+     [data-x-clip]     — columns are still hidden beneath the pin. Only now
+                         the seam draws: a hairline where the surfaces meet
+                         and a shadow that EASES out instead of stopping
+                         flat, and it fades away the moment the scroll
+                         reaches its end — a shadow over nothing is a claim
+                         of depth the layout isn't making.
+
+   Hover keeps the row's own tint. Phone layouts position these cells
+   themselves, so all of this is desktop-only. */
 @media (min-width: 48.001rem) {
   .table td.cell--pin,
   .table th.th--pin {
     position: sticky;
     right: 0;
-    background: var(--surface);
   }
 
   .table th.th--pin {
-    background: var(--surface-sub);
     z-index: 2;
   }
 
-  .table td.cell--pin::before {
+  [data-x-overflow] .table td.cell--pin {
+    background: var(--surface);
+  }
+
+  [data-x-overflow] .table th.th--pin {
+    background: var(--surface-sub);
+  }
+
+  /* The seam, drawn by an overhanging ::before so it never widens the cell:
+     a 1px hairline at the join, then 20px of shadow easing to nothing in
+     two steps (one flat linear stop reads as a photoshopped band — the
+     owner's "lazy" screenshot). One layer, faded as one piece. */
+  .table td.cell--pin::before,
+  .table th.th--pin::before {
     content: '';
     position: absolute;
     top: 0;
     bottom: 0;
-    left: -12px;
-    width: 12px;
-    background: linear-gradient(to right, transparent, rgb(26 26 26 / 0.05));
+    right: 100%;
+    width: 20px;
+    background:
+      linear-gradient(var(--border), var(--border)) right center / 1px 100% no-repeat,
+      linear-gradient(to left, rgb(26 26 26 / 0.055), rgb(26 26 26 / 0.02) 45%, transparent);
+    opacity: 0;
+    transition: opacity 180ms var(--ease);
     pointer-events: none;
   }
 
-  .table tbody tr.is-clickable:hover .cell--pin {
+  [data-x-clip] .table td.cell--pin::before,
+  [data-x-clip] .table th.th--pin::before {
+    opacity: 1;
+  }
+
+  /* Tint with the row — needed only while the cell paints at all. */
+  [data-x-overflow] .table tbody tr.is-clickable:hover .cell--pin {
     background: var(--surface-sub);
   }
 
-  .table tbody tr.is-selected .cell--pin {
+  [data-x-overflow] .table tbody tr.is-selected .cell--pin {
     background: var(--accent-soft);
   }
 }

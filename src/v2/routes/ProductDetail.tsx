@@ -32,6 +32,7 @@ import { Defs } from '../ui/Defs';
 import { AffixField, Checkbox, SelectField, TextArea, TextField } from '../ui/Field';
 import { StoredImg, MediaManager, type MediaValue } from '../ui/Img';
 import { Menu, MenuItem, MenuSeparator } from '../ui/Menu';
+import { TableScroll } from '../ui/TableScroll';
 import { Modal } from '../ui/Modal';
 import { PopEdit, PopEditFoot } from '../ui/PopEdit';
 import { RichText } from '../ui/RichText';
@@ -744,7 +745,7 @@ function VariantsCard({
           }
         />
       ) : (
-        <div className="tscroll">
+        <TableScroll className="tscroll">
           <table className="table">
             <caption className="sr">Variants of {product.title}</caption>
             <thead>
@@ -852,7 +853,7 @@ function VariantsCard({
               ))}
             </tbody>
           </table>
-        </div>
+        </TableScroll>
       )}
     </section>
   );

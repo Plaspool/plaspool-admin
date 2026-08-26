@@ -100,11 +100,57 @@
 
 /* At the width where the header starts collapsing, the word goes and the
    switch plus its count stay — the state remains readable in the space a
-   single control would take. */
+   single control would take. (Below 820px the bar drops the control entirely
+   and the tools sheet carries the labelled form — editor.css.) */
 @media (max-width: 60rem) {
-  .feature-toggle__label {
+  .feature-toggle:not(.feature-toggle--detail) .feature-toggle__label {
     display: none;
   }
+}
+
+/* ═══ THE TOOLS-SHEET FORM ═══ Inside the phone's ⋯ menu the toggle stops
+   being bar furniture and becomes a row that explains itself: the word on
+   the left, the switch on the right, the count spelt into a sentence, and —
+   when the switch is dimmed — the REASON as visible text, because the sheet
+   exists precisely where tooltips do not. */
+.feature-toggle--detail {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  row-gap: 2px;
+  padding: var(--s2) var(--s3);
+  margin: 0;
+  border-right: 0;
+}
+
+.feature-toggle--detail .feature-toggle__control {
+  display: contents;
+}
+
+.feature-toggle--detail .feature-toggle__label {
+  grid-column: 1;
+  grid-row: 1;
+  font-size: var(--step--1);
+  color: var(--ink-2);
+}
+
+.feature-toggle--detail .ui-switch {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+}
+
+.feature-toggle--detail .feature-toggle__count {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+
+.feature-toggle--detail .feature-toggle__why {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  font-size: var(--step--2);
+  line-height: 1.45;
+  color: var(--ink-3);
 }
 
 }
