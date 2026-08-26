@@ -57,9 +57,17 @@ export function blockedReason(post: Post | null | undefined): string | null {
 export function FeatureToggle({
   post,
   user,
+  detail = false,
 }: {
   post: Post | null;
   user: AuthUser | null;
+  /**
+   * The tools-sheet form (the phone's ⋯ menu): a full row that explains
+   * itself — the word always visible, the count spelt out, and a blocked
+   * switch saying WHY in plain text where the bar form says it in a
+   * tooltip. Tooltips are hover-only, and the sheet exists for touch.
+   */
+  detail?: boolean;
 }) {
   const userId = user?.id ?? '';
   const { notify } = useToast();
@@ -143,12 +151,14 @@ export function FeatureToggle({
   );
 
   return (
-    <span className="feature-toggle">
-      {reason ? <Tooltip label={reason}>{control}</Tooltip> : control}
+    <span className={detail ? 'feature-toggle feature-toggle--detail' : 'feature-toggle'}>
+      {reason && !detail ? <Tooltip label={reason}>{control}</Tooltip> : control}
       <span className="feature-toggle__count" aria-live="polite">
         {unavailable ? '— of ' : `${count} of `}
         {limit}
+        {detail ? ' featured slots used' : ''}
       </span>
+      {detail && reason ? <span className="feature-toggle__why">{reason}</span> : null}
 
       <Dialog
         open={swap !== null}

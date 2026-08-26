@@ -512,11 +512,16 @@ export default function EditorRoute() {
             className="btn btn--outline btn--sm editor__secondary"
             onClick={async () => {
               await flush();
-              // v2 port: v2 has no /read/:id reader; land on the post's v2 screen.
-              navigate(`/content/posts/${id}`);
+              /* v2 port: this was "Preview", which landed on the post's v2
+                 screen — but once the advanced editor is the device default,
+                 that route bounces straight back here and the button does
+                 nothing. `?editor=quick` is the explicit door back to the
+                 quick editor (PostEditor honours it past the default), and
+                 the label now says what the destination really is. */
+              navigate(`/content/posts/${id}?editor=quick`);
             }}
           >
-            Preview
+            Quick editor
           </button>
           {/*
             * BESIDE PUBLISH, AND ONLY ONCE THE POST IS PUBLISHED — or once it is
@@ -575,22 +580,43 @@ export default function EditorRoute() {
               </svg>
             </button>
             {moreOpen && (
+              /* THE TOOLS SHEET (owner's mobile round): on a phone the bar
+                 shrinks to Back · saved · Publish · ⋯, and everything folded
+                 away reappears HERE with its name and what it does — the
+                 answer to a row of unlabelled triggers being unreadable on
+                 touch, where tooltips do not exist. The Featured switch moves
+                 in whole (label, count, and its refusal as visible text)
+                 instead of squatting in the bar as a bare switch and number. */
               <div className="editor__more-pop" role="menu">
-                <button onClick={() => act(() => setHistoryOpen(true))}>History</button>
-                <button onClick={() => act(() => setMetaOpen(true))}>Details</button>
+                <div className="editor__more-head">Editor tools</div>
+                <button onClick={() => act(() => setHistoryOpen(true))}>
+                  <span className="editor__more-name">History</span>
+                  <span className="editor__more-sub">Every autosave, restorable</span>
+                </button>
+                <button onClick={() => act(() => setMetaOpen(true))}>
+                  <span className="editor__more-name">Details</span>
+                  <span className="editor__more-sub">Slug, category, cover and excerpt</span>
+                </button>
                 <button
                   onClick={() =>
                     act(async () => {
                       await flush();
-                      // v2 port: v2 has no /read/:id reader; land on the post's v2 screen.
-                      navigate(`/content/posts/${id}`);
+                      /* The explicit door back — see the bar's own button. */
+                      navigate(`/content/posts/${id}?editor=quick`);
                     })
                   }
                 >
-                  Preview
+                  <span className="editor__more-name">Quick editor</span>
+                  <span className="editor__more-sub">The simple form — this studio stays a tap away</span>
                 </button>
+                {(isPublished || wasFeatured) && (
+                  <div className="editor__more-tool">
+                    <FeatureToggle post={post ?? null} user={sessionUser} detail />
+                  </div>
+                )}
                 <button className="is-danger" onClick={() => act(() => setConfirmTrash(true))}>
-                  Move to trash
+                  <span className="editor__more-name">Move to trash</span>
+                  <span className="editor__more-sub">Asks to confirm first</span>
                 </button>
               </div>
             )}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Navigate, useNavigate, useParams } from 'react-router-dom';
+import { Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArchiveRestore, Copy, FileText, PenLine, Trash2, Upload, X } from 'lucide-react';
 import { advancedByDefault } from '../lib/editorPref';
 import type { CoverImage, Post, PostPatch, PostStatus, ReadingTemplate } from '../../../shared/types';
@@ -67,6 +67,12 @@ const TEMPLATES: { value: '' | ReadingTemplate; label: string }[] = [
 export default function PostEditor({ create = false }: { create?: boolean }) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  /* `?editor=quick` is the advanced editor's door back here. Without it the
+     device default below would bounce the navigation straight to `/advanced`
+     again — the trap the owner walked into: make advanced the default once,
+     and no path in the interface ever reached the quick editor again. */
+  const [searchParams] = useSearchParams();
+  const quickOverride = searchParams.get('editor') === 'quick';
   const toast = useToast();
   const session = getSession();
   const isOwner = 'user' in session && session.user?.role === 'owner';
@@ -246,7 +252,7 @@ export default function PostEditor({ create = false }: { create?: boolean }) {
      URL, so nothing needs to load before handing over. `create` stays here:
      the advanced editor edits existing posts, and a new draft lands on
      `/content/posts/:id` after create, where this line takes over. */
-  if (!create && advancedByDefault()) {
+  if (!create && !quickOverride && advancedByDefault()) {
     return <Navigate to={`/content/posts/${id}/advanced`} replace />;
   }
 

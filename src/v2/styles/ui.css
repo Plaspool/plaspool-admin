@@ -309,18 +309,43 @@
   left: 0;
 }
 
-/* Positioned by measurement (Menu.tsx): viewport-fixed, above any clipping
-   ancestor — a wide table's scroller, a card's rounded overflow. Inline
-   top/left/right carry the numbers; any scroll closes it. */
+/* Positioned by measurement and PORTALED to <body> (Menu.tsx). Fixed alone
+   was not enough: a sticky cell is a stacking context, so a fixed panel left
+   inside one is overpainted by every LATER row's pinned cell — the owner's
+   screenshot, a menu underneath the column it came from. Portaled, no
+   scroller's clip, no sticky paint order and no card's rounded overflow can
+   touch it. Inline top/left/right carry the measured numbers,
+   transform-origin the trigger corner it grows from; any scroll closes it.
+   Above the modal (80), because on a phone the row ⋯ lives inside the
+   details sheet and its menu must clear that too. */
 .menu__panel--fixed {
   position: fixed;
-  z-index: 70;
+  z-index: 90;
+  box-shadow: var(--shadow-float);
+  animation: v2-float 150ms var(--ease-out);
+}
+
+/* A bare trigger on a light surface (the row ⋯): the open state must read on
+   the trigger itself — the white-glass hover above is for the topbar's dark
+   strip and is invisible on paper. */
+.menu__bare.is-open .btn--plain {
+  background: var(--surface-active);
+  color: var(--ink-strong);
 }
 
 @keyframes v2-pop {
   from {
     opacity: 0;
     transform: translateY(-4px);
+  }
+}
+
+/* The floated menu's entrance: it grows from the corner it was summoned at —
+   the transform-origin Menu.tsx measures — rather than fading in placeless. */
+@keyframes v2-float {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
   }
 }
 

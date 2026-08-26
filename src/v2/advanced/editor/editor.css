@@ -116,6 +116,46 @@
   color: var(--danger);
 }
 
+/* ── the tools sheet ── The pop grown into the phone's index of everything
+   the shrunken bar folded away: each action carries its name AND one line of
+   what it does, because on touch there is no hover to ask. */
+.editor__more-pop {
+  min-width: 17.5rem;
+  max-width: calc(100vw - 1.5rem);
+  padding: var(--s2);
+}
+.editor__more-head {
+  padding: var(--s1) var(--s3) var(--s2);
+  font-size: var(--step--2);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.editor__more-pop button {
+  display: grid;
+  gap: 1px;
+}
+.editor__more-name {
+  font-size: var(--step--1);
+  color: var(--ink-1);
+}
+.editor__more-pop button.is-danger .editor__more-name {
+  color: var(--danger);
+}
+.editor__more-sub {
+  font-size: var(--step--2);
+  color: var(--ink-4);
+  line-height: 1.4;
+}
+/* The Featured row rides between the actions, ruled off like a section of
+   its own — it is state, not a verb. */
+.editor__more-tool {
+  margin: var(--s1) 0;
+  padding: var(--s1) 0;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
 .editor__trash {
   color: var(--ink-4);
   padding: 0.4rem;
@@ -552,6 +592,12 @@
   }
   .editor__stats,
   .editor__bar .editor__secondary {
+    display: none;
+  }
+  /* The Featured control leaves the bar too (owner's round: shrunk to a bare
+     switch and a number, it read as nothing). The tools sheet carries its
+     labelled form instead — direct child only, so the sheet's copy stays. */
+  .editor__bar-right > .feature-toggle {
     display: none;
   }
   .editor__bar-left {

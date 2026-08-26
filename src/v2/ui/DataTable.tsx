@@ -14,6 +14,7 @@ import {
 import { Toggle } from './Field';
 import { Button } from './primitives';
 import { Modal } from './Modal';
+import { TableScroll } from './TableScroll';
 
 /**
  * THE table. Singular, deliberately — see the header of `page.css`.
@@ -324,7 +325,7 @@ export function DataTable<T, V extends string = string>({
         empty
       ) : (
         <>
-          <div className="tscroll">
+          <TableScroll className="tscroll">
             <table className="table">
               <caption className="sr">{caption}</caption>
               {/* The selection bar occupies the header's slot: while rows are
@@ -434,7 +435,7 @@ export function DataTable<T, V extends string = string>({
                 })}
               </tbody>
             </table>
-          </div>
+          </TableScroll>
           {footer}
         </>
       )}
