@@ -290,35 +290,28 @@
   background: rgb(255 255 255 / 0.14);
 }
 
+/* Skin only — position, elevation and entrance all come from `.vfloat`,
+   because every menu panel is floated now (Float.tsx). */
 .menu__panel {
-  position: absolute;
-  top: calc(100% + var(--s2));
-  right: 0;
-  z-index: 40;
   min-width: 13rem;
   max-width: calc(100vw - var(--s6));
   padding: calc(var(--s1) + 2px);
   background: var(--surface);
   border-radius: var(--r-lg);
-  box-shadow: var(--shadow-pop);
-  animation: v2-pop 120ms var(--ease);
 }
 
-.menu__panel--left {
-  right: auto;
-  left: 0;
-}
-
-/* Positioned by measurement and PORTALED to <body> (Menu.tsx). Fixed alone
-   was not enough: a sticky cell is a stacking context, so a fixed panel left
-   inside one is overpainted by every LATER row's pinned cell — the owner's
-   screenshot, a menu underneath the column it came from. Portaled, no
-   scroller's clip, no sticky paint order and no card's rounded overflow can
-   touch it. Inline top/left/right carry the measured numbers,
-   transform-origin the trigger corner it grows from; any scroll closes it.
-   Above the modal (80), because on a phone the row ⋯ lives inside the
-   details sheet and its menu must clear that too. */
-.menu__panel--fixed {
+/* ═══ THE FLOAT ═══ Every popover rides this one class (Float.tsx):
+   measured off its trigger, viewport-fixed, PORTALED to <body>. Fixed alone
+   was not enough — a sticky cell is a stacking context, so a fixed panel
+   left inside one was overpainted by every LATER row's pinned cell (the
+   owner's screenshot, a menu underneath its own column), and an absolute
+   panel was clipped by `.tscroll`, `.tcard` and `.modal__body` in turn.
+   Portaled, none of them can touch it. Inline top/left/right carry the
+   measured numbers, transform-origin the trigger corner it grows from, and
+   `--float-anchor-w` the trigger's width for panels that match it; any
+   scroll closes it. Above the modal (80), because pickers live inside
+   modal bodies and the phone's details sheet. */
+.vfloat {
   position: fixed;
   z-index: 90;
   box-shadow: var(--shadow-float);
@@ -1278,19 +1271,15 @@
   box-shadow: none;
 }
 
+/* Floated (Float.tsx). Exactly the box's width — the measurement replaces
+   the old `left/right: 0` span, which died with `absolute`. */
 .tagin__pop {
-  position: absolute;
-  top: calc(100% + var(--s1));
-  left: 0;
-  right: 0;
-  z-index: 40;
+  width: var(--float-anchor-w, auto);
   max-height: 14rem;
   overflow-y: auto;
   padding: var(--s1);
   background: var(--surface);
   border-radius: var(--r-md);
-  box-shadow: var(--shadow-pop);
-  animation: v2-pop 120ms var(--ease);
 }
 
 .tagin__opt {
@@ -1829,18 +1818,13 @@
   flex: none;
 }
 
+/* Floated (Float.tsx). At least the trigger's width — `--float-anchor-w` is
+   Float's measurement; the old `left/right: 0` span died with `absolute`. */
 .statuspick__panel {
-  position: absolute;
-  top: calc(100% + var(--s2));
-  left: 0;
-  right: 0;
-  z-index: 40;
-  min-width: 15rem;
+  min-width: max(15rem, var(--float-anchor-w, 0px));
   padding: var(--s1);
   background: var(--surface);
   border-radius: var(--r-lg);
-  box-shadow: var(--shadow-pop);
-  animation: v2-pop 120ms var(--ease);
 }
 
 .statuspick__opt {
@@ -1927,29 +1911,19 @@
   background: var(--surface-active);
 }
 
+/* Floated (Float.tsx) — skin only. */
 .popedit__panel {
-  position: absolute;
-  top: calc(100% + var(--s2));
-  right: 0;
-  z-index: 40;
   width: 17rem;
   max-width: calc(100vw - var(--s8));
   padding: var(--s3);
   background: var(--surface);
   border-radius: var(--r-lg);
-  box-shadow: var(--shadow-pop);
-  animation: v2-pop 120ms var(--ease);
   display: flex;
   flex-direction: column;
   gap: var(--s3);
   text-align: left;
   white-space: normal;
   cursor: default;
-}
-
-.popedit__panel--left {
-  right: auto;
-  left: 0;
 }
 
 .popedit__foot {
@@ -1968,12 +1942,10 @@
   position: relative;
 }
 
+/* Floated (Float.tsx). At least the trigger's width — the old
+   `min-width: 100%` would resolve against the viewport once fixed. */
 .sselect__panel {
-  position: absolute;
-  top: calc(100% + var(--s2));
-  left: 0;
-  z-index: 40;
-  min-width: 100%;
+  min-width: var(--float-anchor-w, auto);
   width: max-content;
   max-width: min(19rem, calc(100vw - var(--s8)));
   display: flex;
@@ -1981,13 +1953,6 @@
   overflow: hidden;
   background: var(--surface);
   border-radius: var(--r-lg);
-  box-shadow: var(--shadow-pop);
-  animation: v2-pop 120ms var(--ease);
-}
-
-.sselect__panel--right {
-  left: auto;
-  right: 0;
 }
 
 .sselect__search {

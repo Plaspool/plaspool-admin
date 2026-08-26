@@ -23,10 +23,6 @@ import { DataTable, IdCell, type Column } from '../ui/DataTable';
  * TODO(v2): real server-side aggregates (revenue by day over ALL orders, a
  * date-range picker) — backend work; this screen upgrades in place when the
  * endpoints exist.
- *
- * TODO(tests): none — skipped this session, recorded in CLAUDE.md. Worth
- * pinning: the truncation notice appearing exactly when the sweep stops
- * short of the window, and refunds netting the daily bars.
  */
 
 const WINDOW_DAYS = 30;

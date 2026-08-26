@@ -22,10 +22,6 @@ import { useToast } from '../ui/Toast';
  * that no longer exists: it shows the truth and says what happened.
  *
  * Writers see the rail read-only; only the owner curates (v1's rule, kept).
- *
- * TODO(tests): none — skipped this session, recorded in CLAUDE.md. Worth
- * pinning: a stale reorder adopts the server's items rather than retrying,
- * and the full-rail path routes through the replace picker.
  */
 export default function Featured() {
   const toast = useToast();

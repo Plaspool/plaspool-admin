@@ -23,10 +23,6 @@ import { useToast } from '../ui/Toast';
  * re-importing the same file cannot quietly resurrect someone who asked to
  * leave. There is deliberately no admin unsubscribe action either — leaving
  * is the recipient's own link, not a button here.
- *
- * TODO(tests): none — skipped this session, recorded in CLAUDE.md. Worth
- * pinning: the import preview showing the refused rows BEFORE anything is
- * written, and only valid addresses travelling in the body.
  */
 
 const SOURCE_TONE: Record<SubscriberSource, BadgeTone> = {

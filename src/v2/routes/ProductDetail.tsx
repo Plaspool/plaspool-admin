@@ -59,22 +59,6 @@ import { useToast } from '../ui/Toast';
  *    RE-READS the product rather than adopting the response.
  */
 
-/*
- * TODO(tests): none exist for this screen — skipped by this session's no-test
- * rule, recorded in CLAUDE.md §"tests that do not exist yet". The paths that
- * most deserve them: the CAS save (409 → conflict banner, not silent
- * overwrite), the archived→active double transition, the delete-variant
- * control staying ABSENT for an everOrdered variant, and description
- * omission when the editor never mounted.
- *
- * The owner's queued fields (2026-08-25) landed with migrations 0400/0420/0440:
- * compare-at and cost per item live in the variant modal's Pricing section
- * (cost is admin-only — the storefront wire strips it server-side), the SEO
- * pair in the Search engine listing card, and `backorderable` is editable on
- * an existing variant at last. The server routes and tests are in
- * `server/shop/catalog/`; this screen stays untested by the same rule as above.
- */
-
 /** The store currency, for a variant that has never been priced yet. Every
  *  priced variant carries its own. */
 const STORE_CURRENCY = 'NGN';

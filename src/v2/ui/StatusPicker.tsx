@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { Check, ChevronsUpDown } from 'lucide-react';
+import { Float } from './Float';
 
 export interface StatusOption<T extends string> {
   value: T;
@@ -33,32 +34,12 @@ export function StatusPicker<T extends string>({
   busy?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function onDown(event: PointerEvent) {
-      if (root.current?.contains(event.target as Node)) return;
-      setOpen(false);
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key !== 'Escape') return;
-      setOpen(false);
-      trigger.current?.focus();
-    }
-    document.addEventListener('pointerdown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('pointerdown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
 
   const current = options.find((o) => o.value === value);
 
   return (
-    <div className="statuspick" ref={root}>
+    <div className="statuspick">
       <button
         ref={trigger}
         type="button"
@@ -73,8 +54,23 @@ export function StatusPicker<T extends string>({
         {current?.label ?? value}
         <ChevronsUpDown aria-hidden="true" />
       </button>
-      {open ? (
-        <div className="statuspick__panel" role="listbox" aria-label={label}>
+      {/* Floated (portaled, viewport-fixed): this control sits on detail
+          pages AND inside modal bodies, and a modal body scrolls — the exact
+          clip the shared mechanism exists to escape. The panel matches the
+          trigger's width through `--float-anchor-w` rather than `left/right:
+          0`, which a fixed element would resolve against the viewport. */}
+      <Float
+        open={open}
+        anchor={trigger}
+        align="left"
+        className="statuspick__panel"
+        role="listbox"
+        ariaLabel={label}
+        onClose={(opts) => {
+          setOpen(false);
+          if (opts?.refocus) trigger.current?.focus();
+        }}
+      >
           {options.map((opt) => (
             <button
               key={opt.value}
@@ -98,8 +94,7 @@ export function StatusPicker<T extends string>({
               </span>
             </button>
           ))}
-        </div>
-      ) : null}
+      </Float>
     </div>
   );
 }

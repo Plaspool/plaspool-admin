@@ -30,10 +30,6 @@ import { useToast } from '../ui/Toast';
  * modal pins the fallback flag rather than letting the press bounce off a
  * 409.
  *
- * TODO(tests): none — skipped this session, recorded in CLAUDE.md. Worth
- * pinning: the fallback zone's missing Delete, and bps↔percent round-trips
- * on the tax field.
- *
  * TODO(v2): store profile, team members and invites stay on the current
  * admin — this screen is zones only, on purpose.
  */

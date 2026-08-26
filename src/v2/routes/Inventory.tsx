@@ -20,10 +20,6 @@ import { useToast } from '../ui/Toast';
  * refuses a stock change without one, which is the whole audit trail's value.
  */
 
-/* TODO(tests): none — skipped this session, recorded in CLAUDE.md. The
- * adjust popover's reason requirement and the belowOnly '1'/'0' wire shape
- * are the two worth pinning. */
-
 const TABS = [
   { value: 'all', label: 'All' },
   { value: 'low', label: 'Low stock' },

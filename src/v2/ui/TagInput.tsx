@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
+import { Float } from './Float';
 
 /**
  * The tag field: chips in the box, the caret after the last chip, and the
@@ -28,6 +29,7 @@ export function TagInput({
   const [focused, setFocused] = useState(false);
   const [hot, setHot] = useState(0);
   const input = useRef<HTMLInputElement>(null);
+  const box = useRef<HTMLDivElement>(null);
 
   const chosen = useMemo(() => new Set(value.map((t) => t.toLowerCase())), [value]);
 
@@ -67,6 +69,7 @@ export function TagInput({
       </span>
       <div className="tagin">
         <div
+          ref={box}
           className="tagin__box"
           onMouseDown={(e) => {
             /* The whole box focuses the input — but not when the press was on
@@ -130,8 +133,26 @@ export function TagInput({
             }}
           />
         </div>
-        {showPop ? (
-          <div className="tagin__pop" role="listbox" aria-label="Existing tags">
+        {/* Floated (portal, viewport-fixed): the field lives in cards and
+            modal bodies, both of which clip an absolute pop. The pop keeps
+            the BOX's width via --float-anchor-w. Escape stays the input's
+            own (clear the draft), so the float's Escape is opted out; every
+            other dismissal maps to blurring the input, which is this
+            field's native close — and blur commits the draft, its stated
+            leaving rule. */}
+        <Float
+          /* A new chip can wrap the box taller; remounting per chip-count
+             remeasures the anchor so the pop never overlaps a grown box. */
+          key={value.length}
+          open={showPop}
+          anchor={box}
+          align="left"
+          className="tagin__pop"
+          role="listbox"
+          ariaLabel="Existing tags"
+          dismissOnEscape={false}
+          onClose={() => input.current?.blur()}
+        >
             {matches.map((s, i) => (
               <button
                 key={s.name}
@@ -166,8 +187,7 @@ export function TagInput({
                 Add “{draft.trim()}”
               </button>
             ) : null}
-          </div>
-        ) : null}
+        </Float>
       </div>
       {hint ? <span className="field__hint">{hint}</span> : null}
     </div>

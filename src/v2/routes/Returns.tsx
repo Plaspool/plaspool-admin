@@ -42,11 +42,6 @@ import { useToast } from '../ui/Toast';
  * rate the customer was PROMISED (`pointsPerUnitSnapshot`), so a Wednesday
  * repricing cannot silently restate Monday's cards.
  *
- * TODO(tests): none — skipped this session, recorded in CLAUDE.md. Worth
- * pinning: inspect's derived qtyRejected (staff type received + accepted,
- * the screen subtracts), the `already_awarded` 409 treated as SUCCESS, and
- * the out-of-area rows never offering inspect.
- *
  * TODO(v2): the bulk selection bar (schedule/collect/receive many at once —
  * `marketingApi.bulk` exists, with per-item CAS and partial-success results)
  * is not wired yet; the queue works one card at a time.

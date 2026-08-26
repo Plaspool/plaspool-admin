@@ -38,10 +38,6 @@ import { useToast } from '../ui/Toast';
  *
  * TODO(v2): autosave + the revision history panel; the cover's focal-point
  * reframe; find-in-post. All live in the v1 studio meanwhile.
- *
- * TODO(tests): none — skipped this session, recorded in CLAUDE.md. Worth
- * pinning: manual saves send `kind: 'manual'`; a 409 shows the conflict
- * banner, never a silent overwrite; excerpt travels only when touched.
  */
 
 const STATUS_OPTIONS: StatusOption<PostStatus>[] = [

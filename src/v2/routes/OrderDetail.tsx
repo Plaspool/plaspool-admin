@@ -38,14 +38,6 @@ import { useToast } from '../ui/Toast';
  * queued emails are cards, and the rail carries the customer and the payment.
  */
 
-/*
- * TODO(tests): none exist for this screen — skipped by this session's no-test
- * rule, recorded in CLAUDE.md. Most-deserving paths: the refund idempotency
- * key staying STABLE across a retried click, the cancel modal refusing a paid
- * cancel without a refund choice, and the three-state `order` result of
- * setFulfillmentStatus (absent / null / order).
- */
-
 function optionLabel(values: Record<string, string>): string | null {
   const parts = Object.values(values).filter(Boolean);
   return parts.length ? parts.join(' / ') : null;

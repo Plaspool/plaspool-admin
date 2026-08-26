@@ -15,6 +15,7 @@ import { Toggle } from './Field';
 import { Button } from './primitives';
 import { Modal } from './Modal';
 import { TableScroll } from './TableScroll';
+import { Float } from './Float';
 
 /**
  * THE table. Singular, deliberately — see the header of `page.css`.
@@ -493,30 +494,10 @@ function BulkMenu({
   keysSelected: string[];
 }) {
   const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    function onDown(event: PointerEvent) {
-      if (root.current?.contains(event.target as Node)) return;
-      setOpen(false);
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key !== 'Escape') return;
-      setOpen(false);
-      trigger.current?.focus();
-    }
-    document.addEventListener('pointerdown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('pointerdown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-
   return (
-    <div className="menu" ref={root}>
+    <div className="menu">
       <button
         ref={trigger}
         type="button"
@@ -528,31 +509,39 @@ function BulkMenu({
       >
         <MoreHorizontal aria-hidden="true" />
       </button>
-      {open ? (
-        <div className="menu__panel menu__panel--left menu__panel--groups" role="menu">
-          {groups.map((group, gi) => (
-            <div key={gi}>
-              {gi > 0 ? <div className="menu__sep" role="separator" /> : null}
-              {group.section ? <div className="menu__section">{group.section}</div> : null}
-              {group.items.map((item) => (
-                <button
-                  key={item.label}
-                  type="button"
-                  role="menuitem"
-                  className={item.critical ? 'menu__item menu__item--critical' : 'menu__item'}
-                  onClick={() => {
-                    setOpen(false);
-                    item.onAction(keysSelected);
-                  }}
-                >
-                  {item.icon}
-                  {item.label}
-                </button>
-              ))}
-            </div>
-          ))}
-        </div>
-      ) : null}
+      <Float
+        open={open}
+        anchor={trigger}
+        align="left"
+        className="menu__panel menu__panel--groups"
+        role="menu"
+        onClose={(opts) => {
+          setOpen(false);
+          if (opts?.refocus) trigger.current?.focus();
+        }}
+      >
+        {groups.map((group, gi) => (
+          <div key={gi}>
+            {gi > 0 ? <div className="menu__sep" role="separator" /> : null}
+            {group.section ? <div className="menu__section">{group.section}</div> : null}
+            {group.items.map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                role="menuitem"
+                className={item.critical ? 'menu__item menu__item--critical' : 'menu__item'}
+                onClick={() => {
+                  setOpen(false);
+                  item.onAction(keysSelected);
+                }}
+              >
+                {item.icon}
+                {item.label}
+              </button>
+            ))}
+          </div>
+        ))}
+      </Float>
     </div>
   );
 }
@@ -640,30 +629,10 @@ function ViewControl({
   onToggle: (key: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    function onDown(event: PointerEvent) {
-      if (root.current?.contains(event.target as Node)) return;
-      setOpen(false);
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key !== 'Escape') return;
-      setOpen(false);
-      trigger.current?.focus();
-    }
-    document.addEventListener('pointerdown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('pointerdown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-
   return (
-    <div className={sort ? 'tview' : 'tview tview--nosort'} ref={root}>
+    <div className={sort ? 'tview' : 'tview tview--nosort'}>
       <button
         ref={trigger}
         type="button"
@@ -676,11 +645,25 @@ function ViewControl({
       >
         <Columns3 aria-hidden="true" />
       </button>
-      {open ? (
-        /* NOT a menu: toggling a column keeps the panel up, because arranging
-           a view is several choices in a row, not one action. Only Escape,
-           the trigger, or clicking away closes it. */
-        <div className="tview__panel" role="dialog" aria-label="View options">
+      {/* NOT a menu: toggling a column keeps the panel up, because arranging
+          a view is several choices in a row, not one action. Only Escape,
+          the trigger, or clicking away closes it — which is exactly Float's
+          contract: clicks inside the portaled panel are inside `panel` and
+          never count as outside. (It used to hang absolute inside the card,
+          and `.tcard`'s rounded overflow cut it off mid-list — the owner's
+          Broadcasts screenshot.) */}
+      <Float
+        open={open}
+        anchor={trigger}
+        align="right"
+        className="tview__panel"
+        role="dialog"
+        ariaLabel="View options"
+        onClose={(opts) => {
+          setOpen(false);
+          if (opts?.refocus) trigger.current?.focus();
+        }}
+      >
           {sort ? (
             <label className="tview__row" style={{ gap: 'var(--s2)' }}>
               <ArrowUpDown aria-hidden="true" style={{ width: 15, height: 15, color: 'var(--ink-sub)', flex: 'none' }} />
@@ -726,8 +709,7 @@ function ViewControl({
               })}
             </div>
           ) : null}
-        </div>
-      ) : null}
+      </Float>
     </div>
   );
 }

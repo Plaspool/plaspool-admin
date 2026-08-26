@@ -40,10 +40,6 @@ import { useToast } from '../ui/Toast';
  * point at it, so renaming moves the words and never the identity. Ledger
  * `reason` strings are snapshots: rendered verbatim, never re-labelled.
  *
- * TODO(tests): none — skipped this session, recorded in CLAUDE.md. Worth
- * pinning: the redemption rate round-trip (points ↔ minor units), and the
- * insufficient-balance 409 surfacing beside the delta field.
- *
  * TODO(v2): the per-customer ledger view (filter by kind, keyset back
  * through history) is not built — crediting shows the live balance and the
  * latest activity list covers the rest for now.

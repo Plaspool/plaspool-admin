@@ -479,17 +479,14 @@
   }
 }
 
+/* Floated (Float.tsx) — skin only. It used to hang absolute inside the
+   card, and `.tcard`'s rounded overflow cut it off mid-list (the owner's
+   Broadcasts screenshot). */
 .tview__panel {
-  position: absolute;
-  top: calc(100% + var(--s2));
-  right: 0;
-  z-index: 40;
   width: 15rem;
   padding: var(--s2);
   background: var(--surface);
   border-radius: var(--r-lg);
-  box-shadow: var(--shadow-pop);
-  animation: v2-pop 120ms var(--ease);
 }
 
 .tview__row {
