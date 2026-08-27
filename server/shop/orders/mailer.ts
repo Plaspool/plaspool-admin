@@ -63,7 +63,7 @@ import type { Step } from '../../mail/brand';
 import type { SystemKey } from '../../mail/defaults';
 import type { RenderedMessage, TemplateValues } from '../../mail/transactional';
 
-/** The kinds, matching `shop_order_email_intents_kind_ck` after migration 0380. */
+/** The kinds, matching `shop_order_email_intents_kind_ck` after migration 0640. */
 export type EmailKind =
   | 'placed'
   | 'confirmation'
@@ -71,7 +71,12 @@ export type EmailKind =
   | 'delivered'
   | 'cancellation'
   | 'refund'
-  | 'refund_failed';
+  | 'refund_failed'
+  /* Both are ABOUT A REVIEW and both ride this outbox anyway — migration 0640's
+     header carries the argument for why that is the right table rather than a
+     shortcut, and names the one case it leaves unserved. */
+  | 'review_invite'
+  | 'review_approved';
 
 /**
  * A rendered message. `html` is nullable ONLY because rows written before
@@ -339,6 +344,12 @@ function stepsFor(kind: EmailKind): Step[] {
     case 'shipment':
       return path(2);
     case 'delivered':
+    /* The invitation follows a delivery, so it shows the same finished strip —
+       the reader is looking at a parcel that arrived either way. */
+    case 'review_invite':
+    /* And so does the published note: the order behind it is complete, and a
+       review is not a fifth step in a delivery. */
+    case 'review_approved':
       return path(3);
     case 'cancellation':
       return [
@@ -485,6 +496,43 @@ export function renderDelivered(
   templates: TemplateSet = BUILT_IN,
 ): RenderedEmail {
   return renderKind('order.delivered', view, baseValues(view, link, 'delivered'), templates);
+}
+
+/**
+ * The invitation to review what was just delivered.
+ *
+ * ONE PER ORDER, NOT PER PARCEL — enforced by the dedupe key at the call site,
+ * not here. A three-parcel order already sends three delivery notices, which is
+ * right because each is about a different box; three invitations to review the
+ * same order is how a shop teaches people to filter it.
+ */
+export function renderReviewInvite(
+  view: OrderMailView,
+  link: AccessLink | null,
+  templates: TemplateSet = BUILT_IN,
+): RenderedEmail {
+  return renderKind('review.invite', view, baseValues(view, link, 'review_invite'), templates);
+}
+
+/**
+ * "Your review is live", for the reviewer.
+ *
+ * IT TAKES AN ORDER VIEW because the whole rendering pipeline is built on one,
+ * and because the order is genuinely what this message descends from — see
+ * migration 0640. The template uses almost none of it: a greeting, the order
+ * link, and the support address.
+ *
+ * THE ADDRESS IS THE CALLER'S PROBLEM, NOT THIS FUNCTION'S. A review carries
+ * its own `author_email`, which is the session's address at submission time and
+ * need not be the address on the order — a shopper may have checked out as a
+ * guest under one and signed up under another. The caller passes the review's.
+ */
+export function renderReviewApproved(
+  view: OrderMailView,
+  link: AccessLink | null,
+  templates: TemplateSet = BUILT_IN,
+): RenderedEmail {
+  return renderKind('review.approved', view, baseValues(view, link, 'review_approved'), templates);
 }
 
 export function renderCancellation(

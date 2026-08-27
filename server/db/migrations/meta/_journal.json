@@ -295,6 +295,13 @@
                         "when":  1786600003400,
                         "tag":  "0620_review_replies_and_reactions",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  42,
+                        "version":  "7",
+                        "when":  1786600003500,
+                        "tag":  "0640_review_emails",
+                        "breakpoints":  true
                     }
                 ]
 }

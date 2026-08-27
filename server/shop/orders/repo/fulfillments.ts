@@ -8,7 +8,12 @@ import {
   StaleWriteError,
 } from '../../../repo/errors';
 import { ID, newId } from '../ids';
-import { renderDelivered, renderShipment, type AccessLink } from '../mailer';
+import {
+  renderDelivered,
+  renderReviewInvite,
+  renderShipment,
+  type AccessLink,
+} from '../mailer';
 import { BUILT_IN } from '../../../email/system-templates';
 import type { TemplateSet } from '../../../email/system-templates';
 import {
@@ -307,19 +312,30 @@ interface FulfillmentTransition {
    * become fulfillable again), not a fact about the customer's order. If it is
    * the whole order being cancelled, `orders.ts`'s CANCEL sends that message.
    */
+  /**
+   * ONE TRANSITION MAY OWE MORE THAN ONE MESSAGE. DELIVER owes two — the
+   * delivery notice, which is per PARCEL, and the review invitation, which is
+   * per ORDER — and they differ in more than wording: their dedupe keys have
+   * different shapes, so a three-parcel order sends three notices and one
+   * invitation. Expressing that as two entries in one array keeps both inside
+   * the SAME statement as the state change, which is the property this whole
+   * file exists to preserve.
+   */
   mail?(
     order: OrderRead,
     fulfillment: Fulfillment,
     link: AccessLink | null,
     templates: TemplateSet,
-  ): {
-    kind: 'shipment' | 'delivered';
-    dedupeKey: string;
-    to: string;
-    subject: string;
-    body: string;
-    html?: string | null;
-  };
+  ): TransitionMail | TransitionMail[];
+}
+
+interface TransitionMail {
+  kind: 'shipment' | 'delivered' | 'review_invite';
+  dedupeKey: string;
+  to: string;
+  subject: string;
+  body: string;
+  html?: string | null;
 }
 
 /**
@@ -351,7 +367,8 @@ async function fulfillmentTransition(
 
   for (let i = 0; i < LIFECYCLE_ATTEMPTS; i += 1) {
     const base = read.fulfillment.revision;
-    const mail = t.mail?.(order, read.fulfillment, link, templates);
+    const owed = t.mail?.(order, read.fulfillment, link, templates);
+    const mails = owed === undefined ? [] : Array.isArray(owed) ? owed : [owed];
 
     const ctes: SQL[] = [
       sql`ful AS (
@@ -372,18 +389,21 @@ async function fulfillmentTransition(
       )`,
     ];
 
-    if (mail) {
-      ctes.push(sql`mail AS (
+    /* One CTE per owed message, each with its own alias — two CTEs cannot share
+       a name, and `ON CONFLICT DO NOTHING` keeps a redelivery from sending
+       either of them twice. */
+    mails.forEach((mail, i) => {
+      ctes.push(sql`${sql.raw(`mail${i}`)} AS (
         INSERT INTO shop_order_email_intents (id, order_id, kind, to_email, subject, body,
                                               html, created_at, dedupe_key)
-        SELECT ${newId(ID.emailIntent)}, ful.order_id, ${mail.kind ?? 'shipment'}, ${mail.to},
+        SELECT ${newId(ID.emailIntent)}, ful.order_id, ${mail.kind}, ${mail.to},
                ${mail.subject}, ${mail.body}, ${mail.html ?? null}::text,
                ${now}, ${mail.dedupeKey}
           FROM ful
         ON CONFLICT (dedupe_key) DO NOTHING
         RETURNING 1
       )`);
-    }
+    });
 
     const res = await db.execute(sql`
       WITH ${sql.join(ctes, sql`, `)}
@@ -453,22 +473,61 @@ const DELIVER: FulfillmentTransition = {
    * listing only what was in that parcel, and the dedupe key carries the
    * fulfilment id for the same reason.
    */
-  mail: (order, fulfillment, link, templates) => ({
-    kind: 'delivered',
-    dedupeKey: `delivered:${fulfillment.id}`,
-    ...renderDelivered(
-      {
-        orderNumber: order.order.orderNumber,
-        email: order.order.email,
-        currency: order.order.currency,
-        grandTotal: order.order.grandTotal,
-        placedAt: order.order.placedAt,
-        lines: parcelLines(order, fulfillment),
-      },
-      link,
-      templates,
-    ),
-  }),
+  mail: (order, fulfillment, link, templates) => [
+    {
+      kind: 'delivered',
+      dedupeKey: `delivered:${fulfillment.id}`,
+      ...renderDelivered(
+        {
+          orderNumber: order.order.orderNumber,
+          email: order.order.email,
+          currency: order.order.currency,
+          grandTotal: order.order.grandTotal,
+          placedAt: order.order.placedAt,
+          lines: parcelLines(order, fulfillment),
+        },
+        link,
+        templates,
+      ),
+    },
+    /*
+     * THE REVIEW INVITATION, AND EVERY DIFFERENCE FROM THE NOTICE ABOVE IS
+     * DELIBERATE.
+     *
+     * PER ORDER, NOT PER PARCEL — the dedupe key carries the ORDER id, so a
+     * three-parcel order sends three delivery notices and exactly one
+     * invitation. Whichever parcel arrives first wins, and the two that follow
+     * write nothing because of the unique constraint. A shop that asks three
+     * times for one order is a shop people filter.
+     *
+     * IT LISTS THE WHOLE ORDER, not `parcelLines`. The notice is about a box
+     * and must name only what is in that box; the invitation is about the
+     * order, and naming a third of it would be strange in the one email that
+     * asks the reader to go and look at what they bought.
+     */
+    {
+      kind: 'review_invite',
+      dedupeKey: `review_invite:${order.order.id}`,
+      ...renderReviewInvite(
+        {
+          orderNumber: order.order.orderNumber,
+          email: order.order.email,
+          currency: order.order.currency,
+          grandTotal: order.order.grandTotal,
+          placedAt: order.order.placedAt,
+          lines: order.lines.map((line) => ({
+            title: line.title,
+            sku: line.sku,
+            qty: line.qty,
+            lineTotal: line.lineTotal,
+            imageId: line.imageId,
+          })),
+        },
+        link,
+        templates,
+      ),
+    },
+  ],
 };
 
 /**

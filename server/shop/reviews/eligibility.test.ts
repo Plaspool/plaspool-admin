@@ -433,3 +433,71 @@ describe('the verified badge', () => {
     expect('order_id' in byId.get(reviewId)!).toBe(false);
   });
 });
+
+describe('approving a review tells its author, through the REAL wiring', () => {
+  const intentsFor = async (reviewId: string) => {
+    const res = await ctx.db.execute(sql`
+      SELECT to_email, kind FROM shop_order_email_intents
+       WHERE dedupe_key = ${`review_approved:${reviewId}`}`);
+    return res.rows;
+  };
+
+  /** Submit as a buyer and return the id plus the address it was written under. */
+  async function pending(slug: string): Promise<{ reviewId: string; email: string }> {
+    const shopper = await customer();
+    await givePurchase(ctx.db, { slug, customerId: shopper.id });
+    const res = await anon.post(SUBMIT, body({ productSlug: slug }), headersFor(shopper.cookie));
+    expect(res.status).toBe(201);
+    const { reviewId } = (await res.json()) as { reviewId: string };
+    return { reviewId, email: shopper.email };
+  }
+
+  it('queues the message on the edge into approved, addressed to the reviewer', async () => {
+    const { reviewId, email } = await pending('approval-mail');
+    /* Nothing owed while it is still pending — the message is about being
+       published, and a pending review is not. */
+    expect(await intentsFor(reviewId)).toHaveLength(0);
+
+    expect((await owner.patch(`${ADMIN}/${reviewId}`, { status: 'approved' })).status).toBe(200);
+
+    const rows = await intentsFor(reviewId);
+    expect(rows).toHaveLength(1);
+    expect(String(rows[0]!.to_email)).toBe(email);
+    expect(String(rows[0]!.kind)).toBe('review_approved');
+  });
+
+  it('does NOT send again when a moderator flips the status back and forth', async () => {
+    const { reviewId } = await pending('approval-twice');
+    await owner.patch(`${ADMIN}/${reviewId}`, { status: 'approved' });
+    await owner.patch(`${ADMIN}/${reviewId}`, { status: 'pending' });
+    await owner.patch(`${ADMIN}/${reviewId}`, { status: 'approved' });
+
+    /* Somebody making up their mind is not three pieces of news. */
+    expect(await intentsFor(reviewId)).toHaveLength(1);
+  });
+
+  it('sends nothing for a rejection, and nothing for a legacy review with no order', async () => {
+    const { reviewId } = await pending('approval-rejected');
+    await owner.patch(`${ADMIN}/${reviewId}`, { status: 'rejected' });
+    expect(await intentsFor(reviewId)).toHaveLength(0);
+
+    /*
+     * A review written before the purchase gate has a NULL `order_id`, and the
+     * outbox this rides requires one. Approving it must still WORK — a hole in
+     * the mail is not a reason to refuse a moderator — it just mails nobody.
+     * Migration 0640's header records this rather than leaving it to be
+     * rediscovered.
+     */
+    await ctx.db.execute(sql`
+      INSERT INTO shop_reviews
+        (id, product_slug, rating, body, author_name, author_email, status,
+         sentiment_label, sentiment_score, created_at, updated_at)
+      VALUES ('rev_legacy0000002', 'approval-legacy', 5, 'From before any of this existed.',
+              'Old Timer', 'old-timer@example.com', 'pending', 'positive', 1,
+              ${1_600_000_000_000}, ${1_600_000_000_000})`);
+
+    const res = await owner.patch(`${ADMIN}/rev_legacy0000002`, { status: 'approved' });
+    expect(res.status).toBe(200);
+    expect(await intentsFor('rev_legacy0000002')).toHaveLength(0);
+  });
+});

@@ -39,6 +39,7 @@ import {
   setReaction,
 } from './threads';
 import type { AppEnv } from '../../app-env';
+import type { Db } from '../../db/client';
 
 /**
  * Reviews — the staff surface and the one public mutation (issue #4).
@@ -84,8 +85,32 @@ export type ReviewsCustomerResolver = (c: Context<AppEnv>) => Promise<ReviewsCus
  */
 const NO_CUSTOMER: ReviewsCustomerResolver = () => Promise.resolve(null);
 
+/**
+ * Queue the "your review is live" message. Returns whether one was written.
+ *
+ * A PORT, FOR THE REASON `ReviewsCustomerResolver` IS ONE, AND FOR A SECOND.
+ * The implementation lives in `server/shop/orders/review-mail.ts` because
+ * Orders owns the outbox, the renderer and every table involved — and because
+ * `eligibility.ts` already spends the single cross-subsystem table read that
+ * contract §2 R3 tolerates, with a comment promising the next crossing gets a
+ * seam instead of a second exception. This is that seam.
+ *
+ * DEFAULTS TO A NO-OP, WHICH IS THE RIGHT DIRECTION HERE and the opposite of
+ * the customer resolver's. An unwired resolver must take reviews DOWN, because
+ * accepting unattributed reviews is worse than refusing everything. An unwired
+ * mailer must not: nobody should be unable to approve a review because the
+ * post-approval email is misconfigured.
+ */
+export type ReviewApprovedMailer = (
+  db: Db,
+  input: { reviewId: string; orderId: string; to: string },
+) => Promise<boolean>;
+
+const NO_MAIL: ReviewApprovedMailer = () => Promise.resolve(false);
+
 export interface ReviewsDeps {
   customer?: ReviewsCustomerResolver;
+  reviewApprovedMailer?: ReviewApprovedMailer;
 }
 
 const auth = requireAuth();
@@ -301,6 +326,7 @@ async function requirePurchaseFor(
 export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
   const routes = new Hono<AppEnv>();
   const resolveCustomer = deps.customer ?? NO_CUSTOMER;
+  const mailApproved = deps.reviewApprovedMailer ?? NO_MAIL;
 
   /*
    * SCOPED TO THIS ONE PATH, AND BEFORE THE PREFLIGHT HANDLER SO IT ALSO
@@ -565,6 +591,7 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
   routes.patch('/reviews/:id', auth, async (c) => {
     const id = pathParam(c, 'id');
     const body = await readJson(c, ModerateBody);
+    const before = await getReview(currentDb(c), id);
     const review = await moderateReview(
       currentDb(c),
       id,
@@ -572,6 +599,38 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
       currentUser(c).id,
       Date.now(),
     );
+
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * THE REVIEWER HEARS THAT THEIR REVIEW IS LIVE — but only on the EDGE into
+     * `approved`, and only for a review that has a proving order.
+     *
+     * ON THE EDGE, NOT ON THE STATE. `before.status !== 'approved'` is what
+     * makes re-approving an already-approved review silent: a moderator
+     * flipping a status twice while making up their mind is not news to the
+     * person who wrote it. (`queueReviewApprovedEmail` also dedupes on the
+     * review id, so this is the second of two independent guards — the first
+     * one that is wrong still cannot send a duplicate.)
+     *
+     * NO PROVING ORDER MEANS NO MESSAGE. Every review written before the
+     * purchase gate shipped has a null `order_id`, and the outbox this rides
+     * requires one. Those authors never expected a message; migration 0640's
+     * header records the hole rather than leaving it to be rediscovered.
+     *
+     * IT DOES NOT FAIL THE APPROVAL. The moderator's action has committed by
+     * the time this runs, and a mailer problem must not present itself as "the
+     * approval did not work" — the outbox is drained by the sweep, and an
+     * intent that is never written is a missing email, not a missing approval.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    if (review.status === 'approved' && before?.status !== 'approved' && review.orderId) {
+      await mailApproved(currentDb(c), {
+        reviewId: review.id,
+        orderId: review.orderId,
+        to: review.authorEmail,
+      });
+    }
+
     return c.json({ review });
   });
 
