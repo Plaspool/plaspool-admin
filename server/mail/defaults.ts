@@ -77,6 +77,11 @@ export const SYSTEM_KEYS = [
   'account.password_reset',
   'return.awarded',
   'return.rejected',
+  /* The namespace the SYSTEM_KEYS comment predicted. Both are about a review,
+     not about an order, even though both ride the order outbox — see the
+     templates below for why that is the right table and not a shortcut. */
+  'review.invite',
+  'review.approved',
 ] as const;
 
 export type SystemKey = (typeof SYSTEM_KEYS)[number];
@@ -712,6 +717,130 @@ const RETURN_REJECTED: SystemTemplate = {
     returnFooterText(),
 };
 
+/* --------------------------------------------------------------- reviews */
+
+/**
+ * THE INVITATION, sent once an order is delivered.
+ *
+ * IT NAMES THE PRODUCTS AND LINKS TO THE ORDER, not to each product page.
+ * That is a deliberate narrowing of what the storefront brief first described,
+ * and the reason is that this repository does not know the storefront's product
+ * URL shape — `catalog/utils/revalidate-url.ts` knows its purge endpoint and
+ * nothing else. Inventing `/products/<slug>` here would put an unagreed
+ * external contract in a customer's inbox, where a wrong guess is a 404 for a
+ * real buyer. The order page is a link this system already mints, already
+ * expires safely, and already knows is correct.
+ *
+ * `{{order_lines}}` CARRIES THE TITLES, so the message still says what it is
+ * about. Per-product deep links are a follow-up for the day the storefront
+ * confirms its path — one constant, and this comment is where to start.
+ *
+ * IT IS THE ONE MESSAGE HERE THAT IS NOT STRICTLY TRANSACTIONAL. A shipment
+ * notice is about a contract the reader entered by paying; an invitation to
+ * write something is closer to marketing, and a shop that sends it twice is a
+ * shop people filter. One per ORDER — never one per parcel — is enforced by the
+ * dedupe key, not by this wording.
+ */
+const REVIEW_INVITE: SystemTemplate = {
+  key: 'review.invite',
+  name: 'Review invitation',
+  description: 'Sent after an order is delivered, inviting a review of what was in it.',
+  variables: ORDER_VARS,
+  subject: 'How did your order go?',
+  html: shell({
+    title: 'How did your order go?',
+    preheader: 'Tell other shoppers what you thought.',
+    body:
+      badge('Delivered') +
+      h1('How did it go?') +
+      p(
+        'Your order <strong>{{order_number}}</strong> has arrived. If you have a ' +
+          'moment, tell other shoppers what you thought — reviews on PlaSpool come ' +
+          'only from people who actually bought the product, so yours carries weight.',
+      ) +
+      `{{order_lines}}` +
+      viewOrder() +
+      small(
+        'Nothing to say yet? Ignore this — it is the only reminder we will send ' +
+          'about this order.',
+      ),
+    footer: orderFooter(),
+  }),
+  text:
+    `Your order {{order_number}} has arrived.
+
+` +
+    `If you have a moment, tell other shoppers what you thought — reviews on
+` +
+    `PlaSpool come only from people who actually bought the product, so yours
+` +
+    `carries weight.
+
+` +
+    `{{order_lines}}
+` +
+    viewOrderText() +
+    `
+Nothing to say yet? Ignore this — it is the only reminder we will send
+` +
+    `about this order.` +
+    orderFooterText(),
+};
+
+/**
+ * THE CONFIRMATION, sent when a human approves a pending review.
+ *
+ * WHY IT RIDES THE ORDER OUTBOX. `shop_order_email_intents.order_id` is NOT
+ * NULL, and this message is not obviously an order message — but every review
+ * that can trigger it has a proving order on it by construction (the gate
+ * records one), and that order IS what the message is downstream of. The
+ * alternative was a second outbox with its own sweeper, its own retry ceiling
+ * and its own failure modes, to send one email. That is the wrong trade.
+ *
+ * THE CONSEQUENCE, NAMED: a review with no `order_id` — every row written
+ * before the gate shipped — sends NOTHING when approved. Those are legacy rows
+ * whose authors never expected a message, so silence is the right outcome, but
+ * it is a real hole and not an oversight.
+ */
+const REVIEW_APPROVED: SystemTemplate = {
+  key: 'review.approved',
+  name: 'Review published',
+  description: 'Sent to the reviewer when staff approve their review.',
+  variables: ['{{customer_name}}', '{{order_url}}', '{{support_email}}'],
+  subject: 'Your review is live',
+  html: shell({
+    title: 'Your review is live',
+    preheader: 'Thank you — other shoppers can read it now.',
+    body:
+      badge('Published') +
+      h1('Your review is live') +
+      p(
+        'Thank you for writing it. Other shoppers can read it now, and it shows the ' +
+          'verified-buyer mark because you bought the product.',
+      ) +
+      viewOrder() +
+      small(
+        'Changed your mind about what you wrote? Reply to this message and we will ' +
+          'take it down.',
+      ),
+    footer: orderFooter(),
+  }),
+  text:
+    `Your review is live.
+
+` +
+    `Thank you for writing it. Other shoppers can read it now, and it shows the
+` +
+    `verified-buyer mark because you bought the product.
+` +
+    viewOrderText() +
+    `
+Changed your mind about what you wrote? Reply to this message and we will
+` +
+    `take it down.` +
+    orderFooterText(),
+};
+
 /**
  * Every default, by key.
  *
@@ -732,6 +861,8 @@ export const DEFAULT_TEMPLATES: Record<SystemKey, SystemTemplate> = {
   'account.password_reset': ACCOUNT_PASSWORD_RESET,
   'return.awarded': RETURN_AWARDED,
   'return.rejected': RETURN_REJECTED,
+  'review.invite': REVIEW_INVITE,
+  'review.approved': REVIEW_APPROVED,
 };
 
 export function defaultTemplate(key: SystemKey): SystemTemplate {

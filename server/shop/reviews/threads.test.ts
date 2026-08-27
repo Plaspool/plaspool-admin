@@ -6,6 +6,7 @@ import type { HttpClient } from '../../test/http';
 import type { AuthUser } from '../../../shared/types';
 import { createCustomer, createCustomerSession } from '../cart/identity/customers';
 import { SHOP_SESSION_COOKIE } from '../cart/identity/cookies';
+import { givePurchase } from './test/purchases';
 
 /**
  * Review replies and reactions (migration 0620), driven through the REAL app.
@@ -62,22 +63,38 @@ beforeAll(async () => {
   anon = httpClient(ctx.db);
   shopper = await signedInCustomer('shopper@example.com', 'Dara');
   other = await signedInCustomer('other@example.com', 'Tunde');
+  /* Both must have BOUGHT the product to reply to or vote on its reviews —
+     the purchase gate (brief §2). Everything in this file is about threads,
+     so the purchase is fixture, not subject. */
+  await givePurchase(ctx.db, { slug: 'pla-basic', customerId: shopper.id });
+  await givePurchase(ctx.db, { slug: 'pla-basic', customerId: other.id });
 });
 
 afterAll(async () => {
   await ctx?.close();
 });
 
-/** An APPROVED review to hang threads off — the fixture everything needs. */
+/**
+ * An APPROVED review to hang threads off — the fixture everything needs.
+ *
+ * A NEW AUTHOR EACH TIME, because one customer may review one product once.
+ * Reusing `shopper` would 403 every call after the first; and the reviews here
+ * all have to sit on `pla-basic` so the public list can find them together.
+ */
+let authors = 0;
 async function approvedReview(): Promise<string> {
+  authors += 1;
+  const author = await signedInCustomer(`author-${authors}@example.com`, 'Author');
+  await givePurchase(ctx.db, { slug: 'pla-basic', customerId: author.id });
   const res = await anon.post(
     SUBMIT,
     {
       productSlug: 'pla-basic',
       rating: 5,
       body: 'Prints clean, great colour, would recommend to anyone.',
+      authorName: 'Dara',
     },
-    ipOf(shopper.cookie),
+    ipOf(author.cookie),
   );
   expect(res.status).toBe(201);
   const { reviewId } = (await res.json()) as { reviewId: string };

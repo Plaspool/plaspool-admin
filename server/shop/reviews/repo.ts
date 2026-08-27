@@ -24,7 +24,7 @@ export type SentimentLabel = DbShopReview['sentimentLabel'];
 /** The whole row, for the admin surface. */
 export type AdminReview = DbShopReview;
 
-/** What the public read returns. No email, no moderator, no order. */
+/** What the public read returns. No email, no moderator, no order ID. */
 export interface PublicReview {
   id: string;
   productSlug: string;
@@ -34,6 +34,20 @@ export interface PublicReview {
   authorName: string;
   sentiment: SentimentLabel;
   createdAt: number;
+  /**
+   * WHETHER AN ORDER PROVED THIS PURCHASE — the badge (brief §5).
+   *
+   * A BOOLEAN DERIVED FROM `order_id`, NOT THE ID ITSELF. Which order somebody
+   * placed is nobody else's business, and this is the cacheable public read: the
+   * projection returns the ANSWER to "was this verified" and never the evidence,
+   * exactly as it returns `author_name` and never `author_email`.
+   *
+   * FALSE ON EVERY REVIEW WRITTEN BEFORE THE GATE SHIPPED, which is honest —
+   * those were never checked against an order. The storefront renders the badge
+   * only when true and renders NOTHING when false; an explicit "unverified"
+   * label would be a punishment for having reviewed early.
+   */
+  verifiedPurchase: boolean;
 }
 
 export interface ProductAggregate {
@@ -64,6 +78,10 @@ const PUBLIC_COLUMNS = {
   authorName: shopReviews.authorName,
   sentiment: shopReviews.sentimentLabel,
   createdAt: shopReviews.createdAt,
+  /* Derived in the statement rather than mapped afterwards, so the column
+     itself never leaves the database and cannot be forgotten into a response
+     by a later refactor of the mapping code. */
+  verifiedPurchase: sql<boolean>`${shopReviews.orderId} IS NOT NULL`,
 } as const;
 
 export interface CreateReviewInput {
@@ -75,6 +93,14 @@ export interface CreateReviewInput {
   authorEmail: string;
   /** Set when the submitter held a live customer session. Null for guests. */
   customerId?: string | null;
+  /**
+   * The order that proved the purchase (brief §2). Required in practice now
+   * that the intake gates on one, but still OPTIONAL here: the admin's own
+   * fixtures and every test that predates the gate construct reviews without
+   * one, and making it mandatory would be a type error in forty places to
+   * express a rule the ROUTE already enforces.
+   */
+  orderId?: string | null;
   now: number;
 }
 
@@ -98,6 +124,7 @@ export async function createReview(db: Db, input: CreateReviewInput): Promise<Ad
       authorName: input.authorName,
       authorEmail: input.authorEmail,
       customerId: input.customerId ?? null,
+      orderId: input.orderId ?? null,
       status: 'pending',
       sentimentLabel: sentiment.label,
       sentimentScore: sentiment.score,

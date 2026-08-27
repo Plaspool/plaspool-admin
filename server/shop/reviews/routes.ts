@@ -22,6 +22,12 @@ import {
   moderateReview,
 } from './repo';
 import {
+  purchasedProduct,
+  purchasedProducts,
+  reviewProductSlug,
+  reviewedProducts,
+} from './eligibility';
+import {
   OWNER_BYLINE,
   clearReaction,
   createReply,
@@ -33,6 +39,7 @@ import {
   setReaction,
 } from './threads';
 import type { AppEnv } from '../../app-env';
+import type { Db } from '../../db/client';
 
 /**
  * Reviews — the staff surface and the one public mutation (issue #4).
@@ -78,8 +85,32 @@ export type ReviewsCustomerResolver = (c: Context<AppEnv>) => Promise<ReviewsCus
  */
 const NO_CUSTOMER: ReviewsCustomerResolver = () => Promise.resolve(null);
 
+/**
+ * Queue the "your review is live" message. Returns whether one was written.
+ *
+ * A PORT, FOR THE REASON `ReviewsCustomerResolver` IS ONE, AND FOR A SECOND.
+ * The implementation lives in `server/shop/orders/review-mail.ts` because
+ * Orders owns the outbox, the renderer and every table involved — and because
+ * `eligibility.ts` already spends the single cross-subsystem table read that
+ * contract §2 R3 tolerates, with a comment promising the next crossing gets a
+ * seam instead of a second exception. This is that seam.
+ *
+ * DEFAULTS TO A NO-OP, WHICH IS THE RIGHT DIRECTION HERE and the opposite of
+ * the customer resolver's. An unwired resolver must take reviews DOWN, because
+ * accepting unattributed reviews is worse than refusing everything. An unwired
+ * mailer must not: nobody should be unable to approve a review because the
+ * post-approval email is misconfigured.
+ */
+export type ReviewApprovedMailer = (
+  db: Db,
+  input: { reviewId: string; orderId: string; to: string },
+) => Promise<boolean>;
+
+const NO_MAIL: ReviewApprovedMailer = () => Promise.resolve(false);
+
 export interface ReviewsDeps {
   customer?: ReviewsCustomerResolver;
+  reviewApprovedMailer?: ReviewApprovedMailer;
 }
 
 const auth = requireAuth();
@@ -173,6 +204,26 @@ const MineQuery = z.object({ reviews: str().max(4000) }).strict();
 const MAX_BULK_REVIEWS = 100;
 
 /**
+ * The eligibility read's query. Slug grammar and ceiling copied from the public
+ * aggregates route DELIBERATELY — a page asks both about the same list of
+ * products in the same page load, and two different limits would make one of
+ * the two calls fail for a grid the other one served.
+ */
+const MAX_BULK_PRODUCTS = 60;
+const EligibilityQuery = z.object({ products: str().max(MAX_BULK_PRODUCTS * 121) }).strict();
+
+/**
+ * The two refusals a review mutation can now carry, and the only two.
+ *
+ * NAMED CONSTANTS BECAUSE THE STOREFRONT BRANCHES ON THEM. These strings are a
+ * wire contract, not log text: a typo here is a storefront that falls through
+ * to its generic failure copy, which is the one outcome this whole feature is
+ * meant to prevent.
+ */
+export const PURCHASE_REQUIRED = 'purchase_required';
+export const ALREADY_REVIEWED = 'already_reviewed';
+
+/**
  * Turn a `createReply` refusal into the response it deserves.
  *
  * EACH REASON GETS ITS OWN ANSWER because each is a different thing to tell
@@ -248,9 +299,34 @@ const AdminListQuery = z.object({
  * 500. `server/shop/app.ts` is the composition root and the only caller that
  * wires the real `resolveShopCustomer`.
  */
+/**
+ * The gate the reply and reaction routes share: this customer must have bought
+ * the product the review under discussion is about.
+ *
+ * `slug` IS TAKEN WHEN THE CALLER ALREADY HAS THE ROW. The reaction route reads
+ * the review anyway to check it is approved; making it read again here would be
+ * a second statement for a value already in hand. The reply route does not have
+ * one, so this looks it up — and a review that has vanished between the two is
+ * a 404, not a 403, because "gone" is the honest answer and a 403 would tell an
+ * ineligible caller that the id was real.
+ */
+async function requirePurchaseFor(
+  c: Context<AppEnv>,
+  customer: ReviewsCustomer,
+  reviewId: string,
+  slug?: string,
+): Promise<void> {
+  const db = currentDb(c);
+  const productSlug = slug ?? (await reviewProductSlug(db, reviewId));
+  if (!productSlug) throw new NotFoundError(reviewId);
+  const proof = await purchasedProduct(db, customer, productSlug);
+  if (!proof) throw new ForbiddenError(PURCHASE_REQUIRED);
+}
+
 export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
   const routes = new Hono<AppEnv>();
   const resolveCustomer = deps.customer ?? NO_CUSTOMER;
+  const mailApproved = deps.reviewApprovedMailer ?? NO_MAIL;
 
   /*
    * SCOPED TO THIS ONE PATH, AND BEFORE THE PREFLIGHT HANDLER SO IT ALSO
@@ -361,14 +437,45 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
        where before a guest could simply type a different one. */
     await limit(c, `revsub:${ip}|${authorEmail}`, INTAKE_EMAIL_LIMIT, INTAKE_WINDOW_MS);
 
-    const review = await createReview(currentDb(c), {
+    const db = currentDb(c);
+
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * THE PURCHASE GATE (brief §2). A session says WHO; this says WHETHER.
+     *
+     * AFTER the rate limits on purpose. Both budgets bound the work an
+     * unauthenticated flood can cause, and moving a database read above them
+     * would let a script make this route do two joins per request for free —
+     * the limiter cannot bound work that runs before it.
+     *
+     * THE PROOF IS RECORDED, not just checked. `orderId` goes on the row, so
+     * "prove this reviewer bought it" has an answer six months from now that
+     * does not depend on re-running this query against orders that have since
+     * been refunded, or against a product whose variants have been retired.
+     * The column has been sitting on `shop_reviews` unused since the schema was
+     * written, with a comment predicting exactly this use.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    const proof = await purchasedProduct(db, customer, body.productSlug);
+    if (!proof) throw new ForbiddenError(PURCHASE_REQUIRED);
+
+    /* One review per customer per product. Checked HERE rather than by a unique
+       index, because the two ways of owning a review (account, or the email on
+       an older row) cannot both be expressed as one constraint — and a race
+       between two submissions from one person is a duplicate in a moderation
+       queue, not a corruption. */
+    const already = await reviewedProducts(db, customer, [body.productSlug]);
+    if (already.has(body.productSlug)) throw new ForbiddenError(ALREADY_REVIEWED);
+
+    const review = await createReview(db, {
       productSlug: body.productSlug,
       rating: body.rating,
       title: body.title?.length ? body.title : null,
       body: body.body,
       authorName,
       authorEmail,
-      customerId: customer?.id ?? null,
+      customerId: customer.id,
+      orderId: proof.orderId,
       now: Date.now(),
     });
 
@@ -387,6 +494,71 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
       },
       201,
     );
+  });
+
+  /**
+   * WHAT THIS SHOPPER MAY REVIEW — the read the product page gates on.
+   *
+   * BELOW `sessionMiddleware`, BESIDE `reactions/mine`, AND NOT ON THE PUBLIC
+   * ROUTER. The answer is different for every reader, and the public reviews
+   * router answers with `Cache-Control: public` from above the session
+   * middleware — a per-viewer field there is one shopper's purchase history
+   * handed to another by a shared cache (threat T6). This is the same argument
+   * that put `reactions/mine` here, and adding `canReview` to the public
+   * payload instead would be a one-line change that looks like saving a round
+   * trip and is actually a leak. It is written down in the brief for the same
+   * reason it is written down here.
+   *
+   * AN ABSENT SESSION IS AN EMPTY OBJECT, NOT A 401 — again like
+   * `reactions/mine`. A logged-out shopper reading a product page is not an
+   * error, and the storefront should render the sign-in prompt rather than
+   * handle a refusal on a read.
+   */
+  routes.use('/reviews/eligibility', shopCors<AppEnv>());
+  routes.get('/reviews/eligibility', async (c) => {
+    const q = readQuery(c, EligibilityQuery);
+    const slugs = q.products
+      .split(',')
+      .map((slug) => slug.trim())
+      .filter((slug) => slug.length > 0);
+
+    if (slugs.length === 0) throw new BadRequestError('products');
+    if (slugs.length > MAX_BULK_PRODUCTS) throw new BadRequestError('products');
+    /* Named individually so a refusal points at the offending slug rather than
+       rejecting a list of sixty for one bad character in the middle of it —
+       the aggregates route's rule, kept identical because a page sends the same
+       list to both. */
+    for (const slug of slugs) {
+      if (!/^[a-z0-9-]+$/.test(slug) || slug.length > 120) {
+        throw new BadRequestError('products');
+      }
+    }
+
+    const customer = await resolveCustomer(c);
+    if (!customer) return c.json({ eligible: {} });
+
+    const db = currentDb(c);
+    const [bought, reviewed] = await Promise.all([
+      purchasedProducts(db, customer, slugs),
+      reviewedProducts(db, customer, slugs),
+    ]);
+
+    /* EVERY REQUESTED SLUG IS IN THE ANSWER, including ones with no claim on
+       them, which come back as two falses. An omission would make every caller
+       write the same "missing means false" branch — the promise the aggregates
+       route already makes about the same list of products. */
+    const eligible: Record<string, { canReview: boolean; hasReviewed: boolean }> = {};
+    for (const slug of slugs) {
+      eligible[slug] = {
+        canReview: bought.has(slug),
+        hasReviewed: reviewed.has(slug),
+      };
+    }
+
+    /* The proving order id is NOT on the wire. The storefront has no use for
+       it, and it is another customer-identifying value crossing an origin for
+       nothing. */
+    return c.json({ eligible });
   });
 
   // ------------------------------------------------------------------ staff
@@ -419,6 +591,7 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
   routes.patch('/reviews/:id', auth, async (c) => {
     const id = pathParam(c, 'id');
     const body = await readJson(c, ModerateBody);
+    const before = await getReview(currentDb(c), id);
     const review = await moderateReview(
       currentDb(c),
       id,
@@ -426,6 +599,38 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
       currentUser(c).id,
       Date.now(),
     );
+
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * THE REVIEWER HEARS THAT THEIR REVIEW IS LIVE — but only on the EDGE into
+     * `approved`, and only for a review that has a proving order.
+     *
+     * ON THE EDGE, NOT ON THE STATE. `before.status !== 'approved'` is what
+     * makes re-approving an already-approved review silent: a moderator
+     * flipping a status twice while making up their mind is not news to the
+     * person who wrote it. (`queueReviewApprovedEmail` also dedupes on the
+     * review id, so this is the second of two independent guards — the first
+     * one that is wrong still cannot send a duplicate.)
+     *
+     * NO PROVING ORDER MEANS NO MESSAGE. Every review written before the
+     * purchase gate shipped has a null `order_id`, and the outbox this rides
+     * requires one. Those authors never expected a message; migration 0640's
+     * header records the hole rather than leaving it to be rediscovered.
+     *
+     * IT DOES NOT FAIL THE APPROVAL. The moderator's action has committed by
+     * the time this runs, and a mailer problem must not present itself as "the
+     * approval did not work" — the outbox is drained by the sweep, and an
+     * intent that is never written is a missing email, not a missing approval.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    if (review.status === 'approved' && before?.status !== 'approved' && review.orderId) {
+      await mailApproved(currentDb(c), {
+        reviewId: review.id,
+        orderId: review.orderId,
+        to: review.authorEmail,
+      });
+    }
+
     return c.json({ review });
   });
 
@@ -488,6 +693,10 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
        the same strengthening the review intake got. */
     await limit(c, `rplsub:${ip}|${customer.id}`, REPLY_CUSTOMER_LIMIT, INTAKE_WINDOW_MS);
 
+    /* Judged against the product the REVIEW is about — never against anything
+       in the body, which would let one purchase unlock the whole shop. */
+    await requirePurchaseFor(c, customer, reviewId);
+
     const authorName = customer.displayName ?? body.authorName;
     if (!authorName) throw new BadRequestError('authorName');
 
@@ -546,6 +755,17 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
        way to learn that one exists, and there is nothing public to react to. */
     const review = await getReview(db, reviewId);
     if (!review || review.status !== 'approved') throw new NotFoundError(reviewId);
+
+    /*
+     * CLEARING A VOTE IS GATED TOO, and that is deliberate rather than an
+     * oversight of the `kind === null` branch below. A shopper who could clear
+     * but not set would have a button that works in one direction, which reads
+     * as a bug from the outside; and the check is against the same product
+     * either way, so an ineligible caller has no vote to clear in the first
+     * place. The 404 above already ran, so this cannot be used to probe for
+     * reviews.
+     */
+    await requirePurchaseFor(c, customer, reviewId, review.productSlug);
 
     if (body.kind === null) {
       await clearReaction(db, reviewId, customer.id);

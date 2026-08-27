@@ -24,7 +24,8 @@ import { MailNotConfiguredError } from '../mail/port';
  * | Condition                       | Status | Body                                           |
  * | ------------------------------- | ------ | ---------------------------------------------- |
  * | Not authenticated               | 401    | `{ error: 'unauthenticated' }`                  |
- * | Authenticated, not permitted    | 403    | `{ error: 'forbidden' }`                        |
+ * | Authenticated, not permitted    | 403    | `{ error: 'forbidden' }`, `reason` only when the |
+ * |                                 |        | refusal turns on the caller's OWN state          |
  * | Post absent or destroyed        | 404    | `{ error: 'gone' }`                             |
  * | Malformed request               | 400    | `{ error: 'bad_request', detail }`              |
  * | Document fails validation       | 422    | `{ error: 'invalid_document', path }`           |
@@ -67,9 +68,29 @@ export class UnauthenticatedError extends Error {
  * whether they wrote it.
  */
 export class ForbiddenError extends Error {
-  constructor() {
+  /**
+   * WHY THIS EXISTS AGAINST THE PARAGRAPH ABOVE, AND WHERE THE LINE IS.
+   *
+   * The rule above is about not describing OTHER PEOPLE'S state to a caller —
+   * whether a post exists, whether they wrote it. A `reason` that describes the
+   * CALLER'S OWN state tells them nothing they could not already establish
+   * about themselves: "you have not bought this" is a fact about their own
+   * order history, and "you already reviewed this" about their own review.
+   *
+   * It is not decoration. Without it the storefront cannot tell "sign in" from
+   * "you cannot do this yet" and has to guess, which it will get wrong in the
+   * direction that wastes somebody's typing (brief §4). Undefined stays exactly
+   * the old body, so every existing thrower is unchanged.
+   *
+   * DO NOT reach for this to explain a refusal that turns on somebody else's
+   * data. That is the case the class comment forbids and it has not moved.
+   */
+  readonly reason?: string;
+
+  constructor(reason?: string) {
     super('forbidden');
     this.name = 'ForbiddenError';
+    this.reason = reason;
   }
 }
 
@@ -94,7 +115,12 @@ function map(err: unknown): Mapped | null {
     return { status: 401, body: { error: 'unauthenticated' } };
   }
   if (err instanceof ForbiddenError) {
-    return { status: 403, body: { error: 'forbidden' } };
+    /* The key is ABSENT rather than null when there is no reason, so the
+       hundreds of existing 403s serialise byte-identically to before. */
+    return {
+      status: 403,
+      body: err.reason === undefined ? { error: 'forbidden' } : { error: 'forbidden', reason: err.reason },
+    };
   }
   if (err instanceof NotFoundError) {
     return { status: 404, body: { error: 'gone' } };

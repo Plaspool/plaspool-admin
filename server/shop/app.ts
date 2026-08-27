@@ -13,6 +13,7 @@ import { ShopCategoryPreconditionFailedError } from './catalog/categories';
 import { DuplicateOptionsError, DuplicateSkuError } from './catalog/variants';
 import { routes as catalog } from './catalog/routes';
 import { createReviewRoutes } from './reviews/routes';
+import { queueReviewApprovedEmail } from './orders/review-mail';
 import { catalogPort } from './catalog/port';
 import { orders } from './orders/routes';
 import { drainCommerceEvents } from './orders/repo/consumer';
@@ -173,7 +174,16 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
    * `__Host-shop_session` and is Cart's; Reviews never imports Cart directly,
    * only this composition root does.
    */
-  shop.route('/', createReviewRoutes({ customer: resolveShopCustomer }));
+  /* And the review-approved mailer, whose implementation is Orders' because
+     Orders owns the outbox it writes to. Reviews declares the port and never
+     imports Orders; this root is the only place that knows both halves. */
+  shop.route(
+    '/',
+    createReviewRoutes({
+      customer: resolveShopCustomer,
+      reviewApprovedMailer: (db, input) => queueReviewApprovedEmail(db, input, Date.now()),
+    }),
+  );
 
   shop.route('/', orders);
 

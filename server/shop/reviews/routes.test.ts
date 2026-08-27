@@ -6,6 +6,7 @@ import type { HttpClient } from '../../test/http';
 import type { AuthUser } from '../../../shared/types';
 import { createCustomer, createCustomerSession } from '../cart/identity/customers';
 import { SHOP_SESSION_COOKIE } from '../cart/identity/cookies';
+import { givePurchase } from './test/purchases';
 
 /**
  * The reviews pipeline, end to end over real HTTP against a migrated
@@ -64,7 +65,8 @@ function fromFreshIp(): { headers: Record<string, string> } {
 
 /** Submit and approve in one motion — the fixture most read tests need. */
 async function approved(over: Partial<Record<string, unknown>> = {}): Promise<string> {
-  const res = await anon.post(SUBMIT, submission(over), asShopper());
+  const slug = String(over.productSlug ?? 'pla-basic');
+  const res = await anon.post(SUBMIT, submission(over), await asBuyer(slug));
   expect(res.status).toBe(201);
   const { reviewId } = (await res.json()) as { reviewId: string };
   const mod = await owner.patch(`${ADMIN}/${reviewId}`, { status: 'approved' });
@@ -73,13 +75,23 @@ async function approved(over: Partial<Record<string, unknown>> = {}): Promise<st
 }
 
 /**
- * A signed-in shopper, because the intake now REQUIRES a customer session.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THERE IS NO SHARED SHOPPER ANY MORE, AND THAT IS THE GATE'S DOING.
  *
- * Module-scope and created once: every submission fixture in this file needs
- * one, and the narrow rate budget keys on (ip, email) — `fromFreshIp()` already
- * varies the address, so one shared account cannot exhaust it.
+ * This file used to submit everything as one module-scope `shopper`. Two new
+ * rules make that impossible, and both are the feature working:
+ *
+ *  - A reviewer must have BOUGHT the product, so a fixture has to own an order
+ *    containing it — a session alone is no longer enough.
+ *  - One review per customer per product, so the second review of `pla-glow`
+ *    cannot come from the same person as the first.
+ *
+ * So each submission gets its own buyer with its own paid order. That is also
+ * closer to what the aggregate tests were always pretending: three ratings on
+ * one product are three people, not one person reviewing three times.
+ * ═══════════════════════════════════════════════════════════════════════════
  */
-let shopper: { id: string; cookie: string };
+let buyers = 0;
 
 async function signedInCustomer(
   email: string | null,
@@ -95,15 +107,32 @@ function withCookie(cookie: string): { headers: Record<string, string> } {
   return { headers: { ...fromFreshIp().headers, cookie } };
 }
 
-/** The default shopper's headers. What `fromFreshIp()` used to be for submits. */
-const asShopper = (): { headers: Record<string, string> } => withCookie(shopper.cookie);
+/**
+ * A fresh signed-in customer who has bought `slug` — the two things the intake
+ * now requires, in one call. Returns the headers a submit needs.
+ */
+async function buyerOf(
+  slug: string,
+  email?: string,
+  displayName: string | null = null,
+): Promise<{ id: string; cookie: string; headers: Record<string, string> }> {
+  buyers += 1;
+  const customer = await signedInCustomer(email ?? `buyer-${buyers}@example.com`, displayName);
+  await givePurchase(ctx.db, { slug, customerId: customer.id });
+  return { ...customer, headers: withCookie(customer.cookie).headers };
+}
+
+/** The common case: a buyer of `slug`, headers only. */
+async function asBuyer(slug = 'pla-basic'): Promise<{ headers: Record<string, string> }> {
+  const { headers } = await buyerOf(slug);
+  return { headers };
+}
 
 beforeAll(async () => {
   ctx = await freshDb();
   owner = await login(ctx.users.owner);
   writer = await login(ctx.users.writer);
   anon = httpClient(ctx.db);
-  shopper = await signedInCustomer('dara@example.com', null);
 });
 
 afterAll(async () => {
@@ -112,7 +141,7 @@ afterAll(async () => {
 
 describe('the customer intake', () => {
   it('accepts an anonymous submission, answers narrow, and attaches sentiment', async () => {
-    const res = await anon.post(SUBMIT, submission(), asShopper());
+    const res = await anon.post(SUBMIT, submission(), await asBuyer());
     expect(res.status).toBe(201);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.reviewId).toMatch(/^rev_/);
@@ -123,9 +152,12 @@ describe('the customer intake', () => {
   });
 
   it('rejects a rating outside 1–5 and a body below the floor', async () => {
-    expect((await anon.post(SUBMIT, submission({ rating: 6 }), asShopper())).status).toBe(400);
-    expect((await anon.post(SUBMIT, submission({ rating: 0 }), asShopper())).status).toBe(400);
-    expect((await anon.post(SUBMIT, submission({ body: 'short' }), asShopper())).status).toBe(400);
+    /* One buyer serves all three: these are refused by the SCHEMA, before the
+       handler resolves a customer at all, so nothing here reaches the gate. */
+    const buyer = await asBuyer();
+    expect((await anon.post(SUBMIT, submission({ rating: 6 }), buyer)).status).toBe(400);
+    expect((await anon.post(SUBMIT, submission({ rating: 0 }), buyer)).status).toBe(400);
+    expect((await anon.post(SUBMIT, submission({ body: 'short' }), buyer)).status).toBe(400);
   });
 
   it('answers the preflight for an allow-listed origin', async () => {
@@ -156,7 +188,7 @@ describe('the customer intake', () => {
   });
 
   it('answers a real submission WITH CREDENTIALS too', async () => {
-    const res = await anon.post(SUBMIT, submission(), asShopper());
+    const res = await anon.post(SUBMIT, submission(), await asBuyer());
     expect(res.status).toBe(201);
     expect(res.headers.get('access-control-allow-credentials')).toBe('true');
   });
@@ -175,10 +207,21 @@ describe('the customer intake', () => {
      */
     const budgeted = await signedInCustomer('budget@example.com', null);
     const ip = { headers: { 'x-real-ip': '198.51.100.77', cookie: budgeted.cookie } };
-    for (let i = 0; i < 3; i += 1) {
-      expect((await anon.post(SUBMIT, submission(), ip)).status).toBe(201);
+    /*
+     * A DIFFERENT PRODUCT EACH TIME, bought in advance. One review per customer
+     * per product would otherwise refuse the second submission with a 403 and
+     * this test would pass for the wrong reason — never reaching the budget it
+     * exists to pin.
+     */
+    for (let i = 0; i < 4; i += 1) {
+      await givePurchase(ctx.db, { slug: `budget-ip-${i}`, customerId: budgeted.id });
     }
-    expect((await anon.post(SUBMIT, submission(), ip)).status).toBe(429);
+    for (let i = 0; i < 3; i += 1) {
+      const res = await anon.post(SUBMIT, submission({ productSlug: `budget-ip-${i}` }), ip);
+      expect(res.status).toBe(201);
+    }
+    const fourth = await anon.post(SUBMIT, submission({ productSlug: 'budget-ip-3' }), ip);
+    expect(fourth.status).toBe(429);
   });
 
   it('grants nothing on the preflight to an origin off the list', async () => {
@@ -231,10 +274,11 @@ describe('a signed-in customer, through the REAL composition root', () => {
      * keep sending the old field until it ships its own change — Zod strips it.
      * Refusing would couple the two repositories to the same deploy minute.
      */
+    const buyer = await buyerOf('pla-basic', 'dara@example.com');
     const res = await anon.post(
       SUBMIT,
       { ...submission(), authorEmail: 'ignored@example.com' },
-      asShopper(),
+      { headers: buyer.headers },
     );
     expect(res.status).toBe(201);
     const { reviewId } = (await res.json()) as { reviewId: string };
@@ -245,13 +289,18 @@ describe('a signed-in customer, through the REAL composition root', () => {
   });
 
   it('sets customer_id and stores the SESSION email and display name', async () => {
-    const { id, cookie } = await signedInCustomer('session-owner@example.com', 'Session Name');
+    const { id, cookie, headers } = await buyerOf(
+      'pla-basic',
+      'session-owner@example.com',
+      'Session Name',
+    );
+    void cookie;
     const res = await anon.post(
       SUBMIT,
       /* The body cannot carry an address any more; the name is a byline and
          the session's `displayName` still outranks it. */
       submission({ authorName: 'Body Name' }),
-      withCookie(cookie),
+      { headers },
     );
     expect(res.status).toBe(201);
     const { reviewId } = (await res.json()) as { reviewId: string };
@@ -267,11 +316,11 @@ describe('a signed-in customer, through the REAL composition root', () => {
   });
 
   it("falls back to the body's authorName when the session has no displayName", async () => {
-    const { cookie } = await signedInCustomer('no-name@example.com', null);
+    const { headers } = await buyerOf('pla-basic', 'no-name@example.com');
     const res = await anon.post(
       SUBMIT,
       submission({ authorName: 'Body Supplied Name' }),
-      withCookie(cookie),
+      { headers },
     );
     expect(res.status).toBe(201);
     const { reviewId } = (await res.json()) as { reviewId: string };
@@ -313,19 +362,23 @@ describe('a signed-in customer, through the REAL composition root', () => {
   });
 
   it('keys the per-email rate budget on the RESOLVED email, not the body one', async () => {
-    const { cookie } = await signedInCustomer('budget-session@example.com', 'Budgeted');
-    const opts = withCookie(cookie);
+    const budgeted = await signedInCustomer('budget-session@example.com', 'Budgeted');
+    const opts = withCookie(budgeted.cookie);
+    /* Distinct products for the same reason as the test above. */
+    for (let i = 0; i < 4; i += 1) {
+      await givePurchase(ctx.db, { slug: `budget-body-${i}`, customerId: budgeted.id });
+    }
     for (let i = 0; i < 3; i += 1) {
       const res = await anon.post(
         SUBMIT,
-        submission({ authorEmail: `varying-${i}@example.com` }),
+        submission({ productSlug: `budget-body-${i}`, authorEmail: `varying-${i}@example.com` }),
         opts,
       );
       expect(res.status).toBe(201);
     }
     const fourth = await anon.post(
       SUBMIT,
-      submission({ authorEmail: 'yet-another@example.com' }),
+      submission({ productSlug: 'budget-body-3', authorEmail: 'yet-another@example.com' }),
       opts,
     );
     expect(fourth.status).toBe(429);
@@ -335,7 +388,7 @@ describe('a signed-in customer, through the REAL composition root', () => {
 describe('moderation gates every public surface', () => {
   it('a pending review is invisible to the public list and aggregate', async () => {
     const slug = 'petg-basic';
-    const res = await anon.post(SUBMIT, submission({ productSlug: slug }), asShopper());
+    const res = await anon.post(SUBMIT, submission({ productSlug: slug }), await asBuyer(slug));
     expect(res.status).toBe(201);
 
     const list = (await (await anon.get(`${PUBLIC_LIST}?product=${slug}`)).json()) as {
@@ -399,7 +452,7 @@ describe('the staff surface', () => {
   it('requires a session to list, and a writer can moderate', async () => {
     expect((await anon.get(ADMIN)).status).toBe(401);
 
-    const res = await anon.post(SUBMIT, submission({ productSlug: 'abs-basic' }), asShopper());
+    const res = await anon.post(SUBMIT, submission({ productSlug: 'abs-basic' }), await asBuyer('abs-basic'));
     const { reviewId } = (await res.json()) as { reviewId: string };
     const mod = await writer.patch(`${ADMIN}/${reviewId}`, { status: 'flagged' });
     expect(mod.status).toBe(200);
@@ -419,7 +472,7 @@ describe('the staff surface', () => {
   });
 
   it('destroy is owner-only', async () => {
-    const res = await anon.post(SUBMIT, submission({ productSlug: 'pla-silk' }), asShopper());
+    const res = await anon.post(SUBMIT, submission({ productSlug: 'pla-silk' }), await asBuyer('pla-silk'));
     const { reviewId } = (await res.json()) as { reviewId: string };
 
     expect((await writer.del(`${ADMIN}/${reviewId}`)).status).toBe(403);
@@ -439,7 +492,7 @@ describe('the aggregate', () => {
       body: 'Terrible spool, arrived broken and tangled. Waste of money.',
     });
     // A pending fourth review must not move any number below.
-    await anon.post(SUBMIT, submission({ productSlug: slug, rating: 5 }), asShopper());
+    await anon.post(SUBMIT, submission({ productSlug: slug, rating: 5 }), await asBuyer(slug));
 
     const { aggregate } = (await (await anon.get(`${PUBLIC_AGG}?product=${slug}`)).json()) as {
       aggregate: {
