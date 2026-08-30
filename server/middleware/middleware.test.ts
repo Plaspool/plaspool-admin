@@ -19,6 +19,7 @@ import {
   UnauthenticatedError,
 } from './errors';
 import { configuredOrigins } from './origin';
+import { storefrontOrigin } from '../shop/storefront-url';
 import { clientIp } from './ratelimit';
 import {
   BadRequestError,
@@ -277,9 +278,17 @@ describe('the assembled app', () => {
     expect(res.status).toBe(404);
   });
 
-  it('with no injected list, the allow-list is APP_ORIGINS', async () => {
-    // vitest.config.ts sets APP_ORIGINS=http://localhost:5173.
-    expect(configuredOrigins()).toEqual(['http://localhost:5173']);
+  it('with no injected list, the allow-list is APP_ORIGINS plus the storefront', async () => {
+    /*
+     * vitest.config.ts sets APP_ORIGINS=http://localhost:5173, and the
+     * storefront's own origin is appended unconditionally — see
+     * `configuredOrigins`. THAT SECOND ENTRY IS THE POINT: leaving the site
+     * this API serves out of `APP_ORIGINS` is never a decision, it is an
+     * omission, and it fails as a silent CORS refusal that logs a success on
+     * this side. Pinned as an exact list rather than a `toContain`, so adding a
+     * third implicit origin has to be a deliberate edit here.
+     */
+    expect(configuredOrigins()).toEqual(['http://localhost:5173', storefrontOrigin()]);
     const real = createApp({ db: ctx.db });
     const allowed = await real.request('/api/nothing-here', {
       method: 'POST',

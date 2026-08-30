@@ -2,6 +2,7 @@ import type { MiddlewareHandler } from 'hono';
 import { getEnv } from '../env';
 import { ForbiddenError } from './errors';
 import type { AppEnv } from '../app-env';
+import { storefrontOrigin } from '../shop/storefront-url';
 
 /**
  * CSRF, by same-origin deployment plus `SameSite=Lax` plus this (spec §6).
@@ -38,10 +39,43 @@ export const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTION
  * and would make importing the app demand a full environment.
  */
 export function configuredOrigins(): string[] {
-  return getEnv()
+  const fromEnv = getEnv()
     .APP_ORIGINS.split(',')
     .map((o) => o.trim())
     .filter((o) => o.length > 0);
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * THE STOREFRONT IS ALWAYS ALLOWED, WHETHER OR NOT ANYBODY REMEMBERED.
+   *
+   * `storefrontOrigin()` is the site this API exists to serve. Leaving it out of
+   * `APP_ORIGINS` is not a policy decision anybody would make on purpose — it is
+   * a value somebody forgot to update — and the failure it produces is silent
+   * and expensive:
+   *
+   *   The preflight still answers 204. It simply carries no
+   *   `access-control-allow-origin`, so the BROWSER refuses the response. The
+   *   server logs a success. The storefront reports "We couldn't load your
+   *   cart", and every credentialed call — cart, session exchange, orders,
+   *   returns — fails identically with nothing anywhere naming the cause.
+   *
+   * That happened when `plaspool.com` was attached to the Worker: `APP_ORIGINS`
+   * still listed only the old `*.workers.dev` hostname, and sign-in broke on the
+   * live site while every check on this side stayed green.
+   *
+   * ═══ THIS GRANTS NO NEW TRUST ═══
+   * `STOREFRONT_ORIGIN` is already trusted to build the links in customer mail
+   * (`shop/storefront-url.ts`), so an attacker who could set it already owns
+   * more than this. And the guarantee the module header makes is untouched:
+   * matching is still EQUALITY against a fixed list, never a suffix test.
+   *
+   * `APP_ORIGINS` remains the place to add anything else — previews, the admin's
+   * own origin, a second storefront. This only makes the one entry that must
+   * always be present impossible to omit.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  const storefront = storefrontOrigin();
+  return fromEnv.includes(storefront) ? fromEnv : [...fromEnv, storefront];
 }
 
 /**
