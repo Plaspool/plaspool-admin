@@ -30,8 +30,18 @@
  * protocol-relative path in some clients and a 404 in the rest.
  */
 
-export const DEFAULT_STOREFRONT_ORIGIN =
-  'https://plaspool-storefront.uririnathaniel.workers.dev';
+/**
+ * ⚠  THE SITE'S OWN DOMAIN, not the Worker's generated hostname.
+ *
+ * This was `plaspool-storefront.uririnathaniel.workers.dev`, which is where the
+ * Worker answered before `plaspool.com` was attached to it. Both still resolve
+ * to the same deployment, so nothing 404s — which is exactly why this could sit
+ * wrong indefinitely. What it costs is not a broken link but a WRONG one: every
+ * order email tells a customer their receipt lives at a hostname that is not the
+ * shop they bought from, and the day that route stops being served, mail already
+ * delivered breaks with it.
+ */
+export const DEFAULT_STOREFRONT_ORIGIN = 'https://plaspool.com';
 
 function normalise(raw: string): string {
   const trimmed = raw.trim();

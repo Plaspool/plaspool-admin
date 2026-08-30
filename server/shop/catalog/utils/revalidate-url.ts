@@ -27,6 +27,6 @@
  * believing the endpoint is protected. When the check lands over there, it gets
  * wired here at the same time.
  */
-const STOREFRONT_ORIGIN = 'https://plaspool-storefront.uririnathaniel.workers.dev';
+const STOREFRONT_ORIGIN = 'https://plaspool.com';
 
 export const STOREFRONT_REVALIDATE_URL = `${STOREFRONT_ORIGIN}/api/revalidate`;

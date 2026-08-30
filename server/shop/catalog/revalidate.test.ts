@@ -229,7 +229,7 @@ describe('the endpoint', () => {
     revalidateCatalog();
     await settleRevalidations();
 
-    expect(calls[0].url).toBe('https://plaspool-storefront.uririnathaniel.workers.dev/api/revalidate');
+    expect(calls[0].url).toBe('https://plaspool.com/api/revalidate');
     // And that is what the module imports, so a typo in either fails here.
     expect(calls[0].url).toBe(STOREFRONT_REVALIDATE_URL);
   });

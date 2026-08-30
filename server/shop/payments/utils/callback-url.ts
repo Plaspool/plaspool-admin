@@ -26,4 +26,4 @@
  * somewhere else without a code change.
  */
 export const DEFAULT_PAYMENTS_CALLBACK_URL =
-  'https://plaspool-storefront.uririnathaniel.workers.dev/checkout/complete';
+  'https://plaspool.com/checkout/complete';
