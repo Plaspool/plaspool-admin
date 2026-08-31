@@ -37,6 +37,7 @@ import Posts from './routes/Posts';
 import PostEditor from './routes/PostEditor';
 import PostEditorAdvanced from './routes/PostEditorAdvanced';
 import Analytics from './routes/Analytics';
+import AnalyticsProducts from './routes/AnalyticsProducts';
 import Discounts from './routes/Discounts';
 import DiscountNew from './routes/DiscountNew';
 import DesignGallery from './routes/DesignGallery';
@@ -141,6 +142,7 @@ const router = createHashRouter([
       { path: '/emails/subscribers', element: <EmailSubscribers /> },
       { path: '/emails/outbox', element: <EmailOutbox /> },
       { path: '/analytics', element: <Analytics /> },
+      { path: '/analytics/products', element: <AnalyticsProducts /> },
 
       /* ── settings ────────────────────────────────────────────────────── */
       { path: '/settings', element: <Settings /> },

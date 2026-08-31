@@ -1,0 +1,98 @@
+/**
+ * The admin analytics read (owner's 2026-08-31 batch) — the server-side
+ * aggregates the v2 Analytics screen used to fake by paging `GET /admin/orders`
+ * client-side.
+ *
+ * A SEPARATE MODULE RATHER THAN A BLOCK IN `api-shop.ts`, for the reason that
+ * file itself gives about `api.ts`: another session is editing it right now,
+ * and a file two writers append to is a file that loses a block. Nothing here
+ * is a different convention — `apiFetch` is the shared request function, so
+ * `credentials: 'include'`, the error envelope and spec §8's status table are
+ * the shared ones.
+ *
+ * Every path, shape and field below is copied from
+ * `server/shop/admin/analytics.ts` and `server/shop/admin/routes.ts` rather
+ * than remembered.
+ */
+import { apiFetch } from './api';
+
+const BASE = '/shop/admin';
+
+/**
+ * The ranges the picker offers. The route's schema is `z.enum(['7','30','90',
+ * '365'])`, not a free integer — every value is a scan bound server-side — so
+ * the type spells the four values rather than saying `number` and letting a
+ * fifth one become a 400 at runtime.
+ */
+export type AnalyticsDays = 7 | 30 | 90 | 365;
+
+/** The server's default window, `Number(q.days ?? '30')` in the route. */
+export const ANALYTICS_DEFAULT_DAYS: AnalyticsDays = 30;
+
+export interface AnalyticsDay {
+  /** YYYY-MM-DD in WAT (UTC+1, fixed — the server's own bucketing). Days with
+   *  no paid order are ABSENT; a client drawing a calendar fills the gaps. */
+  day: string;
+  /** Minor units, net of refunds, over paid orders. */
+  net: number;
+  orders: number;
+}
+
+export interface AnalyticsStatusRow {
+  status: string;
+  /** Over `placed_at` — the pipeline strip, cancellations included. */
+  count: number;
+}
+
+export interface AnalyticsProductRow {
+  variantId: string;
+  sku: string;
+  title: string;
+  units: number;
+  /** GROSS line revenue, minor units — refunds are order-level and cannot be
+   *  pinned to a line honestly, so they are netted in `totals`, not here. */
+  gross: number;
+}
+
+export interface ShopAnalytics {
+  /** The one instant every window below was measured from. */
+  generatedAt: number;
+  days: number;
+  totals: {
+    /** Minor units, `grand_total - refunded_total` over paid orders. */
+    net: number;
+    orders: number;
+    items: number;
+    /** Net over orders, minor units, 0 when there were none. */
+    averageOrder: number;
+  };
+  revenueByDay: AnalyticsDay[];
+  ordersByStatus: AnalyticsStatusRow[];
+  /** Every seller in the window, best first, capped at 200 server-side. */
+  topProducts: AnalyticsProductRow[];
+}
+
+/**
+ * The aggregate carries NO currency field: the store settles everything in
+ * naira and the server sums minor units without splitting by currency, so the
+ * formatter is told NGN here once rather than each screen guessing it from a
+ * row that does not exist.
+ */
+export const ANALYTICS_CURRENCY = 'NGN';
+
+export const analyticsApi = {
+  /**
+   * `GET /api/shop/admin/analytics`. At the server's own default the `days`
+   * param is OMITTED, not echoed — the wire carries only what differs from
+   * the default, so the route's answer is its default and never a client's
+   * copy of it.
+   */
+  async get(days: AnalyticsDays, signal?: AbortSignal): Promise<ShopAnalytics> {
+    return apiFetch<ShopAnalytics>(`${BASE}/analytics`, {
+      query: { days: days === ANALYTICS_DEFAULT_DAYS ? undefined : String(days) },
+      signal,
+    });
+  },
+};
+
+export type AnalyticsApi = typeof analyticsApi;

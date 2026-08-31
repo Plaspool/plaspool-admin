@@ -1,33 +1,46 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
 vi.setConfig({ testTimeout: 20_000 });
 
 /**
- * The analytics screen, pinned on its honesty rule — nothing on it is
- * fabricated, and each assertion below is one way that rule quietly breaks:
+ * The analytics screen, rebuilt on the server aggregate. What these tests pin
+ * is the DATA FLOW — the wire and what lands on screen:
  *
- *  - **A curve over days it never read.** The order sweep is capped at eight
- *    pages; when the cap stops it while still INSIDE the 30-day window, older
- *    days exist that the bars cannot see, and the screen must say so. The
- *    notice must also NOT appear when the sweep stopped because it reached
- *    past the window — that sweep saw everything the chart draws.
- *  - **Gross bars.** A day's bar is `grandTotal - refundedTotal` over paid
- *    orders. Drawing gross would overstate every day somebody was refunded,
- *    which is precisely the day an operator comes here to understand.
- *  - **A client total where the server has a better one.** The revenue tile
- *    prefers `stats()`'s own 30-day aggregate — computed over EVERY order —
- *    and only falls back to the swept subtotal when the server offered no row
- *    for the currency, naming its basis either way.
+ *  - **The tiles print the server's own numbers**, formatted through the one
+ *    shared money formatter — no client re-derivation survives the rewrite.
+ *  - **The default range says nothing on the wire.** The route defaults
+ *    `days` to 30 itself; the opening read must carry NO `days` param, and
+ *    switching the picker to 90d must refetch with the literal `?days=90`
+ *    (the schema is `z.enum(['7','30','90','365'])` — anything else is a 400).
+ *  - **A 403 is a sentence, not a blank.** `ForbiddenError`'s message lands
+ *    in the critical banner with a Retry.
  *
- * `fetch` IS STUBBED, NOT `../../data/api-shop`: the path, the cursor
- * threading and the response shape are what the sweep gets wrong silently,
- * and a mocked module asserts none of them.
+ * `fetch` IS STUBBED, NOT `../../data/api-shop-analytics`: the path and the
+ * query string are exactly what a mocked module would assert nothing about.
+ *
+ * `../ui/EChart` IS MOCKED, deliberately: jsdom has no canvas, so
+ * `echarts.init` cannot paint here — and pixels are not what this suite is
+ * for. The stub renders the `ariaLabel` each chart receives, so the tests
+ * assert that the right CHARTS exist with the right accessible sentences,
+ * while the option plumbing stays the component's own code.
  */
+vi.mock('../ui/EChart', async () => {
+  const { createElement } = await import('react');
+  return {
+    EChart: (props: { ariaLabel: string }) =>
+      createElement('div', {
+        'data-testid': 'echart',
+        role: 'img',
+        'aria-label': props.ariaLabel,
+      }),
+  };
+});
 
 import { money } from '../lib/format';
-import type { ShopOrderRow } from '../../data/api-shop';
+import type { ShopAnalytics } from '../../data/api-shop-analytics';
 import { ToastHost } from '../ui/Toast';
 import Analytics from './Analytics';
 
@@ -64,11 +77,6 @@ function when(pathname: string, body: unknown, status = 200): void {
   );
 }
 
-/** GETs of exactly this path, cursors and all. */
-const reads = (pathname: string): number =>
-  calls.filter((c) => c.path.split('?')[0] === pathname && (c.init.method ?? 'GET') === 'GET')
-    .length;
-
 beforeEach(() => {
   handlers.clear();
   calls = [];
@@ -97,74 +105,46 @@ afterEach(() => {
 
 // -------------------------------------------------------------- the harness
 
-const STATS = '/api/shop/admin/stats';
-const ORDERS = '/api/shop/admin/orders';
+const ANALYTICS = '/api/shop/admin/analytics';
 
-const HOUR = 3_600_000;
 const DAY = 86_400_000;
+const NOW = 1_756_224_000_000;
 
-/** One paid order-with-lines row, the exact wrapper shape the list sends. */
-function orderRow(
-  id: string,
-  placedAt: number,
-  over: Partial<ShopOrderRow['order']> = {},
-): ShopOrderRow {
-  const grandTotal = over.grandTotal ?? 500_000;
-  return {
-    order: {
-      id,
-      orderNumber: `PL-${id}`,
-      customerId: null,
-      email: 'buyer@test.local',
-      currency: 'NGN',
-      subtotal: grandTotal,
-      shippingTotal: 0,
-      taxTotal: 0,
-      grandTotal,
-      refundedTotal: 0,
-      status: 'paid',
-      shippingAddress: {},
-      billingAddress: {},
-      placedAt,
-      paidAt: placedAt,
-      fulfilledAt: null,
-      deliveredAt: null,
-      cancelledAt: null,
-      revision: 1,
-      checkoutId: `chk_${id}`,
-      paymentIntentId: null,
-      ...over,
-    },
-    lines: [
-      {
-        id: `${id}_l1`,
-        lineNo: 1,
-        variantId: 'var_1',
-        sku: 'SP-1',
-        title: 'A spool',
-        optionValues: {},
-        qty: 1,
-        unitAmount: grandTotal,
-        lineTotal: grandTotal,
-        fulfilledQty: 0,
-      },
-    ],
-  };
+/** The server's WAT bucketing (UTC+1), repeated so fixture days really land
+ *  inside the calendar the component builds from `generatedAt`. */
+const watDay = (epochMs: number): string =>
+  new Date(epochMs + 3_600_000).toISOString().slice(0, 10);
+
+const BODY: ShopAnalytics = {
+  generatedAt: NOW,
+  days: 30,
+  totals: { net: 12_345_600, orders: 4, items: 9, averageOrder: 3_086_400 },
+  revenueByDay: [
+    { day: watDay(NOW - 2 * DAY), net: 9_345_600, orders: 3 },
+    { day: watDay(NOW), net: 3_000_000, orders: 1 },
+  ],
+  ordersByStatus: [
+    { status: 'paid', count: 3 },
+    { status: 'pending', count: 1 },
+  ],
+  topProducts: [
+    { variantId: 'var_1', sku: 'SP-1', title: 'A spool', units: 6, gross: 9_000_000 },
+    { variantId: 'var_2', sku: 'SP-2', title: 'Another spool', units: 3, gross: 3_345_600 },
+  ],
+};
+
+/** The route's own behaviour: `days` echoed back, defaulting to 30. */
+function withAnalytics(): void {
+  when(ANALYTICS, (url) => ({
+    body: { ...BODY, days: Number(url.searchParams.get('days') ?? '30') },
+  }));
 }
 
-/** `stats()`'s full shape — only `revenue` matters here, but the wire is whole. */
-function statsBody(revenue: { currency: string; last24h: number; last7d: number; last30d: number }[]) {
-  return {
-    generatedAt: Date.now(),
-    ordersByStatus: [],
-    revenue,
-    lowStockThreshold: 5,
-    lowStock: [],
-    lowStockMore: false,
-    emails: { pending: 0, stuck: 0, sent: 0 },
-    latestOrders: [],
-  };
-}
+/** Every GET of the aggregate, oldest first, as its parsed query string. */
+const queries = (): URLSearchParams[] =>
+  calls
+    .filter((c) => c.path.split('?')[0] === ANALYTICS && (c.init.method ?? 'GET') === 'GET')
+    .map((c) => new URLSearchParams(c.path.split('?')[1] ?? ''));
 
 /**
  * `Intl` writes a no-break space between code and digits; testing-library's
@@ -194,104 +174,78 @@ function mount() {
 // ============================================================================
 
 describe('the analytics screen', () => {
-  it('shows the partial-coverage notice exactly when the page cap stops the sweep inside the window', async () => {
-    const NOW = Date.now();
-    when(STATS, statsBody([]));
-    /*
-     * Eight pages, every order inside the window, every page offering a next
-     * cursor — so the CAP is what ends the sweep, with older in-window days
-     * still unread. That is the one condition the banner exists for.
-     */
-    when(ORDERS, (url) => {
-      const cursor = url.searchParams.get('cursor');
-      const page = cursor ? Number(cursor.slice(1)) : 0;
-      return {
-        body: {
-          items: [
-            orderRow(`o${page}a`, NOW - (page * 2 + 1) * HOUR),
-            orderRow(`o${page}b`, NOW - (page * 2 + 2) * HOUR),
-          ],
-          nextCursor: `c${page + 1}`,
-        },
-      };
-    });
+  it('shows skeletons first, then the four tiles printing the server’s own numbers', async () => {
+    withAnalytics();
     mount();
 
-    const banner = await screen.findByText('Partial daily coverage');
-    /* The note names the actual coverage rather than apologising vaguely. */
-    expect(banner.closest('.banner')?.textContent).toContain('the most recent 16 orders');
-    expect(reads(ORDERS)).toBe(8);
+    /* Before the response lands, the wait is skeleton blocks, not a blank. */
+    expect(document.querySelectorAll('.skel').length).toBeGreaterThan(0);
 
-    cleanup();
-    calls = [];
+    /* Then each tile carries the aggregate's number through the shared money
+       formatter — net, count, net-over-orders, items. */
+    expect(
+      await within(tile('Net revenue')).findByText(norm(money(12_345_600, 'NGN'))),
+    ).toBeTruthy();
+    expect(within(tile('Paid orders')).getByText('4')).toBeTruthy();
+    expect(
+      within(tile('Average order')).getByText(norm(money(3_086_400, 'NGN'))),
+    ).toBeTruthy();
+    expect(within(tile('Items sold')).getByText('9')).toBeTruthy();
 
-    /*
-     * The same sweep stopped by the WINDOW instead: a page still offers a
-     * cursor, but its oldest row is already older than 30 days — everything
-     * the chart draws was read, so there is nothing to disclose.
-     */
-    when(ORDERS, {
-      items: [orderRow('recent', NOW - HOUR), orderRow('ancient', NOW - 40 * DAY)],
-      nextCursor: 'c1',
-    });
-    mount();
-
-    await screen.findByText(norm(`peak ${money(500_000, 'NGN')}`));
-    expect(screen.queryByText('Partial daily coverage')).toBeNull();
-    /* …and the offered cursor was never followed: the window ended the walk. */
-    expect(reads(ORDERS)).toBe(1);
+    /* And nothing is still pretending to load. */
+    expect(document.querySelectorAll('.skel')).toHaveLength(0);
   });
 
-  it('nets refunds out of the daily bars', async () => {
-    const NOW = Date.now();
-    when(STATS, statsBody([]));
-    when(ORDERS, {
-      items: [orderRow('o1', NOW - 3 * HOUR, { grandTotal: 500_000, refundedTotal: 200_000 })],
-      nextCursor: null,
-    });
+  it('asks with no days param by default, and refetches with ?days=90 when the picker moves', async () => {
+    const user = userEvent.setup();
+    withAnalytics();
     mount();
+    await within(tile('Paid orders')).findByText('4');
 
-    /* The chart's own scale line reads the netted figure — a gross bar would
-       print ₦5,000 here and overstate the day somebody was refunded on. */
-    expect(await screen.findByText(norm(`peak ${money(300_000, 'NGN')}`))).toBeTruthy();
+    /* The opening read carries NOTHING — the server's default is the answer,
+       not a client echo of it. */
+    expect(queries()).toHaveLength(1);
+    expect(queries()[0]!.get('days')).toBeNull();
 
-    /* The day's tooltip carries the same net, and the gross appears nowhere. */
-    const titles = [...document.querySelectorAll('svg title')].map((t) => t.textContent ?? '');
-    expect(titles.some((t) => t.includes(money(300_000, 'NGN')) && t.includes('1 order'))).toBe(
-      true,
-    );
-    expect(titles.some((t) => t.includes(money(500_000, 'NGN')))).toBe(false);
-
-    /* The derived tiles agree about what one paid order was worth net. */
-    expect(within(tile('Average order')).getByText(norm(money(300_000, 'NGN')))).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: '90d' }));
+    await waitFor(() => expect(queries()).toHaveLength(2));
+    /* The literal '90' — the route's z.enum refuses anything else. */
+    expect(queries()[1]!.get('days')).toBe('90');
+    expect(await screen.findByText(/The last 90 days, from real orders/)).toBeTruthy();
   });
 
-  it('prefers the server’s own 30-day figure on the revenue tile, and names its basis', async () => {
-    const NOW = Date.now();
-    /* The swept orders net to 300,000; the server's aggregate over EVERY
-       order says 1,234,500. The tile must show the server's number. */
-    when(ORDERS, {
-      items: [orderRow('o1', NOW - HOUR, { grandTotal: 500_000, refundedTotal: 200_000 })],
-      nextCursor: null,
-    });
-    when(STATS, statsBody([{ currency: 'NGN', last24h: 0, last7d: 0, last30d: 1_234_500 }]));
+  it('renders the three charts with their accessible sentences, and the teaser links to the table subpage', async () => {
+    withAnalytics();
+    mount();
+    await within(tile('Paid orders')).findByText('4');
+
+    /* Three charts, no more: the daily bars, the status donut, the teaser. */
+    expect(screen.getAllByTestId('echart')).toHaveLength(3);
+    expect(
+      screen.getByRole('img', { name: /net revenue per day over the last 30 days/i }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole('img', { name: /orders by status over the last 30 days/i }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole('img', { name: /top 2 products by gross revenue/i }),
+    ).toBeTruthy();
+
+    /* The table itself does NOT render here — that is the subpage's whole
+       reason to exist. The teaser offers the way there instead. */
+    expect(screen.queryByRole('table')).toBeNull();
+    const link = screen.getByRole('link', { name: 'See the full table' });
+    expect(link.getAttribute('href')).toBe('/analytics/products');
+  });
+
+  it('turns a 403 into the critical banner with the permission sentence and a Retry', async () => {
+    when(ANALYTICS, { error: 'forbidden', requestId: 'req_test' }, 403);
     mount();
 
-    const revenue = tile('Net revenue · 30d');
-    expect(await within(revenue).findByText(norm(money(1_234_500, 'NGN')))).toBeTruthy();
-    expect(within(revenue).getByText('Server total, every order')).toBeTruthy();
-    expect(within(revenue).queryByText(norm(money(300_000, 'NGN')))).toBeNull();
-
-    cleanup();
-    calls = [];
-
-    /* No aggregate for the currency → the honest fallback is the swept
-       subtotal, and the basis sentence says so rather than posing as a total. */
-    when(STATS, statsBody([]));
-    mount();
-
-    const fallback = tile('Net revenue · 30d');
-    expect(await within(fallback).findByText(norm(money(300_000, 'NGN')))).toBeTruthy();
-    expect(within(fallback).getByText('From the swept orders')).toBeTruthy();
+    expect(await screen.findByText('Couldn’t load analytics')).toBeTruthy();
+    expect(screen.getByText('You do not have permission to do that')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+    /* The refused screen draws no chart it has no data for. */
+    expect(screen.queryAllByTestId('echart')).toHaveLength(0);
   });
 });
