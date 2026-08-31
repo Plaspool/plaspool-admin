@@ -433,7 +433,7 @@ function ExportModal({ onClose }: { onClose: () => void }) {
         </div>
       ) : (
         <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
-          Every product, one row per version. The download link goes to{' '}
+          Every product, one row per variant. The download link goes to{' '}
           <strong>{email ?? 'your email'}</strong> and works for 7 days.
         </p>
       )}
@@ -585,7 +585,7 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
     >
       <div className="stack">
         <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
-          One row per version, in the same shape as the export. Handle is the product’s link name, and is how
+          One row per variant, in the same shape as the export. Handle is the product’s link name, and is how
           rows are matched to products you already have (capitals and punctuation don’t matter).
           Any column you leave out is kept as it is. Prices are in naira with two decimals, and
           stock is the exact number you have, not a change to it.

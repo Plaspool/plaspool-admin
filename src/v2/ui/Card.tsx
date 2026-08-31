@@ -13,7 +13,7 @@ export function Card({
   children,
 }: {
   title?: string;
-  /** One control, right-aligned on the title row — "Add version", "View all". */
+  /** One control, right-aligned on the title row — "Add variant", "View all". */
   action?: ReactNode;
   /** Removes body padding, for a card whose content is a full-bleed table. */
   flush?: boolean;

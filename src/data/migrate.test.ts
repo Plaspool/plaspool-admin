@@ -818,4 +818,75 @@ describe('images.ts — the resolver and the upload path', () => {
     // commit that never happened.
     expect(await db.assetMap.get('img_a')).toBeUndefined();
   });
+
+  /*
+   * THE THREE SENTENCES THIS FILE USED TO GET WRONG, and the incident that
+   * paid for them (2026-08-31).
+   *
+   * `admin.plaspool.com` was aliased onto the admin while the R2 bucket's CORS
+   * allow-list still named only the `*.vercel.app` origins, so the browser
+   * REFUSED TO SEND the presigned PUT. Every attempt therefore left an
+   * uncommitted row behind, and on the eleventh `MAX_OPEN_SLOTS` answered
+   * 400 `slots`.
+   *
+   * Not one sentence the writer saw pointed anywhere near that. The first ten
+   * said "you may be offline" — to a writer whose slot request had just
+   * succeeded, which proves the opposite — and the eleventh said "too many
+   * uploads are already in progress. Try again in a moment", when nothing was
+   * in progress and no amount of waiting a moment could help.
+   *
+   * These pin the wording, because the sentence is the only part of a failure a
+   * writer ever sees and nothing else in this suite reads one.
+   */
+  const gifFile = () =>
+    new File([new Uint8Array([0x47, 0x49, 0x46])], 'photo.gif', { type: 'image/gif' });
+
+  const refusedPut = () =>
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        // A cross-origin PUT the browser blocks rejects with exactly the
+        // TypeError a dead network produces. The throw cannot tell them apart.
+        throw new TypeError('Failed to fetch');
+      }),
+    );
+
+  it('does not blame the connection when the browser refuses to send the PUT', async () => {
+    refusedPut();
+
+    const err = await storeImageFile(gifFile()).catch((e) => e as ImageError);
+
+    expect(err).toBeInstanceOf(ImageError);
+    // The slot request succeeded moments earlier, so "offline" is a claim this
+    // code is in no position to make.
+    expect(err.message).not.toMatch(/offline/i);
+    expect(err.message).toMatch(/storage/i);
+  });
+
+  it('still says offline when the browser itself says so', async () => {
+    refusedPut();
+    vi.stubGlobal('navigator', { onLine: false });
+
+    const err = await storeImageFile(gifFile()).catch((e) => e as ImageError);
+
+    expect(err).toBeInstanceOf(ImageError);
+    expect(err.message).toMatch(/offline/i);
+  });
+
+  it('does not describe dead slots as uploads in progress', async () => {
+    vi.mocked(api.createImageSlot).mockRejectedValue(
+      apiError(400, 'bad_request', { detail: 'slots' }),
+    );
+
+    const err = await storeImageFile(gifFile()).catch((e) => e as ImageError);
+
+    expect(err).toBeInstanceOf(ImageError);
+    // Nothing is in progress: the slots are held by uploads that already died.
+    expect(err.message).not.toMatch(/in progress/i);
+    // And "a moment" is wrong by three orders of magnitude — a slot is held for
+    // a day, so the writer needs the real number to decide what to do.
+    expect(err.message).not.toMatch(/in a moment/i);
+    expect(err.message).toMatch(/24 hours/i);
+  });
+
 });

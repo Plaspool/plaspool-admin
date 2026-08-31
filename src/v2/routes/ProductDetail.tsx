@@ -687,9 +687,9 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
           </Card>
 
           {create ? (
-            <Card title="Versions">
+            <Card title="Variants">
               <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
-                Save the product first. Versions, prices and stock can only be added afterwards.
+                Save the product first. Variants, prices and stock can only be added afterwards.
               </p>
             </Card>
           ) : (
@@ -705,7 +705,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
           <Card title="Bulk discount">
             <Checkbox
               label="Offer a quantity discount on this product"
-              hint="Customers who buy several get a lower price each. The count adds up across every version of this product, so three black plus two white counts as five."
+              hint="Customers who buy several get a lower price each. The count adds up across every variant of this product, so three black plus two white counts as five."
               checked={bulkEnabled}
               onChange={setBulkEnabled}
             />
@@ -1077,7 +1077,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                     label: 'Published',
                     value: product!.publishedAt ? shortDate(product!.publishedAt) : '—',
                   },
-                  { label: 'Versions', value: product!.variants.length },
+                  { label: 'Variants', value: product!.variants.length },
                 ]}
               />
             </Card>
@@ -1192,31 +1192,31 @@ function VariantsCard({
   return (
     <section className="card">
       <div className="card__head">
-        <h2 className="card__title">Versions</h2>
+        <h2 className="card__title">Variants</h2>
         <Button onClick={onAdd}>
           <Plus aria-hidden="true" />
-          Add version
+          Add variant
         </Button>
       </div>
       {variants.length === 0 ? (
         <EmptyState
           icon={<Boxes />}
-          title="No versions yet"
-          body="A product sells through its versions — each one has its own product code, price and stock."
+          title="No variants yet"
+          body="A product sells through its variants — each one has its own product code, price and stock."
           actions={
             <Button tone="primary" onClick={onAdd}>
               <Plus aria-hidden="true" />
-              Add version
+              Add variant
             </Button>
           }
         />
       ) : (
         <TableScroll className="tscroll">
           <table className="table">
-            <caption className="sr">Versions of {product.title}</caption>
+            <caption className="sr">Variants of {product.title}</caption>
             <thead>
               <tr>
-                <th scope="col">Version</th>
+                <th scope="col">Variant</th>
                 <th scope="col" className="th--num">Price</th>
                 <th scope="col" className="th--num">Available</th>
                 <th scope="col" className="th--tight">Status</th>
@@ -1285,7 +1285,7 @@ function VariantsCard({
                               onEdit(v);
                             }}
                           >
-                            Edit version…
+                            Edit variant…
                           </MenuItem>
                           <MenuItem
                             onSelect={() => {
@@ -1307,7 +1307,7 @@ function VariantsCard({
                                   onDelete(v);
                                 }}
                               >
-                                Delete version…
+                                Delete variant…
                               </MenuItem>
                             </>
                           )}
@@ -1570,7 +1570,7 @@ function VariantModal({
   const price = variant?.price ?? null;
   const costParsed = cost.trim() === '' ? null : parseMajor(cost, currency);
   const marginHint = (() => {
-    if (!price) return 'Profit shows once you set a price in the versions table.';
+    if (!price) return 'Profit shows once you set a price in the variants table.';
     if (costParsed === null || !costParsed.ok || price.amount === 0) {
       return `Against the current price of ${money(price.amount, currency)}.`;
     }
@@ -1668,14 +1668,14 @@ function VariantModal({
 
   return (
     <Modal
-      title={creating ? 'Add version' : `Edit ${variant.sku}`}
+      title={creating ? 'Add variant' : `Edit ${variant.sku}`}
       onClose={onClose}
       wide
       footer={
         <>
           <Button onClick={onClose}>Cancel</Button>
           <Button tone="primary" busy={busy} onClick={() => void commit()}>
-            {creating ? 'Add version' : 'Save version'}
+            {creating ? 'Add variant' : 'Save variant'}
           </Button>
         </>
       }
@@ -1750,7 +1750,7 @@ function VariantModal({
               placeholder="#8b5a2b"
               className="input mono"
               spellCheck={false}
-              hint="The colour shown while this version has no photo."
+              hint="The colour shown while this variant has no photo."
               onChange={(e) => setColorHex(e.target.value)}
             />
           </div>
@@ -1800,7 +1800,7 @@ function VariantModal({
 
         {productImages.length > 0 ? (
           <div className="stack stack--tight">
-            <span className="field__label">Version photo</span>
+            <span className="field__label">Variant photo</span>
             <div className="row" style={{ flexWrap: 'wrap', gap: 'var(--s2)' }}>
               <button
                 type="button"
@@ -1930,7 +1930,7 @@ function DeleteVariantModal({
         <>
           <Button onClick={onClose}>Cancel</Button>
           <Button tone="critical" busy={busy} onClick={() => void commit()}>
-            Delete version
+            Delete variant
           </Button>
         </>
       }
