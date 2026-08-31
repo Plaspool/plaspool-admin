@@ -24,6 +24,18 @@ vi.setConfig({ testTimeout: 20_000 });
 import { money } from '../lib/format';
 import type { ShopAnalytics } from '../../data/api-shop-analytics';
 import { ToastHost } from '../ui/Toast';
+vi.mock('../../data/session', () => ({
+  getSession: () => ({
+    status: 'authed' as const,
+    user: {
+      id: 'u_owner',
+      email: 'owner@plaspool.com',
+      displayName: 'Owner',
+      role: 'owner' as import('../../../shared/roles').Role,
+    },
+  }),
+  subscribe: () => () => {},
+}));
 import AnalyticsProducts from './AnalyticsProducts';
 
 /* What jsdom does not implement and the v2 chrome touches — `ResizeObserver`

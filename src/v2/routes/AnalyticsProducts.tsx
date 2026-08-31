@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { BarChart3, Package } from 'lucide-react';
+import { BarChart3, Lock, Package } from 'lucide-react';
 import {
   analyticsApi,
   ANALYTICS_CURRENCY,
@@ -8,6 +8,8 @@ import {
   type AnalyticsProductRow,
 } from '../../data/api-shop-analytics';
 import { useAsync } from '../lib/useAsync';
+import { getSession } from '../../data/session';
+import { hasDomain } from '../../../shared/roles';
 import { money } from '../lib/format';
 import { PageHeader } from '../ui/Page';
 import { Banner, Button, EmptyState } from '../ui/primitives';
@@ -41,11 +43,34 @@ const RANGES: { value: '7' | '30' | '90' | '365'; label: string }[] = [
 ];
 
 export default function AnalyticsProducts() {
+  const session = getSession();
+  const viewer = 'user' in session ? session.user : null;
+  const allowed = viewer !== null && hasDomain(viewer.role, 'analytics');
   const [days, setDays] = useState<AnalyticsDays>(ANALYTICS_DEFAULT_DAYS);
   const { data, error, loading, reload } = useAsync(
-    (signal) => analyticsApi.get(days, signal),
-    [days],
+    (signal) => (allowed ? analyticsApi.get(days, signal) : Promise.resolve(null)),
+    [days, allowed],
   );
+
+  if (!allowed) {
+    return (
+      <div className="page">
+        <PageHeader
+          icon={<Lock />}
+          title="Best sellers"
+          backTo="/analytics"
+          backLabel="Analytics"
+        />
+        <div className="card">
+          <EmptyState
+            icon={<Lock />}
+            title="Not your surface"
+            body="Analytics is for the owner, developers, and the operations and marketing roles."
+          />
+        </div>
+      </div>
+    );
+  }
 
   const rows = data?.topProducts ?? [];
   const grossTotal = rows.reduce((n, r) => n + r.gross, 0);

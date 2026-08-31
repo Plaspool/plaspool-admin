@@ -42,6 +42,21 @@ vi.mock('../ui/EChart', async () => {
 import { money } from '../lib/format';
 import type { ShopAnalytics } from '../../data/api-shop-analytics';
 import { ToastHost } from '../ui/Toast';
+const sessionFixture = vi.hoisted(() => ({
+  role: 'owner' as import('../../../shared/roles').Role,
+}));
+vi.mock('../../data/session', () => ({
+  getSession: () => ({
+    status: 'authed' as const,
+    user: {
+      id: 'u_owner',
+      email: 'owner@plaspool.com',
+      displayName: 'Owner',
+      role: sessionFixture.role,
+    },
+  }),
+  subscribe: () => () => {},
+}));
 import Analytics from './Analytics';
 
 /* What jsdom does not implement and the v2 chrome touches. */
@@ -78,6 +93,7 @@ function when(pathname: string, body: unknown, status = 200): void {
 }
 
 beforeEach(() => {
+  sessionFixture.role = 'owner';
   handlers.clear();
   calls = [];
   window.sessionStorage.clear();
@@ -247,5 +263,18 @@ describe('the analytics screen', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
     /* The refused screen draws no chart it has no data for. */
     expect(screen.queryAllByTestId('echart')).toHaveLength(0);
+  });
+
+  it('a content writer is gated with a graceful empty state and no fetch', async () => {
+    /* The integration critic's finding: a writer (the one role without the
+     * analytics domain) must degrade like the rest of the batch, not hit a
+     * red load-failure banner. The gate is client-side and fetches nothing. */
+    sessionFixture.role = 'writer';
+    when(ANALYTICS, { body: {} }); // present but must never be called
+    mount();
+
+    expect(await screen.findByText('Not your surface')).toBeTruthy();
+    expect(queries()).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   });
 });

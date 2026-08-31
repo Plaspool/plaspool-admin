@@ -31,7 +31,7 @@ import { AffixField, Checkbox, Segmented, SelectField, TextField } from '../ui/F
 import { Menu, MenuItem } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
-import { isAdminRole } from '../../../shared/roles';
+import { hasDomain } from '../../../shared/roles';
 
 /**
  * MARKETING — `/marketing`. The points machine: programmes, the redemption
@@ -53,9 +53,13 @@ function pluralise(n: number, one: string, other: string): string {
 export default function Marketing() {
   const toast = useToast();
   const session = getSession();
-  /* Owner-grade means owner OR developer since migration 0680 — the
-     server's requireAdmin() tier, mirrored (shared/roles.ts). */
-  const isOwner = 'user' in session && session.user != null && isAdminRole(session.user.role);
+  /* WHO MAY EDIT rewards programs and redemption settings: the marketing
+     DOMAIN (owner, developer, marketing), which is exactly what the server's
+     domain gate admits on /api/marketing/* since migration 0680. `isOwner` is
+     kept as the name every control below reads; the meaning is "may write
+     marketing config". */
+  const isOwner =
+    'user' in session && session.user != null && hasDomain(session.user.role, 'marketing');
 
   const [programs, setPrograms] = useState<Program[] | null>(null);
   const [settings, setSettings] = useState<MarketingSettings | null>(null);

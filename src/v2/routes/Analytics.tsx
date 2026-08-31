@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { BarChart3 } from 'lucide-react';
+import { BarChart3, Lock } from 'lucide-react';
 import {
   analyticsApi,
   ANALYTICS_CURRENCY,
@@ -8,9 +8,11 @@ import {
   type ShopAnalytics,
 } from '../../data/api-shop-analytics';
 import { useAsync } from '../lib/useAsync';
+import { getSession } from '../../data/session';
+import { hasDomain } from '../../../shared/roles';
 import { humanise, money } from '../lib/format';
 import { PageHeader } from '../ui/Page';
-import { Banner, Button, ButtonLink } from '../ui/primitives';
+import { Banner, Button, ButtonLink, EmptyState } from '../ui/primitives';
 import { Card } from '../ui/Card';
 import { Segmented } from '../ui/Field';
 import { EChart } from '../ui/EChart';
@@ -134,12 +136,39 @@ const STATUS_COLOURS: Record<string, string> = {
 
 const statusColour = (status: string): string => STATUS_COLOURS[status] ?? '#8a8782';
 
+/** The analytics domain (owner/developer/support/supply-chain/marketing) —
+ *  a content writer is the one role without it, and gets the graceful absence
+ *  the rest of the batch renders rather than a red load-failure banner. */
+function useAnalyticsAccess(): boolean {
+  const session = getSession();
+  const viewer = 'user' in session ? session.user : null;
+  return viewer !== null && hasDomain(viewer.role, 'analytics');
+}
+
+function NoAnalytics({ backTo, title }: { backTo?: string; title: string }) {
+  return (
+    <div className="page">
+      <PageHeader icon={<BarChart3 />} title={title} backTo={backTo} backLabel="Analytics" />
+      <div className="card">
+        <EmptyState
+          icon={<Lock />}
+          title="Not your surface"
+          body="Analytics is for the owner, developers, and the operations and marketing roles. Content writers work in Products and Content."
+        />
+      </div>
+    </div>
+  );
+}
+
 export default function Analytics() {
+  const allowed = useAnalyticsAccess();
   const [days, setDays] = useState<AnalyticsDays>(ANALYTICS_DEFAULT_DAYS);
   const { data, error, loading, reload } = useAsync(
-    (signal) => analyticsApi.get(days, signal),
-    [days],
+    (signal) => (allowed ? analyticsApi.get(days, signal) : Promise.resolve(null)),
+    [days, allowed],
   );
+
+  if (!allowed) return <NoAnalytics title="Analytics" />;
 
   const calendar = useMemo(() => (data ? fillCalendar(data) : []), [data]);
   const accent = accentColour();
