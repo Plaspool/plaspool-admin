@@ -1,4 +1,5 @@
 import { ForbiddenError } from './middleware/errors';
+import { isAdminRole } from '../shared/roles';
 import type { AuthUser, ListPost, Post } from '../shared/types';
 
 /**
@@ -45,8 +46,11 @@ export function authorize(
   action: Action,
 ): boolean {
   if (action === 'read') return true;
-  if (action === 'destroy') return user.role === 'owner';
-  return post.authorId === user.id || user.role === 'owner';
+  /* `isAdminRole` since migration 0680: developers are the owner's tier
+   * everywhere except about each other (shared/roles.ts), and that includes
+   * fixing anybody's post and destroying. */
+  if (action === 'destroy') return isAdminRole(user.role);
+  return post.authorId === user.id || isAdminRole(user.role);
 }
 
 /**

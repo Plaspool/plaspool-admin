@@ -736,7 +736,14 @@ describe('the team list', () => {
       await post(ctx.users.writer.id, 'p_binned', now);
 
       const items = await listUsers(ctx.db);
-      expect(items.map((u) => u.email)).toEqual(['owner@test.local', 'writer@test.local']);
+      expect(items.map((u) => u.email)).toEqual([
+        'owner@test.local',
+        'writer@test.local',
+        'developer@test.local',
+        'supply@test.local',
+        'support@test.local',
+        'marketing@test.local',
+      ]);
 
       const writer = items.find((u) => u.id === ctx.users.writer.id)!;
       // A trashed post is restorable until somebody empties the trash, so it is

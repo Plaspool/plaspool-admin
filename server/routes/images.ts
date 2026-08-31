@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
 import { pathParam, readJson, readQuery, str } from '../middleware/errors';
-import { requireAuth, requireOwner } from '../middleware/session';
+import { requireAdmin, requireAuth } from '../middleware/session';
 import { limit } from '../middleware/ratelimit';
 import { BadRequestError, NotFoundError } from '../repo/errors';
 import {
@@ -498,7 +498,7 @@ function collectedToWire(image: CollectedImage): Record<string, unknown> {
   };
 }
 
-routes.post('/images/collect-orphans', requireOwner(), async (c) => {
+routes.post('/images/collect-orphans', requireAdmin(), async (c) => {
   const db = currentDb(c);
   const query = readQuery(c, MaintenanceQuery);
   const dryRun = query.dryRun === '1' || query.dryRun === 'true';

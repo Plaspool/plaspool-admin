@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { pathParam, readJson, readJsonOrEmpty, str } from '../middleware/errors';
-import { requireAuth, requireOwner } from '../middleware/session';
+import { requireAuth, requireAdmin } from '../middleware/session';
 import {
   MAX_FEATURED,
   featurePost,
@@ -58,7 +58,7 @@ export const routes = new Hono<AppEnv>();
  * `server/routes/posts.ts`.
  */
 const auth = requireAuth();
-const ownerOnly = requireOwner();
+const adminOnly = requireAdmin();
 
 /**
  * `.strict()`, so `{ rank: 1 }` is a 400 rather than a silently ignored field.
@@ -94,7 +94,7 @@ routes.get('/featured', auth, async (c) =>
   c.json({ items: await listFeatured(currentDb(c)) }),
 );
 
-routes.post('/posts/:id/feature', ownerOnly, async (c) => {
+routes.post('/posts/:id/feature', adminOnly, async (c) => {
   const body = await readJsonOrEmpty(c, FeatureBody);
   /*
    * `pathParam`, so a NUL byte is a 400 and not a 500 — `server/nul-bytes.test.ts`
@@ -113,7 +113,7 @@ routes.post('/posts/:id/feature', ownerOnly, async (c) => {
   return c.json({ items });
 });
 
-routes.post('/posts/:id/unfeature', ownerOnly, async (c) =>
+routes.post('/posts/:id/unfeature', adminOnly, async (c) =>
   c.json({ items: await unfeaturePost(currentDb(c), pathParam(c, 'id')) }),
 );
 
@@ -125,7 +125,7 @@ routes.post('/posts/:id/unfeature', ownerOnly, async (c) =>
  * rank or a moment where one has none — invariant 4 of the contract, and the
  * reason `posts_featured_rank_uq` is deferrable.
  */
-routes.put('/featured', ownerOnly, async (c) => {
+routes.put('/featured', adminOnly, async (c) => {
   const body = await readJson(c, ReorderBody);
   return c.json({ items: await reorderFeatured(currentDb(c), body.ids) });
 });

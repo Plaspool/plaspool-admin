@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { pathParam, readJson, readQuery, str } from '../../middleware/errors';
-import { requireAuth, requireOwner } from '../../middleware/session';
+import { requireAuth } from '../../middleware/session';
 import { currentDb } from '../../app-env';
 import { createArea, listAreas, patchArea } from './repo';
 import type { AppEnv } from '../../app-env';
@@ -30,7 +30,7 @@ import type { AppEnv } from '../../app-env';
 export const routes = new Hono<AppEnv>();
 
 const auth = requireAuth();
-const owner = requireOwner();
+const staff = requireAuth();
 
 /** Long enough for the longest real place name several times over, short enough
  *  that a pasted document never reaches a region heading. */
@@ -100,7 +100,7 @@ routes.get('/areas', auth, async (c) => {
  * It is created INACTIVE, like every other area — switching it on is the
  * separate, deliberate act.
  */
-routes.post('/areas', owner, async (c) => {
+routes.post('/areas', staff, async (c) => {
   const body = await readJson(c, CreateBody);
   const area = await createArea(currentDb(c), body, { now: Date.now() });
   return c.json({ area }, 201);
@@ -109,7 +109,7 @@ routes.post('/areas', owner, async (c) => {
 /** Contract #6.1b — rename, re-alias, reorder, and the Switch. CAS on
  *  `expectedRevision`; a lost race answers `stale_write` carrying the row that
  *  won, so the screen re-renders the truth without a second fetch (spec D7). */
-routes.patch('/areas/:id', owner, async (c) => {
+routes.patch('/areas/:id', staff, async (c) => {
   const id = pathParam(c, 'id');
   const { expectedRevision, ...patch } = await readJson(c, PatchBody);
   const area = await patchArea(currentDb(c), id, patch, { expectedRevision, now: Date.now() });

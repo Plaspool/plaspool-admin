@@ -37,6 +37,7 @@ let owner: HttpClient;
 let writer: HttpClient;
 /** No session at all — a fresh browser, not a logged-out one. */
 let anon: HttpClient;
+let marketing: HttpClient;
 
 const API = '/api/marketing';
 
@@ -54,6 +55,7 @@ beforeAll(async () => {
   ctx = await freshDb();
   owner = await login(ctx.users.owner);
   writer = await login(ctx.users.writer);
+  marketing = await login(ctx.users.marketing);
   anon = httpClient(ctx.db);
 });
 
@@ -125,28 +127,23 @@ describe('mounting and the guards', () => {
     });
   });
 
-  it('lets a WRITER read the codes but not create or edit one', async () => {
+  it('belongs to the marketing domain: marketing writes, a writer sees nothing', async () => {
     /*
-     * THE FROZEN ROLE MATRIX (spec D12). A discount is money — it changes what
-     * an order costs, permanently, for everybody who types it — so writing one
-     * sits beside the program rates and the redemption economics under
-     * `requireOwner`. Reading is not gated: "is that code still on?" is a
-     * question a writer answering a customer has to be able to look up.
-     *
-     * The UI renders owner-only controls as ABSENT rather than disabled, so
-     * these 403s are the backstop for a raced role change, not the ordinary
-     * path.
+     * THE ROLE MATRIX SINCE MIGRATION 0680 (shared/roles.ts). Discounts are
+     * the marketing role's whole job, so the domain gate admits marketing,
+     * owner and developer and nobody else — a content writer no longer even
+     * reads the list. Spec D12's owner-only write rule is superseded by the
+     * owner's role model; the domain gate is what keeps a writer out.
      */
     const existing = await created();
 
-    expect((await writer.get(`${API}/discounts`)).status).toBe(200);
+    expect((await writer.get(`${API}/discounts`)).status).toBe(403);
 
-    const post = await create({}, writer);
-    expect(post.status).toBe(403);
-    expect(await json(post)).toMatchObject({ error: 'forbidden' });
+    const post = await create({ code: 'MKTG10' }, marketing);
+    expect(post.status).toBe(201);
 
-    const patch = await save(existing, { status: 'disabled' }, writer);
-    expect(patch.status).toBe(403);
+    const patch = await save(existing, { status: 'disabled' }, marketing);
+    expect(patch.status).toBe(200);
   });
 });
 

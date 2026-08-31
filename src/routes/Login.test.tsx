@@ -88,7 +88,7 @@ beforeEach(() => {
 
 describe('signing in', () => {
   it('sends the credentials and adopts the session it gets back', async () => {
-    vi.mocked(api.login).mockResolvedValue(WRITER);
+    vi.mocked(api.login).mockResolvedValue({ kind: 'session', user: WRITER });
     renderLogin();
 
     await signIn('  writer@test.local  ');
@@ -168,7 +168,7 @@ describe('what a refusal is allowed to say', () => {
     await signIn();
     await screen.findByRole('alert');
 
-    vi.mocked(api.login).mockResolvedValue(WRITER);
+    vi.mocked(api.login).mockResolvedValue({ kind: 'session', user: WRITER });
     await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
 
     await waitFor(() => expect(adoptUser).toHaveBeenCalled());
@@ -177,7 +177,7 @@ describe('what a refusal is allowed to say', () => {
 
 describe('the re-auth form', () => {
   it('knows who you are and does not make you retype it', async () => {
-    vi.mocked(api.login).mockResolvedValue(WRITER);
+    vi.mocked(api.login).mockResolvedValue({ kind: 'session', user: WRITER });
     render(<SignInForm initialEmail={WRITER.email} lockEmail />);
 
     expect(screen.getByLabelText('Email')).toHaveProperty('readOnly', true);

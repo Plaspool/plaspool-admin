@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { pathParam, readJson, readJsonOrEmpty, readQuery, str } from '../middleware/errors';
-import { requireAuth, requireOwner } from '../middleware/session';
+import { requireAdmin, requireAuth } from '../middleware/session';
 import { assertAuthorized } from '../authorize';
 import {
   archivePost,
@@ -380,6 +380,6 @@ routes.post('/posts/sweep-blank', auth, async (c) => {
  * their revisions, so it is the one route that can destroy another writer's
  * history in bulk.
  */
-routes.post('/trash/empty', requireOwner(), async (c) =>
+routes.post('/trash/empty', requireAdmin(), async (c) =>
   c.json({ emptied: await emptyTrash(currentDb(c)) }),
 );

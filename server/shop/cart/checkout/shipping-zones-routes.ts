@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { pathParam, readJson, str } from '../../../middleware/errors';
-import { requireAuth, requireOwner } from '../../../middleware/session';
+import { requireAdmin, requireAuth } from '../../../middleware/session';
 import { currentDb } from '../../../app-env';
 import type { AppEnv } from '../../../app-env';
 import {
@@ -177,7 +177,7 @@ shippingZoneRoutes.get('/admin/delivery-areas', auth, async (c) => {
   return c.json({ items: await listDeliveryAreas(currentDb(c)) });
 });
 
-shippingZoneRoutes.put('/admin/delivery-areas/:areaKey', requireOwner(), async (c) => {
+shippingZoneRoutes.put('/admin/delivery-areas/:areaKey', requireAdmin(), async (c) => {
   const body = await readJson(c, DeliveryAreaBody);
   const area = await saveDeliveryArea(
     currentDb(c),
@@ -193,7 +193,7 @@ shippingZoneRoutes.put('/admin/delivery-areas/:areaKey', requireOwner(), async (
  * an owner deliberately overriding whatever is there; see the repo's note on
  * why failing forty rows because one moved is the worse answer.
  */
-shippingZoneRoutes.post('/admin/delivery-areas/bulk', requireOwner(), async (c) => {
+shippingZoneRoutes.post('/admin/delivery-areas/bulk', requireAdmin(), async (c) => {
   const body = await readJson(c, DeliveryAreasBulkBody);
   const items = await saveDeliveryAreas(currentDb(c), body.areaKeys, {
     delivers: body.delivers,

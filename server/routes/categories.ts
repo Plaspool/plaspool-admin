@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Context } from 'hono';
 import { pathParam, readJson, readQuery, str, toResponse } from '../middleware/errors';
-import { requireAuth, requireOwner } from '../middleware/session';
+import { requireAdmin, requireAuth } from '../middleware/session';
 import { BadRequestError } from '../repo/errors';
 import {
   CategoryPreconditionFailedError,
@@ -185,7 +185,7 @@ routes.patch('/categories/:id', requireAuth(), async (c) => {
  * Owner-only. Refused with 409 while posts still carry the name, unless
  * `?reassign=` names where they should go (`-` for uncategorised).
  */
-routes.delete('/categories/:id', requireOwner(), async (c) => {
+routes.delete('/categories/:id', requireAdmin(), async (c) => {
   const id = categoryId(c);
   const { reassign } = readQuery(c, DeleteQuery);
   return c.json(await deleteCategory(currentDb(c), id, reassignTarget(reassign)));

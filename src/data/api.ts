@@ -333,12 +333,47 @@ export const api = {
     return (await apiFetch<{ user: AuthUser }>('/auth/me')).user;
   },
 
-  async login(email: string, password: string): Promise<AuthUser> {
-    const res = await apiFetch<{ user: AuthUser }>('/auth/login', {
+  /**
+   * The password step. Since migration 0700 a protected account answers with a
+   * CHALLENGE instead of a session: the ticket proves the password verified,
+   * and the six-digit code in the account's inbox is the second half —
+   * `loginCode` below trades the pair for the session.
+   */
+  async login(
+    email: string,
+    password: string,
+  ): Promise<
+    | { kind: 'session'; user: AuthUser }
+    | { kind: 'code'; ticket: string; expiresAt: number }
+  > {
+    const res = await apiFetch<
+      { user: AuthUser } | { twoFactor: { ticket: string; expiresAt: number } }
+    >('/auth/login', {
       method: 'POST',
       body: { email, password },
     });
+    if ('twoFactor' in res) {
+      return { kind: 'code', ticket: res.twoFactor.ticket, expiresAt: res.twoFactor.expiresAt };
+    }
+    return { kind: 'session', user: res.user };
+  },
+
+  /** The code step. 401 covers a wrong code, an expired challenge and a spent
+   * one alike — the server refuses to split them (enumeration). */
+  async loginCode(ticket: string, code: string): Promise<AuthUser> {
+    const res = await apiFetch<{ user: AuthUser }>('/auth/login/code', {
+      method: 'POST',
+      body: { ticket, code },
+    });
     return res.user;
+  },
+
+  /** Always 202 — the server never says whether the ticket was live. */
+  async resendLoginCode(ticket: string): Promise<void> {
+    await apiFetch<{ sent: true }>('/auth/login/resend', {
+      method: 'POST',
+      body: { ticket },
+    });
   },
 
   /*

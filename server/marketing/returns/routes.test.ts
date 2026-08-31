@@ -27,6 +27,7 @@ import type { AuthUser } from '../../../shared/types';
 let ctx: TestCtx;
 let owner: HttpClient;
 let writer: HttpClient;
+let support: HttpClient;
 /** No session at all — a fresh browser, not a logged-out one. */
 let anon: HttpClient;
 
@@ -171,6 +172,7 @@ beforeAll(async () => {
   ctx = await freshDb();
   owner = await login(ctx.users.owner);
   writer = await login(ctx.users.writer);
+  support = await login(ctx.users.support);
   anon = httpClient(ctx.db);
 
   /* The board every intake in this file lands on. Installed once, because the
@@ -235,16 +237,17 @@ describe('mounting and the guards — every route here is requireAuth', () => {
     expect((await anon.post(`${API}/returns/ret_x/notes`, {})).status).toBe(401);
   });
 
-  it('lets a WRITER drive the whole lifecycle — transitions are requireAuth, not requireOwner', async () => {
+  it('lets SUPPORT drive the whole lifecycle — returns are order-side work (migration 0680)', async () => {
     /*
-     * The frozen role matrix (spec D12). Any staff member processes returns,
-     * including the inspection that awards the points; `requireOwner` is
-     * reserved for the writes that change what a return is WORTH. A writer who
-     * had to fetch the owner to record a count is a count that stops being
-     * recorded.
+     * THE ROLE MATRIX SINCE MIGRATION 0680: returns belong to the ORDERS
+     * domain — support and supply chain process them, the inspection that
+     * awards points included — and a content writer is off the surface
+     * entirely. `requireAuth` on the routes still holds; the domain gate is
+     * what now decides WHICH staff.
      */
+    expect((await writer.get(`${API}/returns`)).status).toBe(403);
     const detail = await json<Detail>(
-      await writer.post(`${API}/returns`, {
+      await support.post(`${API}/returns`, {
         email: nextEmail(),
         qtyDeclared: 4,
         pickupAddress: '9 Marina',
@@ -262,7 +265,7 @@ describe('mounting and the guards — every route here is requireAuth', () => {
       ['receive', {}],
       ['inspect', { qtyAccepted: 4, qtyRejected: 0 }],
     ] as const) {
-      const res = await move(row.id, action, { expectedRevision: row.revision, ...body }, writer);
+      const res = await move(row.id, action, { expectedRevision: row.revision, ...body }, support);
       expect(res.status).toBe(200);
       row = (await json<{ request: Wire }>(res)).request;
     }
@@ -679,20 +682,21 @@ describe('the catalogue, on the wire', () => {
 // ------------------------------------------------------------- the queue
 
 describe('the inspection bonus is the OWNER’s — contract #6.5', () => {
-  it('REFUSES A WRITER’S TOP-UP, while the same writer inspects without one', async () => {
+  it('REFUSES SUPPORT’S TOP-UP, while the same support account inspects without one', async () => {
     /*
      * ═══════════════════════════════════════════════════════════════════════
      * THE GUARD IS ON THE FIELD, NOT ON THE ROUTE, AND BOTH HALVES MATTER.
      *
-     * `requireOwner()` here would make a writer fetch the owner to record what
-     * arrived in a box, and a count that needs a second person is a count that
-     * stops being recorded (spec D12). But minting points ABOVE the programme's
-     * rate is money, and money is owner-only everywhere else in this subsystem.
+     * A route-level tier guard here would make support fetch an admin to
+     * record what arrived in a box, and a count that needs a second person is
+     * a count that stops being recorded. But minting points ABOVE the
+     * programme's rate is money, and money stays with the owner/developer
+     * tier (`isAdminRole`, migration 0680).
      *
-     * So this test asserts the pair: the writer is refused with a bonus and
-     * succeeds without one. Asserting only the 403 would stay green if somebody
-     * "fixed" it by putting `requireOwner()` on the route — which would break
-     * the warehouse to protect the wallet.
+     * So this test asserts the pair: support is refused with a bonus and
+     * succeeds without one. Asserting only the 403 would stay green if
+     * somebody "fixed" it by putting a tier guard on the route — which would
+     * break the warehouse to protect the wallet.
      * ═══════════════════════════════════════════════════════════════════════
      */
     const withBonus = await returnAt('received', capsProgramId);
@@ -706,7 +710,7 @@ describe('the inspection bonus is the OWNER’s — contract #6.5', () => {
         bonusPoints: 25,
         bonusReason: 'Goodwill',
       },
-      writer,
+      support,
     );
     expect(refused.status).toBe(403);
     expect(await json(refused)).toMatchObject({ error: 'forbidden' });
@@ -721,7 +725,7 @@ describe('the inspection bonus is the OWNER’s — contract #6.5', () => {
       withBonus.id,
       'inspect',
       { expectedRevision: withBonus.revision, qtyAccepted: 4, qtyRejected: 0 },
-      writer,
+      support,
     );
     expect(plain.status).toBe(200);
     const body = await json<{ award: { points: number }; bonus: unknown }>(plain);
@@ -952,14 +956,23 @@ describe('POST /returns/bulk — contract #6.4', () => {
     expect(res.status).toBe(400);
   });
 
-  it('needs a session, and a writer is session enough', async () => {
+  it('needs a session, and SUPPORT is session enough (migration 0680)', async () => {
     const row = await returnAt('requested', capsProgramId);
     expect((await bulk({ action: 'collect', items: [item(row)], body: {} }, anon)).status).toBe(401);
-    /* Processing returns is any staff member's work (spec D12) — the board is
-     * just a faster way to press the same buttons. */
+    /* Processing returns is order-side staff work since migration 0680 — the
+     * board is a faster way to press the same buttons, and support holds it
+     * where a content writer does not. */
+    expect(
+      (
+        await bulk(
+          { action: 'schedule', items: [item(row)], body: { pickupAt: Date.now() + 3_600_000 } },
+          writer,
+        )
+      ).status,
+    ).toBe(403);
     const res = await bulk(
       { action: 'schedule', items: [item(row)], body: { pickupAt: Date.now() + 3_600_000 } },
-      writer,
+      support,
     );
     expect(res.status).toBe(200);
     expect((await json<{ results: BulkResult[] }>(res)).results[0].ok).toBe(true);

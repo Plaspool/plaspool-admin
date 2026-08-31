@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { pathParam, readJson, str } from '../../middleware/errors';
-import { requireAuth, requireOwner } from '../../middleware/session';
+import { requireAuth } from '../../middleware/session';
 import { currentDb, currentUser } from '../../app-env';
 import { createDiscount, listDiscounts, patchDiscount } from './repo';
 import type { AppEnv } from '../../app-env';
@@ -37,7 +37,7 @@ import type { AppEnv } from '../../app-env';
 export const routes = new Hono<AppEnv>();
 
 const auth = requireAuth();
-const owner = requireOwner();
+const staff = requireAuth();
 
 // ------------------------------------------------------------------ schemas
 
@@ -227,7 +227,7 @@ routes.get('/discounts', auth, async (c) => {
   return c.json({ discounts });
 });
 
-routes.post('/discounts', owner, async (c) => {
+routes.post('/discounts', staff, async (c) => {
   const draft = await readJson(c, CreateDiscountBody);
   const discount = await createDiscount(currentDb(c), draft, {
     actorId: currentUser(c).id,
@@ -238,7 +238,7 @@ routes.post('/discounts', owner, async (c) => {
   return c.json({ discount }, 201);
 });
 
-routes.patch('/discounts/:id', owner, async (c) => {
+routes.patch('/discounts/:id', staff, async (c) => {
   const id = pathParam(c, 'id');
   const { expectedRevision, ...patch } = await readJson(c, DiscountPatchBody);
   const discount = await patchDiscount(currentDb(c), id, patch, {

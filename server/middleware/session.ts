@@ -55,7 +55,9 @@ export function requireAuth(): MiddlewareHandler<AppEnv> {
 }
 
 /**
- * Owner only — invites, empty-trash, export, destroy.
+ * Owner only — the handful of routes where the singular account is the point:
+ * destroying everything, and nothing else since migration 0680 widened the
+ * team model. Most former `requireOwner()` sites became `requireAdmin()`.
  *
  * 401 before 403, so an anonymous caller learns nothing about which routes are
  * owner-only that they could not learn from the source anyway, and an
@@ -66,6 +68,26 @@ export function requireOwner(): MiddlewareHandler<AppEnv> {
     const user = c.get('user');
     if (!user) throw new UnauthenticatedError();
     if (user.role !== 'owner') throw new ForbiddenError();
+    await next();
+  };
+}
+
+/**
+ * Owner or developer — the "full access" pair of `shared/roles.ts`
+ * (migration 0680). Everything that used to be the owner's alone except the
+ * team rules and destroy: refunds, cancels, sweeps, discount writes, the
+ * email marketing surface.
+ *
+ * A ROLE CHECK AND NOT `hasDomain(role, 'danger')`, deliberately: this guard
+ * marks routes where the ACTOR must be one of the two trusted tiers, however
+ * the domain matrix evolves. Routing it through the matrix would let a future
+ * grant quietly widen refunds.
+ */
+export function requireAdmin(): MiddlewareHandler<AppEnv> {
+  return async (c, next) => {
+    const user = c.get('user');
+    if (!user) throw new UnauthenticatedError();
+    if (user.role !== 'owner' && user.role !== 'developer') throw new ForbiddenError();
     await next();
   };
 }

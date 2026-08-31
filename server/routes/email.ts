@@ -9,7 +9,7 @@ import {
   str,
   toResponse,
 } from '../middleware/errors';
-import { requireOwner } from '../middleware/session';
+import { requireAuth } from '../middleware/session';
 import { clientIp, limit } from '../middleware/ratelimit';
 import { BadRequestError, NotFoundError } from '../repo/errors';
 import { pageLimit, requireCursor } from '../repo/cursor';
@@ -359,7 +359,7 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
    * `GET /api/categories` makes for having no cursor: a page here would be a limit
    * the composer would immediately have to defeat.
    */
-  routes.get('/admin/email/templates', requireOwner(), async (c) => {
+  routes.get('/admin/email/templates', requireAuth(), async (c) => {
     const db = currentDb(c);
     /*
      * SEED THE SYSTEM TEMPLATES BEFORE LISTING, AND THIS IS THE MAIN SEEDER.
@@ -399,28 +399,28 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
    * `{ duplicateOf: id }` on the create route would mean one handler where half
    * the fields are mutually exclusive with the other half.
    */
-  routes.post('/admin/email/templates/:id/duplicate', requireOwner(), async (c) => {
+  routes.post('/admin/email/templates/:id/duplicate', requireAuth(), async (c) => {
     const id = emailId(c);
     const template = await duplicateTemplate(currentDb(c), id, currentUser(c).id, Date.now());
     if (!template) throw new NotFoundError(id);
     return c.json({ template }, 201);
   });
 
-  routes.get('/admin/email/templates/:id', requireOwner(), async (c) => {
+  routes.get('/admin/email/templates/:id', requireAuth(), async (c) => {
     const id = emailId(c);
     const template = await getTemplate(currentDb(c), id);
     if (!template) throw new NotFoundError(id);
     return c.json({ template });
   });
 
-  routes.post('/admin/email/templates', requireOwner(), async (c) => {
+  routes.post('/admin/email/templates', requireAuth(), async (c) => {
     const body = await readJson(c, TemplateBody);
     const input = checkedTemplate(body);
     const template = await createTemplate(currentDb(c), input, currentUser(c).id, Date.now());
     return c.json({ template }, 201);
   });
 
-  routes.patch('/admin/email/templates/:id', requireOwner(), async (c) => {
+  routes.patch('/admin/email/templates/:id', requireAuth(), async (c) => {
     const id = emailId(c);
     const db = currentDb(c);
     const patch = await readJson(c, TemplatePatchBody);
@@ -461,7 +461,7 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
     return c.json({ template });
   });
 
-  routes.delete('/admin/email/templates/:id', requireOwner(), async (c) => {
+  routes.delete('/admin/email/templates/:id', requireAuth(), async (c) => {
     const id = emailId(c);
     if (!(await deleteTemplate(currentDb(c), id))) throw new NotFoundError(id);
     return c.json({ ok: true });
@@ -469,7 +469,7 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
 
   // -------------------------------------------------------------- subscribers
 
-  routes.get('/admin/email/subscribers', requireOwner(), async (c) => {
+  routes.get('/admin/email/subscribers', requireAuth(), async (c) => {
     const db = currentDb(c);
     const query = readQuery(c, SubscriberQuery);
     const limitValue = pageLimit(query.limit);
@@ -494,7 +494,7 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
     return c.json({ ...page, counts: await audienceCounts(db) });
   });
 
-  routes.post('/admin/email/subscribers', requireOwner(), async (c) => {
+  routes.post('/admin/email/subscribers', requireAuth(), async (c) => {
     const body = await readJson(c, SubscriberBody);
     const email = body.email.trim();
     if (!email.includes('@')) throw new BadRequestError('email');
@@ -573,7 +573,7 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
     return c.json(outcome, outcome.created ? 201 : 200);
   });
 
-  routes.post('/admin/email/subscribers/import', requireOwner(), async (c) => {
+  routes.post('/admin/email/subscribers/import', requireAuth(), async (c) => {
     const user = currentUser(c);
     await limit(c, `emailimport:${user.id}`, IMPORT_LIMIT, IMPORT_WINDOW_MS);
     const body = await readJson(c, ImportBody);
@@ -598,7 +598,7 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
 
   // --------------------------------------------------------------- broadcasts
 
-  routes.get('/admin/email/broadcasts', requireOwner(), async (c) => {
+  routes.get('/admin/email/broadcasts', requireAuth(), async (c) => {
     const db = currentDb(c);
     return c.json({ items: await listBroadcasts(db), audience: await audienceCounts(db) });
   });
@@ -614,11 +614,11 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
    * it at the moment it is needed rather than trusting a count fetched three screens
    * ago.
    */
-  routes.get('/admin/email/audience', requireOwner(), async (c) =>
+  routes.get('/admin/email/audience', requireAuth(), async (c) =>
     c.json(await audienceCounts(currentDb(c))),
   );
 
-  routes.get('/admin/email/broadcasts/:id', requireOwner(), async (c) => {
+  routes.get('/admin/email/broadcasts/:id', requireAuth(), async (c) => {
     const id = emailId(c);
     const db = currentDb(c);
     const broadcast = await getBroadcast(db, id);
@@ -634,7 +634,7 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
    * "what did we send in March" answerable — see the note on `email_broadcasts` in
    * migration 0008.
    */
-  routes.post('/admin/email/broadcasts', requireOwner(), async (c) => {
+  routes.post('/admin/email/broadcasts', requireAuth(), async (c) => {
     const db = currentDb(c);
     const body = await readJson(c, BroadcastBody);
     if (!UUID.test(body.templateId)) throw new BadRequestError('templateId');
@@ -668,7 +668,7 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
    * the re-read tells them apart so a stale screen gets the honest one of 404
    * and 409 rather than whichever this route guessed.
    */
-  routes.delete('/admin/email/broadcasts/:id', requireOwner(), async (c) => {
+  routes.delete('/admin/email/broadcasts/:id', requireAuth(), async (c) => {
     const id = emailId(c);
     const db = currentDb(c);
     if (await deleteBroadcast(db, id)) return c.json({ ok: true });
@@ -688,7 +688,7 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
    * configured, whether the template renders, and whether the audience is who they
    * expected. The rest is drained by `/drain` and by the daily cron.
    */
-  routes.post('/admin/email/broadcasts/:id/send', requireOwner(), async (c) => {
+  routes.post('/admin/email/broadcasts/:id/send', requireAuth(), async (c) => {
     const id = emailId(c);
     const db = currentDb(c);
     const body = await readJsonOrEmpty(c, DrainBody);
@@ -727,7 +727,7 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
 
   /** Continue a send that is already under way. Idempotent; a broadcast with
    * nothing pending drains zero and is closed by the same call. */
-  routes.post('/admin/email/broadcasts/:id/drain', requireOwner(), async (c) => {
+  routes.post('/admin/email/broadcasts/:id/drain', requireAuth(), async (c) => {
     const id = emailId(c);
     const db = currentDb(c);
     const body = await readJsonOrEmpty(c, DrainBody);
@@ -760,7 +760,7 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
    * over the shop's verified sending domain. The address comes from the session,
    * which is the one address the caller has already proved they control.
    */
-  routes.post('/admin/email/broadcasts/:id/test', requireOwner(), async (c) => {
+  routes.post('/admin/email/broadcasts/:id/test', requireAuth(), async (c) => {
     const id = emailId(c);
     const db = currentDb(c);
     const user = currentUser(c);
@@ -855,7 +855,7 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
     return c.json(await runDrain(c, mailer, limit));
   });
 
-  routes.post('/admin/email/drain', requireOwner(), async (c) => {
+  routes.post('/admin/email/drain', requireAuth(), async (c) => {
     const body = await readJsonOrEmpty(c, DrainBody);
     return c.json(await runDrain(c, mailer, body.limit));
   });

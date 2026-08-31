@@ -64,6 +64,11 @@ export function SignInForm({
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /* Non-null between the password verifying and the emailed code arriving
+     (migration 0700). The ticket is the server's proof the first factor
+     happened, so this form never holds the password past that point. */
+  const [challenge, setChallenge] = useState<{ ticket: string } | null>(null);
+  const [code, setCode] = useState('');
   const errorId = useId();
 
   async function submit(event: FormEvent) {
@@ -72,21 +77,78 @@ export function SignInForm({
     setBusy(true);
     setError(null);
     try {
-      const user = await api.login(email.trim(), password);
+      const result = await api.login(email.trim(), password);
+      // The password never goes back into a controlled input's state after
+      // this point, successful or not.
+      setPassword('');
+      if (result.kind === 'code') {
+        setChallenge({ ticket: result.ticket });
+        setBusy(false);
+        return;
+      }
       /*
        * `adoptUser` and not a local setState: it is what decides whether this
        * is the same person coming back (keep everything) or a different one
        * (clear the cache), sets the ambient user id `src/data/posts.ts` reads,
        * and starts the replay of whatever went unsent.
        */
-      await adoptUser(user);
-      // The password never goes back into a controlled input's state after
-      // this point, successful or not.
-      setPassword('');
+      await adoptUser(result.user);
     } catch (err) {
       setError(messageFor(err));
       setBusy(false);
     }
+  }
+
+  async function submitCode(event: FormEvent) {
+    event.preventDefault();
+    if (busy || !challenge) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const user = await api.loginCode(challenge.ticket, code.trim());
+      setCode('');
+      await adoptUser(user);
+    } catch {
+      setError('That code didn’t work. It may have expired — codes last ten minutes.');
+      setBusy(false);
+    }
+  }
+
+  if (challenge) {
+    return (
+      <form className="authform" onSubmit={submitCode} noValidate>
+        <p className="authform__lede">
+          A six-digit code is on its way to <strong>{email.trim()}</strong>.
+        </p>
+        <label className="label" htmlFor={`${errorId}-code`}>
+          Sign-in code
+        </label>
+        <input
+          id={`${errorId}-code`}
+          className="input"
+          name="code"
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          value={code}
+          required
+          autoFocus
+          aria-describedby={error ? errorId : undefined}
+          onChange={(e) => setCode(e.target.value)}
+        />
+        {error && (
+          <p className="authform__error" id={errorId} role="alert">
+            {error}
+          </p>
+        )}
+        <button
+          className="btn btn--primary authform__submit"
+          type="submit"
+          disabled={busy || code.trim().length < 6}
+        >
+          {busy ? 'Verifying…' : 'Verify code'}
+        </button>
+      </form>
+    );
   }
 
   return (

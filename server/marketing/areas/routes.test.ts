@@ -34,6 +34,7 @@ let ctx: TestCtx;
 let owner: HttpClient;
 let writer: HttpClient;
 let anon: HttpClient;
+let marketing: HttpClient;
 let programId: string;
 
 const API = '/api/marketing';
@@ -132,6 +133,7 @@ beforeAll(async () => {
   ctx = await freshDb();
   owner = await login(ctx.users.owner);
   writer = await login(ctx.users.writer);
+  marketing = await login(ctx.users.marketing);
   anon = httpClient(ctx.db);
 
   const res = await owner.post(`${API}/programs`, {
@@ -260,11 +262,13 @@ describe('GET /areas — contract #6.1', () => {
     expect(faraway?.seeded).toBe(true);
   });
 
-  it('needs a session, and needs nothing more than one', async () => {
+  it('needs a session in the marketing domain (migration 0680)', async () => {
     expect((await anon.get(`${API}/areas`)).status).toBe(401);
-    // A writer must SEE the boards to work them; only writing the list is the
-    // owner's, which is the next describe.
-    expect((await writer.get(`${API}/areas`)).status).toBe(200);
+    /* The boards moved behind the marketing domain with the role widening: a
+     * content writer has no business in pickup geography, and the marketing
+     * role works it. */
+    expect((await writer.get(`${API}/areas`)).status).toBe(403);
+    expect((await marketing.get(`${API}/areas`)).status).toBe(200);
   });
 
   it('refuses a filter it does not have, rather than ignoring it', async () => {

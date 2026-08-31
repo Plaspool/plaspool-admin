@@ -31,6 +31,7 @@ import type { CustomerPage, CustomerRow, CustomerSummary, LedgerEntry, LedgerPag
 let ctx: TestCtx;
 let owner: HttpClient;
 let writer: HttpClient;
+let marketing: HttpClient;
 /** No session at all — a fresh browser, not a logged-out one. */
 let anon: HttpClient;
 
@@ -53,6 +54,7 @@ beforeAll(async () => {
   ctx = await freshDb();
   owner = await login(ctx.users.owner);
   writer = await login(ctx.users.writer);
+  marketing = await login(ctx.users.marketing);
   anon = httpClient(ctx.db);
 
   const res = await owner.post(`${API}/programs`, {
@@ -157,20 +159,20 @@ describe('mounting and the guards', () => {
     expect(await json(missing)).toMatchObject({ error: 'gone' });
   });
 
-  it('lets a writer read a customer and refuses their adjustment with 403', async () => {
+  it('is the marketing domain’s: marketing reads and adjusts, a writer is refused', async () => {
     /*
-     * The frozen role matrix (spec D12): staff processing returns have to see a
-     * balance — it is on the screen they inspect from — while minting points out
-     * of nothing is the owner's, like repricing a program. The UI renders
-     * "Adjust balance…" as ABSENT for writers, so this 403 is the backstop for a
-     * raced role change rather than the ordinary path.
+     * THE ROLE MATRIX SINCE MIGRATION 0680 (shared/roles.ts): the points
+     * ledger belongs to the marketing domain, so the marketing role holds the
+     * whole surface — reads AND the adjustment the owner alone used to sign —
+     * and a content writer no longer reaches any of it.
      */
     const email = nextEmail('role');
     await adjustOk({ email, delta: 30, reason: 'Goodwill' });
 
-    expect((await summary(email, writer)).balance).toBe(30);
-    expect((await writer.get(`${API}/customers?query=role`)).status).toBe(200);
-    expect((await writer.get(`${API}/customers/${seg(email)}/ledger`)).status).toBe(200);
+    expect((await summary(email, marketing)).balance).toBe(30);
+    expect((await marketing.get(`${API}/customers?query=role`)).status).toBe(200);
+    expect((await writer.get(`${API}/customers?query=role`)).status).toBe(403);
+    expect((await writer.get(`${API}/customers/${seg(email)}/ledger`)).status).toBe(403);
 
     const refused = await post({ email, delta: 1000, reason: 'Writer was here' }, writer);
     expect(refused.status).toBe(403);

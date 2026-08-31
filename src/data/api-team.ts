@@ -18,6 +18,7 @@
  */
 import { apiFetch } from './api';
 import { PreconditionFailedError } from './errors';
+import type { Role } from '../../shared/roles';
 
 /**
  * One row of `GET /api/users`.
@@ -30,11 +31,13 @@ export interface TeamUser {
   id: string;
   email: string;
   displayName: string;
-  role: 'owner' | 'writer';
+  role: Role;
   createdAt: number;
   /** Non-null means revoked — every session they hold was destroyed with it. */
   disabledAt: number | null;
   postCount: number;
+  /** Login demands an emailed code after the password (migration 0700). */
+  twoFactorEmail: boolean;
 }
 
 /**
@@ -49,7 +52,7 @@ export interface TeamUser {
 export interface TeamInvite {
   id: string;
   email: string;
-  role: 'owner' | 'writer';
+  role: Role;
   createdAt: number;
   expiresAt: number;
   /** Non-null means spent — the account exists and the token is dead. */
@@ -73,7 +76,7 @@ export interface MintedInvite {
   invite: {
     id: string;
     email: string;
-    role: 'owner' | 'writer';
+    role: Role;
     expiresAt: number;
     /** Contains the raw token. There is no second chance to read it. */
     url: string;
@@ -95,7 +98,13 @@ export interface DisableResult {
  * somewhere. A client that told them apart by parsing prose would get it wrong
  * the first time the prose changed.
  */
-export type TeamRefusal = 'disable_self' | 'disable_last_owner';
+export type TeamRefusal =
+  | 'disable_self'
+  | 'disable_last_owner'
+  /** A developer aiming at the owner or a fellow developer (migration 0680). */
+  | 'manage_peer'
+  | 'role_self'
+  | 'role_owner';
 
 /**
  * The refusal an error carries, or `null` if it is not one of them.
@@ -159,7 +168,7 @@ export const teamApi = {
    * address — refused before the token is minted rather than after it is spent,
    * so the invitee never gets a link that dies on `users_email_unique`.
    */
-  async createInvite(email: string, role: 'owner' | 'writer'): Promise<MintedInvite> {
+  async createInvite(email: string, role: Exclude<Role, 'owner'>): Promise<MintedInvite> {
     return await apiFetch<MintedInvite>('/invites', {
       method: 'POST',
       body: { email, role },
@@ -179,6 +188,25 @@ export const teamApi = {
       signal,
     });
     return res.items;
+  },
+
+  /** Change what an account is. Refusals arrive as `TeamRefusal` 409s. */
+  async setRole(id: string, role: Exclude<Role, 'owner'>): Promise<TeamUser> {
+    const res = await apiFetch<{ ok: true; user: TeamUser }>(
+      `/users/${encodeURIComponent(id)}/role`,
+      { method: 'PATCH', body: { role }, id, subject: 'User' },
+    );
+    return res.user;
+  },
+
+  /** Turn the emailed sign-in code on or off for one account. */
+  async setTwoFactor(id: string, enabled: boolean): Promise<void> {
+    await apiFetch<{ ok: true }>(`/users/${encodeURIComponent(id)}/two-factor`, {
+      method: 'PATCH',
+      body: { enabled },
+      id,
+      subject: 'User',
+    });
   },
 
   async revokeInvite(id: string): Promise<void> {

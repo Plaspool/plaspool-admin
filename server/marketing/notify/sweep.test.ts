@@ -102,6 +102,7 @@ const unconfigured = new UnconfiguredMailer();
 let owner: HttpClient;
 /** Writer, on the same kind of app — the route is `requireAuth`, deliberately. */
 let writer: HttpClient;
+let marketing: HttpClient;
 /** Owner, on an app with no mail configured. */
 let setupPending: HttpClient;
 /** No session at all — a fresh browser, not a logged-out one. */
@@ -147,6 +148,7 @@ beforeAll(async () => {
   db = ctx.db;
   owner = await login(ctx.users.owner, { mailer: recorder });
   writer = await login(ctx.users.writer, { mailer: recorder });
+  marketing = await login(ctx.users.marketing, { mailer: recorder });
   setupPending = await login(ctx.users.owner, { mailer: unconfigured });
   anon = httpClient(ctx.db);
 });
@@ -557,7 +559,10 @@ describe('POST /api/marketing/sweep — contract #27', () => {
     const { email } = await queuedAward();
     const [queued] = await intents();
 
-    const res = await writer.post(`${API}/sweep`, {});
+    /* Since migration 0680 "staff" means staff holding the marketing domain
+     * — the role whose queue this is. A content writer is refused. */
+    expect((await writer.post(`${API}/sweep`, {})).status).toBe(403);
+    const res = await marketing.post(`${API}/sweep`, {});
     expect(res.status).toBe(200);
     expect(await json(res)).toEqual({ sent: 1, failed: 0, skipped: 0 });
 

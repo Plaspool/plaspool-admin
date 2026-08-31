@@ -10,6 +10,7 @@ import {
   zodDetail,
 } from '../../middleware/errors';
 import { requireAuth } from '../../middleware/session';
+import { isAdminRole } from '../../../shared/roles';
 import { currentDb, currentUser } from '../../app-env';
 import { loadTemplates } from '../../email/system-templates';
 import { BadRequestError, NotFoundError } from '../../repo/errors';
@@ -700,7 +701,7 @@ routes.post('/returns/:id/inspect', auth, async (c) => {
    * 145 and the customer would have 120.
    * ═══════════════════════════════════════════════════════════════════════════
    */
-  if (body.bonusPoints !== undefined && user.role !== 'owner') throw new ForbiddenError();
+  if (body.bonusPoints !== undefined && !isAdminRole(user.role)) throw new ForbiddenError();
 
   const db = currentDb(c);
   /*
