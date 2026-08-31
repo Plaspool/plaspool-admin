@@ -76,6 +76,24 @@ function fillCalendar(a: ShopAnalytics): { day: string; net: number; orders: num
   return out;
 }
 
+/**
+ * ECharts inserts a string tooltip formatter's return value as raw innerHTML
+ * (TooltipHTMLContent.js), and a custom formatter bypasses ECharts' own
+ * escaping — so any attacker-influenced string in a tooltip is stored XSS.
+ * A product TITLE is exactly that: a `writer` (products domain, no analytics)
+ * could plant `<img onerror>` in a title that an analytics-only viewer's
+ * session then executes on hover, jumping the role wall migration 0680 built.
+ * Every scalar interpolated into a tooltip goes through this first.
+ */
+function esc(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /** '2026-08-31' → '31 Aug', for an axis label. */
 function dayLabel(day: string): string {
   const d = new Date(`${day}T00:00:00Z`);
@@ -194,7 +212,9 @@ export default function Analytics() {
         trigger: 'item',
         formatter: (params: unknown) => {
           const p = params as { name?: string; value?: number };
-          return `${p.name}: ${p.value}`;
+          /* `name` is a humanised STATUS enum today — escaped anyway, so a
+             future data source cannot reopen the tooltip XSS above. */
+          return `${esc(String(p.name ?? ''))}: ${Number(p.value ?? 0)}`;
         },
       },
       /* The legend IS the interaction: clicking an entry drops that status out
@@ -231,7 +251,7 @@ export default function Analytics() {
           const p = params as { name?: string; data?: { grossMinor?: number; units?: number } };
           const grossMinor = p?.data?.grossMinor ?? 0;
           const units = p?.data?.units ?? 0;
-          return `${p.name}<br/>${money(grossMinor, ANALYTICS_CURRENCY)} · ${units} ${
+          return `${esc(String(p.name ?? ''))}<br/>${money(grossMinor, ANALYTICS_CURRENCY)} · ${units} ${
             units === 1 ? 'unit' : 'units'
           }`;
         },
