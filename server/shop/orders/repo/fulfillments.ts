@@ -428,33 +428,83 @@ async function fulfillmentTransition(
   throw new StaleWriteError(derivedFrom, read.fulfillment.revision, null);
 }
 
-const SHIP: FulfillmentTransition = {
-  name: 'ship',
-  holds: (f) => f.status === 'pending',
-  guard: sql`status = 'pending'`,
-  set: (now) => sql`status = 'shipped', shipped_at = ${now}`,
-  timeline: { type: 'shipped', message: 'Shipped' },
-  mail: (order, fulfillment, link, templates) => ({
-    kind: 'shipment',
-    /* One shipment mail PER FULFILMENT — a three-parcel order sends three. */
-    dedupeKey: `shipment:${fulfillment.id}`,
-    ...renderShipment(
-      {
-        orderNumber: order.order.orderNumber,
-        email: order.order.email,
-        currency: order.order.currency,
-        grandTotal: order.order.grandTotal,
-        placedAt: order.order.placedAt,
-        /* Only the lines THIS parcel contains — see `parcelLines`. */
-        lines: parcelLines(order, fulfillment),
-        carrier: fulfillment.carrier,
-        trackingNumber: fulfillment.trackingNumber,
-      },
-      link,
-      templates,
-    ),
-  }),
-};
+/**
+ * Carrier and tracking details, with three-valued semantics per field:
+ * `undefined` keeps what the row holds, an explicit `null` clears it, a string
+ * replaces it. The distinction is load-bearing — a ship dialog that did not
+ * touch the carrier must not blank a carrier typed at parcel creation.
+ */
+export interface FulfillmentDetails {
+  carrier?: string | null;
+  trackingNumber?: string | null;
+}
+
+/** The stored row with any ship-time details applied over it — what the row
+ *  WILL hold once the transition lands, used to render the mail from the same
+ *  values the UPDATE writes. */
+function withDetails(fulfillment: Fulfillment, details?: FulfillmentDetails): Fulfillment {
+  return {
+    ...fulfillment,
+    carrier: details?.carrier === undefined ? fulfillment.carrier : details.carrier,
+    trackingNumber:
+      details?.trackingNumber === undefined
+        ? fulfillment.trackingNumber
+        : details.trackingNumber,
+  };
+}
+
+/**
+ * A FACTORY, NOT A CONSTANT, because ship is now the one transition that may
+ * carry data: the operator confirms carrier/tracking in the ship dialog, and
+ * the shipment email renders whatever the row holds AT SHIP TIME. Both halves
+ * of that promise live here:
+ *
+ *  - the SET writes the details IN THE SAME UPDATE as the status change, so
+ *    there is no ordering in which the transition lands and the details do not;
+ *  - the mail renders from `withDetails(...)` — the values the UPDATE is about
+ *    to write — because the intent CTE binds the message rendered in JS, and
+ *    rendering from the pre-transition row would email the OLD tracking number
+ *    beside a row holding the new one.
+ */
+function shipTransition(details?: FulfillmentDetails): FulfillmentTransition {
+  return {
+    name: 'ship',
+    holds: (f) => f.status === 'pending',
+    guard: sql`status = 'pending'`,
+    set: (now) => {
+      const sets = [sql`status = 'shipped'`, sql`shipped_at = ${now}`];
+      if (details?.carrier !== undefined) sets.push(sql`carrier = ${details.carrier}`);
+      if (details?.trackingNumber !== undefined) {
+        sets.push(sql`tracking_number = ${details.trackingNumber}`);
+      }
+      return sql.join(sets, sql`, `);
+    },
+    timeline: { type: 'shipped', message: 'Shipped' },
+    mail: (order, fulfillment, link, templates) => {
+      const shipping = withDetails(fulfillment, details);
+      return {
+        kind: 'shipment',
+        /* One shipment mail PER FULFILMENT — a three-parcel order sends three. */
+        dedupeKey: `shipment:${fulfillment.id}`,
+        ...renderShipment(
+          {
+            orderNumber: order.order.orderNumber,
+            email: order.order.email,
+            currency: order.order.currency,
+            grandTotal: order.order.grandTotal,
+            placedAt: order.order.placedAt,
+            /* Only the lines THIS parcel contains — see `parcelLines`. */
+            lines: parcelLines(order, fulfillment),
+            carrier: shipping.carrier,
+            trackingNumber: shipping.trackingNumber,
+          },
+          link,
+          templates,
+        ),
+      };
+    },
+  };
+}
 
 const DELIVER: FulfillmentTransition = {
   name: 'deliver',
@@ -581,8 +631,84 @@ export const shipFulfillment = (
   link: AccessLink | null,
   actorId: string | null,
   templates: TemplateSet = BUILT_IN,
+  /* Trailing and optional so every existing caller and test compiles unchanged
+   * and keeps the stored details — undefined means keep, per FulfillmentDetails. */
+  details?: FulfillmentDetails,
 ): Promise<Fulfillment> =>
-  fulfillmentTransition(db, id, SHIP, now, link, actorId, templates);
+  fulfillmentTransition(db, id, shipTransition(details), now, link, actorId, templates);
+
+/**
+ * Edit carrier/tracking on a parcel that has NOT shipped, with no transition.
+ *
+ * `status = 'pending'` IS IN THE WHERE, NOT PRE-CHECKED, and the reason is the
+ * whole design of this file: a read-then-update decides against a snapshot a
+ * concurrent ship has already invalidated, and editing the tracking number of
+ * a parcel whose shipment email JUST went out would silently make the row
+ * disagree with what the customer was told. A shipped or delivered parcel's
+ * details are frozen — the email is the record — so the refusal is a 409
+ * `precondition_failed`, classified exactly the way the transitions classify
+ * theirs.
+ *
+ * NO TIMELINE ENTRY AND NO GENERATION BUMP, both deliberate. The timeline is
+ * customer-visible history and a tracking typo fixed before anything shipped is
+ * not an event in the order's life (`shop_order_events_type_ck` would also
+ * refuse a new type without a migration); and the lifecycle trigger watches
+ * status and the two timestamps only, so a details edit does not move the
+ * generation — which is precisely what lets it race a concurrent SHIP safely:
+ * the ship's CAS still wins or retries on `revision`, which this bumps.
+ */
+export async function updateFulfillmentDetails(
+  db: Db,
+  id: string,
+  details: FulfillmentDetails,
+): Promise<Fulfillment> {
+  if (details.carrier === undefined && details.trackingNumber === undefined) {
+    throw new BadRequestError('details');
+  }
+
+  let read = await readFulfillment(db, id);
+  if (!read) throw new NotFoundError(id);
+  const pinned = read.generation;
+  const derivedFrom = read.fulfillment.revision;
+
+  for (let i = 0; i < LIFECYCLE_ATTEMPTS; i += 1) {
+    const base = read.fulfillment.revision;
+    const sets: SQL[] = [];
+    if (details.carrier !== undefined) sets.push(sql`carrier = ${details.carrier}`);
+    if (details.trackingNumber !== undefined) {
+      sets.push(sql`tracking_number = ${details.trackingNumber}`);
+    }
+
+    const res = await db.execute(sql`
+      WITH ful AS (
+        UPDATE shop_fulfillments
+           SET ${sql.join(sets, sql`, `)}, revision = revision + 1
+         WHERE id = ${id}
+           AND revision = ${base}
+           AND lifecycle_generation = ${pinned}
+           AND status = 'pending'
+        RETURNING ${sql.raw(returning())}
+      )
+      SELECT ${sql.raw(returning())},
+             (SELECT COALESCE(json_agg(json_build_object('id', fl.id,
+                                                        'order_line_id', fl.order_line_id,
+                                                        'qty', fl.qty) ORDER BY fl.id), '[]'::json)
+                FROM shop_fulfillment_lines fl WHERE fl.fulfillment_id = ful.id) AS lines
+        FROM ful`);
+
+    const row = res.rows[0];
+    if (row) return rowToFulfillment(row);
+
+    const after = await readFulfillment(db, id);
+    if (!after) throw new NotFoundError(id);
+    if (after.generation === pinned && after.fulfillment.status !== 'pending') {
+      throw new PreconditionFailedError('edit_tracking', asErrorSubject(after.fulfillment));
+    }
+    read = after;
+  }
+
+  throw new StaleWriteError(derivedFrom, read.fulfillment.revision, null);
+}
 
 export const deliverFulfillment = (
   db: Db,

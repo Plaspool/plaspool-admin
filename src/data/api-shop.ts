@@ -1580,14 +1580,37 @@ export const shopApi = {
    * the compiler insist on a plain truthiness check, which is the only check
    * correct for all three.
    * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * `change` TAKES A BARE STATUS OR AN OBJECT, and the string form is kept so
+   * every existing call site compiles unchanged. The object form is the ship
+   * dialog's: `{ status: 'shipped', carrier, trackingNumber }` writes the
+   * details in the same statement as the transition (the shipment email renders
+   * them), and `{ carrier, trackingNumber }` with NO status edits a pending
+   * parcel's details without transitioning — the server 409s it once the parcel
+   * has shipped, because the email already told the customer. Per field: absent
+   * means keep, explicit `null` means clear. `JSON.stringify` drops `undefined`
+   * members, so an absent field genuinely never travels.
    */
   async setFulfillmentStatus(
     id: string,
-    status: 'shipped' | 'delivered' | 'cancelled',
+    change:
+      | 'shipped'
+      | 'delivered'
+      | 'cancelled'
+      | {
+          status?: 'shipped' | 'delivered' | 'cancelled';
+          carrier?: string | null;
+          trackingNumber?: string | null;
+        },
   ): Promise<{ fulfillment: ShopFulfillment; order?: ShopOrder | null }> {
     return shopFetch<{ fulfillment: ShopFulfillment; order?: ShopOrder | null }>(
       `${BASE}/fulfillments/${seg(id)}`,
-      { method: 'PATCH', body: { status }, id, subject: 'Fulfilment' },
+      {
+        method: 'PATCH',
+        body: typeof change === 'string' ? { status: change } : change,
+        id,
+        subject: 'Fulfilment',
+      },
     );
   },
 

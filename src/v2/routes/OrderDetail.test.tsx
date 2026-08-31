@@ -379,9 +379,20 @@ describe('the order detail screen', () => {
     mount();
     await loaded();
 
+    /* "Mark shipped" no longer fires: it opens the ship dialog, where the
+     * carrier/tracking the shipment email will carry are confirmed. Untouched
+     * empty fields submit as explicit nulls — the parcel row held none. */
     await user.click(screen.getByRole('button', { name: 'Mark shipped' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Mark Parcel 1 shipped' });
+    await user.click(within(dialog).getByRole('button', { name: 'Mark shipped' }));
 
-    await waitFor(() => expect(sent(PARCEL, 'PATCH')).toEqual({ status: 'shipped' }));
+    await waitFor(() =>
+      expect(sent(PARCEL, 'PATCH')).toEqual({
+        status: 'shipped',
+        carrier: null,
+        trackingNumber: null,
+      }),
+    );
     expect(await screen.findByText('Parcel 1 shipped')).toBeTruthy();
     await waitFor(() => expect(reads(ORDER)).toBe(2));
     expect(screen.queryByText(SETTLED_TOAST)).toBeNull();
@@ -398,10 +409,161 @@ describe('the order detail screen', () => {
     await loaded();
 
     await user.click(screen.getByRole('button', { name: 'Mark shipped' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Mark Parcel 1 shipped' });
+    await user.click(within(dialog).getByRole('button', { name: 'Mark shipped' }));
 
     // The one shape of the three allowed to claim the order fulfilled.
     expect(await screen.findByText(SETTLED_TOAST)).toBeTruthy();
     expect(await screen.findByText('Parcel 1 shipped')).toBeTruthy();
     await waitFor(() => expect(reads(ORDER)).toBe(2));
+  });
+
+  it('ships with the TYPED carrier and tracking — the dialog is what the email renders', async () => {
+    const user = userEvent.setup();
+    withOrder([parcel('pending')]);
+    when(PARCEL, { fulfillment: parcel('shipped'), order: null });
+    mount();
+    await loaded();
+
+    await user.click(screen.getByRole('button', { name: 'Mark shipped' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Mark Parcel 1 shipped' });
+    await user.type(within(dialog).getByLabelText('Carrier'), 'GIG Logistics');
+    await user.type(within(dialog).getByLabelText('Tracking number'), 'GIG-123');
+    await user.click(within(dialog).getByRole('button', { name: 'Mark shipped' }));
+
+    await waitFor(() =>
+      expect(sent(PARCEL, 'PATCH')).toEqual({
+        status: 'shipped',
+        carrier: 'GIG Logistics',
+        trackingNumber: 'GIG-123',
+      }),
+    );
+    expect(await screen.findByText('Parcel 1 shipped')).toBeTruthy();
+    await waitFor(() => expect(reads(ORDER)).toBe(2));
+  });
+
+  it('Edit tracking saves details on a pending parcel WITHOUT transitioning it', async () => {
+    const user = userEvent.setup();
+    withOrder([parcel('pending')]);
+    when(PARCEL, {
+      fulfillment: { ...parcel('pending'), carrier: 'DHL', trackingNumber: 'T-9' },
+    });
+    mount();
+    await loaded();
+
+    await user.click(screen.getByRole('button', { name: 'Edit tracking' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Parcel 1 tracking' });
+    await user.type(within(dialog).getByLabelText('Carrier'), 'DHL');
+    await user.type(within(dialog).getByLabelText('Tracking number'), 'T-9');
+    await user.click(within(dialog).getByRole('button', { name: 'Save tracking' }));
+
+    /* Key by key: NO status member at all — this is the details-only PATCH,
+     * and a stray transition here would ship the parcel. */
+    await waitFor(() =>
+      expect(sent(PARCEL, 'PATCH')).toEqual({ carrier: 'DHL', trackingNumber: 'T-9' }),
+    );
+    expect(await screen.findByText('Parcel 1 tracking saved')).toBeTruthy();
+    await waitFor(() => expect(reads(ORDER)).toBe(2));
+  });
+});
+
+// ============================================================================
+
+describe('the next-step menu item', () => {
+  it('names "Fulfil items…" for a paid order with an unfulfilled remainder, and opens the modal', async () => {
+    const user = userEvent.setup();
+    withOrder(); // paid, qty 2 of which 0 fulfilled — the remainder decides.
+    mount();
+    await loaded();
+
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(
+      await screen.findByRole('menuitem', { name: 'Next step: Fulfil items…' }),
+    );
+
+    expect(await screen.findByRole('dialog', { name: 'Fulfil items' })).toBeTruthy();
+  });
+
+  it('names "Mark Parcel 1 shipped…" once the remainder is packed, and the dialog ships it', async () => {
+    const user = userEvent.setup();
+    // Everything packed (fulfilledQty = qty), one parcel still pending: the
+    // next move is that parcel's shipment, by its ROW number.
+    when(ORDER, {
+      order,
+      lines: [{ ...line, fulfilledQty: 2 }],
+      fulfillments: [parcel('pending')],
+      timeline: [],
+      emails: [],
+      payment,
+    });
+    when(PARCEL, { fulfillment: parcel('shipped'), order: null });
+    mount();
+    await loaded();
+
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(
+      await screen.findByRole('menuitem', { name: 'Next step: Mark Parcel 1 shipped…' }),
+    );
+
+    const dialog = await screen.findByRole('dialog', { name: 'Mark Parcel 1 shipped' });
+    await user.type(within(dialog).getByLabelText('Carrier'), 'GIG Logistics');
+    await user.type(within(dialog).getByLabelText('Tracking number'), 'GIG-123');
+    await user.click(within(dialog).getByRole('button', { name: 'Mark shipped' }));
+
+    await waitFor(() =>
+      expect(sent(PARCEL, 'PATCH')).toEqual({
+        status: 'shipped',
+        carrier: 'GIG Logistics',
+        trackingNumber: 'GIG-123',
+      }),
+    );
+    expect(await screen.findByText('Parcel 1 shipped')).toBeTruthy();
+  });
+
+  it('runs "Mark Parcel 1 delivered" directly — no dialog, the existing toasts', async () => {
+    const user = userEvent.setup();
+    when(ORDER, {
+      order,
+      lines: [{ ...line, fulfilledQty: 2 }],
+      fulfillments: [parcel('shipped')],
+      timeline: [],
+      emails: [],
+      payment,
+    });
+    // The delivered branch answers { fulfillment } and stops — nothing settles.
+    when(PARCEL, {
+      fulfillment: { ...parcel('shipped'), status: 'delivered', deliveredAt: NOW },
+    });
+    mount();
+    await loaded();
+
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(
+      await screen.findByRole('menuitem', { name: 'Next step: Mark Parcel 1 delivered' }),
+    );
+
+    await waitFor(() => expect(sent(PARCEL, 'PATCH')).toEqual({ status: 'delivered' }));
+    expect(await screen.findByText('Parcel 1 delivered')).toBeTruthy();
+    await waitFor(() => expect(reads(ORDER)).toBe(2));
+    expect(screen.queryByText(SETTLED_TOAST)).toBeNull();
+  });
+
+  it('says "Awaiting payment — nothing to run" on a pending order', async () => {
+    const user = userEvent.setup();
+    when(ORDER, {
+      order: { ...order, status: 'pending', paidAt: null },
+      lines: [line],
+      fulfillments: [],
+      timeline: [],
+      emails: [],
+      payment: null,
+    });
+    mount();
+    await loaded();
+
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    expect(
+      await screen.findByRole('menuitem', { name: 'Awaiting payment — nothing to run' }),
+    ).toBeTruthy();
   });
 });
