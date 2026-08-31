@@ -1,4 +1,5 @@
 import { shopApi } from '../../data/api-shop';
+import { ForbiddenError } from '../../data/errors';
 import { listReviews } from '../../data/api-reviews';
 
 /**
@@ -65,15 +66,26 @@ const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
 export async function fetchAlerts(signal?: AbortSignal): Promise<OpsAlert[]> {
   /* Reviews ride along best-effort: a moderation outage must not blank the
-     whole bell, because the stuck-email alert is the one that matters most. */
+     whole bell, because the stuck-email alert is the one that matters most.
+
+     THE STATS 403 IS SWALLOWED ON PURPOSE, AND ONLY THE 403. Stats sit in the
+     analytics domain, which the scoped roles (a content writer, most visibly)
+     do not hold — for them the refusal is the system working, and their bell
+     is quiet, not broken. Every stats-fed alert simply doesn't exist for
+     them; the reviews alert can still ride if their role may moderate. Any
+     OTHER failure still throws, so the shell keeps treating a real outage as
+     "keep the last list" rather than as an empty bell. */
   const [stats, reviews] = await Promise.all([
-    shopApi.stats({}, signal),
+    shopApi.stats({}, signal).catch((cause: unknown) => {
+      if (cause instanceof ForbiddenError) return null;
+      throw cause;
+    }),
     listReviews({ status: 'pending', limit: 25 }).catch(() => null),
   ]);
 
   const alerts: OpsAlert[] = [];
 
-  if (stats.emails.stuck > 0) {
+  if (stats && stats.emails.stuck > 0) {
     const n = stats.emails.stuck;
     alerts.push({
       id: 'emails-stuck',
@@ -87,10 +99,12 @@ export async function fetchAlerts(signal?: AbortSignal): Promise<OpsAlert[]> {
     });
   }
 
-  const paid = stats.ordersByStatus
-    .filter((row) => row.status === 'paid')
-    .reduce((n, row) => n + row.count, 0);
-  if (paid > 0) {
+  const paid = stats
+    ? stats.ordersByStatus
+        .filter((row) => row.status === 'paid')
+        .reduce((n, row) => n + row.count, 0)
+    : 0;
+  if (stats && paid > 0) {
     alerts.push({
       id: 'orders-paid',
       source: 'Orders',
@@ -112,13 +126,13 @@ export async function fetchAlerts(signal?: AbortSignal): Promise<OpsAlert[]> {
       tone: 'info',
       title: `${n}${more ? '+' : ''} ${plural(n, 'review', 'reviews')} awaiting moderation`,
       body: 'Nothing shows on the storefront until it is approved.',
-      at: reviews.items[0]?.createdAt ?? stats.generatedAt,
+      at: reviews.items[0]?.createdAt ?? stats?.generatedAt ?? Date.now(),
       to: '/products/reviews',
       signature: `${n}${more ? '+' : ''}`,
     });
   }
 
-  if (stats.lowStock.length > 0) {
+  if (stats && stats.lowStock.length > 0) {
     const n = stats.lowStock.length;
     alerts.push({
       id: 'low-stock',

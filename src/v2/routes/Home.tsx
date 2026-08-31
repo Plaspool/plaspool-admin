@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import { shopApi } from '../../data/api-shop';
+import { ForbiddenError } from '../../data/errors';
 import { useAsync } from '../lib/useAsync';
 import { money } from '../lib/format';
 import { AnalyticsBar, AnalyticsMenuItem, PageHeader, useAnalyticsBar, type Metric } from '../ui/Page';
@@ -28,7 +29,19 @@ import { BoxArt, CouponArt, PageArt, PeopleArt, ReceiptArt, ShelfArt } from '../
  */
 export default function Home() {
   const [shown, toggle] = useAnalyticsBar('home');
-  const { data, error } = useAsync((signal) => shopApi.stats({}, signal), []);
+  /* THE 403 IS A SCOPED HOME, NOT A BROKEN ONE. Stats sit in the analytics
+     domain, which a content writer does not hold — so for them the endpoint
+     answers 403 by design. The launcher below is still their front door:
+     swallow the refusal into "no data" (no tiles, no alert banners) rather
+     than letting it paint the load-failure banner over a page that works. */
+  const { data, error } = useAsync(
+    (signal) =>
+      shopApi.stats({}, signal).catch((cause: unknown) => {
+        if (cause instanceof ForbiddenError) return null;
+        throw cause;
+      }),
+    [],
+  );
 
   const metrics = useMemo<Metric[]>(() => {
     if (!data) return [];
@@ -71,7 +84,9 @@ export default function Home() {
         <p>What do you want to work on next?</p>
       </div>
 
-      {shown ? <AnalyticsBar range="Store total" metrics={metrics} /> : null}
+      {/* No metrics means loading OR a scoped role — an empty bar frame would
+          claim numbers exist that never will. */}
+      {shown && metrics.length > 0 ? <AnalyticsBar range="Store total" metrics={metrics} /> : null}
 
       {error ? (
         <Banner tone="critical" title="Couldn’t load the store summary">

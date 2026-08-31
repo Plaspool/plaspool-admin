@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.setConfig({ testTimeout: 20_000 });
 
@@ -12,16 +12,21 @@ vi.setConfig({ testTimeout: 20_000 });
  * first glance, which for the stuck-email alert means nobody is ever told
  * the pile grew.
  *
+ * PLUS THE SCOPED-ROLE RULE (2026-08-31): stats sit in the analytics domain,
+ * which a content writer does not hold, so `/shop/admin/stats` answers their
+ * bell with a 403 BY DESIGN. `fetchAlerts` must swallow exactly that refusal
+ * into an empty list — a writer's bell is quiet, not broken — while every
+ * other failure still throws so a real outage keeps looking like one. The
+ * second describe below stubs `fetch` to drive that path; the read-state
+ * tests still never touch the network.
+ *
  * NAMED `.test.tsx` DELIBERATELY, though it contains no JSX: `alerts.ts`
  * reads `window.localStorage`, so this file needs the `ui` project's jsdom
  * (the `client` node project has no `window`, under which every alert would
  * read as unread and the assertion below that marking works would fail).
- * Nothing else is stubbed: `fetchAlerts`'s imports are plain fetch wrappers
- * with no import-time side effects, and the behavior under test never calls
- * the network.
  */
 
-import { isUnread, markRead, type OpsAlert } from './alerts';
+import { fetchAlerts, isUnread, markRead, type OpsAlert } from './alerts';
 
 /** The stuck-email fact at a given magnitude — same id, moving signature. */
 const stuckEmails = (signature: string): OpsAlert => ({
@@ -38,6 +43,26 @@ const stuckEmails = (signature: string): OpsAlert => ({
 beforeEach(() => {
   window.localStorage.clear();
 });
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+/** Answer every route with one JSON verdict — the 403 tests need no routing
+ *  table, because the refusal under test is the same for both endpoints. */
+function stubAnswers(answer: (pathname: string) => { status: number; body: unknown }) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: unknown) => {
+      const url = new URL(String(input), 'https://studio.test');
+      const { status, body } = answer(url.pathname);
+      return new Response(JSON.stringify(body), {
+        status,
+        headers: { 'content-type': 'application/json' },
+      });
+    }),
+  );
+}
 
 // ============================================================================
 
@@ -59,5 +84,44 @@ describe('the bell’s read state', () => {
     // And acknowledging the new magnitude settles it at that level.
     markRead(six);
     expect(isUnread(six)).toBe(false);
+  });
+});
+
+describe('a scoped role’s bell', () => {
+  it('swallows the stats 403 into an empty list — quiet, not broken', async () => {
+    /* A content writer: no analytics domain, so stats refuses — and their
+       role holds no marketing either, so reviews refuses too. Both refusals
+       together must resolve to [], never reject. */
+    stubAnswers(() => ({
+      status: 403,
+      body: { error: 'forbidden', requestId: 'req_test' },
+    }));
+
+    await expect(fetchAlerts()).resolves.toEqual([]);
+  });
+
+  it('still lets the reviews alert ride when only stats is refused', async () => {
+    /* A role that may moderate but not read analytics: the stats-fed alerts
+       simply do not exist for them, while the reviews fact still shows. */
+    stubAnswers((pathname) =>
+      pathname === '/api/shop/reviews'
+        ? {
+            status: 200,
+            body: {
+              items: [{ id: 'rev_1', createdAt: 1_756_000_000_000 }],
+              nextCursor: null,
+            },
+          }
+        : { status: 403, body: { error: 'forbidden', requestId: 'req_test' } },
+    );
+
+    const alerts = await fetchAlerts();
+    expect(alerts.map((a) => a.id)).toEqual(['reviews-pending']);
+    expect(alerts[0]!.title).toBe('1 review awaiting moderation');
+  });
+
+  it('a real outage still throws — only the 403 is the system working', async () => {
+    stubAnswers(() => ({ status: 500, body: { error: 'internal', requestId: 'req_test' } }));
+    await expect(fetchAlerts()).rejects.toThrow();
   });
 });

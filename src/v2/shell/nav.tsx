@@ -91,5 +91,14 @@ export const NAV: NavEntry[] = [
 ];
 
 export const NAV_FOOT: NavEntry[] = [
-  { to: '/settings', label: 'Settings', icon: <Settings /> },
+  {
+    to: '/settings',
+    label: 'Settings',
+    icon: <Settings />,
+    children: [
+      { to: '/settings/shipping', label: 'Shipping' },
+      { to: '/settings/team', label: 'Team' },
+      { to: '/settings/writing', label: 'Writing' },
+    ],
+  },
 ];
