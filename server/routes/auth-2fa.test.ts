@@ -122,18 +122,23 @@ describe('the protected login', () => {
     expect(mailer.sent).toHaveLength(0);
   });
 
-  it('falls OPEN when no mailer is configured — a dev checkout still signs in', async () => {
+  it('fails CLOSED when no mailer is configured — the factor is never waived by config', async () => {
+    /* The first cut fell open here and the security critic killed it: one
+     * missing baked-at-build env var must not quietly turn every protected
+     * login single-factor. Dev checkouts are unaffected — nothing there has
+     * two_factor_email set. */
     await protect(ctx.users.owner.email);
     const c = httpClient(ctx.db, { mailer: new UnconfiguredMailer() });
     const res = await c.post('/api/auth/login', {
       email: ctx.users.owner.email,
       password: SEED_PASSWORD,
     });
-    expect(res.status).toBe(200);
-    expect((await c.get('/api/auth/me')).status).toBe(200);
+    expect(res.status).toBe(503);
+    expect((await json<{ error: string }>(res)).error).toBe('two_factor_unavailable');
+    expect((await c.get('/api/auth/me')).status).toBe(401);
   });
 
-  it('falls CLOSED when the configured provider fails — 503, no session, no waiver', async () => {
+  it('fails CLOSED when the configured provider is down — 503, no session, no waiver', async () => {
     await protect(ctx.users.owner.email);
     const c = httpClient(ctx.db, { mailer: new BrokenMailer() });
     const res = await c.post('/api/auth/login', {

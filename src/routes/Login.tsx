@@ -69,6 +69,7 @@ export function SignInForm({
      happened, so this form never holds the password past that point. */
   const [challenge, setChallenge] = useState<{ ticket: string } | null>(null);
   const [code, setCode] = useState('');
+  const [resent, setResent] = useState(false);
   const errorId = useId();
 
   async function submit(event: FormEvent) {
@@ -147,6 +148,31 @@ export function SignInForm({
         >
           {busy ? 'Verifying…' : 'Verify code'}
         </button>
+        <div className="authform__row" style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <button
+            className="btn"
+            type="button"
+            onClick={() => {
+              setChallenge(null);
+              setCode('');
+              setError(null);
+              setResent(false);
+            }}
+          >
+            Start over
+          </button>
+          <button
+            className="btn"
+            type="button"
+            disabled={resent}
+            onClick={() => {
+              setResent(true);
+              void api.resendLoginCode(challenge.ticket).catch(() => undefined);
+            }}
+          >
+            {resent ? 'Code re-sent' : 'Send a new code'}
+          </button>
+        </div>
       </form>
     );
   }

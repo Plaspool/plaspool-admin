@@ -840,6 +840,17 @@ export async function acceptInvite(
   const invite = claimed.rows[0];
   if (!invite) throw new InviteError();
 
+  /*
+   * AN OWNER-ROLE INVITE IS POISON AND IS REFUSED AT ACCEPTANCE, not only at
+   * creation. The new invite routes cannot mint one (the enum and `canAssign`
+   * both refuse), but the COLUMN still admits the value — migration 0680
+   * keeps it legal because history may carry it — and an unspent owner invite
+   * minted by the pre-0680 route would otherwise create a SECOND owner, who
+   * could then disable the first. The invite stays claimed: a token that can
+   * never be honoured should not be retryable either.
+   */
+  if (String(invite.role) === 'owner') throw new InviteError();
+
   try {
     return await createUser(db, {
       email: String(invite.email),

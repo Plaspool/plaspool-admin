@@ -564,14 +564,19 @@ export function createAuthRoutes(deps: AuthRouteDeps = {}): Hono<AppEnv> {
    * person who mistyped four times and then got it right must not be locked
    * out of the code step.
    *
-   * AN UNCONFIGURED MAILER FALLS OPEN, A FAILED SEND FALLS CLOSED, and the
-   * asymmetry is deliberate. No `RESEND_API_KEY` is a deployment that CHOSE to
-   * run without mail (every dev checkout, the test suites): demanding a code
-   * nothing can deliver would lock every login on such a deployment forever,
-   * with a recovery that means production database surgery. A SEND failure on
-   * a configured deployment is transient weather: the account stays protected,
-   * the caller gets a 503 that names the problem, and nobody's second factor
-   * is waived because a provider blinked.
+   * A PROTECTED ACCOUNT FAILS CLOSED, WHETHER THE MAILER IS UNCONFIGURED OR
+   * MERELY DOWN. The first cut fell open for the unconfigured case ("a dev
+   * checkout must still sign in") and the security critic was right to kill
+   * it: `RESEND_API_KEY` is one baked-at-build env var (§5), and the planned
+   * account move is exactly the moment it goes missing — at which point every
+   * protected login would quietly become single-factor. Instead: 503
+   * `two_factor_unavailable`, and the second factor is never waived by
+   * configuration. A dev checkout is unaffected because nothing there has
+   * `two_factor_email` set (harness seeds and DDL default are false). The
+   * lockout recovery, should production ever lose its mail config with 2FA
+   * on: `scripts/set-owner-password.ts` + `UPDATE users SET two_factor_email
+   * = false WHERE email = …` — deliberate database surgery for a deliberate
+   * misconfiguration.
    */
   app.post('/auth/login', async (c) => {
     const db = currentDb(c);
@@ -596,45 +601,50 @@ export function createAuthRoutes(deps: AuthRouteDeps = {}): Hono<AppEnv> {
     await forget(db, narrowKey);
 
     if (found.twoFactorEmail) {
-      let configured = true;
+      const unavailable = () =>
+        c.json(
+          { error: 'two_factor_unavailable', requestId: c.get('requestId') ?? '' },
+          503,
+        );
       try {
         mailer.assertConfigured?.();
-      } catch {
-        configured = false;
+      } catch (err) {
+        console.error(
+          '[api]',
+          JSON.stringify({
+            requestId: c.get('requestId') ?? '',
+            name: err instanceof Error ? err.name : 'Error',
+            message: 'two-factor account with no mail configuration',
+            route: 'POST /api/auth/login',
+          }),
+        );
+        return unavailable();
       }
-      if (configured) {
-        // Housekeeping riding a write path that already exists: yesterday's
-        // expired challenges go, bounded and best-effort.
-        await sweepLoginChallenges(db, Date.now()).catch(() => 0);
-        const challenge = await createLoginChallenge(db, found.user.id, Date.now());
-        try {
-          await mailer.send(
-            await renderSystem(db, 'account.login_code', address, {
-              code: challenge.code,
-              expiry_minutes: String(Math.round(CODE_TTL_MS / 60_000)),
-            }),
-          );
-        } catch (err) {
-          // Name and message only — the message must never carry the code.
-          console.error(
-            '[api]',
-            JSON.stringify({
-              requestId: c.get('requestId') ?? '',
-              name: err instanceof Error ? err.name : 'Error',
-              message: err instanceof Error ? err.message : 'mail send failed',
-              route: 'POST /api/auth/login',
-            }),
-          );
-          return c.json(
-            {
-              error: 'two_factor_unavailable',
-              requestId: c.get('requestId') ?? '',
-            },
-            503,
-          );
-        }
-        return c.json({ twoFactor: { ticket: challenge.ticket, expiresAt: challenge.expiresAt } });
+      // Housekeeping riding a write path that already exists: yesterday's
+      // expired challenges go, bounded and best-effort.
+      await sweepLoginChallenges(db, Date.now()).catch(() => 0);
+      const challenge = await createLoginChallenge(db, found.user.id, Date.now());
+      try {
+        await mailer.send(
+          await renderSystem(db, 'account.login_code', address, {
+            code: challenge.code,
+            expiry_minutes: String(Math.round(CODE_TTL_MS / 60_000)),
+          }),
+        );
+      } catch (err) {
+        // Name and message only — the message must never carry the code.
+        console.error(
+          '[api]',
+          JSON.stringify({
+            requestId: c.get('requestId') ?? '',
+            name: err instanceof Error ? err.name : 'Error',
+            message: err instanceof Error ? err.message : 'mail send failed',
+            route: 'POST /api/auth/login',
+          }),
+        );
+        return unavailable();
       }
+      return c.json({ twoFactor: { ticket: challenge.ticket, expiresAt: challenge.expiresAt } });
     }
 
     const { token, expiresAt } = await createSession(

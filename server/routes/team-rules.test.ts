@@ -176,6 +176,30 @@ describe('invites', () => {
     ).toBe(201);
   });
 
+  it('a historical owner-role invite row is refused at ACCEPTANCE', async () => {
+    /* The column still admits `owner` (0680 keeps history legal) and the
+     * pre-0680 route could mint one; acceptance is the second wall. The seed
+     * goes in raw, the way only history can put it there. */
+    const { mintToken, tokenId } = await import('../repo/users');
+    const token = mintToken();
+    await ctx.db.execute(sql`
+      INSERT INTO invites (email, token_hash, role, invited_by, created_at, expires_at)
+      VALUES ('usurper@test.local', ${tokenId(token)}, 'owner', ${ctx.users.owner.id}::uuid,
+              ${Date.now()}, ${Date.now() + 86_400_000})`);
+
+    const fresh = httpClient(ctx.db);
+    const res = await fresh.post('/api/auth/accept-invite', {
+      token,
+      password: 'a-long-enough-password',
+      displayName: 'Usurper',
+    });
+    expect(res.status).toBe(400);
+    const owners = await ctx.db.execute(
+      sql`SELECT count(*)::int AS n FROM users WHERE role = 'owner'`,
+    );
+    expect(Number(owners.rows[0].n)).toBe(1);
+  });
+
   it('an accepted invite carries its role into the account, protected by default', async () => {
     const owner = await login(ctx.users.owner);
     const res = await owner.post('/api/invites', {

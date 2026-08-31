@@ -10,11 +10,13 @@ import type { AppEnv } from '../../app-env';
  * Service areas on the wire — contract #6.1 and #6.1b.
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * READING IS `requireAuth`; EVERY WRITE IS `requireOwner`. This list decides
- * WHERE VANS GO, which is the same class of decision as a program's rate or the
- * redemption economics — the things the frozen role matrix (spec D12) reserves
- * for the owner. A writer processing returns needs to SEE the boards; switching
- * a district on commits the business to sending a driver there.
+ * EVERY ROUTE IS `requireAuth`; WHICH STAFF REACH THEM IS THE DOMAIN GATE'S
+ * CALL (migration 0680, `server/middleware/permissions.ts`). This surface sits
+ * in the `marketing` domain, so the marketing role, the owner and developers
+ * hold it — reads and writes alike — and a content writer is off it entirely.
+ * The list still decides WHERE VANS GO; what changed is who the owner trusts
+ * with that decision, and spec D12's owner-only rule is superseded by the
+ * owner's own role model.
  *
  * THE GUARDS ARE ATTACHED PER ROUTE, never `routes.use('*', …)` — the rule
  * `../programs/routes.ts` states at length, and the reason `../app.ts` pins an
