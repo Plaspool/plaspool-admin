@@ -52,6 +52,13 @@ const ACTOR = '11111111-1111-4111-8111-111111111111';
 const EMAIL = 'dara@example.test';
 const ORDER = 'ord_fixture_1';
 
+/**
+ * WHAT THE CUSTOMER CALLS THE SAME ORDER. Held apart from `ORDER` on purpose and
+ * sharing no substring with it: an assertion that passed for both would not be
+ * able to tell the two apart, which is the entire bug this pair pins down.
+ */
+const ORDER_NUMBER = '2026-000009-D';
+
 /** ISO-4217 is a code, not a customer-facing noun — it may be written down. */
 const CURRENCY = 'NGN';
 
@@ -411,8 +418,16 @@ describe('quote — what a balance is worth against a cart', () => {
 // --------------------------------------------------------------------- redeem
 
 describe('redeem — the debit at order commit', () => {
-  const spend = (over: Partial<{ orderId: string; points: number; currency: string }> = {}) => ({
+  const spend = (
+    over: Partial<{
+      orderId: string;
+      orderNumber: string;
+      points: number;
+      currency: string;
+    }> = {},
+  ) => ({
     orderId: ORDER,
+    orderNumber: ORDER_NUMBER,
     email: EMAIL,
     points: 100,
     currency: CURRENCY,
@@ -436,7 +451,10 @@ describe('redeem — the debit at order commit', () => {
       actor_type: 'customer',
     });
     // Render-final, in the words of this instant.
-    expect(row?.reason).toBe(`Order ${ORDER}: 100 ${CAPS.other} spent`);
+    expect(row?.reason).toBe(`Order ${ORDER_NUMBER}: 100 ${CAPS.other} spent`);
+    // The internal id is written STRUCTURALLY, to `order_id` above — never into
+    // the sentence, which is the half a shopper reads.
+    expect(String(row?.reason)).not.toContain(ORDER);
     for (const word of presetWords) {
       expect(String(row?.reason), `preset word "${word}" reached the ledger`).not.toContain(word);
     }
@@ -534,10 +552,41 @@ describe('redeem — the debit at order commit', () => {
     expect(err.detail).toBe('orderId');
   });
 
+  it('refuses an order number of nothing rather than freezing a hole in a sentence', async () => {
+    await fund(300);
+
+    // `reason` is never re-rendered, so "Order : 100 points spent" would be
+    // wrong in a shopper's history for as long as the row exists.
+    const err = await rejection<BadRequestError>(port.redeem(spend({ orderNumber: '   ' })));
+    expect(err).toBeInstanceOf(BadRequestError);
+    expect(err.detail).toBe('orderNumber');
+    expect(await rowsOfKind('redemption')).toHaveLength(0);
+    expect(await readBalance(db, EMAIL)).toBe(300);
+  });
+
+  it('still answers a replay when the order number is missing', async () => {
+    await fund(300);
+    const first = await port.redeem(spend());
+
+    /*
+     * THE ORDERING THE PORT PROMISES. An order number is not the idempotency
+     * key, so a webhook firing a second time without one must be answered from
+     * the row that already exists — not thrown at. Were the check hoisted to the
+     * top beside `orderId`'s, this would raise `orderNumber` and a paid order
+     * would be flagged for review over a field its debit no longer needs.
+     */
+    expect(await port.redeem(spend({ orderNumber: '  ' }))).toEqual(first);
+    expect(await rowsOfKind('redemption')).toHaveLength(1);
+  });
+
   it('replays to the redemption even after the order has been released', async () => {
     await fund(300);
     const first = await port.redeem(spend());
-    await port.release({ orderId: ORDER, reason: 'the order was cancelled' });
+    await port.release({
+      orderId: ORDER,
+      orderNumber: ORDER_NUMBER,
+      reason: 'the order was cancelled',
+    });
 
     /*
      * A paid webhook re-firing after a cancellation finds TWO rows carrying this
@@ -559,12 +608,17 @@ describe('redeem — the debit at order commit', () => {
 // -------------------------------------------------------------------- release
 
 describe('release — the compensating credit', () => {
-  const undo = (reason = 'the order was cancelled') => ({ orderId: ORDER, reason });
+  const undo = (reason = 'the order was cancelled') => ({
+    orderId: ORDER,
+    orderNumber: ORDER_NUMBER,
+    reason,
+  });
 
   async function redeemed(): Promise<string> {
     await fund(300);
     const result = await port.redeem({
       orderId: ORDER,
+      orderNumber: ORDER_NUMBER,
       email: EMAIL,
       points: 100,
       currency: CURRENCY,
@@ -586,8 +640,9 @@ describe('release — the compensating credit', () => {
     // Issued by whatever cancelled the order, which is a process, not a person.
     expect(row?.actor_type).toBe('system');
     expect(row?.reason).toBe(
-      `Order ${ORDER}: 100 ${CAPS.other} returned — the order was cancelled`,
+      `Order ${ORDER_NUMBER}: 100 ${CAPS.other} returned — the order was cancelled`,
     );
+    expect(String(row?.reason)).not.toContain(ORDER);
   });
 
   it('is a success when the order never spent a point', async () => {
@@ -637,6 +692,17 @@ describe('release — the compensating credit', () => {
     expect(err.detail).toBe('reason');
     expect(await rowsOfKind('redemption_release')).toHaveLength(0);
   });
+
+  it('refuses an order number of nothing', async () => {
+    await redeemed();
+
+    const err = await rejection<BadRequestError>(
+      port.release({ orderId: ORDER, orderNumber: ' ', reason: 'the order was cancelled' }),
+    );
+    expect(err).toBeInstanceOf(BadRequestError);
+    expect(err.detail).toBe('orderNumber');
+    expect(await rowsOfKind('redemption_release')).toHaveLength(0);
+  });
 });
 
 // ----------------------------------------------------------------- the races
@@ -652,7 +718,13 @@ describe('release — the compensating credit', () => {
  * answer is a 500 on a webhook it will keep retrying.
  */
 describe('a first look that missed a row — the interleavings one connection cannot issue', () => {
-  const spend = () => ({ orderId: ORDER, email: EMAIL, points: 100, currency: CURRENCY });
+  const spend = () => ({
+    orderId: ORDER,
+    orderNumber: ORDER_NUMBER,
+    email: EMAIL,
+    points: 100,
+    currency: CURRENCY,
+  });
 
   it('answers a redemption from the row its own index refused to duplicate', async () => {
     await fund(300);
@@ -694,12 +766,17 @@ describe('a first look that missed a row — the interleavings one connection ca
   it('answers a release from its own refused row, and the refusal moves nothing', async () => {
     await fund(300);
     await port.redeem(spend());
-    const first = await port.release({ orderId: ORDER, reason: 'the order was cancelled' });
+    const first = await port.release({
+      orderId: ORDER,
+      orderNumber: ORDER_NUMBER,
+      reason: 'the order was cancelled',
+    });
     expect(await lifetimeEarned()).toBe(400);
 
     const blind = blindOnce('redemption_release');
     const second = await redemptionPort(blind.db, () => NOW).release({
       orderId: ORDER,
+      orderNumber: ORDER_NUMBER,
       reason: 'cancelled again, by a second worker',
     });
 

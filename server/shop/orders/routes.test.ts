@@ -655,7 +655,7 @@ describe('the admin surface', () => {
         redeem: () => {
           throw new Error('a cancel must never redeem');
         },
-        release: async (input: { orderId: string; reason: string }) => {
+        release: async (input: { orderId: string; orderNumber: string; reason: string }) => {
           released.push(input);
           return { ok: true as const, entryId: 'entry_1', balance: 1000 };
         },
@@ -666,7 +666,9 @@ describe('the admin surface', () => {
       refund: { kind: 'none' },
     });
     expect(res.status).toBe(200);
-    expect(released).toEqual([{ orderId: read.order.id, reason: 'admin' }]);
+    expect(released).toEqual([
+      { orderId: read.order.id, orderNumber: read.order.orderNumber, reason: 'admin' },
+    ]);
   });
 
   it('cancelling a cancelled order is a 409 precondition_failed, not a 500', async () => {

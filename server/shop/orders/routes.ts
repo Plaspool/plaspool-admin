@@ -915,7 +915,7 @@ function registerAdminRoutes(
      * to release and documents that as a success, so no caller has to check
      * first — and most cancelled orders never spent a point.
      */
-    await refundPoints(db, deps().redemption, read.order.id, 'admin');
+    await refundPoints(db, deps().redemption, read.order.id, read.order.orderNumber, 'admin');
 
     return c.json({ order });
   });
