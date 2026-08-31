@@ -16,6 +16,7 @@ import { resendMailer } from '../../mail/resend';
 import type { Mailer } from '../../mail/port';
 import { renderSystem } from '../../email/system-templates';
 import { money } from '../../../shared/commerce/money';
+import { slugify } from '../../../shared/doc';
 import type { AuthUser, DocNode } from '../../../shared/types';
 import { SHOP_CURRENCY } from '../currency';
 import { listProducts } from './query';
@@ -285,7 +286,15 @@ export async function buildCatalogCsv(db: Db): Promise<{ csv: string; rowCount: 
     cursor = page.nextCursor ?? undefined;
   } while (cursor !== undefined);
 
-  const csv = Papa.unparse({ fields: [...CSV_COLUMNS], data: rows });
+  /*
+   * `escapeFormulae` because a spreadsheet treats a cell beginning `=`, `+`,
+   * `-` or `@` as a formula — a product titled `=HYPERLINK("http://evil",…)`
+   * would otherwise export as a live formula that runs when the next admin
+   * opens the file in Excel or Sheets. papaparse prefixes such a cell with a
+   * `'`, which the reimport trims back off (`cell()`), so the round trip is
+   * unaffected.
+   */
+  const csv = Papa.unparse({ fields: [...CSV_COLUMNS], data: rows }, { escapeFormulae: true });
   return { csv, rowCount: rows.length };
 }
 
@@ -416,16 +425,36 @@ function parseOptions(raw: string): Record<string, string> | null {
  * `invalid` (line plus every complaint) and is EXCLUDED from grouping — the
  * rest of the file is never held hostage by one bad cell.
  */
+/**
+ * The columns a file actually CARRIES, as an allow-list the update path reads.
+ *
+ * THIS IS THE FIX FOR THE SILENT-WIPE BUG. An absent column and a present-but-
+ * blank cell both read as `''` through `cell()`, and on update `''` is the
+ * CLEAR instruction — so importing the app's own bulk-price file
+ * (`Handle,Title,Variant SKU,Variant Price`) would erase category, tags, SEO,
+ * overview and every variant's options on the products it touched, and report
+ * a clean success. Shopify leaves omitted columns untouched; so must this. A
+ * column NOT in this set is "leave alone", never "clear".
+ */
+export type PresentColumns = Set<(typeof CSV_COLUMNS)[number]>;
+
 function parseImportRows(csv: string): {
   rows: ImportRow[];
   invalid: CsvProblem[];
   total: number;
+  present: PresentColumns;
 } {
   const parsed = Papa.parse<Record<string, unknown>>(csv, {
     header: true,
     skipEmptyLines: true,
   });
-  if (parsed.data.length > MAX_IMPORT_ROWS) throw new BadRequestError('csv');
+  if (parsed.data.length > MAX_IMPORT_ROWS) throw new BadRequestError('too_many_rows');
+
+  const present: PresentColumns = new Set(
+    (parsed.meta.fields ?? []).filter((f): f is (typeof CSV_COLUMNS)[number] =>
+      (CSV_COLUMNS as readonly string[]).includes(f),
+    ),
+  );
 
   const invalid: CsvProblem[] = [];
   /*
@@ -452,8 +481,20 @@ function parseImportRows(csv: string): {
     const line = index + 1;
     const problems: string[] = [];
 
-    const handle = cell(raw, 'Handle');
-    if (handle === '') problems.push('missing Handle');
+    /*
+     * SLUGIFIED, so `Case-Spool` matches an existing `case-spool` instead of
+     * creating a duplicate the way the raw-string compare did — the create
+     * path slugifies too, so an un-normalised handle matched nothing and then
+     * took a `-2` suffix off the uniqueness ladder. `slugify('')` is
+     * `'untitled'`, so a blank or all-punctuation handle is caught FIRST and
+     * reported rather than silently becoming a product named "untitled".
+     */
+    const rawHandle = cell(raw, 'Handle');
+    const handle = rawHandle === '' ? '' : slugify(rawHandle);
+    if (rawHandle === '') problems.push('missing Handle');
+    else if (handle === 'untitled' && !/[a-z0-9]/i.test(rawHandle.normalize('NFKD'))) {
+      problems.push(`Handle "${rawHandle}" has no usable characters`);
+    }
 
     const statusRaw = cell(raw, 'Status').toLowerCase();
     if (statusRaw !== '' && !IMPORT_STATUSES.has(statusRaw)) {
@@ -536,7 +577,7 @@ function parseImportRows(csv: string): {
     });
   });
 
-  return { rows, invalid, total: parsed.data.length };
+  return { rows, invalid, total: parsed.data.length, present };
 }
 
 /**
@@ -670,29 +711,35 @@ async function applyStatus(
   }
 }
 
-/** The product-fields patch a group's head row describes. Empty SEO/overview
- *  cells are the CLEAR instruction (null), matching what export writes for a
- *  stored NULL — that symmetry is the round trip. */
-function headPatch(head: ImportRow): ProductPatch {
-  return {
-    title: head.title,
-    category: head.category,
-    tags: head.tags,
-    seoTitle: head.seoTitle || null,
-    seoDescription: head.seoDescription || null,
-    overview: head.overview || null,
-  };
+/**
+ * The product-fields patch a group's head row describes, keyed on which
+ * columns the FILE actually carried (`present`). A column that is present and
+ * blank clears the field (empty SEO/overview → null, matching what export
+ * writes for a stored NULL — that symmetry is the round trip); a column that
+ * is ABSENT is left untouched, so a partial file (the app's own bulk-price
+ * export) updates only what it names. `Title` is always safe to include: a
+ * group with no title was already refused whole by `groupRows`.
+ */
+function headPatch(head: ImportRow, present: PresentColumns): ProductPatch {
+  const patch: ProductPatch = { title: head.title };
+  if (present.has('Category')) patch.category = head.category;
+  if (present.has('Tags')) patch.tags = head.tags;
+  if (present.has('SEO Title')) patch.seoTitle = head.seoTitle || null;
+  if (present.has('SEO Description')) patch.seoDescription = head.seoDescription || null;
+  if (present.has('Overview')) patch.overview = head.overview || null;
+  return patch;
 }
 
 async function applyCreate(
   db: Db,
   group: ImportGroup,
+  present: PresentColumns,
   actor: AuthUser,
   invalid: CsvProblem[],
 ): Promise<void> {
   const head = group.head;
   const product = await createProduct(db, actor, {
-    ...headPatch(head),
+    ...headPatch(head, present),
     slug: group.handle,
     /*
      * ═══ THE 2026-08-27 LESSON, HONOURED BY OMISSION ═══
@@ -727,11 +774,12 @@ async function applyUpdate(
   db: Db,
   existing: { id: string; status: string },
   group: ImportGroup,
+  present: PresentColumns,
   actor: AuthUser,
   invalid: CsvProblem[],
 ): Promise<void> {
   const head = group.head;
-  const patch = headPatch(head);
+  const patch = headPatch(head, present);
   /*
    * Description ONLY when the cell is non-empty. The CSV carries plain text,
    * so a blank cell cannot mean "clear the document" — an exported file whose
@@ -770,13 +818,22 @@ async function applyUpdate(
         continue;
       }
 
-      const variantPatch: VariantPatch = {
-        optionValues: input.optionValues,
-        compareAtMinor: input.compareAtMinor,
-        costMinor: input.costMinor,
-      };
+      /*
+       * ONLY the variant fields the file actually carried. Without the
+       * presence gate, importing a bulk-price file (Options/Compare/Cost
+       * columns absent) would wipe every touched variant's option identity to
+       * `{}` — a `DuplicateOptionsError` on the second variant and a broken
+       * variant picker on the storefront. Present-and-blank still clears
+       * (the round-trip symmetry); absent leaves alone.
+       */
+      const variantPatch: VariantPatch = {};
+      if (present.has('Variant Options')) variantPatch.optionValues = input.optionValues;
+      if (present.has('Variant Compare At Price')) {
+        variantPatch.compareAtMinor = input.compareAtMinor;
+      }
+      if (present.has('Variant Cost')) variantPatch.costMinor = input.costMinor;
       if (input.backorderable !== null) variantPatch.backorderable = input.backorderable;
-      await updateVariant(db, match.id, variantPatch);
+      if (Object.keys(variantPatch).length > 0) await updateVariant(db, match.id, variantPatch);
 
       if (input.priceMinor !== null && input.priceMinor !== (match.price?.amount ?? null)) {
         await setPrice(db, match.id, money(input.priceMinor, SHOP_CURRENCY), 'CSV import');
@@ -934,7 +991,7 @@ csvRoutes.post('/admin/products/import', auth, async (c) => {
   const db = currentDb(c);
   const actor = currentUser(c);
 
-  const { rows, invalid, total } = parseImportRows(body.csv);
+  const { rows, invalid, total, present } = parseImportRows(body.csv);
   const groups = groupRows(rows, invalid);
 
   if (body.mode === 'preview') {
@@ -944,11 +1001,17 @@ csvRoutes.post('/admin/products/import', auth, async (c) => {
     );
     let creates = 0;
     let updates = 0;
+    let skips = 0;
     for (const group of groups) {
-      if (existing.has(group.handle)) updates += 1;
-      else creates += 1;
+      if (existing.has(group.handle)) {
+        /* Preview must agree with apply: with `replace` off, an existing
+         * handle is a SKIP, not an update — otherwise the modal promises
+         * changes apply will not make. */
+        if (body.replace) updates += 1;
+        else skips += 1;
+      } else creates += 1;
     }
-    return c.json({ creates, updates, invalid, total });
+    return c.json({ creates, updates, skips, invalid, total });
   }
 
   let created = 0;
@@ -966,10 +1029,10 @@ csvRoutes.post('/admin/products/import', auth, async (c) => {
     }
     try {
       if (existing) {
-        await applyUpdate(db, existing, group, actor, invalid);
+        await applyUpdate(db, existing, group, present, actor, invalid);
         updated += 1;
       } else {
-        await applyCreate(db, group, actor, invalid);
+        await applyCreate(db, group, present, actor, invalid);
         created += 1;
       }
     } catch (err) {

@@ -320,7 +320,66 @@ describe('import', () => {
       mode: 'preview',
     });
     expect(res.status).toBe(400);
-    expect(await json(res)).toMatchObject({ error: 'bad_request', detail: 'csv' });
+    expect(await json(res)).toMatchObject({ error: 'bad_request', detail: 'too_many_rows' });
+  });
+
+  it('matches an existing handle case- and punctuation-insensitively — no duplicate', async () => {
+    /* THE BLOCKING BUG: the raw-string matcher created `case-spool` AND
+     * `case-spool-2` when the file's Handle differed only in case. The slugify
+     * on both sides now makes `Case-Spool` update the existing `case-spool`. */
+    await http.post(IMPORT_PATH, {
+      csv: [HEADER, 'case-spool,Case Spool,active,,,,,,,CS-1,,1000.00,,,3,false'].join('\n'),
+      mode: 'apply',
+    });
+    const before = await adminProductBySlug('case-spool');
+
+    const res = await http.post(IMPORT_PATH, {
+      csv: [HEADER, 'Case-Spool,Case Spool Renamed,active,,,,,,,CS-1,,1500.00,,,5,false'].join('\n'),
+      mode: 'apply',
+    });
+    expect(await json(res)).toMatchObject({ created: 0, updated: 1, invalid: [] });
+
+    /* Still exactly one product under the slug, updated in place. */
+    const after = await adminProductBySlug('case-spool');
+    expect(after.id).toBe(before.id);
+    expect(after.title).toBe('Case Spool Renamed');
+    const strays = await http.get('/api/shop/admin/products?status=active');
+    const slugs = (await json<{ items: { slug: string }[] }>(strays)).items.map((p) => p.slug);
+    expect(slugs.filter((s) => s === 'case-spool-2')).toHaveLength(0);
+  });
+
+  it('a partial-column file updates only what it names and wipes nothing', async () => {
+    /* THE OTHER BLOCKING BUG: importing the app's own bulk-price shape
+     * (Handle,Title,Variant SKU,Variant Price) used to blank category, tags,
+     * SEO, overview and the variant's option identity, reporting clean
+     * success. Absent columns must now be left alone. */
+    await http.post(IMPORT_PATH, {
+      csv: [
+        HEADER,
+        'rich-spool,Rich Spool,active,Fibre,"pla, blue",A rich spool.,An overview,' +
+          'The SEO title,The SEO description,RICH-1,"{""Color"":""Blue""}",2000.00,,,7,false',
+      ].join('\n'),
+      mode: 'apply',
+    });
+
+    const partial = 'Handle,Title,Variant SKU,Variant Price';
+    const res = await http.post(IMPORT_PATH, {
+      csv: [partial, 'rich-spool,Rich Spool,RICH-1,2500.00'].join('\n'),
+      mode: 'apply',
+    });
+    expect(await json(res)).toMatchObject({ updated: 1, invalid: [] });
+
+    const product = await adminProductBySlug('rich-spool');
+    /* Everything the partial file did NOT name survives. */
+    expect(product.category).toBe('Fibre');
+    expect(product.tags).toEqual(['pla', 'blue']);
+    expect(product.seoTitle).toBe('The SEO title');
+    expect(product.overview).toBe('An overview');
+    expect(product.description).toEqual(doc('A rich spool.'));
+    expect(product.variants[0].optionValues).toEqual({ Color: 'Blue' });
+    expect(product.variants[0].compareAtMinor).toBeNull();
+    /* The one thing it DID name moved. */
+    expect(product.variants[0].price).toEqual({ amount: 250_000, currency: 'NGN' });
   });
 
   it('creates a product with variant, options, price, stock and status — verifiable through the admin read', async () => {

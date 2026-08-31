@@ -42,8 +42,10 @@ export interface CsvImportProblem {
 /** `mode: 'preview'` — what WOULD happen, nothing written. */
 export interface CsvImportPreview {
   creates: number;
-  /** Handles that already exist (non-trashed, any status). */
+  /** Handles that already exist and WILL be updated (replace on). */
   updates: number;
+  /** Existing handles that will be SKIPPED because replace is off. */
+  skips: number;
   invalid: CsvImportProblem[];
   /** Data rows in the file, refused ones included. */
   total: number;

@@ -230,7 +230,7 @@ describe('CSV export and import on the product list', () => {
     when(IMPORT, (_url, init) => {
       const body = JSON.parse(String(init.body)) as { mode: string };
       return body.mode === 'preview'
-        ? { body: { creates: 0, updates: 1, invalid: [], total: 1 } }
+        ? { body: { creates: 0, updates: 0, skips: 1, invalid: [], total: 1 } }
         : { body: { applied: true, created: 0, updated: 0, skipped: 1, invalid: [] } };
     });
     mount();
@@ -240,7 +240,9 @@ describe('CSV export and import on the product list', () => {
       screen.getByRole('checkbox', { name: /Replace products with the same handle/ }),
     );
     await user.upload(screen.getByLabelText('CSV file'), csvFile());
-    await screen.findByText('0 new · 1 to update · 0 rows with problems');
+    // replace off: the existing handle previews as a SKIP, not an update —
+    // the count agrees with what apply will do.
+    await screen.findByText('0 new · 0 to update · 1 skipped · 0 rows with problems');
 
     await user.click(screen.getByRole('button', { name: 'Import products' }));
     await waitFor(() => expect(bodies(IMPORT, 'POST')).toHaveLength(2));
@@ -250,5 +252,36 @@ describe('CSV export and import on the product list', () => {
       { csv: CSV_TEXT, mode: 'apply', replace: false },
     ]);
     expect(await screen.findByText('0 created · 0 updated · 1 skipped')).toBeTruthy();
+  });
+
+  it('apply-stage problems keep the modal open and list every refused row', async () => {
+    const user = userEvent.setup();
+    when(LIST, { items: [product('prod_a')], nextCursor: null });
+    when(IMPORT, (_url, init) => {
+      const body = JSON.parse(String(init.body)) as { mode: string };
+      return body.mode === 'preview'
+        ? { body: { creates: 1, updates: 0, skips: 0, invalid: [], total: 2 } }
+        : {
+            body: {
+              applied: true,
+              created: 1,
+              updated: 0,
+              skipped: 0,
+              // The conflict only apply can find — a SKU already on another product.
+              invalid: [{ line: 3, problem: 'SKU "RICH-1" is already in use' }],
+            },
+          };
+    });
+    mount();
+
+    await openMenuItem(user, 'Import…');
+    await user.upload(screen.getByLabelText('CSV file'), csvFile());
+    await screen.findByText('1 new · 0 to update · 0 rows with problems');
+    await user.click(screen.getByRole('button', { name: 'Import products' }));
+
+    // The modal stays open on the result and names the refused row — the
+    // conflict is visible, not swallowed into a toast count.
+    expect(await screen.findByText('Row 3: SKU "RICH-1" is already in use')).toBeTruthy();
+    expect(screen.getByText('1 created · 0 updated · 1 refused')).toBeTruthy();
   });
 });

@@ -4,8 +4,11 @@ import { shopApi, type ProductStatus, type ShopProduct, type ShopTag } from '../
 import {
   shopCsvApi,
   type CsvImportPreview,
+  type CsvImportProblem,
+  type CsvImportResult,
   type ProductExportResult,
 } from '../../data/api-shop-csv';
+import { ApiError } from '../../data/errors';
 import { getSession, subscribe } from '../../data/session';
 import { useAsync } from '../lib/useAsync';
 import { humanise, productTone, shortDate } from '../lib/format';
@@ -444,6 +447,36 @@ function ExportModal({ onClose }: { onClose: () => void }) {
  * counts and the per-row problems here are the ones apply will act on — not a
  * client-side guess that can disagree with it.
  */
+/** Turn an import failure into a sentence the operator can act on — the
+ *  row-cap 400 in particular, which otherwise reads as a bare "bad_request". */
+function importError(err: unknown): string {
+  if (err instanceof ApiError && err.status === 400) {
+    if (err.detail === 'too_many_rows') return 'That file has too many rows — the limit is 1,000.';
+    if (err.detail === 'csv') return 'That file could not be read as CSV.';
+  }
+  return err instanceof Error && err.message ? err.message : 'Import failed';
+}
+
+/** A short list of per-row problems, header + up to five + a "more" tail. */
+function ProblemList({ title, problems }: { title: string; problems: CsvImportProblem[] }) {
+  if (problems.length === 0) return null;
+  return (
+    <div className="stack stack--tight">
+      <p style={{ fontSize: 'var(--t-sm)', fontWeight: 'var(--w-medium)' }}>{title}</p>
+      {problems.slice(0, 5).map((problem) => (
+        <p key={problem.line} className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+          {`Row ${problem.line}: ${problem.problem}`}
+        </p>
+      ))}
+      {problems.length > 5 ? (
+        <p className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+          {`…and ${problems.length - 5} more`}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
   const toast = useToast();
   const [csv, setCsv] = useState<string | null>(null);
@@ -451,21 +484,42 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
   const [preview, setPreview] = useState<CsvImportPreview | null>(null);
   const [checking, setChecking] = useState(false);
   const [busy, setBusy] = useState(false);
+  /* Set when apply finishes with per-row problems: the modal STAYS open and
+     shows exactly which rows the server refused, rather than a bare toast
+     count — the conflicts only apply can find (a SKU already on another
+     product, a bad option combination) are visible nowhere else. */
+  const [result, setResult] = useState<CsvImportResult | null>(null);
+
+  async function runPreview(text: string, withReplace: boolean) {
+    setChecking(true);
+    try {
+      setPreview(await shopCsvApi.previewImport(text, withReplace));
+    } catch (err) {
+      toast.show(importError(err), 'critical');
+    } finally {
+      setChecking(false);
+    }
+  }
 
   async function pick(file: File | undefined) {
     if (!file) return;
     setPreview(null);
-    setChecking(true);
+    setResult(null);
     try {
       const text = await file.text();
       setCsv(text);
-      setPreview(await shopCsvApi.previewImport(text, replace));
-    } catch (err) {
+      await runPreview(text, replace);
+    } catch {
       setCsv(null);
-      toast.show(err instanceof Error ? err.message : 'Couldn’t read that file', 'critical');
-    } finally {
-      setChecking(false);
+      toast.show('Couldn’t read that file', 'critical');
     }
+  }
+
+  /* Re-preview when the replace toggle flips, so the counts always describe
+     the mode apply will actually run — preview and apply cannot disagree. */
+  function toggleReplace(next: boolean) {
+    setReplace(next);
+    if (csv !== null) void runPreview(csv, next);
   }
 
   async function apply() {
@@ -473,17 +527,41 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
     setBusy(true);
     try {
       const r = await shopCsvApi.applyImport(csv, replace);
+      if (r.invalid.length > 0) {
+        setResult(r);
+        setBusy(false);
+        return;
+      }
       const parts = [`${r.created} created`, `${r.updated} updated`];
       if (r.skipped > 0) parts.push(`${r.skipped} skipped`);
-      if (r.invalid.length > 0) {
-        parts.push(`${r.invalid.length} ${r.invalid.length === 1 ? 'row' : 'rows'} refused`);
-      }
-      toast.show(parts.join(' · '), r.invalid.length > 0 ? 'critical' : 'default');
+      toast.show(parts.join(' · '));
       onDone();
     } catch (err) {
-      toast.show(err instanceof Error ? err.message : 'Import failed', 'critical');
+      toast.show(importError(err), 'critical');
       setBusy(false);
     }
+  }
+
+  if (result) {
+    return (
+      <Modal
+        title="Import finished"
+        onClose={onDone}
+        wide
+        footer={<Button tone="primary" onClick={onDone}>Done</Button>}
+      >
+        <div className="stack">
+          <p style={{ fontSize: 'var(--t-md)' }}>
+            <strong>
+              {`${result.created} created · ${result.updated} updated${
+                result.skipped > 0 ? ` · ${result.skipped} skipped` : ''
+              } · ${result.invalid.length} refused`}
+            </strong>
+          </p>
+          <ProblemList title="These rows were skipped:" problems={result.invalid} />
+        </div>
+      </Modal>
+    );
   }
 
   return (
@@ -508,8 +586,9 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
       <div className="stack">
         <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
           One row per variant, matching the export: Handle is the product’s URL slug and is how
-          rows are matched to what you already have. Prices are in naira with two decimals; stock
-          is the absolute count.
+          rows are matched to what you already have (case and punctuation are normalised).
+          Columns you leave out are kept as they are. Prices are in naira with two decimals;
+          stock is the absolute count.
         </p>
         <label className="field">
           <span className="field__label">CSV file</span>
@@ -523,7 +602,7 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
           label="Replace products with the same handle"
           hint="Unticked, rows whose handle already exists are skipped rather than updated."
           checked={replace}
-          onChange={setReplace}
+          onChange={toggleReplace}
         />
         {checking ? (
           <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
@@ -534,21 +613,14 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
           <div className="stack stack--tight">
             <p style={{ fontSize: 'var(--t-md)' }}>
               <strong>
-                {`${preview.creates} new · ${preview.updates} to update · ${preview.invalid.length} ${
+                {`${preview.creates} new · ${preview.updates} to update${
+                  preview.skips > 0 ? ` · ${preview.skips} skipped` : ''
+                } · ${preview.invalid.length} ${
                   preview.invalid.length === 1 ? 'row' : 'rows'
                 } with problems`}
               </strong>
             </p>
-            {preview.invalid.slice(0, 5).map((problem) => (
-              <p key={problem.line} className="muted" style={{ fontSize: 'var(--t-sm)' }}>
-                {`Row ${problem.line}: ${problem.problem}`}
-              </p>
-            ))}
-            {preview.invalid.length > 5 ? (
-              <p className="muted" style={{ fontSize: 'var(--t-sm)' }}>
-                {`…and ${preview.invalid.length - 5} more`}
-              </p>
-            ) : null}
+            <ProblemList title="Problems found:" problems={preview.invalid} />
           </div>
         ) : null}
       </div>
