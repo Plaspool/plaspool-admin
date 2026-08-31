@@ -54,6 +54,9 @@ export interface EmailIntent {
   sentAt: number | null;
   attempts: number;
   lastError: string | null;
+  /** An operator gave up on this unsent intent (migration 0660). The sweeper
+   * skips it and the backlog stops counting it; retry clears it. */
+  dismissedAt: number | null;
 }
 
 function rowToIntent(row: Record<string, unknown>): EmailIntent {
@@ -69,11 +72,12 @@ function rowToIntent(row: Record<string, unknown>): EmailIntent {
     sentAt: toEpochMsOrNull(row.sent_at),
     attempts: Number(row.attempts),
     lastError: row.last_error == null ? null : String(row.last_error),
+    dismissedAt: toEpochMsOrNull(row.dismissed_at),
   };
 }
 
 const INTENT_COLUMNS = sql.raw(
-  'id, order_id, kind, to_email, subject, body, html, created_at, sent_at, attempts, last_error',
+  'id, order_id, kind, to_email, subject, body, html, created_at, sent_at, attempts, last_error, dismissed_at',
 );
 
 /** Every intent for one order, newest last. For the admin order view and for tests. */
@@ -82,6 +86,120 @@ export async function listIntents(db: Db, orderId: string): Promise<EmailIntent[
     SELECT ${INTENT_COLUMNS} FROM shop_order_email_intents
      WHERE order_id = ${orderId} ORDER BY created_at ASC, id ASC`);
   return res.rows.map(rowToIntent);
+}
+
+/**
+ * The four ways the outbox screen slices intents (migration 0660's range).
+ *
+ * `attention` is the row the Home banner counts: unsent, out of retries, and
+ * not yet dismissed. `queued` is everything the sweeper will still try. The
+ * four are disjoint and cover the table, so the screen's tab counts sum to the
+ * row count and an intent is never in two tabs at once.
+ */
+export type OutboxBucket = 'attention' | 'queued' | 'sent' | 'dismissed';
+
+/** An intent joined with the one order fact the list screen needs. */
+export interface OutboxItem extends EmailIntent {
+  orderNumber: string;
+}
+
+function bucketPredicate(bucket: OutboxBucket) {
+  switch (bucket) {
+    case 'attention':
+      return sql`i.sent_at IS NULL AND i.dismissed_at IS NULL
+                 AND i.attempts >= ${EMAIL_ATTEMPT_LIMIT}`;
+    case 'queued':
+      return sql`i.sent_at IS NULL AND i.dismissed_at IS NULL
+                 AND i.attempts < ${EMAIL_ATTEMPT_LIMIT}`;
+    case 'sent':
+      return sql`i.sent_at IS NOT NULL`;
+    case 'dismissed':
+      return sql`i.sent_at IS NULL AND i.dismissed_at IS NOT NULL`;
+  }
+}
+
+/** How many rows the outbox screen shows per bucket. The table is small by
+ * construction (a handful of intents per order), so this bounds pathology, not
+ * everyday use. */
+export const OUTBOX_LIMIT = 200;
+
+/**
+ * Cross-order intent list for the outbox screen, newest first.
+ *
+ * NEWEST FIRST, unlike the sweeper's oldest-first: the operator arrives from an
+ * alert about what just went wrong, and the sweeper's fairness ordering would
+ * put that at the bottom.
+ */
+export async function listOutbox(
+  db: Db,
+  bucket: OutboxBucket,
+  limit: number = OUTBOX_LIMIT,
+): Promise<OutboxItem[]> {
+  const res = await db.execute(sql`
+    SELECT i.id, i.order_id, i.kind, i.to_email, i.subject, i.body, i.html,
+           i.created_at, i.sent_at, i.attempts, i.last_error, i.dismissed_at,
+           o.order_number
+      FROM shop_order_email_intents i
+      JOIN shop_orders o ON o.id = i.order_id
+     WHERE ${bucketPredicate(bucket)}
+     ORDER BY i.created_at DESC, i.id DESC
+     LIMIT ${limit}`);
+  return res.rows.map((row) => ({
+    ...rowToIntent(row),
+    orderNumber: String(row.order_number),
+  }));
+}
+
+/** One grouped scan for the outbox tabs, so the counts and the rows come from
+ * the same predicates and cannot drift. */
+export async function countOutbox(db: Db): Promise<Record<OutboxBucket, number>> {
+  const res = await db.execute(sql`
+    SELECT count(*) FILTER (WHERE i.sent_at IS NULL AND i.dismissed_at IS NULL
+                              AND i.attempts >= ${EMAIL_ATTEMPT_LIMIT})::int AS attention,
+           count(*) FILTER (WHERE i.sent_at IS NULL AND i.dismissed_at IS NULL
+                              AND i.attempts < ${EMAIL_ATTEMPT_LIMIT})::int AS queued,
+           count(*) FILTER (WHERE i.sent_at IS NOT NULL)::int AS sent,
+           count(*) FILTER (WHERE i.sent_at IS NULL AND i.dismissed_at IS NOT NULL)::int
+             AS dismissed
+      FROM shop_order_email_intents i`);
+  const row = res.rows[0] ?? {};
+  return {
+    attention: Number(row.attention ?? 0),
+    queued: Number(row.queued ?? 0),
+    sent: Number(row.sent ?? 0),
+    dismissed: Number(row.dismissed ?? 0),
+  };
+}
+
+/**
+ * The documented recovery (`UPDATE … SET attempts = 0`), with a session instead
+ * of a psql prompt. Also clears a dismissal — the two verbs invert each other.
+ *
+ * UNSENT ROWS ONLY. Retrying a sent intent would re-deliver a message the
+ * customer already has, so a sent id answers `false` and the route 404s rather
+ * than quietly double-sending.
+ */
+export async function retryIntent(db: Db, id: string): Promise<boolean> {
+  const res = await db.execute(sql`
+    UPDATE shop_order_email_intents
+       SET attempts = 0, dismissed_at = NULL
+     WHERE id = ${id} AND sent_at IS NULL
+    RETURNING id`);
+  return res.rows.length > 0;
+}
+
+/**
+ * "Stop counting this at me." Unsent rows only, idempotent on repeat — the
+ * second dismiss finds `dismissed_at` already set and keeps the FIRST time, so
+ * the audit answer to "when did we give up" never moves.
+ */
+export async function dismissIntent(db: Db, id: string, now: number): Promise<boolean> {
+  const res = await db.execute(sql`
+    UPDATE shop_order_email_intents
+       SET dismissed_at = COALESCE(dismissed_at, ${now})
+     WHERE id = ${id} AND sent_at IS NULL
+    RETURNING id`);
+  return res.rows.length > 0;
 }
 
 export interface SweepSummary {
@@ -118,6 +236,7 @@ export async function sweepEmailIntents(
   const res = await db.execute(sql`
     SELECT ${INTENT_COLUMNS} FROM shop_order_email_intents
      WHERE sent_at IS NULL AND attempts < ${EMAIL_ATTEMPT_LIMIT}
+       AND dismissed_at IS NULL
      ORDER BY created_at ASC, id ASC
      LIMIT ${limit}`);
 

@@ -84,6 +84,7 @@ export const NAV: NavEntry[] = [
       { to: '/emails/broadcasts', label: 'Broadcasts' },
       { to: '/emails/templates', label: 'Templates' },
       { to: '/emails/subscribers', label: 'Subscribers' },
+      { to: '/emails/outbox', label: 'Outbox' },
     ],
   },
   { to: '/analytics', label: 'Analytics', icon: <BarChart3 /> },

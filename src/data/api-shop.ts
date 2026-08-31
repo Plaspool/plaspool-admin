@@ -627,10 +627,27 @@ export interface ShopEmailIntent {
   to: string;
   subject: string;
   body: string;
+  /** The designed HTML part; `null` on rows written before migration 0320. */
+  html: string | null;
   createdAt: number;
   sentAt: number | null;
   attempts: number;
   lastError: string | null;
+  /** An operator dismissed this unsent intent (migration 0660). */
+  dismissedAt: number | null;
+}
+
+/** The outbox screen's slices. Disjoint, and together they cover the table. */
+export type OutboxBucket = 'attention' | 'queued' | 'sent' | 'dismissed';
+
+/** An intent joined with the order number the list screen links through. */
+export interface ShopOutboxItem extends ShopEmailIntent {
+  orderNumber: string;
+}
+
+export interface ShopOutbox {
+  items: ShopOutboxItem[];
+  counts: Record<OutboxBucket, number>;
 }
 
 export type PaymentStatus =
@@ -983,6 +1000,28 @@ export const shopApi = {
    */
   async stats(query: { threshold?: number } = {}, signal?: AbortSignal): Promise<ShopStats> {
     return shopFetch<ShopStats>(`${BASE}/stats`, { query: { ...query }, signal });
+  },
+
+  // ---------------------------------------------------------------- outbox
+
+  /** The order-email outbox, one bucket at a time, with every tab's count. */
+  async listEmailOutbox(bucket: OutboxBucket, signal?: AbortSignal): Promise<ShopOutbox> {
+    return shopFetch<ShopOutbox>(`${BASE}/emails`, { query: { bucket }, signal });
+  },
+
+  /**
+   * Reset the attempt counter AND run one sweep, so "retry" means "try now".
+   * The summary says whether anything actually left; 404 for a sent intent.
+   */
+  async retryEmailIntent(
+    id: string,
+  ): Promise<{ ok: true; emails: { sent: number; failed: number; skipped: number } }> {
+    return shopFetch(`${BASE}/emails/${seg(id)}/retry`, { method: 'POST', id });
+  },
+
+  /** Stop counting an unsent intent at the operator. Retry undoes it. */
+  async dismissEmailIntent(id: string): Promise<{ ok: true }> {
+    return shopFetch(`${BASE}/emails/${seg(id)}/dismiss`, { method: 'POST', id });
   },
 
   /** The full low-stock list the overview only shows the head of. */

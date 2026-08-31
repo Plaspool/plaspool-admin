@@ -23,6 +23,7 @@ import {
   audienceCounts,
   createBroadcast,
   createTemplate,
+  deleteBroadcast,
   deleteTemplate,
   duplicateTemplate,
   enqueueAudience,
@@ -651,6 +652,29 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
       Date.now(),
     );
     return c.json({ broadcast }, 201);
+  });
+
+  /**
+   * Delete a draft nobody is going to send.
+   *
+   * DRAFTS ONLY, and the 409 carries the row so the screen can say WHY rather
+   * than shrugging: a broadcast that has started is the record of what was (or
+   * is being) sent to real inboxes, and the templates screen already holds the
+   * matching precedent — system templates refuse deletion with the reason
+   * attached. A draft, by contrast, has enqueued nothing and told nobody
+   * anything; it is a snapshot the owner decided against.
+   *
+   * `deleteBroadcast` answers `false` for "not a draft" AND for "no such row";
+   * the re-read tells them apart so a stale screen gets the honest one of 404
+   * and 409 rather than whichever this route guessed.
+   */
+  routes.delete('/admin/email/broadcasts/:id', requireOwner(), async (c) => {
+    const id = emailId(c);
+    const db = currentDb(c);
+    if (await deleteBroadcast(db, id)) return c.json({ ok: true });
+    const existing = await getBroadcast(db, id);
+    if (!existing) throw new NotFoundError(id);
+    throw new EmailPreconditionFailedError('delete', 'broadcast', existing);
   });
 
   /**

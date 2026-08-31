@@ -875,6 +875,40 @@ export async function startBroadcast(
 }
 
 /**
+ * Delete a DRAFT, and only a draft — one guarded statement, no read-then-write.
+ *
+ * A draft is the one status with nothing to account for: no recipient has been
+ * enqueued (that happens at `startBroadcast`), nothing has been handed to a
+ * provider, and the row is a snapshot the owner decided not to use. `sending`,
+ * `sent` and `failed` rows are the record of what left the building and stay,
+ * exactly as unsent order-email intents do.
+ *
+ * THE RECIPIENT SWEEP RIDES THE SAME STATEMENT ANYWAY. "A draft has no
+ * recipients" is an invariant of today's code, not of the schema — a future
+ * "pause" feature that CASes sending → draft would silently orphan its queue
+ * rows here if this relied on the invariant. A CTE keeps it one statement (the
+ * Neon HTTP driver refuses `transaction()`), so there is no window where the
+ * broadcast is gone and its recipients are not.
+ *
+ * Returns `false` when the row was not a draft OR did not exist; the route
+ * re-reads to tell the two apart.
+ */
+export async function deleteBroadcast(db: Db, id: string): Promise<boolean> {
+  const res = await db.execute(sql`
+    WITH doomed AS (
+      SELECT id FROM email_broadcasts WHERE id = ${id}::uuid AND status = 'draft'
+    ),
+    swept AS (
+      DELETE FROM email_broadcast_recipients
+       WHERE broadcast_id IN (SELECT id FROM doomed)
+    )
+    DELETE FROM email_broadcasts
+     WHERE id IN (SELECT id FROM doomed)
+    RETURNING id`);
+  return res.rows.length > 0;
+}
+
+/**
  * Enqueue the audience: every subscriber who has not opted out, once.
  *
  * ONE STATEMENT, `INSERT … SELECT`, so an audience of five thousand is one round

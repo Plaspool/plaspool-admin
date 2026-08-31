@@ -83,9 +83,9 @@ export default function Home() {
         <Banner
           tone="critical"
           title={`${stuck} email${stuck === 1 ? '' : 's'} will never send`}
-          action={<ButtonLink to="/emails">View emails</ButtonLink>}
+          action={<ButtonLink to="/emails/outbox">Open the outbox</ButtonLink>}
         >
-          These are out of retry attempts. Nothing will resend them without you.
+          These are out of retry attempts. Retry or dismiss them from the outbox.
         </Banner>
       ) : null}
 

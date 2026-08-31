@@ -302,6 +302,13 @@
                         "when":  1786600003500,
                         "tag":  "0640_review_emails",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  43,
+                        "version":  "7",
+                        "when":  1786600003600,
+                        "tag":  "0660_email_intent_dismissal",
+                        "breakpoints":  true
                     }
                 ]
 }

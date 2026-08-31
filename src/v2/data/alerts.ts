@@ -80,9 +80,9 @@ export async function fetchAlerts(signal?: AbortSignal): Promise<OpsAlert[]> {
       source: 'Emails',
       tone: 'critical',
       title: `${n} ${plural(n, 'email', 'emails')} will never send`,
-      body: 'Out of retry attempts — nothing resends these without you.',
+      body: 'Out of retry attempts — retry or dismiss them from the outbox.',
       at: stats.generatedAt,
-      to: '/emails',
+      to: '/emails/outbox',
       signature: String(n),
     });
   }

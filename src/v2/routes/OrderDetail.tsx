@@ -844,7 +844,12 @@ function RefundModal({
 /* ═════════════════════════════════════════════════════════ EMAIL ROW ════ */
 
 function EmailRow({ mail }: { mail: ShopEmailIntent }) {
-  const stuck = mail.sentAt === null && mail.lastError !== null && mail.attempts > 0;
+  /* A dismissed intent is one the operator RESOLVED on the outbox screen —
+   * badging it critical here would keep alarming about a decision already
+   * made, and the wording matches the outbox's bucket names. */
+  const dismissed = mail.sentAt === null && mail.dismissedAt != null;
+  const stuck =
+    mail.sentAt === null && !dismissed && mail.lastError !== null && mail.attempts > 0;
   return (
     <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -862,7 +867,7 @@ function EmailRow({ mail }: { mail: ShopEmailIntent }) {
         ) : null}
       </div>
       <Badge tone={mail.sentAt ? 'ok' : stuck ? 'critical' : 'neutral'}>
-        {mail.sentAt ? 'Handed to mailer' : stuck ? 'Stuck' : 'Queued'}
+        {mail.sentAt ? 'Handed to mailer' : dismissed ? 'Dismissed' : stuck ? 'Won’t send' : 'Queued'}
       </Badge>
     </div>
   );

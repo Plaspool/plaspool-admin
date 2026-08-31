@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Lock, Mail, MoreHorizontal, Plus, Send } from 'lucide-react';
+import { Lock, Mail, MoreHorizontal, Plus, Send, Trash2 } from 'lucide-react';
 import {
   emailApi,
   missingUnsubscribe,
@@ -62,6 +62,7 @@ export default function EmailBroadcasts() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [confirmSend, setConfirmSend] = useState<EmailBroadcast | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<EmailBroadcast | null>(null);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -204,6 +205,16 @@ export default function EmailBroadcasts() {
                   >
                     Send to {b.recipientCount}…
                   </MenuItem>
+                  <MenuItem
+                    critical
+                    icon={<Trash2 aria-hidden="true" />}
+                    onSelect={() => {
+                      close();
+                      setConfirmDelete(b);
+                    }}
+                  >
+                    Delete draft…
+                  </MenuItem>
                 </>
               ) : null}
             </>
@@ -267,6 +278,51 @@ export default function EmailBroadcasts() {
             toast.show(`Draft ready — ${created.recipientCount} recipients when you send`);
           }}
         />
+      ) : null}
+
+      {confirmDelete ? (
+        <Modal
+          title="Delete this draft?"
+          onClose={() => setConfirmDelete(null)}
+          footer={
+            <>
+              <Button onClick={() => setConfirmDelete(null)}>Cancel</Button>
+              <Button
+                tone="critical"
+                onClick={() => {
+                  const target = confirmDelete;
+                  setConfirmDelete(null);
+                  void (async () => {
+                    try {
+                      await emailApi.deleteBroadcast(target.id);
+                      setBroadcasts((list) =>
+                        list === null ? list : list.filter((b) => b.id !== target.id),
+                      );
+                      toast.show('Draft deleted');
+                    } catch (cause) {
+                      toast.show(
+                        cause instanceof Error && cause.message
+                          ? cause.message
+                          : 'Something went wrong.',
+                        'critical',
+                      );
+                      void load();
+                    }
+                  })();
+                }}
+              >
+                <Trash2 aria-hidden="true" />
+                Delete draft
+              </Button>
+            </>
+          }
+        >
+          <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
+            <strong>“{confirmDelete.subject}”</strong> has been sent to nobody — deleting it
+            removes the snapshot for good. Broadcasts that have started sending keep their
+            record and cannot be deleted.
+          </p>
+        </Modal>
       ) : null}
 
       {confirmSend ? (

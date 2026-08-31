@@ -201,10 +201,13 @@ async function revenue(db: Db, now: number): Promise<RevenueWindow[]> {
  *     inbox.
  */
 async function emailBacklog(db: Db): Promise<EmailBacklog> {
+  /* `dismissed_at IS NULL` on both unsent buckets (migration 0660): a dismissed
+   * intent is one the operator has ruled on, and counting it in `stuck` would
+   * make the Home banner un-clearable by the very screen built to clear it. */
   const res = await db.execute(sql`
-    SELECT count(*) FILTER (WHERE e.sent_at IS NULL
+    SELECT count(*) FILTER (WHERE e.sent_at IS NULL AND e.dismissed_at IS NULL
                               AND e.attempts <  ${EMAIL_ATTEMPT_LIMIT})::int AS pending,
-           count(*) FILTER (WHERE e.sent_at IS NULL
+           count(*) FILTER (WHERE e.sent_at IS NULL AND e.dismissed_at IS NULL
                               AND e.attempts >= ${EMAIL_ATTEMPT_LIMIT})::int AS stuck,
            count(*) FILTER (WHERE e.sent_at IS NOT NULL)::int                AS sent
       FROM shop_order_email_intents e`);
