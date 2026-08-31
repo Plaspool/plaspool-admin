@@ -175,7 +175,7 @@ describe('the inventory screen', () => {
     await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
 
     expect(
-      await within(panel).findByText('The audit trail refuses a stock change without a reason.'),
+      await within(panel).findByText('A stock change needs a reason. It is kept on record.'),
     ).toBeTruthy();
     expect(sentNothing(ADJUST)).toBe(true);
 

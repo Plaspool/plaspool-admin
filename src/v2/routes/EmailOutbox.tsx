@@ -74,19 +74,19 @@ const TABS: { value: OutboxBucket; label: string }[] = [
 const EMPTY: Record<OutboxBucket, { title: string; body: string }> = {
   attention: {
     title: 'Nothing needs you',
-    body: 'No email is out of retries. When one gives up, it lands here with the provider’s error and a Retry that sends immediately.',
+    body: 'No email has given up trying. If one does, it appears here with the reason, and a Retry button that sends it straight away.',
   },
   queued: {
     title: 'Nothing waiting',
-    body: 'Emails queue here for at most a few minutes — the sweep hands them to the mail provider on its next pass.',
+    body: 'Emails wait here for a few minutes at most, then get handed to the mail service.',
   },
   sent: {
     title: 'Nothing sent yet',
-    body: 'Order emails appear here once they have been handed to the mail provider.',
+    body: 'Order emails appear here once they have been sent.',
   },
   dismissed: {
     title: 'Nothing dismissed',
-    body: 'Dismissing a dead email stops it being counted at you on the Home screen. Retry undoes it.',
+    body: 'Dismissing a failed email stops it showing up on your Home screen. Retry brings it back.',
   },
 };
 
@@ -105,9 +105,9 @@ export default function EmailOutbox() {
       if (res.emails.sent > 0) {
         toast.show(res.emails.sent === 1 ? 'Sent' : `Sent — ${res.emails.sent} delivered`);
       } else if (res.emails.failed > 0) {
-        toast.show('The send failed again — the fresh error is on the row.', 'critical');
+        toast.show('It failed again. The new reason is shown on the row.', 'critical');
       } else {
-        toast.show('Requeued — the next sweep will pick it up');
+        toast.show('Queued — it will be sent shortly');
       }
     } catch (cause) {
       toast.show(
@@ -121,7 +121,7 @@ export default function EmailOutbox() {
   async function dismiss(i: ShopOutboxItem) {
     try {
       await shopApi.dismissEmailIntent(i.id);
-      toast.show('Dismissed — it will not send and stops being counted');
+      toast.show('Dismissed — it won’t send, and won’t be counted');
     } catch (cause) {
       toast.show(
         cause instanceof Error && cause.message ? cause.message : 'Something went wrong.',
@@ -267,14 +267,14 @@ export default function EmailOutbox() {
     <div className="page">
       <PageHeader
         icon={<Inbox />}
-        title="Outbox"
-        subtitle="Every order email the system owes or has delivered — retry the dead ones from here."
+        title="Sent emails"
+        subtitle="Every order email the store still owes or has already sent. Retry the failed ones here."
       />
 
       {error ? (
         <Banner
           tone="critical"
-          title="Couldn’t load the outbox"
+          title="Couldn’t load sent emails"
           action={<Button onClick={reload}>Retry</Button>}
         >
           {error}
@@ -282,7 +282,7 @@ export default function EmailOutbox() {
       ) : null}
 
       <DataTable
-        caption="Email outbox"
+        caption="Sent emails"
         columns={columns}
         rows={loading ? [] : (data?.items ?? [])}
         rowKey={(i) => i.id}
@@ -326,13 +326,13 @@ export default function EmailOutbox() {
               ]}
             />
             {viewing.lastError ? (
-              <Banner tone="warn" title="The provider’s last refusal">
+              <Banner tone="warn" title="Why it failed last time">
                 {viewing.lastError}
               </Banner>
             ) : null}
             <div>
               <span className="field__label">
-                The text version — most inboxes render the designed HTML part of the same message
+                The plain-text version. Most inboxes show the designed version of the same message instead
               </span>
               <pre
                 className="mono"

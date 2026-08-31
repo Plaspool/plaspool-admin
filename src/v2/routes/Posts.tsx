@@ -95,7 +95,7 @@ export default function Posts() {
         <IdCell
           thumb={<FileText aria-hidden="true" />}
           title={p.title || 'Untitled'}
-          meta={p.slug ? <span className="mono">/{p.slug}</span> : 'No slug yet'}
+          meta={p.slug ? <span className="mono">/{p.slug}</span> : 'No link name yet'}
           href={`/content/posts/${p.id}`}
         />
       ),
@@ -131,7 +131,7 @@ export default function Posts() {
       <PageHeader
         icon={<FileText />}
         title="Blog posts"
-        subtitle="The publication side of the shop."
+        subtitle="The writing side of the shop."
         actions={
           <ButtonLink tone="primary" size="lg" to="/content/posts/new">
             <Plus aria-hidden="true" />
@@ -176,7 +176,7 @@ export default function Posts() {
               title={search ? 'No posts match that filter' : 'Nothing written here yet'}
               body={
                 search
-                  ? 'The filter only searches the posts on this page.'
+                  ? 'This only searches the posts on this page.'
                   : 'Posts you write show up here with their status, category and word count.'
               }
               actions={search ? <Button onClick={() => setSearch('')}>Clear filter</Button> : null}
@@ -195,8 +195,8 @@ export default function Posts() {
       />
 
       <p className="page__learn">
-        Open a post to edit it — the quick editor by default, or the advanced editor from More
-        actions (make it your default in Settings).
+        Open a post to edit it. You get the quick editor by default, or the advanced editor from More
+        actions. You can make either one your default in Settings.
       </p>
     </div>
   );

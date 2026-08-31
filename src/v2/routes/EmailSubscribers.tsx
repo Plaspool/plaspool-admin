@@ -48,8 +48,8 @@ function MarketingOnly() {
       <div className="card">
         <EmptyState
           icon={<Lock />}
-          title="A marketing surface"
-          body="Everything on the email side — templates, subscribers, broadcasts — belongs to the marketing role and the admins."
+          title="This is a marketing screen"
+          body="Everything to do with email — templates, subscribers and newsletters — is handled by the marketing team and admins."
         />
       </div>
     </div>
@@ -141,7 +141,7 @@ export default function EmailSubscribers() {
         subtitle={
           audience.data
             ? `${audience.data.subscribed} subscribed · ${audience.data.suppressed} unsubscribed and kept on record`
-            : 'The audience the next broadcast goes to.'
+            : 'Everyone the next newsletter will go to.'
         }
         actions={
           <>
@@ -195,7 +195,7 @@ export default function EmailSubscribers() {
             <EmptyState
               icon={<Users />}
               title="No subscribers yet"
-              body="Customers join at checkout; you can also add or import addresses you have consent for."
+              body="Customers join at checkout. You can also add or import addresses you have permission to email."
             />
           )
         }
@@ -244,7 +244,7 @@ function AddModal({ onClose, onDone }: { onClose: () => void; onDone: (email: st
   async function commit() {
     const addr = email.trim().toLowerCase();
     if (!EMAILISH.test(addr)) {
-      setError('That does not look like an email address.');
+      setError('That doesn’t look like an email address.');
       return;
     }
     setBusy(true);
@@ -286,7 +286,7 @@ function AddModal({ onClose, onDone }: { onClose: () => void; onDone: (email: st
         />
         <Checkbox
           label="Send the welcome email"
-          hint="A real message to a real person — off by default, because most manual adds are a list being migrated, not a new subscriber. Ignored if the address is already on the list."
+          hint="Sends a real email to a real person. Off by default, because most addresses added by hand come from an existing list. Skipped if the address is already there."
           checked={welcome}
           onChange={setWelcome}
         />
@@ -324,7 +324,7 @@ function ImportModal({
 
   async function commit() {
     if (parsed.valid.length === 0) {
-      setError('Nothing importable yet.');
+      setError('Nothing to import yet.');
       return;
     }
     setBusy(true);
@@ -357,7 +357,7 @@ function ImportModal({
           label="Addresses"
           rows={7}
           value={raw}
-          hint="Paste them — one per line, or separated by commas. Importing asserts you have consent to email these people; that assertion is what fills the consent date."
+          hint="Paste them one per line, or separated by commas. By importing, you confirm these people agreed to be emailed — that is what today’s date is recorded against."
           onChange={(e) => {
             setRaw((e.target as HTMLTextAreaElement).value);
             setError(null);
@@ -379,7 +379,7 @@ function ImportModal({
           </div>
         ) : null}
         <p className="muted" style={{ fontSize: 'var(--t-sm)', lineHeight: 1.5 }}>
-          Already-present addresses are skipped, in either state — an import can never resurrect
+          Addresses already on the list are skipped either way. An import can never re-add
           someone who unsubscribed.
         </p>
         {error ? (

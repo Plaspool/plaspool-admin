@@ -152,8 +152,8 @@ function NoAnalytics({ backTo, title }: { backTo?: string; title: string }) {
       <div className="card">
         <EmptyState
           icon={<Lock />}
-          title="Not your surface"
-          body="Analytics is for the owner, developers, and the operations and marketing roles. Content writers work in Products and Content."
+          title="You don’t have access to this"
+          body="Analytics is for the owner, developers, and the operations and marketing teams. If you write content, your work is under Products and Content."
         />
       </div>
     </div>
@@ -218,7 +218,7 @@ export default function Analytics() {
       dataZoom: [{ type: 'inside' }, { type: 'slider', height: 18, bottom: 8 }],
       series: [
         {
-          name: 'Net revenue',
+          name: 'Sales after refunds',
           type: 'bar',
           barMaxWidth: 26,
           itemStyle: { color: accent, borderRadius: [3, 3, 0, 0] },
@@ -299,7 +299,7 @@ export default function Analytics() {
       },
       series: [
         {
-          name: 'Gross revenue',
+          name: 'Total sales',
           type: 'bar',
           barMaxWidth: 18,
           itemStyle: { color: accent, borderRadius: [0, 3, 3, 0] },
@@ -317,14 +317,14 @@ export default function Analytics() {
   const totals = data?.totals ?? null;
   const tiles = [
     {
-      label: 'Net revenue',
+      label: 'Sales after refunds',
       value: totals === null ? null : money(totals.net, ANALYTICS_CURRENCY),
-      hint: 'Net of refunds, over paid orders',
+      hint: 'Paid orders, after refunds',
     },
     {
       label: 'Paid orders',
       value: totals === null ? null : String(totals.orders),
-      hint: 'Paid inside the window',
+      hint: 'Paid in this period',
     },
     {
       label: 'Average order',
@@ -334,12 +334,12 @@ export default function Analytics() {
           : totals.orders > 0
             ? money(totals.averageOrder, ANALYTICS_CURRENCY)
             : '—',
-      hint: 'Net over paid orders',
+      hint: 'Paid orders, after refunds',
     },
     {
       label: 'Items sold',
       value: totals === null ? null : String(totals.items),
-      hint: 'Units across paid orders',
+      hint: 'Items across all paid orders',
     },
   ] as const;
 
@@ -350,7 +350,7 @@ export default function Analytics() {
       <PageHeader
         icon={<BarChart3 />}
         title="Analytics"
-        subtitle={`The last ${days} days, from real orders — nothing modelled, nothing smoothed.`}
+        subtitle={`The last ${days} days, taken straight from real orders.`}
         actions={
           <Segmented
             label="Range"
@@ -408,14 +408,14 @@ export default function Analytics() {
           </div>
 
           {/* ── net revenue by day ────────────────────────────────────── */}
-          <Card title="Net revenue by day">
+          <Card title="Sales by day">
             {showSkeletons ? (
               <span className="skel" style={{ width: '100%', height: '20rem' }} aria-hidden="true" />
             ) : (
               <EChart
                 option={revenueOption}
                 height="22rem"
-                ariaLabel={`Bar chart of net revenue per day over the last ${days} days, in naira. Drag to zoom the date range; each day's tooltip names its net revenue and order count.`}
+                ariaLabel={`Bar chart of sales after refunds per day over the last ${days} days, in naira. Drag to zoom the date range; each day's tooltip names its sales and order count.`}
               />
             )}
           </Card>

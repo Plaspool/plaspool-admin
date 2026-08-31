@@ -89,8 +89,8 @@ export default function SettingsShipping() {
         <div className="card">
           <EmptyState
             icon={<Lock />}
-            title="Owner and developer surface"
-            body="Shipping zones price real orders, so they belong to the settings domain — the owner and developers."
+            title="Only the owner and developers can change this"
+            body="Delivery prices affect what real customers are charged, so only the owner and developers can change them."
           />
         </div>
       </div>
@@ -121,7 +121,7 @@ export default function SettingsShipping() {
           meta={
             z.regions.length
               ? z.regions.join(', ')
-              : 'Any region not named by another zone'
+              : 'Anywhere not covered by another zone'
           }
         />
       ),
@@ -132,7 +132,7 @@ export default function SettingsShipping() {
       label: 'Role',
       tight: true,
       render: (z) =>
-        z.isFallback ? <Badge tone="info">Fallback</Badge> : <Badge>Named regions</Badge>,
+        z.isFallback ? <Badge tone="info">Catch-all</Badge> : <Badge>Named regions</Badge>,
     },
     {
       key: 'tax',
@@ -224,7 +224,7 @@ export default function SettingsShipping() {
         title="Shipping"
         backTo="/settings"
         backLabel="Settings"
-        subtitle="Shipping zones — which regions pay what to receive a parcel."
+        subtitle="What each part of the country pays for delivery."
         actions={
           <Button tone="primary" size="lg" onClick={() => setEditing('new')}>
             <Plus aria-hidden="true" />
@@ -235,9 +235,9 @@ export default function SettingsShipping() {
 
       {allZeroTax ? (
         <Banner tone="warn" title="Every zone charges 0% tax">
-          Deliberate until VAT registration is confirmed — charging unregistered and failing to
-          charge registered are both real problems. The rate is editable per zone the day it is
-          settled.
+          This is on purpose until VAT registration is confirmed. Charging tax without being
+          registered, and not charging it once you are, are both problems. You can set a rate per
+          zone as soon as it is settled.
         </Banner>
       ) : null}
 
@@ -258,15 +258,15 @@ export default function SettingsShipping() {
           <EmptyState
             icon={<Globe />}
             title="No shipping zones"
-            body="Checkout cannot price delivery without at least the fallback zone."
+            body="Checkout can’t work out delivery costs until you add at least the catch-all zone."
           />
         }
         footer={null}
       />
 
       <p className="page__learn">
-        An order's address matches on its region — Abuja, Lagos and the rest are all NG. Exactly
-        one fallback zone must exist; it catches every region the named zones don't.
+        An order is matched on the state in its delivery address. You need exactly
+        one catch-all zone, which covers anywhere the other zones don't name.
       </p>
 
       {editing !== 'closed' ? (
@@ -301,8 +301,8 @@ export default function SettingsShipping() {
           }
         >
           <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
-            Its regions fall back to the fallback zone's rates. Orders already priced keep their
-            frozen totals — nothing historical changes.
+            Its regions will use the catch-all zone's prices instead. Orders already placed keep
+            the price they were given — nothing already sold changes.
           </p>
         </Modal>
       ) : null}
@@ -341,17 +341,17 @@ function ZoneModal({
 
   async function commit() {
     if (!label.trim()) {
-      setError('A zone needs a name.');
+      setError('Give the zone a name.');
       return;
     }
     const pct = Number(taxPercent);
     if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
-      setError('Tax is a percentage between 0 and 100.');
+      setError('Tax must be a percentage between 0 and 100.');
       return;
     }
     const taxRateBps = Math.round(pct * 100);
     if (!isFallback && regions.length === 0) {
-      setError('Name at least one region, or make it the fallback.');
+      setError('Name at least one region, or make this the catch-all zone.');
       return;
     }
     setBusy(true);
@@ -404,11 +404,11 @@ function ZoneModal({
       <div className="stack">
         <TextField label="Name" value={label} placeholder="Abuja" autoFocus onChange={(e) => setLabel(e.target.value)} />
         <Checkbox
-          label="Fallback zone"
+          label="Catch-all zone"
           hint={
             onlyFallback
-              ? 'This is the only fallback — every store needs exactly one, so the flag stays on.'
-              : 'Catches every region the named zones don’t. Exactly one must exist.'
+              ? 'This is your only catch-all zone. Every store needs exactly one, so it can’t be turned off.'
+              : 'Covers anywhere the other zones don’t. You need exactly one of these.'
           }
           checked={onlyFallback ? true : isFallback}
           onChange={(next) => {
@@ -421,7 +421,7 @@ function ZoneModal({
             value={regions}
             onChange={setRegions}
             placeholder="Abuja, Lagos…"
-            hint="An order matches on its address's region (the state). Spelling must match what checkout sends."
+            hint="Orders are matched on the state in the delivery address, so the spelling has to match exactly."
           />
         )}
         <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
@@ -467,12 +467,12 @@ function OptionsModal({
     <Modal title={`${zone.label} — delivery options`} onClose={onClose} wide>
       <div className="stack">
         <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.5 }}>
-          What checkout offers an address in this zone. Each row saves itself; orders already
-          placed keep their frozen totals.
+          What a customer in this zone can choose at checkout. Each row saves on its own, and orders already
+          placed keep the price they were given.
         </p>
         {zone.options.length === 0 ? (
           <Banner tone="warn" title="No options — this zone can’t ship">
-            Checkout has nothing to offer an address here until an option exists.
+            Customers here have nothing to choose at checkout until you add an option.
           </Banner>
         ) : (
           zone.options
@@ -504,7 +504,7 @@ function OptionRow({ option, onChanged }: { option: ShopShippingOption; onChange
       return;
     }
     if (!label.trim()) {
-      setError('The option needs a name — it is what checkout shows.');
+      setError('Give the option a name. Customers see it at checkout.');
       return;
     }
     setBusy(true);

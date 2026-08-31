@@ -237,7 +237,7 @@ describe('CSV export and import on the product list', () => {
 
     await openMenuItem(user, 'Import…');
     await user.click(
-      screen.getByRole('checkbox', { name: /Replace products with the same handle/ }),
+      screen.getByRole('checkbox', { name: /Update products that are already here/ }),
     );
     await user.upload(screen.getByLabelText('CSV file'), csvFile());
     // replace off: the existing handle previews as a SKIP, not an update —

@@ -231,7 +231,7 @@ describe('the delivery areas board', () => {
 
     // SAVE TWO — the clear. `null` on the wire, never a missing key.
     await user.click(screen.getByRole('button', { name: 'Delivery rate for Ikeja' }));
-    await user.click(await screen.findByRole('button', { name: 'Clear override' }));
+    await user.click(await screen.findByRole('button', { name: 'Use the state price' }));
 
     await waitFor(() => expect(bodiesOf(`${DELIVERY}/ikeja`, 'PUT')).toHaveLength(2));
     const clear = bodiesOf(`${DELIVERY}/ikeja`, 'PUT')[1]!;

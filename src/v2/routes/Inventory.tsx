@@ -59,9 +59,9 @@ export default function Inventory() {
 
   const metrics: Metric[] = useMemo(
     () => [
-      { label: 'Variants on this page', value: String(all.length) },
-      { label: 'Units on hand', value: String(all.reduce((n, r) => n + r.onHand, 0)) },
-      { label: 'Reserved', value: String(all.reduce((n, r) => n + r.reserved, 0)) },
+      { label: 'Versions on this page', value: String(all.length) },
+      { label: 'Units in stock', value: String(all.reduce((n, r) => n + r.onHand, 0)) },
+      { label: 'Set aside', value: String(all.reduce((n, r) => n + r.reserved, 0)) },
       { label: 'Available', value: String(all.reduce((n, r) => n + r.available, 0)) },
       { label: 'Oversold', value: String(all.filter((r) => r.available < 0).length) },
     ],
@@ -73,7 +73,7 @@ export default function Inventory() {
   const columns: Column<InventoryRow>[] = [
     {
       key: 'variant',
-      header: 'Variant',
+      header: 'Version',
       primary: true,
       render: (r) => (
         <IdCell
@@ -105,15 +105,15 @@ export default function Inventory() {
     },
     {
       key: 'onHand', mobile: 'keep',
-      header: 'On hand',
-      label: 'On hand',
+      header: 'In stock',
+      label: 'In stock',
       numeric: true,
       render: (r) => <span className="num">{r.onHand}</span>,
     },
     {
       key: 'reserved',
-      header: 'Reserved',
-      label: 'Reserved',
+      header: 'Set aside',
+      label: 'Set aside',
       numeric: true,
       render: (r) => <span className="num muted">{r.reserved}</span>,
     },
@@ -173,28 +173,28 @@ export default function Inventory() {
         }}
         search={{
           value: search,
-          placeholder: 'Filter the variants on this page',
+          placeholder: 'Filter the versions on this page',
           onChange: setSearch,
         }}
         empty={
           search ? (
             <EmptyState
               icon={<Boxes />}
-              title="No variants match that filter"
-              body="The filter only searches the variants on this page."
+              title="No versions match that filter"
+              body="This only searches the versions on this page."
               actions={<Button onClick={() => setSearch('')}>Clear filter</Button>}
             />
           ) : tab === 'low' ? (
             <EmptyState
               icon={<Boxes />}
               title="Nothing is low on stock"
-              body="Variants at or below the low-stock threshold show up here."
+              body="Versions at or below your low stock level show up here."
             />
           ) : (
             <EmptyState
               icon={<Boxes />}
               title="No inventory yet"
-              body="Every variant carries its own stock row — add products and variants to see them here."
+              body="Each version has its own stock count. Add products and versions to see them here."
             />
           )
         }
@@ -210,7 +210,7 @@ export default function Inventory() {
       />
 
       <p className="page__learn">
-        Reserved units belong to carts mid-checkout and unshipped orders; available is on hand
+        Set aside means held for carts being paid for and orders not yet shipped. Available is what is in stock
         minus reserved.
       </p>
     </div>
@@ -232,11 +232,11 @@ function AdjustCell({ row, onWrite }: { row: InventoryRow; onWrite: () => void }
 
   async function commit(close: () => void) {
     if (!deltaOk) {
-      setFieldError('A whole number, positive or negative — not zero.');
+      setFieldError('Enter a whole number, above or below zero — but not zero.');
       return;
     }
     if (!reason.trim()) {
-      setFieldError('The audit trail refuses a stock change without a reason.');
+      setFieldError('A stock change needs a reason. It is kept on record.');
       return;
     }
     setBusy(true);
@@ -273,7 +273,7 @@ function AdjustCell({ row, onWrite }: { row: InventoryRow; onWrite: () => void }
               deltaOk
                 ? `Available ${row.available} → ${row.available + parsed}`
                 : row.backorderable
-                  ? 'Backorderable — available may go negative on purpose.'
+                  ? 'Can be back-ordered, so stock is allowed to go below zero.'
                   : undefined
             }
             onChange={(e) => {
@@ -284,7 +284,7 @@ function AdjustCell({ row, onWrite }: { row: InventoryRow; onWrite: () => void }
           <TextField
             label="Reason"
             value={reason}
-            placeholder="Stocktake, damage, correction…"
+            placeholder="Stock count, damage, correction…"
             error={fieldError}
             onChange={(e) => {
               setReason(e.target.value);

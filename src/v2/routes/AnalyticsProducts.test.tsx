@@ -171,7 +171,7 @@ describe('the best-sellers subpage', () => {
     /* The footer names the table's basis — gross, with refunds netted on the
        parent page rather than guessed per product. */
     expect(
-      screen.getByText(/refunds are order-level and netted on the Analytics page/),
+      screen.getByText(/Refunds apply to whole orders/),
     ).toBeTruthy();
   });
 
@@ -196,7 +196,7 @@ describe('the best-sellers subpage', () => {
     expect(await screen.findByText('Nothing sold in this window yet')).toBeTruthy();
     /* No footer note under a table with nothing in it. */
     expect(
-      screen.queryByText(/refunds are order-level and netted on the Analytics page/),
+      screen.queryByText(/Refunds apply to whole orders/),
     ).toBeNull();
   });
 });

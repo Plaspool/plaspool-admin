@@ -103,9 +103,9 @@ export default function Reviews() {
       await moderateReview(review.id, status);
       toast.show(
         status === 'approved'
-          ? 'Approved — now on the storefront'
+          ? 'Approved — now showing in your shop'
           : status === 'rejected'
-            ? 'Rejected — hidden from the storefront'
+            ? 'Turned down — hidden from your shop'
             : `Marked ${status}`,
       );
       setOpenReview(null);
@@ -193,7 +193,7 @@ export default function Reviews() {
 
   return (
     <div className="page">
-      <PageHeader icon={<Star />} title="Reviews" subtitle="Nothing shows on the storefront until it is approved." />
+      <PageHeader icon={<Star />} title="Reviews" subtitle="Nothing appears in your shop until you approve it." />
 
       {error ? (
         <Banner tone="critical" title="Couldn’t load reviews">
@@ -231,14 +231,14 @@ export default function Reviews() {
           ) : tab === 'pending' ? (
             <EmptyState
               icon={<MessageSquare />}
-              title="Nothing awaiting moderation"
-              body="New reviews land here first and stay off the storefront until approved."
+              title="Nothing waiting to be checked"
+              body="New reviews arrive here first, and stay hidden from your shop until you approve them."
             />
           ) : (
             <EmptyState
               icon={<MessageSquare />}
               title="No reviews here yet"
-              body="Customers can review a product from its storefront page."
+              body="Customers can leave a review from a product’s page in your shop."
             />
           )
         }
@@ -326,8 +326,8 @@ export default function Reviews() {
               />
             ) : (
               <p className="field__hint">
-                Replies open once this review is approved — there is nothing public
-                to reply to before that.
+                You can reply once this review is approved. Until then there is nothing
+                public to reply to.
               </p>
             )}
           </div>
@@ -348,8 +348,8 @@ export default function Reviews() {
           }
         >
           <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
-            Deleting removes it everywhere, permanently. Rejecting instead keeps the record while
-            hiding it from the storefront — usually the better move.
+            Deleting removes it everywhere, for good. Turning it down keeps the record but
+            hides it from your shop — usually the better choice.
           </p>
         </Modal>
       ) : null}
@@ -532,7 +532,7 @@ function ThreadPanel({
           label={replyTo ? `Replying to ${replyTo.authorName}` : 'Reply as the shop'}
           value={draft}
           rows={3}
-          placeholder="Answer as PlaSpool. This is public the moment you post it."
+          placeholder="You are replying as PlaSpool. Everyone can see this as soon as you post it."
           onChange={(e) => setDraft(e.target.value)}
         />
         <div className="thread__composer-foot">

@@ -24,7 +24,7 @@ export default function SettingsWriting() {
         title="Writing"
         backTo="/settings"
         backLabel="Settings"
-        subtitle="Editor preferences for blog posts — per device, saved as you flip them."
+        subtitle="How the blog post editor works for you. Saved for this device as soon as you change it."
       />
 
       <Card title="Editor">
@@ -43,9 +43,9 @@ export default function SettingsWriting() {
             }}
           />
           <span className="field__hint">
-            The advanced editor is the full writing studio — slash commands, autosave with
-            revisions, find and replace. The quick editor stays one tap away either way, and this
-            choice is per device.
+            The advanced editor is the full writing studio: shortcut commands, autosave that keeps
+            earlier drafts, and find and replace. The quick editor is always one tap away, and this
+            choice applies to this device only.
           </span>
         </div>
       </Card>

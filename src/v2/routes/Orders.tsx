@@ -21,7 +21,7 @@ const TABS: { value: OrderStatus | 'all'; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'pending', label: 'Unpaid' },
   { value: 'paid', label: 'Paid' },
-  { value: 'fulfilled', label: 'Fulfilled' },
+  { value: 'fulfilled', label: 'Sent out' },
   { value: 'refunded', label: 'Refunded' },
   { value: 'cancelled', label: 'Cancelled' },
 ];
@@ -61,9 +61,9 @@ export default function Orders() {
     return [
       { label: 'Orders', value: String(rows.length) },
       { label: 'Items ordered', value: String(items) },
-      { label: 'Net revenue', value: money(gross, currency) },
-      { label: 'Sales reversals', value: money(refunded, currency) },
-      { label: 'Fulfilled', value: String(rows.filter((r) => r.order.fulfilledAt !== null).length) },
+      { label: 'Sales after refunds', value: money(gross, currency) },
+      { label: 'Refunded', value: money(refunded, currency) },
+      { label: 'Sent out', value: String(rows.filter((r) => r.order.fulfilledAt !== null).length) },
     ];
   }, [rows]);
 
@@ -157,7 +157,7 @@ export default function Orders() {
               body={
                 search || tab !== 'all'
                   ? 'Try a different filter or clear the search.'
-                  : 'This is where you will fulfil orders, collect payments and track progress.'
+                  : 'This is where you send out orders, take payments and follow their progress.'
               }
               actions={
                 search || tab !== 'all' ? (
@@ -192,7 +192,7 @@ export default function Orders() {
           screenshot, not by anyone reading the code. Copy states the actual
           affordance now. */}
       <p className="page__learn">
-        Open an order to fulfil it, refund it, or read its timeline.
+        Open an order to send it out, refund it, or see everything that has happened to it.
       </p>
     </div>
   );

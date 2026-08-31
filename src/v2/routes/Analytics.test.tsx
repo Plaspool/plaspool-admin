@@ -200,7 +200,7 @@ describe('the analytics screen', () => {
     /* Then each tile carries the aggregate's number through the shared money
        formatter — net, count, net-over-orders, items. */
     expect(
-      await within(tile('Net revenue')).findByText(norm(money(12_345_600, 'NGN'))),
+      await within(tile('Sales after refunds')).findByText(norm(money(12_345_600, 'NGN'))),
     ).toBeTruthy();
     expect(within(tile('Paid orders')).getByText('4')).toBeTruthy();
     expect(
@@ -227,7 +227,7 @@ describe('the analytics screen', () => {
     await waitFor(() => expect(queries()).toHaveLength(2));
     /* The literal '90' — the route's z.enum refuses anything else. */
     expect(queries()[1]!.get('days')).toBe('90');
-    expect(await screen.findByText(/The last 90 days, from real orders/)).toBeTruthy();
+    expect(await screen.findByText(/The last 90 days, taken straight from real orders/)).toBeTruthy();
   });
 
   it('renders the three charts with their accessible sentences, and the teaser links to the table subpage', async () => {
@@ -238,7 +238,7 @@ describe('the analytics screen', () => {
     /* Three charts, no more: the daily bars, the status donut, the teaser. */
     expect(screen.getAllByTestId('echart')).toHaveLength(3);
     expect(
-      screen.getByRole('img', { name: /net revenue per day over the last 30 days/i }),
+      screen.getByRole('img', { name: /sales after refunds per day over the last 30 days/i }),
     ).toBeTruthy();
     expect(
       screen.getByRole('img', { name: /orders by status over the last 30 days/i }),
@@ -273,7 +273,7 @@ describe('the analytics screen', () => {
     when(ANALYTICS, { body: {} }); // present but must never be called
     mount();
 
-    expect(await screen.findByText('Not your surface')).toBeTruthy();
+    expect(await screen.findByText('You don’t have access to this')).toBeTruthy();
     expect(queries()).toHaveLength(0);
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   });

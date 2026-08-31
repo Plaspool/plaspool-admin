@@ -290,7 +290,7 @@ describe('the returns queue', () => {
     await user.click(screen.getByRole('button', { name: 'Award points' }));
 
     // A receipt, not a refusal.
-    await screen.findByText('Already awarded — the first attempt landed');
+    await screen.findByText('Already paid out — your first attempt worked');
 
     // The modal re-read and landed back on the facts the first attempt wrote.
     const dialog = screen.getByRole('dialog');

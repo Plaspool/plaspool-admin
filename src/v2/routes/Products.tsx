@@ -93,7 +93,7 @@ export default function Products() {
     toast.show(
       failed === 0
         ? `${ok} ${ok === 1 ? 'product' : 'products'} ${verb}`
-        : `${ok} ${verb}, ${failed} refused — a transition only applies from certain states`,
+        : `${ok} ${verb}, ${failed} refused — some products were not in a state that allows it`,
       failed === 0 ? 'default' : 'critical',
     );
     reload();
@@ -133,7 +133,7 @@ export default function Products() {
             p.coverImageId ? <StoredImg id={p.coverImageId} alt="" /> : <Package aria-hidden="true" />
           }
           title={p.title || 'Untitled product'}
-          meta={p.slug ? <span className="mono">/{p.slug}</span> : 'No slug'}
+          meta={p.slug ? <span className="mono">/{p.slug}</span> : 'No link name'}
           href={`/products/${p.id}`}
         />
       ),
@@ -293,7 +293,7 @@ export default function Products() {
             <EmptyState
               icon={<Package />}
               title="No products match that filter"
-              body="The filter only searches the products on this page."
+              body="This only searches the products on this page."
               actions={<Button onClick={() => setSearch('')}>Clear filter</Button>}
             />
           ) : (
@@ -301,7 +301,7 @@ export default function Products() {
                product pictures right. */
             <SplitEmpty
               title="Add your products"
-              body="Start by stocking the store with spools your customers will love. Products you add show up here with their status, category and tags."
+              body="Start by adding what you sell. Products you add show up here with their status, category and tags."
               actions={
                 <>
                   <ButtonLink tone="primary" to="/products/new">
@@ -338,7 +338,7 @@ export default function Products() {
             toast.show(
               failed === 0
                 ? `Tags updated on ${ok} ${ok === 1 ? 'product' : 'products'}`
-                : `${ok} updated, ${failed} refused — refresh and retry those`,
+                : `${ok} updated, ${failed} refused — reload the page and try those again`,
               failed === 0 ? 'default' : 'critical',
             );
             reload();
@@ -410,8 +410,8 @@ function ExportModal({ onClose }: { onClose: () => void }) {
           </p>
           <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
             {result.emailed
-              ? 'The download link is on its way to your inbox, and works for 7 days.'
-              : 'Email is not configured on this deployment — use the link below; it works for 7 days.'}
+              ? 'The download link is on its way to your inbox. It works for 7 days.'
+              : 'Email isn’t set up here, so use the link below. It works for 7 days.'}
           </p>
           <p style={{ fontSize: 'var(--t-md)' }}>
             {/* A plain anchor on purpose: the response is Content-Disposition
@@ -433,7 +433,7 @@ function ExportModal({ onClose }: { onClose: () => void }) {
         </div>
       ) : (
         <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
-          Every product, one row per variant. The download link goes to{' '}
+          Every product, one row per version. The download link goes to{' '}
           <strong>{email ?? 'your email'}</strong> and works for 7 days.
         </p>
       )}
@@ -451,8 +451,8 @@ function ExportModal({ onClose }: { onClose: () => void }) {
  *  row-cap 400 in particular, which otherwise reads as a bare "bad_request". */
 function importError(err: unknown): string {
   if (err instanceof ApiError && err.status === 400) {
-    if (err.detail === 'too_many_rows') return 'That file has too many rows — the limit is 1,000.';
-    if (err.detail === 'csv') return 'That file could not be read as CSV.';
+    if (err.detail === 'too_many_rows') return 'That file has too many rows. The most you can import at once is 1,000.';
+    if (err.detail === 'csv') return 'That file couldn’t be read as a CSV.';
   }
   return err instanceof Error && err.message ? err.message : 'Import failed';
 }
@@ -585,10 +585,10 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
     >
       <div className="stack">
         <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
-          One row per variant, matching the export: Handle is the product’s URL slug and is how
-          rows are matched to what you already have (case and punctuation are normalised).
-          Columns you leave out are kept as they are. Prices are in naira with two decimals;
-          stock is the absolute count.
+          One row per version, in the same shape as the export. Handle is the product’s link name, and is how
+          rows are matched to products you already have (capitals and punctuation don’t matter).
+          Any column you leave out is kept as it is. Prices are in naira with two decimals, and
+          stock is the exact number you have, not a change to it.
         </p>
         <label className="field">
           <span className="field__label">CSV file</span>
@@ -599,8 +599,8 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
           />
         </label>
         <Checkbox
-          label="Replace products with the same handle"
-          hint="Unticked, rows whose handle already exists are skipped rather than updated."
+          label="Update products that are already here"
+          hint="If you leave this off, products that already exist are skipped instead of updated."
           checked={replace}
           onChange={toggleReplace}
         />
@@ -713,11 +713,11 @@ function BulkTagsModal({
           value={chosen}
           onChange={setChosen}
           suggestions={vocabulary}
-          hint="Added to every selected product; existing spellings win over typed ones."
+          hint="Added to every product you selected. Tags you already use are matched first."
         />
       ) : present.length === 0 ? (
         <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
-          The selected products carry no tags.
+          The products you selected have no tags.
         </p>
       ) : (
         <div className="stack stack--tight">

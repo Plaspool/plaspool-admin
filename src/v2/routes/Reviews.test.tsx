@@ -216,7 +216,7 @@ describe('the reviews queue', () => {
 
     // Approve, from the row's quick action.
     await user.click(await screen.findByRole('button', { name: 'Approve' }));
-    await screen.findByText('Approved — now on the storefront');
+    await screen.findByText('Approved — now showing in your shop');
 
     const approve = bodiesOf(`${REVIEWS}/${pendingReview.id}`, 'PATCH')[0]!;
     /*
@@ -234,7 +234,7 @@ describe('the reviews queue', () => {
     // Reject, from the modal — the other verb, the same wall.
     const modal = await openModal(user);
     await user.click(within(modal).getByRole('button', { name: 'Reject' }));
-    await screen.findByText('Rejected — hidden from the storefront');
+    await screen.findByText('Turned down — hidden from your shop');
 
     const patches = bodiesOf(`${REVIEWS}/${pendingReview.id}`, 'PATCH');
     expect(patches).toHaveLength(2);
@@ -420,7 +420,7 @@ describe('the review thread', () => {
     const modal = await openModal(user);
 
     expect(within(modal).queryByLabelText('Reply as the shop')).toBeNull();
-    expect(within(modal).getByText(/Replies open once this review is approved/)).toBeTruthy();
+    expect(within(modal).getByText(/You can reply once this review is approved/)).toBeTruthy();
   });
 
   it('survives a thread that will not load, rather than breaking the modal', async () => {

@@ -81,10 +81,10 @@ export const NAV: NavEntry[] = [
     label: 'Emails',
     icon: <Mail />,
     children: [
-      { to: '/emails/broadcasts', label: 'Broadcasts' },
+      { to: '/emails/broadcasts', label: 'Newsletters' },
       { to: '/emails/templates', label: 'Templates' },
       { to: '/emails/subscribers', label: 'Subscribers' },
-      { to: '/emails/outbox', label: 'Outbox' },
+      { to: '/emails/outbox', label: 'Sent emails' },
     ],
   },
   {

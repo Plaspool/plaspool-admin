@@ -300,7 +300,7 @@ function withProduct(row: ShopProductDetail, write?: Responder): void {
   }
 }
 
-/** The ladder migration 0600 seeds: 5% at three, 10% at five, 15% at ten. */
+/** The discount migration 0600 seeds: 5% at three, 10% at five, 15% at ten. */
 const DEFAULT_LADDER = [
   { minQty: 3, percentBps: 500 },
   { minQty: 5, percentBps: 1000 },
@@ -445,9 +445,9 @@ describe('the product editor', () => {
     /* The sold variant's menu still works — edit and discontinue are there —
        so the missing item is the rule, not a broken menu. */
     const soldMenu = await openRowMenu(user, orderedVariant.sku);
-    expect(within(soldMenu).getByRole('menuitem', { name: 'Edit variant…' })).toBeTruthy();
+    expect(within(soldMenu).getByRole('menuitem', { name: 'Edit version…' })).toBeTruthy();
     expect(within(soldMenu).getByRole('menuitem', { name: 'Discontinue' })).toBeTruthy();
-    expect(within(soldMenu).queryByRole('menuitem', { name: 'Delete variant…' })).toBeNull();
+    expect(within(soldMenu).queryByRole('menuitem', { name: 'Delete version…' })).toBeNull();
 
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
@@ -455,7 +455,7 @@ describe('the product editor', () => {
     /* The never-ordered twin proves the control exists and is being withheld,
        not merely unimplemented. */
     const freshMenu = await openRowMenu(user, freshVariant.sku);
-    expect(within(freshMenu).getByRole('menuitem', { name: 'Delete variant…' })).toBeTruthy();
+    expect(within(freshMenu).getByRole('menuitem', { name: 'Delete version…' })).toBeTruthy();
   });
 
   it('omits the description key while the editor never produced a doc, and carries a stored one', async () => {
@@ -540,27 +540,27 @@ describe('the product editor', () => {
     await screen.findByDisplayValue('Recycled Spool');
 
     const menu = await openRowMenu(user, freshVariant.sku);
-    await user.click(within(menu).getByRole('menuitem', { name: 'Edit variant…' }));
+    await user.click(within(menu).getByRole('menuitem', { name: 'Edit version…' }));
     await screen.findByRole('dialog', { name: 'Edit SPL-BLU-1KG' });
 
-    await retype(user, 'Compare-at price', 'abc');
-    await user.click(screen.getByRole('button', { name: 'Save variant' }));
+    await retype(user, 'Original price', 'abc');
+    await user.click(screen.getByRole('button', { name: 'Save version' }));
 
     /* One shared parser, two boxes — the refusal has to say WHICH. */
     expect(await screen.findByRole('alert')).toHaveProperty(
       'textContent',
-      'Compare-at: That is not an amount — digits and one decimal point only.',
+      'Original price: That is not an amount — digits and one decimal point only.',
     );
 
-    await user.clear(screen.getByLabelText('Compare-at price'));
+    await user.clear(screen.getByLabelText('Original price'));
     await retype(user, 'Cost per item', 'abc');
-    await user.click(screen.getByRole('button', { name: 'Save variant' }));
+    await user.click(screen.getByRole('button', { name: 'Save version' }));
 
     expect(await screen.findByRole('alert')).toHaveProperty(
       'textContent',
       'Cost per item: That is not an amount — digits and one decimal point only.',
     );
-    expect(screen.queryByText(/^Compare-at:/)).toBeNull();
+    expect(screen.queryByText(/^Original price:/)).toBeNull();
 
     /* Both refusals happened HERE: nothing reached the wire. */
     expect(writes()).toEqual([]);
@@ -578,9 +578,9 @@ describe('the product editor', () => {
     /* Saved untouched: the flag did not move, so it does not travel — a no-op
        `backorderable` would still bump the inventory row's clock. */
     const first = await openRowMenu(user, freshVariant.sku);
-    await user.click(within(first).getByRole('menuitem', { name: 'Edit variant…' }));
+    await user.click(within(first).getByRole('menuitem', { name: 'Edit version…' }));
     await screen.findByRole('dialog', { name: 'Edit SPL-BLU-1KG' });
-    await user.click(screen.getByRole('button', { name: 'Save variant' }));
+    await user.click(screen.getByRole('button', { name: 'Save version' }));
 
     await waitFor(() => expect(sent(variantPath(freshVariant.id), 'PATCH')).toBeTruthy());
     expect(sent(variantPath(freshVariant.id), 'PATCH')).toEqual(FRESH_PATCH_BASE);
@@ -588,10 +588,10 @@ describe('the product editor', () => {
     /* The modal closed and the page re-read; open it again and flip the flag. */
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     const second = await openRowMenu(user, freshVariant.sku);
-    await user.click(within(second).getByRole('menuitem', { name: 'Edit variant…' }));
+    await user.click(within(second).getByRole('menuitem', { name: 'Edit version…' }));
     await screen.findByRole('dialog', { name: 'Edit SPL-BLU-1KG' });
     await user.click(screen.getByRole('checkbox', { name: /Backorderable/ }));
-    await user.click(screen.getByRole('button', { name: 'Save variant' }));
+    await user.click(screen.getByRole('button', { name: 'Save version' }));
 
     await waitFor(() =>
       expect(sent(variantPath(freshVariant.id), 'PATCH')).toEqual({
@@ -636,7 +636,7 @@ describe('the search engine listing card', () => {
     expect(price.textContent).toMatch(/NGN/);
     /* Collapsed means collapsed: no editors until the pencil. */
     expect(within(card).queryByLabelText('Page title')).toBeNull();
-    expect(within(card).queryByLabelText('Meta description')).toBeNull();
+    expect(within(card).queryByLabelText('Search description')).toBeNull();
   });
 
   it('opens on the pencil with counters that follow the typing, past the ceiling included', async () => {
@@ -667,7 +667,7 @@ describe('the search engine listing card', () => {
     expect(screen.queryByLabelText('Page title')).toBeNull();
   });
 
-  it('shows the URL handle read-only under the storefront path, never as an editor', async () => {
+  it('shows the link name read-only under the shop path, never as an editor', async () => {
     const user = userEvent.setup();
     withProduct(spool);
     mountAt(spool.id);
@@ -675,34 +675,34 @@ describe('the search engine listing card', () => {
 
     await user.click(screen.getByRole('button', { name: 'Edit search engine listing' }));
 
-    const handle = screen.getByLabelText('URL handle') as HTMLInputElement;
+    const handle = screen.getByLabelText('Link name') as HTMLInputElement;
     expect(handle.value).toBe('recycled-petg-spool');
     expect(handle.readOnly).toBe(true);
     expect(screen.getByText('plaspool.com/products/')).toBeTruthy();
     /* The sentence that explains WHY there is no editor here. */
-    expect(screen.getByText(/a published URL is a promise/)).toBeTruthy();
+    expect(screen.getByText(/It never changes after that, so links people saved keep working/)).toBeTruthy();
   });
 });
 
-// ------------------------------------------------------ the bulk ladder (0600)
+// --------------------------------------------------- the bulk discounts (0600)
 
-describe('the bulk quantity ladder', () => {
+describe('the bulk quantity discounts', () => {
   it('shows the inherited shop default, and says that is what it is', async () => {
     withProduct(spool);
     mountAt(spool.id);
 
     expect(await screen.findByText('Shop default')).toBeTruthy();
-    // The three seeded rungs, rendered as percentages rather than basis points.
+    // The three seeded rows, rendered as percentages rather than basis points.
     expect(screen.getByText('3 or more')).toBeTruthy();
     expect(screen.getByText('5% off')).toBeTruthy();
     expect(screen.getByText('10% off')).toBeTruthy();
     expect(screen.getByText('15% off')).toBeTruthy();
     // Inherited means no editing controls at all.
-    expect(screen.queryByLabelText('Minimum quantity for rung 1')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Save ladder' })).toBeNull();
+    expect(screen.queryByLabelText('Smallest quantity for row 1')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save discounts' })).toBeNull();
   });
 
-  it('prices each rung off the CHEAPEST variant, rounded the way the engine rounds', async () => {
+  it('prices each row off the CHEAPEST variant, rounded the way the engine rounds', async () => {
     withProduct(spool);
     mountAt(spool.id);
     await screen.findByText('Shop default');
@@ -713,18 +713,18 @@ describe('the bulk quantity ladder', () => {
   });
 
   it('seeds an override FROM the default rather than from an empty table', async () => {
-    // "Set a different ladder" almost always means "the usual one, adjusted";
+    // "Set different discounts" almost always means "the usual ones, adjusted";
     // an empty table with an Add button makes the common case the most work.
     const user = userEvent.setup();
     withProduct(spool);
     mountAt(spool.id);
 
-    await user.click(await screen.findByRole('button', { name: 'Set a different ladder' }));
+    await user.click(await screen.findByRole('button', { name: 'Set different discounts for this product' }));
     expect(screen.getByText('This product only')).toBeTruthy();
-    expect((screen.getByLabelText('Minimum quantity for rung 1') as HTMLInputElement).value).toBe(
+    expect((screen.getByLabelText('Smallest quantity for row 1') as HTMLInputElement).value).toBe(
       '3',
     );
-    expect((screen.getByLabelText('Discount for rung 2') as HTMLInputElement).value).toBe('10');
+    expect((screen.getByLabelText('Discount for row 2') as HTMLInputElement).value).toBe('10');
   });
 
   it('PUTs basis points, not percent, on its own endpoint', async () => {
@@ -743,13 +743,13 @@ describe('the bulk quantity ladder', () => {
     );
     mountAt(spool.id);
 
-    await user.click(await screen.findByRole('button', { name: 'Set a different ladder' }));
-    // Rungs 3 and 2 go first, so the assertion is about one row and not three.
-    await user.click(screen.getByRole('button', { name: 'Remove rung 3' }));
-    await user.click(screen.getByRole('button', { name: 'Remove rung 2' }));
-    await retype(user, 'Minimum quantity for rung 1', '4');
-    await retype(user, 'Discount for rung 1', '12.5');
-    await user.click(screen.getByRole('button', { name: 'Save ladder' }));
+    await user.click(await screen.findByRole('button', { name: 'Set different discounts for this product' }));
+    // Rows 3 and 2 go first, so the assertion is about one row and not three.
+    await user.click(screen.getByRole('button', { name: 'Remove row 3' }));
+    await user.click(screen.getByRole('button', { name: 'Remove row 2' }));
+    await retype(user, 'Smallest quantity for row 1', '4');
+    await retype(user, 'Discount for row 1', '12.5');
+    await user.click(screen.getByRole('button', { name: 'Save discounts' }));
 
     await waitFor(() =>
       expect(sent(productPath(spool.id) + '/bulk-tiers', 'PUT')).toEqual({
@@ -761,31 +761,31 @@ describe('the bulk quantity ladder', () => {
     expect(writes()).not.toContain(productPath(spool.id));
   });
 
-  it('refuses a rung below 2 in the screen, naming the rule rather than the field path', async () => {
+  it('refuses a row below 2 in the screen, naming the rule rather than the field path', async () => {
     // The route answers 400 `tiers.0.minQty`, which is not a sentence anybody
     // can act on. The refusal happens here and nothing is sent.
     const user = userEvent.setup();
     withProduct(spool);
     mountAt(spool.id);
 
-    await user.click(await screen.findByRole('button', { name: 'Set a different ladder' }));
-    await retype(user, 'Minimum quantity for rung 1', '1');
-    await user.click(screen.getByRole('button', { name: 'Save ladder' }));
+    await user.click(await screen.findByRole('button', { name: 'Set different discounts for this product' }));
+    await retype(user, 'Smallest quantity for row 1', '1');
+    await user.click(screen.getByRole('button', { name: 'Save discounts' }));
 
     expect(await screen.findByText(/quantity of 2 or more/)).toBeTruthy();
     expect(writes()).not.toContain(productPath(spool.id) + '/bulk-tiers');
   });
 
-  it('refuses two rungs at the same quantity, and says which one', async () => {
+  it('refuses two rows at the same quantity, and says which one', async () => {
     const user = userEvent.setup();
     withProduct(spool);
     mountAt(spool.id);
 
-    await user.click(await screen.findByRole('button', { name: 'Set a different ladder' }));
-    await retype(user, 'Minimum quantity for rung 2', '3');
-    await user.click(screen.getByRole('button', { name: 'Save ladder' }));
+    await user.click(await screen.findByRole('button', { name: 'Set different discounts for this product' }));
+    await retype(user, 'Smallest quantity for row 2', '3');
+    await user.click(screen.getByRole('button', { name: 'Save discounts' }));
 
-    expect(await screen.findByText(/Two rungs both start at 3/)).toBeTruthy();
+    expect(await screen.findByText(/Two rows both start at 3/)).toBeTruthy();
     expect(writes()).not.toContain(productPath(spool.id) + '/bulk-tiers');
   });
 
@@ -816,7 +816,7 @@ describe('the bulk quantity ladder', () => {
     expect(await screen.findByText('Shop default')).toBeTruthy();
   });
 
-  it('hides the whole ladder when the product has bulk discounts switched off', async () => {
+  it('hides the whole table when the product has bulk discounts switched off', async () => {
     const user = userEvent.setup();
     withProduct(spool);
     mountAt(spool.id);

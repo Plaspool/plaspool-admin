@@ -202,13 +202,13 @@ describe('the marketing screen', () => {
     await table();
 
     await user.click(screen.getByRole('button', { name: 'Edit' }));
-    await screen.findByRole('dialog', { name: 'Redemption settings' });
+    await screen.findByRole('dialog', { name: 'How points are spent' });
 
     // Stored minor → typed naira: 500 opens as "5.00", never "500" or "0.05".
-    expect(screen.getByLabelText('Rate — money')).toHaveProperty('value', '5.00');
-    expect(screen.getByLabelText('Rate — points')).toHaveProperty('value', '100');
+    expect(screen.getByLabelText('How much money')).toHaveProperty('value', '5.00');
+    expect(screen.getByLabelText('How many points')).toHaveProperty('value', '100');
 
-    await retype(user, screen.getByLabelText('Rate — money'), '750');
+    await retype(user, screen.getByLabelText('How much money'), '750');
     await user.click(screen.getByRole('button', { name: 'Save settings' }));
 
     await waitFor(() => expect(asked(SETTINGS)).toBeTruthy());
@@ -228,11 +228,11 @@ describe('the marketing screen', () => {
 
     // The server's echo closes the loop: reopened, the stored 75000 minor
     // units render back as the same naira that was typed.
-    await screen.findByText('Redemption settings saved');
+    await screen.findByText('Spending settings saved');
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await user.click(screen.getByRole('button', { name: 'Edit' }));
-    expect(await screen.findByLabelText('Rate — money')).toHaveProperty('value', '750.00');
-    expect(screen.getByLabelText('Rate — points')).toHaveProperty('value', '100');
+    expect(await screen.findByLabelText('How much money')).toHaveProperty('value', '750.00');
+    expect(screen.getByLabelText('How many points')).toHaveProperty('value', '100');
   });
 
   it('surfaces insufficient_balance beside the delta, with the typed debit kept — never a toast', async () => {
@@ -245,12 +245,12 @@ describe('the marketing screen', () => {
     await table();
 
     await user.click(screen.getByRole('button', { name: 'Credit a customer…' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Credit points' });
+    const dialog = await screen.findByRole('dialog', { name: 'Add points by hand' });
 
     await user.type(within(dialog).getByLabelText('Customer email'), 'dara@example.com');
     await user.type(within(dialog).getByLabelText('Points'), '-500');
     await user.type(within(dialog).getByLabelText('Reason'), 'Fixing a double credit');
-    await user.click(within(dialog).getByRole('button', { name: 'Write the entry' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Save entry' }));
 
     await waitFor(() => expect(asked(ADJUSTMENTS)).toBeTruthy());
     expect(sent(ADJUSTMENTS, 'POST')).toEqual({
@@ -264,7 +264,7 @@ describe('the marketing screen', () => {
     // in the same form block as the delta it is about.
     const alert = await within(dialog).findByRole('alert');
     expect(alert.textContent).toBe(
-      'That debit would take the balance below zero — the ledger refuses it.',
+      'That would take their balance below zero.',
     );
     expect(alert.closest('.stack')).toBe(
       within(dialog).getByLabelText('Points').closest('.stack'),
@@ -273,7 +273,7 @@ describe('the marketing screen', () => {
     // Not a toast, not a dismissal: the modal stays up with the number still
     // in the box, because the fix is to type a smaller one.
     expect(document.querySelector('.toast')).toBeNull();
-    expect(screen.getByRole('dialog', { name: 'Credit points' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Add points by hand' })).toBeTruthy();
     expect(within(dialog).getByLabelText('Points')).toHaveProperty('value', '-500');
   });
 
@@ -290,18 +290,18 @@ describe('the marketing screen', () => {
     // CREATE: the two things that can never change later exist only here.
     await user.click(screen.getByRole('button', { name: 'New programme' }));
     const create = await screen.findByRole('dialog', { name: 'New programme' });
-    expect(within(create).getByLabelText('Key')).toBeTruthy();
-    expect(within(create).getByRole('group', { name: 'Kind' })).toBeTruthy();
+    expect(within(create).getByLabelText('ID code')).toBeTruthy();
+    expect(within(create).getByRole('group', { name: 'Type' })).toBeTruthy();
     await user.click(within(create).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
     // EDIT: no key box, no kind switch — the handle is read-only prose.
     await user.click(within(grid).getByText('Canister Returns'));
     const edit = await screen.findByRole('dialog', { name: 'Edit Canister Returns' });
-    expect(within(edit).queryByLabelText('Key')).toBeNull();
-    expect(within(edit).queryByRole('group', { name: 'Kind' })).toBeNull();
+    expect(within(edit).queryByLabelText('ID code')).toBeNull();
+    expect(within(edit).queryByRole('group', { name: 'Type' })).toBeNull();
     expect(within(edit).getByText(capsProgram.key)).toBeTruthy();
-    expect(within(edit).getByText(/Kind and key never change/)).toBeTruthy();
+    expect(within(edit).getByText(/The type and ID code can’t be changed/)).toBeTruthy();
 
     await retype(user, within(edit).getByLabelText('Name'), 'Deposit Scheme');
     await user.click(within(edit).getByRole('button', { name: 'Save programme' }));
