@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { pathParam, readJson, readQuery, str } from '../../middleware/errors';
-import { requireAuth, requireOwner } from '../../middleware/session';
+import { requireAuth } from '../../middleware/session';
 import { currentDb, currentUser } from '../../app-env';
 import {
   MAX_QUERY_LENGTH,
@@ -41,7 +41,7 @@ import type { AppEnv } from '../../app-env';
 export const routes = new Hono<AppEnv>();
 
 const auth = requireAuth();
-const owner = requireOwner();
+const staff = requireAuth();
 
 // ------------------------------------------------------------------ schemas
 
@@ -151,7 +151,7 @@ routes.get('/customers/:email/ledger', auth, async (c) => {
  * missing. The balance is the counter's own value, read off the statement that
  * moved it.
  */
-routes.post('/adjustments', owner, async (c) => {
+routes.post('/adjustments', staff, async (c) => {
   const body = await readJson(c, AdjustBody);
   const result = await adjust(currentDb(c), {
     ...body,

@@ -47,12 +47,54 @@ export const users = pgTable(
     passwordHash: text('password_hash').notNull(),
     /** Replaces the hardcoded `'You'`. */
     displayName: text('display_name').notNull(),
-    role: text('role').$type<'owner' | 'writer'>().notNull(),
+    /** The six-role model of `shared/roles.ts` (migration 0680). */
+    role: text('role').$type<import('../../shared/roles').Role>().notNull(),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
     /** Revoke without deleting authored posts. */
     disabledAt: bigint('disabled_at', { mode: 'number' }),
+    /** Login demands an emailed code after the password (migration 0700).
+     * DDL-default false so column-less inserts — the test seeds — stay
+     * single-factor; the migration flips existing rows and `createUser`
+     * names the column for real accounts. */
+    twoFactorEmail: boolean('two_factor_email').notNull().default(false),
   },
-  (t) => [check('users_role_ck', sql`${t.role} IN ('owner', 'writer')`)],
+  (t) => [
+    check(
+      'users_role_ck',
+      sql`${t.role} IN ('owner', 'developer', 'writer', 'supply_chain', 'support', 'marketing')`,
+    ),
+  ],
+);
+
+/**
+ * A password-verified login waiting on its emailed code (migration 0700).
+ *
+ * `ticket_hash`/`code_hash` are HMACs under SESSION_SECRET — `tokenId` in
+ * `server/repo/users.ts`, the same treatment sessions and invites get — so a
+ * database dump alone is inert. `attempts` is the CAS the verify route spends;
+ * five wrong guesses consume the challenge. `resends` bounds the mail one
+ * password-holder can aim at an inbox.
+ */
+export const authLoginChallenges = pgTable(
+  'auth_login_challenges',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    ticketHash: text('ticket_hash').notNull().unique(),
+    codeHash: text('code_hash').notNull(),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    resends: integer('resends').notNull().default(0),
+    /** Non-null means spent — by success, or by the attempt ceiling. */
+    consumedAt: bigint('consumed_at', { mode: 'number' }),
+  },
+  (t) => [
+    check('auth_login_challenges_attempts_ck', sql`${t.attempts} >= 0`),
+    check('auth_login_challenges_resends_ck', sql`${t.resends} >= 0`),
+  ],
 );
 
 export const sessions = pgTable(
@@ -85,8 +127,9 @@ export const invites = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     email: text('email').notNull(),
     tokenHash: text('token_hash').notNull().unique(),
-    /** Role granted on acceptance. */
-    role: text('role').$type<'owner' | 'writer'>().notNull(),
+    /** Role granted on acceptance. `owner` stays LEGAL here — history may
+     * carry it — but no route mints it (shared/roles.ts, migration 0680). */
+    role: text('role').$type<import('../../shared/roles').Role>().notNull(),
     invitedBy: uuid('invited_by')
       .notNull()
       .references(() => users.id),
@@ -95,7 +138,12 @@ export const invites = pgTable(
     /** Single use — non-null means spent. */
     acceptedAt: bigint('accepted_at', { mode: 'number' }),
   },
-  (t) => [check('invites_role_ck', sql`${t.role} IN ('owner', 'writer')`)],
+  (t) => [
+    check(
+      'invites_role_ck',
+      sql`${t.role} IN ('owner', 'developer', 'writer', 'supply_chain', 'support', 'marketing')`,
+    ),
+  ],
 );
 
 export const posts = pgTable(

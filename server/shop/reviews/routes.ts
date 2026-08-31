@@ -13,6 +13,7 @@ import {
 import { BadRequestError, NotFoundError } from '../../repo/errors';
 import { clientIp, limit } from '../../middleware/ratelimit';
 import { requireAuth } from '../../middleware/session';
+import { isAdminRole } from '../../../shared/roles';
 import { currentDb, currentUser } from '../../app-env';
 import {
   createReview,
@@ -641,7 +642,7 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
    * owner's to act on.
    */
   routes.delete('/reviews/:id', auth, async (c) => {
-    if (currentUser(c).role !== 'owner') throw new ForbiddenError();
+    if (!isAdminRole(currentUser(c).role)) throw new ForbiddenError();
     const id = pathParam(c, 'id');
     await destroyReview(currentDb(c), id);
     return c.json({ ok: true });
@@ -886,7 +887,7 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
 
   /** Owner-only, matching review deletion: it is for removal requests. */
   routes.delete('/replies/:id', auth, async (c) => {
-    if (currentUser(c).role !== 'owner') throw new ForbiddenError();
+    if (!isAdminRole(currentUser(c).role)) throw new ForbiddenError();
     const id = pathParam(c, 'id');
     if (!(await destroyReply(currentDb(c), id))) throw new NotFoundError(id);
     return c.json({ ok: true });

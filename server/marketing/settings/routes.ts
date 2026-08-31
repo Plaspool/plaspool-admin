@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { readJson, str } from '../../middleware/errors';
-import { requireAuth, requireOwner } from '../../middleware/session';
+import { requireAuth } from '../../middleware/session';
 import { currentDb, currentUser } from '../../app-env';
 import { NotFoundError } from '../../repo/errors';
 import { getSettings, patchSettings } from './repo';
@@ -29,7 +29,7 @@ import type { AppEnv } from '../../app-env';
 export const routes = new Hono<AppEnv>();
 
 const auth = requireAuth();
-const owner = requireOwner();
+const staff = requireAuth();
 
 /** The columns are `integer`; past this is SQLSTATE 22003, i.e. a 500 for a
  *  number somebody typed. What a sensible rate is belongs to the owner. */
@@ -80,7 +80,7 @@ routes.get('/settings', auth, async (c) => {
   return c.json({ settings });
 });
 
-routes.patch('/settings', owner, async (c) => {
+routes.patch('/settings', staff, async (c) => {
   const { expectedRevision, ...patch } = await readJson(c, SettingsPatchBody);
   const settings = await patchSettings(currentDb(c), patch, {
     expectedRevision,

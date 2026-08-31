@@ -4,8 +4,8 @@ import { z } from 'zod';
 import { pathParam, readJson, readQuery, str } from '../middleware/errors';
 import {
   clearSessionCookie,
+  requireAdmin,
   requireAuth,
-  requireOwner,
   sessionToken,
   setSessionCookie,
 } from '../middleware/session';
@@ -34,6 +34,15 @@ import {
   updateDisplayName,
 } from '../repo/users';
 import { consumePasswordReset, createPasswordReset } from '../repo/password-reset';
+import {
+  CODE_TTL_MS,
+  createLoginChallenge,
+  resendLoginChallenge,
+  sweepLoginChallenges,
+  verifyLoginChallenge,
+} from '../repo/login-challenges';
+import { ASSIGNABLE_ROLES, canAssign } from '../../shared/roles';
+import { ForbiddenError } from '../middleware/errors';
 import { resendMailer } from '../mail/resend';
 import type { Mailer } from '../mail/port';
 import { BadRequestError, NotFoundError } from '../repo/errors';
@@ -160,6 +169,17 @@ const AcceptInviteBody = z
 
 const ForgotBody = z.object({ email: Email }).strict();
 
+/** The ticket is `mintToken()` output (43 chars); the bound is generous and
+ * exists so an unauthenticated caller cannot hand the HMAC a megabyte. */
+const CodeBody = z
+  .object({
+    ticket: str().min(1).max(512),
+    code: str().min(1).max(16),
+  })
+  .strict();
+
+const ResendBody = z.object({ ticket: str().min(1).max(512) }).strict();
+
 const ResetBody = z
   .object({
     token: str().min(1).max(512),
@@ -172,7 +192,10 @@ const ResetBody = z
 const InviteBody = z
   .object({
     email: Email,
-    role: z.enum(['owner', 'writer']).default('writer'),
+    /** `owner` is deliberately not in the enum: the singular account is never
+     * minted through the API (shared/roles.ts, migration 0680). A body naming
+     * it is a 400, the same wall the role-change route builds. */
+    role: z.enum(ASSIGNABLE_ROLES).default('writer'),
   })
   .strict();
 
@@ -230,73 +253,12 @@ function normaliseEmail(email: string): string {
 }
 
 // ------------------------------------------------------------------- login
-
-routes.post('/auth/login', async (c) => {
-  const db = currentDb(c);
-  const ip = clientIp(c);
-
-  /*
-   * THE IP BUCKET IS CONSULTED BEFORE THE BODY IS READ.
-   *
-   * Parsing first meant an unauthenticated caller could make the process parse
-   * a body up to the platform limit on every request, however many times it
-   * had already been refused — the limiter cannot bound work it runs after.
-   * The narrow bucket is keyed by the email and therefore cannot move above
-   * the parse; the IP bucket is the one that has to.
-   */
-  await limit(c, `login:${ip}`, LOGIN_IP_LIMIT, LOGIN_WINDOW_MS);
-
-  const { email, password } = await readJson(c, LoginBody);
-  const address = normaliseEmail(email);
-
-  /*
-   * TWO BUCKETS, IP FIRST (spec §6).
-   *
-   * A single per-email limiter lets one host password-spray every account in an
-   * invite-only instance without ever tripping. The IP bucket is checked FIRST
-   * so a host that has already exhausted it cannot go on minting a new
-   * `auth_attempts` row per address it guesses — which would make the limiter
-   * itself the storage-exhaustion primitive.
-   */
-  const narrowKey = `login:${ip}|${address}`;
-  await limit(c, narrowKey, LOGIN_LIMIT, LOGIN_WINDOW_MS);
-
-  const found = await findUserByEmail(db, address);
-
-  /*
-   * THE HASH RUNS EITHER WAY.
-   *
-   * Returning early for an unknown address makes the two answers differ by ~200
-   * milliseconds, which is trivially measurable over a handful of requests and
-   * turns this endpoint into a list of who has an account here.
-   */
-  const ok = await verifyPassword(password, found?.passwordHash ?? DUMMY_PASSWORD_HASH);
-
-  /*
-   * A revoked writer gets the same refusal as a wrong password, and the check
-   * is here rather than in the query so it costs the same either way.
-   * `resolveSession` already refuses a disabled user's session; without this,
-   * login would still succeed and hand back a cookie that 401s on the very next
-   * request.
-   */
-  if (!ok || !found || found.disabledAt != null) throw new UnauthenticatedError();
-
-  const { token, expiresAt } = await createSession(
-    db,
-    found.user.id,
-    c.req.header('user-agent') ?? undefined,
-  );
-  setSessionCookie(c, token, expiresAt);
-
-  /*
-   * Only the NARROW bucket is cleared, never `login:<ip>` (see `forget`).
-   * Clearing both would hand an attacker holding one valid account a reset
-   * button for the spray limiter.
-   */
-  await forget(db, narrowKey);
-
-  return c.json({ user: found.user });
-});
+//
+// REGISTERED IN `createAuthRoutes` AND NOT HERE, since migration 0700: a
+// protected account's login SENDS MAIL (the six-digit code), so the route
+// needs the factory's mailer — exactly the move `POST /invites` made when the
+// invite started arriving by email. The factory registers it before mounting
+// this router, so there is exactly one registration.
 
 // ------------------------------------------------------------------ logout
 
@@ -535,7 +497,7 @@ export function uuidParam(c: Context<AppEnv>, name: string): string {
  * The same rule `ListQueryParams` states for post filters: `?include=acepted`
  * quietly returning the default list looks like a bug in the screen.
  */
-routes.get('/invites', requireOwner(), async (c) => {
+routes.get('/invites', requireAdmin(), async (c) => {
   const { include } = readQuery(c, InviteQuery);
   const wanted = (include ?? '')
     .split(',')
@@ -554,7 +516,7 @@ routes.get('/invites', requireOwner(), async (c) => {
   });
 });
 
-routes.delete('/invites/:id', requireOwner(), async (c) => {
+routes.delete('/invites/:id', requireAdmin(), async (c) => {
   const id = uuidParam(c, 'id');
   if (!(await revokeInvite(currentDb(c), id))) throw new NotFoundError(id);
   return c.json({ ok: true });
@@ -586,6 +548,175 @@ export interface AuthRouteDeps {
 export function createAuthRoutes(deps: AuthRouteDeps = {}): Hono<AppEnv> {
   const mailer = deps.mailer ?? resendMailer();
   const app = new Hono<AppEnv>();
+
+  /**
+   * `POST /api/auth/login` — password first, then, for a protected account,
+   * the emailed code (migration 0700).
+   *
+   * Everything up to the password verdict is unchanged from the pre-0700 route
+   * and keeps its two properties: the IP bucket runs before the parse, and an
+   * unknown email costs the same scrypt derivation as a wrong password.
+   *
+   * WHAT A 2FA ACCOUNT GETS BACK IS A TICKET, NOT A SESSION. The ticket proves
+   * the password step happened so `/auth/login/code` never sees a password;
+   * the code goes to the inbox through the same transport the reset flow uses.
+   * The narrow limiter bucket is cleared HERE, at the password success — a
+   * person who mistyped four times and then got it right must not be locked
+   * out of the code step.
+   *
+   * A PROTECTED ACCOUNT FAILS CLOSED, WHETHER THE MAILER IS UNCONFIGURED OR
+   * MERELY DOWN. The first cut fell open for the unconfigured case ("a dev
+   * checkout must still sign in") and the security critic was right to kill
+   * it: `RESEND_API_KEY` is one baked-at-build env var (§5), and the planned
+   * account move is exactly the moment it goes missing — at which point every
+   * protected login would quietly become single-factor. Instead: 503
+   * `two_factor_unavailable`, and the second factor is never waived by
+   * configuration. A dev checkout is unaffected because nothing there has
+   * `two_factor_email` set (harness seeds and DDL default are false). The
+   * lockout recovery, should production ever lose its mail config with 2FA
+   * on: `scripts/set-owner-password.ts` + `UPDATE users SET two_factor_email
+   * = false WHERE email = …` — deliberate database surgery for a deliberate
+   * misconfiguration.
+   */
+  app.post('/auth/login', async (c) => {
+    const db = currentDb(c);
+    const ip = clientIp(c);
+
+    await limit(c, `login:${ip}`, LOGIN_IP_LIMIT, LOGIN_WINDOW_MS);
+
+    const { email, password } = await readJson(c, LoginBody);
+    const address = normaliseEmail(email);
+
+    const narrowKey = `login:${ip}|${address}`;
+    await limit(c, narrowKey, LOGIN_LIMIT, LOGIN_WINDOW_MS);
+
+    const found = await findUserByEmail(db, address);
+
+    // THE HASH RUNS EITHER WAY — the enumeration property the module header
+    // exists for. See DUMMY_PASSWORD_HASH.
+    const ok = await verifyPassword(password, found?.passwordHash ?? DUMMY_PASSWORD_HASH);
+    if (!ok || !found || found.disabledAt != null) throw new UnauthenticatedError();
+
+    // Only the NARROW bucket is cleared, never `login:<ip>` (see `forget`).
+    await forget(db, narrowKey);
+
+    if (found.twoFactorEmail) {
+      const unavailable = () =>
+        c.json(
+          { error: 'two_factor_unavailable', requestId: c.get('requestId') ?? '' },
+          503,
+        );
+      try {
+        mailer.assertConfigured?.();
+      } catch (err) {
+        console.error(
+          '[api]',
+          JSON.stringify({
+            requestId: c.get('requestId') ?? '',
+            name: err instanceof Error ? err.name : 'Error',
+            message: 'two-factor account with no mail configuration',
+            route: 'POST /api/auth/login',
+          }),
+        );
+        return unavailable();
+      }
+      // Housekeeping riding a write path that already exists: yesterday's
+      // expired challenges go, bounded and best-effort.
+      await sweepLoginChallenges(db, Date.now()).catch(() => 0);
+      const challenge = await createLoginChallenge(db, found.user.id, Date.now());
+      try {
+        await mailer.send(
+          await renderSystem(db, 'account.login_code', address, {
+            code: challenge.code,
+            expiry_minutes: String(Math.round(CODE_TTL_MS / 60_000)),
+          }),
+        );
+      } catch (err) {
+        // Name and message only — the message must never carry the code.
+        console.error(
+          '[api]',
+          JSON.stringify({
+            requestId: c.get('requestId') ?? '',
+            name: err instanceof Error ? err.name : 'Error',
+            message: err instanceof Error ? err.message : 'mail send failed',
+            route: 'POST /api/auth/login',
+          }),
+        );
+        return unavailable();
+      }
+      return c.json({ twoFactor: { ticket: challenge.ticket, expiresAt: challenge.expiresAt } });
+    }
+
+    const { token, expiresAt } = await createSession(
+      db,
+      found.user.id,
+      c.req.header('user-agent') ?? undefined,
+    );
+    setSessionCookie(c, token, expiresAt);
+
+    return c.json({ user: found.user });
+  });
+
+  /**
+   * `POST /api/auth/login/code` — spend one guess at the emailed code.
+   *
+   * A wrong code, an expired challenge, a spent challenge and a ticket that
+   * never existed are ONE 401: the split would let a caller probe which
+   * tickets are live. Five wrong guesses consume the challenge inside the
+   * statement (`verifyLoginChallenge`), so the ceiling cannot be raced.
+   */
+  app.post('/auth/login/code', async (c) => {
+    const db = currentDb(c);
+    await limit(c, `2fa:${clientIp(c)}`, LOGIN_IP_LIMIT, LOGIN_WINDOW_MS);
+    const { ticket, code } = await readJson(c, CodeBody);
+
+    const result = await verifyLoginChallenge(db, ticket, code, Date.now());
+    if (!result.ok) throw new UnauthenticatedError();
+
+    const { token, expiresAt } = await createSession(
+      db,
+      result.user.id,
+      c.req.header('user-agent') ?? undefined,
+    );
+    setSessionCookie(c, token, expiresAt);
+    return c.json({ user: result.user });
+  });
+
+  /**
+   * `POST /api/auth/login/resend` — a fresh code on the same challenge.
+   *
+   * ALWAYS 202, exactly as `/auth/forgot`: whether the ticket was live, spent,
+   * or invented, the caller learns nothing. The real bound is in the
+   * statement (three resends per challenge) and the limiter here.
+   */
+  app.post('/auth/login/resend', async (c) => {
+    const db = currentDb(c);
+    await limit(c, `2faresend:${clientIp(c)}`, FORGOT_LIMIT, FORGOT_WINDOW_MS);
+    const { ticket } = await readJson(c, ResendBody);
+
+    const fresh = await resendLoginChallenge(db, ticket, Date.now());
+    if (fresh) {
+      try {
+        await mailer.send(
+          await renderSystem(db, 'account.login_code', fresh.to, {
+            code: fresh.code,
+            expiry_minutes: String(Math.round(CODE_TTL_MS / 60_000)),
+          }),
+        );
+      } catch (err) {
+        console.error(
+          '[api]',
+          JSON.stringify({
+            requestId: c.get('requestId') ?? '',
+            name: err instanceof Error ? err.name : 'Error',
+            message: err instanceof Error ? err.message : 'mail send failed',
+            route: 'POST /api/auth/login/resend',
+          }),
+        );
+      }
+    }
+    return c.json({ sent: true }, 202);
+  });
 
   /**
    * Mint an invite and, if this deployment can, mail it.
@@ -676,10 +807,20 @@ export function createAuthRoutes(deps: AuthRouteDeps = {}): Hono<AppEnv> {
     }
   }
 
-  app.post('/invites', requireOwner(), async (c) => {
+  app.post('/invites', requireAdmin(), async (c) => {
     const db = currentDb(c);
     const { email, role } = await readJson(c, InviteBody);
     const address = normaliseEmail(email);
+
+    /*
+     * THE SENIORITY RULE (shared/roles.ts): the owner mints any assignable
+     * role; a developer mints the four below developer. The enum already
+     * refused `owner` for everybody, so this is only about developers minting
+     * peers.
+     */
+    if (!canAssign(currentUser(c).role, role)) {
+      throw new ForbiddenError();
+    }
 
     /*
      * Refused before the invite is minted rather than after it is spent. Without

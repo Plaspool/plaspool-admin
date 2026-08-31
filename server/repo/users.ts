@@ -6,7 +6,10 @@ import type { AuthUser } from '../../shared/types';
 import { getEnv } from '../env';
 import { hashPassword } from './password';
 
-export type Role = 'owner' | 'writer';
+/** Re-exported from the shared table so server code keeps its old import
+ * path; the vocabulary itself lives beside the labels and grants it must
+ * never drift from (`shared/roles.ts`, migration 0680). */
+export type Role = import('../../shared/roles').Role;
 
 /** 30-day expiry, refreshed when more than half has elapsed (spec §6). */
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -97,7 +100,9 @@ export function tokenId(token: string): string {
   return createHmac('sha256', getEnv().SESSION_SECRET).update(token).digest('hex');
 }
 
-function rowToAuthUser(row: Record<string, unknown>): AuthUser {
+/** EXPORTED for `repo/login-challenges.ts`, which joins users through a
+ * challenge and must map the row identically. */
+export function rowToAuthUser(row: Record<string, unknown>): AuthUser {
   return {
     id: String(row.id),
     email: String(row.email),
@@ -142,16 +147,29 @@ export function assertCredentials(a: { password: string; displayName: string }):
 
 export async function createUser(
   db: Db,
-  a: { email: string; password: string; displayName: string; role: Role },
+  a: {
+    email: string;
+    password: string;
+    displayName: string;
+    role: Role;
+    /**
+     * DEFAULT true — every REAL account starts protected, which is what the
+     * owner asked for. The DDL default is false so the column-less inserts in
+     * the test harness stay single-factor (migration 0700's header carries the
+     * ordering argument).
+     */
+    twoFactorEmail?: boolean;
+  },
 ): Promise<AuthUser> {
   // Before hashing: a rejected password should not cost 200 ms of scrypt.
   assertCredentials(a);
   const passwordHash = await hashPassword(a.password);
   try {
     const res = await db.execute(sql`
-      INSERT INTO users (email, password_hash, display_name, role, created_at)
+      INSERT INTO users (email, password_hash, display_name, role, created_at,
+                         two_factor_email)
       VALUES (${a.email.trim().toLowerCase()}, ${passwordHash}, ${a.displayName.trim()},
-              ${a.role}, ${Date.now()})
+              ${a.role}, ${Date.now()}, ${a.twoFactorEmail ?? true})
       RETURNING id, email, display_name, role`);
     return rowToAuthUser(res.rows[0]);
   } catch (err) {
@@ -175,9 +193,14 @@ export async function createUser(
 export async function findUserByEmail(
   db: Db,
   email: string,
-): Promise<{ user: AuthUser; passwordHash: string; disabledAt: number | null } | null> {
+): Promise<{
+  user: AuthUser;
+  passwordHash: string;
+  disabledAt: number | null;
+  twoFactorEmail: boolean;
+} | null> {
   const res = await db.execute(sql`
-    SELECT id, email, display_name, role, password_hash, disabled_at
+    SELECT id, email, display_name, role, password_hash, disabled_at, two_factor_email
       FROM users WHERE email = ${email.trim().toLowerCase()}`);
   const row = res.rows[0];
   if (!row) return null;
@@ -185,6 +208,7 @@ export async function findUserByEmail(
     user: rowToAuthUser(row),
     passwordHash: String(row.password_hash),
     disabledAt: toEpochMsOrNull(row.disabled_at),
+    twoFactorEmail: Boolean(row.two_factor_email),
   };
 }
 
@@ -522,6 +546,8 @@ export interface UserSummary {
   /** Non-null means revoked — `resolveSession` refuses their every session. */
   disabledAt: number | null;
   postCount: number;
+  /** Login demands an emailed code after the password (migration 0700). */
+  twoFactorEmail: boolean;
 }
 
 /**
@@ -549,10 +575,11 @@ export interface UserSummary {
 export async function listUsers(db: Db): Promise<UserSummary[]> {
   const res = await db.execute(sql`
     SELECT u.id, u.email, u.display_name, u.role, u.created_at, u.disabled_at,
-           count(p.id)::int AS post_count
+           u.two_factor_email, count(p.id)::int AS post_count
       FROM users u
       LEFT JOIN posts p ON p.author_id = u.id
-     GROUP BY u.id, u.email, u.display_name, u.role, u.created_at, u.disabled_at
+     GROUP BY u.id, u.email, u.display_name, u.role, u.created_at, u.disabled_at,
+              u.two_factor_email
      ORDER BY u.created_at ASC, u.id ASC`);
   return res.rows.map((row) => ({
     id: String(row.id),
@@ -565,7 +592,46 @@ export async function listUsers(db: Db): Promise<UserSummary[]> {
     // `count(*)` is int8, which `@neondatabase/serverless` hands back as a
     // string while PGlite hands back a number — the seam `toEpochMs` exists for.
     postCount: Number(row.post_count),
+    twoFactorEmail: Boolean(row.two_factor_email),
   }));
+}
+
+/**
+ * Change what an account IS — its role. The rules about WHO may aim this at
+ * WHOM live in the route (`server/routes/users.ts`), because they are about
+ * the actor; this function holds only the invariant no caller may override:
+ *
+ * OWNER IS IMMUTABLE IN BOTH DIRECTIONS. The guarded UPDATE refuses to write
+ * `owner` and refuses to touch a row that IS `owner`, so however the route
+ * rules evolve, "exactly one owner, the seeded one" survives as a property of
+ * the statement rather than of the callers (`shared/roles.ts` header).
+ *
+ * @returns the updated user, or `null` when the id matched nothing the
+ * statement may touch — a missing row and the owner row look identical here,
+ * and the route re-reads to tell 404 from 409.
+ */
+export async function setUserRole(db: Db, userId: string, role: Role): Promise<AuthUser | null> {
+  if (role === 'owner') return null;
+  const res = await db.execute(sql`
+    UPDATE users SET role = ${role}
+     WHERE id = ${userId}::uuid AND role <> 'owner'
+    RETURNING id, email, display_name, role`);
+  return res.rows[0] ? rowToAuthUser(res.rows[0]) : null;
+}
+
+/**
+ * Turn the emailed second factor on or off for one account.
+ *
+ * NO SESSION SWEEP RIDES ALONG: flipping the factor changes what the NEXT
+ * login demands, and ending live sessions is `disableUser`'s job — an admin
+ * hardening an account should not sign its holder out mid-shift.
+ *
+ * @returns `false` when the id matched nothing, so the route can 404.
+ */
+export async function setTwoFactorEmail(db: Db, userId: string, on: boolean): Promise<boolean> {
+  const res = await db.execute(sql`
+    UPDATE users SET two_factor_email = ${on} WHERE id = ${userId}::uuid RETURNING id`);
+  return res.rows.length > 0;
 }
 
 /**
@@ -773,6 +839,17 @@ export async function acceptInvite(
 
   const invite = claimed.rows[0];
   if (!invite) throw new InviteError();
+
+  /*
+   * AN OWNER-ROLE INVITE IS POISON AND IS REFUSED AT ACCEPTANCE, not only at
+   * creation. The new invite routes cannot mint one (the enum and `canAssign`
+   * both refuse), but the COLUMN still admits the value — migration 0680
+   * keeps it legal because history may carry it — and an unspent owner invite
+   * minted by the pre-0680 route would otherwise create a SECOND owner, who
+   * could then disable the first. The invite stays claimed: a token that can
+   * never be honoured should not be retryable either.
+   */
+  if (String(invite.role) === 'owner') throw new InviteError();
 
   try {
     return await createUser(db, {

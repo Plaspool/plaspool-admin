@@ -15,7 +15,16 @@ import { hashPassword } from '../repo/password';
  */
 export interface TestCtx {
   db: Db;
-  users: { owner: AuthUser; writer: AuthUser };
+  /** One seed per role (migration 0680). `owner` and `writer` predate the
+   * others and most suites use only those two. */
+  users: {
+    owner: AuthUser;
+    writer: AuthUser;
+    developer: AuthUser;
+    supplyChain: AuthUser;
+    support: AuthUser;
+    marketing: AuthUser;
+  };
   close(): Promise<void>;
 }
 
@@ -85,7 +94,15 @@ export const SEED_PASSWORD = 'seed-password';
 const SEED_COST_LOG2 = 4;
 
 async function seedUsers(db: Db): Promise<TestCtx['users']> {
-  const mk = async (email: string, displayName: string, role: 'owner' | 'writer') => {
+  /* The column list deliberately omits `two_factor_email`, so every seed gets
+   * the DDL default (false) and login stays single-step in every suite —
+   * migration 0700's header carries the argument. The 2FA suite flips the
+   * column on the rows it needs. */
+  const mk = async (
+    email: string,
+    displayName: string,
+    role: import('../../shared/roles').Role,
+  ) => {
     const passwordHash = await hashPassword(SEED_PASSWORD, SEED_COST_LOG2);
     const res = await db.execute(sql`
       INSERT INTO users (email, password_hash, display_name, role, created_at)
@@ -96,12 +113,16 @@ async function seedUsers(db: Db): Promise<TestCtx['users']> {
       id: String(row.id),
       email: String(row.email),
       displayName: String(row.display_name),
-      role: row.role as 'owner' | 'writer',
+      role: row.role as import('../../shared/roles').Role,
     } satisfies AuthUser;
   };
 
   return {
     owner: await mk('owner@test.local', 'Owner', 'owner'),
     writer: await mk('writer@test.local', 'Writer', 'writer'),
+    developer: await mk('developer@test.local', 'Developer', 'developer'),
+    supplyChain: await mk('supply@test.local', 'Supply', 'supply_chain'),
+    support: await mk('support@test.local', 'Support', 'support'),
+    marketing: await mk('marketing@test.local', 'Marketing', 'marketing'),
   };
 }

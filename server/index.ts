@@ -6,6 +6,7 @@ import { toResponse } from './middleware/errors';
 import { NotFoundError } from './repo/errors';
 import { originGuard } from './middleware/origin';
 import { sessionMiddleware } from './middleware/session';
+import { rolePermissions } from './middleware/permissions';
 import { createAuthRoutes } from './routes/auth';
 import { routes as users } from './routes/users';
 import { routes as posts } from './routes/posts';
@@ -462,6 +463,16 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
   app.use(`${API_PREFIX}/*`, originGuard(deps.origins));
 
   app.use(`${API_PREFIX}/*`, sessionMiddleware());
+
+  /*
+   * THE DOMAIN GATE (migration 0680), DIRECTLY UNDER THE SESSION RESOLVE. It
+   * acts only when an ADMIN session resolved and only tightens — a customer or
+   * anonymous request matches no admin user and falls through to each route's
+   * own guards unchanged. One table over mounted paths instead of six roles'
+   * worth of per-route edits; `server/middleware/permissions.ts` carries the
+   * argument, including why the admin catch-all is owner/developer-only.
+   */
+  app.use(`${API_PREFIX}/*`, rolePermissions());
 
   app.route(API_PREFIX, createAuthRoutes({ mailer: deps.mailer }));
   /*

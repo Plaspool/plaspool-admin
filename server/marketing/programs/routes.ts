@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { pathParam, readJson, str } from '../../middleware/errors';
-import { requireAuth, requireOwner } from '../../middleware/session';
+import { requireAuth } from '../../middleware/session';
 import { currentDb, currentUser } from '../../app-env';
 import { createProgram, listPrograms, patchProgram } from './repo';
 import type { AppEnv } from '../../app-env';
@@ -34,7 +34,7 @@ import type { AppEnv } from '../../app-env';
 export const routes = new Hono<AppEnv>();
 
 const auth = requireAuth();
-const owner = requireOwner();
+const staff = requireAuth();
 
 // ------------------------------------------------------------------ schemas
 
@@ -163,7 +163,7 @@ routes.get('/programs', auth, async (c) => {
   return c.json({ programs });
 });
 
-routes.post('/programs', owner, async (c) => {
+routes.post('/programs', staff, async (c) => {
   const draft = await readJson(c, CreateProgramBody);
   const program = await createProgram(currentDb(c), draft, {
     actorId: currentUser(c).id,
@@ -172,7 +172,7 @@ routes.post('/programs', owner, async (c) => {
   return c.json({ program }, 201);
 });
 
-routes.patch('/programs/:id', owner, async (c) => {
+routes.patch('/programs/:id', staff, async (c) => {
   const id = pathParam(c, 'id');
   const { expectedRevision, ...patch } = await readJson(c, ProgramPatchBody);
   const program = await patchProgram(currentDb(c), id, patch, {

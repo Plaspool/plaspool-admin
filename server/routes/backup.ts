@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { readJson } from '../middleware/errors';
-import { requireAuth, requireOwner } from '../middleware/session';
+import { requireAdmin, requireAuth } from '../middleware/session';
 import { limit } from '../middleware/ratelimit';
 import { BACKUP_LIMIT, BACKUP_WINDOW_MS } from '../repo/ratelimit';
 import { exportAll, existingPostIds } from '../repo/backup';
@@ -47,7 +47,7 @@ export const routes = new Hono<AppEnv>();
 
 // ------------------------------------------------------------------ export
 
-routes.get('/export', requireOwner(), async (c) => {
+routes.get('/export', requireAdmin(), async (c) => {
   const db = currentDb(c);
   await limit(c, `export:${currentUser(c).id}`, BACKUP_LIMIT, BACKUP_WINDOW_MS);
 

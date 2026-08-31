@@ -503,12 +503,16 @@ describe('the admin surface', () => {
     expect(res.status).toBe(401);
   });
 
-  it('a writer may read and fulfil; only an owner may cancel', async () => {
+  it('supply chain may read and fulfil; only the admin tier may cancel (migration 0680)', async () => {
     const read = await paidOrder(CUSTOMER_A);
+    /* A content writer is off the orders surface entirely now — the domain
+     * gate, not the route guard. */
     const writer = await login(ctx.users.writer);
+    expect((await writer.get(`/api/shop/admin/orders/${read.order.id}`)).status).toBe(403);
 
-    expect((await writer.get(`/api/shop/admin/orders/${read.order.id}`)).status).toBe(200);
-    const created = await writer.post(`/api/shop/admin/orders/${read.order.id}/fulfillments`, {
+    const chain = await login(ctx.users.supplyChain);
+    expect((await chain.get(`/api/shop/admin/orders/${read.order.id}`)).status).toBe(200);
+    const created = await chain.post(`/api/shop/admin/orders/${read.order.id}/fulfillments`, {
       lines: [{ orderLineId: read.lines[0].id, qty: 1 }],
       carrier: 'DHL',
       trackingNumber: 'T1',
@@ -520,7 +524,7 @@ describe('the admin surface', () => {
      * paid order is the most money-adjacent thing here: it tells every consumer of
      * `order.cancelled` to release the stock and stops the order ever shipping.
      */
-    const refused = await writer.post(`/api/shop/admin/orders/${read.order.id}/cancel`);
+    const refused = await chain.post(`/api/shop/admin/orders/${read.order.id}/cancel`);
     expect(refused.status).toBe(403);
     expect(await json(refused)).toMatchObject({ error: 'forbidden' });
   });
@@ -1254,7 +1258,9 @@ describe('GET /admin/sweep, for an external cron service', () => {
      */
     process.env.CRON_SECRET = SECRET;
     const writer = await login(ctx.users.writer);
-    expect((await writer.get('/api/shop/admin/sweep')).status).toBe(401);
+    /* 403 from the domain gate, not 401 from the bearer check — refused
+     * either way, and a staff session is still never a cron credential. */
+    expect((await writer.get('/api/shop/admin/sweep')).status).toBe(403);
   });
 
   it('the path an operator is given is the path the router registers', () => {

@@ -75,6 +75,7 @@ export const SYSTEM_KEYS = [
   'account.welcome',
   'account.invite',
   'account.password_reset',
+  'account.login_code',
   'return.awarded',
   'return.rejected',
   /* The namespace the SYSTEM_KEYS comment predicted. Both are about a review,
@@ -596,6 +597,39 @@ const ACCOUNT_PASSWORD_RESET: SystemTemplate = {
     `changed and you can ignore this message — your current password still works.\n`,
 };
 
+/**
+ * The second factor (migration 0700). SIX DIGITS IN THE SUBJECT LINE,
+ * deliberately: the person is mid-login on another screen, and a code they can
+ * read off the notification without opening the message is the whole UX. The
+ * body repeats it large for the notification-less inbox.
+ */
+const ACCOUNT_LOGIN_CODE: SystemTemplate = {
+  key: 'account.login_code',
+  name: 'Sign-in code',
+  description: 'Sent when a protected account signs in — the emailed second factor.',
+  variables: ['{{code}}', '{{expiry_minutes}}', '{{support_email}}'],
+  subject: '{{code}} is your PlaSpool sign-in code',
+  html: shell({
+    title: 'Your sign-in code',
+    preheader: 'Use this code to finish signing in.',
+    body:
+      badge('Security', 'neutral') +
+      h1('Your sign-in code') +
+      p('Enter this code to finish signing in to the PlaSpool admin:') +
+      h1('{{code}}') +
+      small(
+        'It works once and expires in {{expiry_minutes}} minutes. If you were not ' +
+        'signing in, someone has your password — change it now.',
+      ),
+    footer: `Sent by PlaSpool. Did not ask for this? Write to ${SUPPORT}.`,
+  }),
+  text:
+    `Enter this code to finish signing in to the PlaSpool admin:\n\n` +
+    `{{code}}\n\n` +
+    `It works once and expires in {{expiry_minutes}} minutes. If you were not\n` +
+    `signing in, someone has your password — change it now.\n`,
+};
+
 /* ------------------------------------------------------------------- returns */
 
 /**
@@ -859,6 +893,7 @@ export const DEFAULT_TEMPLATES: Record<SystemKey, SystemTemplate> = {
   'account.welcome': ACCOUNT_WELCOME,
   'account.invite': ACCOUNT_INVITE,
   'account.password_reset': ACCOUNT_PASSWORD_RESET,
+  'account.login_code': ACCOUNT_LOGIN_CODE,
   'return.awarded': RETURN_AWARDED,
   'return.rejected': RETURN_REJECTED,
   'review.invite': REVIEW_INVITE,

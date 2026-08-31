@@ -10,7 +10,7 @@ import {
   readQuery,
   str,
 } from '../../middleware/errors';
-import { requireAuth, requireOwner } from '../../middleware/session';
+import { requireAdmin, requireAuth } from '../../middleware/session';
 import { BadRequestError, NotFoundError } from '../../repo/errors';
 import { rejectNul } from '../../repo/cursor';
 import { currentDb, currentUser } from '../../app-env';
@@ -643,7 +643,7 @@ function registerAdminRoutes(
     return c.json(await runSweep(c, deps()));
   });
 
-  routes.post('/admin/sweep', requireOwner(), async (c) => c.json(await runSweep(c, deps())));
+  routes.post('/admin/sweep', requireAdmin(), async (c) => c.json(await runSweep(c, deps())));
 
   /**
    * `requireOwner()`, not `requireAuth()` — contract §HTTP puts anything money-adjacent
@@ -693,7 +693,7 @@ function registerAdminRoutes(
    * human: retry the refund, or pay the customer another way.
    * ═══════════════════════════════════════════════════════════════════════════
    */
-  routes.post('/admin/orders/:id/cancel', requireOwner(), async (c) => {
+  routes.post('/admin/orders/:id/cancel', requireAdmin(), async (c) => {
     const db = currentDb(c);
     const body = await readJsonOrEmpty(c, CancelBody);
     const read = await requireOrder(db, pathParam(c, 'id'));

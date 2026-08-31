@@ -32,6 +32,7 @@ import type { Program } from './repo';
 let ctx: TestCtx;
 let owner: HttpClient;
 let writer: HttpClient;
+let marketing: HttpClient;
 /** No session at all — a fresh browser, not a logged-out one. */
 let anon: HttpClient;
 
@@ -49,6 +50,7 @@ beforeAll(async () => {
   ctx = await freshDb();
   owner = await login(ctx.users.owner);
   writer = await login(ctx.users.writer);
+  marketing = await login(ctx.users.marketing);
   anon = httpClient(ctx.db);
 });
 
@@ -109,17 +111,15 @@ describe('mounting and the guards', () => {
     expect(await json(missing)).toMatchObject({ error: 'gone' });
   });
 
-  it('lets a writer read the list and refuses their writes with 403', async () => {
+  it('is the marketing domain’s: marketing reads, a writer is refused outright', async () => {
     /*
-     * The frozen role matrix (spec D12): programs are configuration, so creating
-     * and editing one is the owner's. Reading is not — a writer processing
-     * returns has to see which programs exist and what they are called.
-     *
-     * The UI renders owner-only controls as ABSENT rather than disabled, so this
-     * 403 is the backstop for a raced role change or a hand-made request, not the
-     * ordinary path.
+     * THE ROLE MATRIX SINCE MIGRATION 0680: programs are the marketing
+     * domain's, so the marketing role reads them and a content writer is off
+     * the surface entirely. The 403s below are the domain gate's, and the UI
+     * renders the section as absent for roles that do not hold it.
      */
-    expect((await list(writer)).length).toBeGreaterThan(0);
+    expect((await writer.get('/api/marketing/programs')).status).toBe(403);
+    expect((await list(marketing)).length).toBeGreaterThan(0);
 
     const created = await create();
     const post = await writer.post('/api/marketing/programs', draft());

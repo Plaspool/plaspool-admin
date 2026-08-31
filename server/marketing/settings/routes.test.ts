@@ -31,6 +31,7 @@ import type { Program } from '../programs/repo';
 let ctx: TestCtx;
 let owner: HttpClient;
 let writer: HttpClient;
+let marketing: HttpClient;
 let anon: HttpClient;
 
 async function login(user: AuthUser): Promise<HttpClient> {
@@ -47,6 +48,7 @@ beforeAll(async () => {
   ctx = await freshDb();
   owner = await login(ctx.users.owner);
   writer = await login(ctx.users.writer);
+  marketing = await login(ctx.users.marketing);
   anon = httpClient(ctx.db);
 });
 
@@ -103,7 +105,8 @@ describe('mounting and the guards', () => {
      * screens render balances in those words, so a reader that could not see them
      * would render the currency word as nothing at all.
      */
-    const seen = await read(writer);
+    expect((await writer.get('/api/marketing/settings')).status).toBe(403);
+    const seen = await read(marketing);
     expect(seen.pointsLabelPlural.length).toBeGreaterThan(0);
 
     const res = await writer.patch('/api/marketing/settings', {

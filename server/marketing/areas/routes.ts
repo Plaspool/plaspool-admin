@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { pathParam, readJson, readQuery, str } from '../../middleware/errors';
-import { requireAuth, requireOwner } from '../../middleware/session';
+import { requireAuth } from '../../middleware/session';
 import { currentDb } from '../../app-env';
 import { createArea, listAreas, patchArea } from './repo';
 import type { AppEnv } from '../../app-env';
@@ -10,11 +10,13 @@ import type { AppEnv } from '../../app-env';
  * Service areas on the wire — contract #6.1 and #6.1b.
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * READING IS `requireAuth`; EVERY WRITE IS `requireOwner`. This list decides
- * WHERE VANS GO, which is the same class of decision as a program's rate or the
- * redemption economics — the things the frozen role matrix (spec D12) reserves
- * for the owner. A writer processing returns needs to SEE the boards; switching
- * a district on commits the business to sending a driver there.
+ * EVERY ROUTE IS `requireAuth`; WHICH STAFF REACH THEM IS THE DOMAIN GATE'S
+ * CALL (migration 0680, `server/middleware/permissions.ts`). This surface sits
+ * in the `marketing` domain, so the marketing role, the owner and developers
+ * hold it — reads and writes alike — and a content writer is off it entirely.
+ * The list still decides WHERE VANS GO; what changed is who the owner trusts
+ * with that decision, and spec D12's owner-only rule is superseded by the
+ * owner's own role model.
  *
  * THE GUARDS ARE ATTACHED PER ROUTE, never `routes.use('*', …)` — the rule
  * `../programs/routes.ts` states at length, and the reason `../app.ts` pins an
@@ -30,7 +32,7 @@ import type { AppEnv } from '../../app-env';
 export const routes = new Hono<AppEnv>();
 
 const auth = requireAuth();
-const owner = requireOwner();
+const staff = requireAuth();
 
 /** Long enough for the longest real place name several times over, short enough
  *  that a pasted document never reaches a region heading. */
@@ -100,7 +102,7 @@ routes.get('/areas', auth, async (c) => {
  * It is created INACTIVE, like every other area — switching it on is the
  * separate, deliberate act.
  */
-routes.post('/areas', owner, async (c) => {
+routes.post('/areas', staff, async (c) => {
   const body = await readJson(c, CreateBody);
   const area = await createArea(currentDb(c), body, { now: Date.now() });
   return c.json({ area }, 201);
@@ -109,7 +111,7 @@ routes.post('/areas', owner, async (c) => {
 /** Contract #6.1b — rename, re-alias, reorder, and the Switch. CAS on
  *  `expectedRevision`; a lost race answers `stale_write` carrying the row that
  *  won, so the screen re-renders the truth without a second fetch (spec D7). */
-routes.patch('/areas/:id', owner, async (c) => {
+routes.patch('/areas/:id', staff, async (c) => {
   const id = pathParam(c, 'id');
   const { expectedRevision, ...patch } = await readJson(c, PatchBody);
   const area = await patchArea(currentDb(c), id, patch, { expectedRevision, now: Date.now() });

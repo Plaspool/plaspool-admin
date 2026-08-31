@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { shopCors } from '../cart/cors';
 import { pathParam, readJson, str } from '../../middleware/errors';
-import { requireOwner } from '../../middleware/session';
+import { requireAdmin } from '../../middleware/session';
 import { NotFoundError } from '../../repo/errors';
 import { currentDb, currentUser } from '../../app-env';
 import { ProviderError } from './provider/scrub';
@@ -424,10 +424,10 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
 
   // ------------------------------------------------------------------ admin
 
-  const owner = requireOwner();
+  const admin = requireAdmin();
 
   /** Full detail, refunds included. Owner only. */
-  app.get('/shop/admin/payments/intents/:id', owner, async (c) => {
+  app.get('/shop/admin/payments/intents/:id', admin, async (c) => {
     const db = currentDb(c);
     const id = pathParam(c, 'id');
     const intent = await getIntent(db, id);
@@ -441,7 +441,7 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
    * `requireAuth()`: a writer can publish posts and has no business moving
    * money.
    */
-  app.post('/shop/admin/payments/intents/:id/refunds', owner, async (c) => {
+  app.post('/shop/admin/payments/intents/:id/refunds', admin, async (c) => {
     const body = await readJson(c, CreateRefundBody);
     const result = await createRefund(currentDb(c), resolveProvider(deps), {
       intentId: pathParam(c, 'id'),
@@ -454,7 +454,7 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
   });
 
   /** Cancel a checkout that was never paid. */
-  app.post('/shop/admin/payments/intents/:id/cancel', owner, async (c) =>
+  app.post('/shop/admin/payments/intents/:id/cancel', admin, async (c) =>
     c.json(publicIntent(await cancelIntent(currentDb(c), pathParam(c, 'id')))),
   );
 
@@ -464,7 +464,7 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
    * The safety net under "acknowledge then process" — anything the
    * post-response work did not finish because the function was frozen.
    */
-  app.post('/shop/admin/payments/events/drain', owner, async (c) =>
+  app.post('/shop/admin/payments/events/drain', admin, async (c) =>
     c.json({
       processed: await drainPaymentEvents(currentDb(c), 50, Date.now(), { checkout }),
     }),

@@ -309,6 +309,20 @@
                         "when":  1786600003600,
                         "tag":  "0660_email_intent_dismissal",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  44,
+                        "version":  "7",
+                        "when":  1786600003700,
+                        "tag":  "0680_admin_roles",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  45,
+                        "version":  "7",
+                        "when":  1786600003800,
+                        "tag":  "0700_email_login_codes",
+                        "breakpoints":  true
                     }
                 ]
 }

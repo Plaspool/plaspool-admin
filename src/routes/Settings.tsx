@@ -632,7 +632,7 @@ function AccountSection({ user }: { user: AuthUser }) {
 function InviteForm({ onInvited }: { onInvited: () => void }) {
   const { notify } = useToast();
   const [email, setEmail] = useState('');
-  const [role, setRole] = useState<'owner' | 'writer'>('writer');
+  const [role, setRole] = useState<'developer' | 'writer'>('writer');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [minted, setMinted] = useState<MintedInvite | null>(null);
@@ -708,13 +708,17 @@ function InviteForm({ onInvited }: { onInvited: () => void }) {
               same word as its `aria-label`, exactly as the existing theme and
               sort controls on this screen do. */}
           <span className="label">Role</span>
-          <Select<'owner' | 'writer'>
+          {/* `owner` left the menu with migration 0680: the singular account
+              is never minted through the API. The current admin's team screen
+              carries the full six-role picker; this v1 fallback keeps the two
+              it always understood, `developer` standing where `owner` stood. */}
+          <Select<'developer' | 'writer'>
             label="Role"
             value={role}
             onChange={setRole}
             options={[
               { value: 'writer', label: 'Writer — writes and publishes their own posts' },
-              { value: 'owner', label: 'Owner — everything, including this screen' },
+              { value: 'developer', label: 'Developer — everything, including this screen' },
             ]}
           />
         </div>

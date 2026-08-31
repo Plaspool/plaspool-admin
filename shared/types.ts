@@ -198,7 +198,8 @@ export interface AuthUser {
   id: string;
   email: string;
   displayName: string;
-  role: 'owner' | 'writer';
+  /** The six-role model of `shared/roles.ts` (migration 0680). */
+  role: import('./roles').Role;
 }
 
 /**

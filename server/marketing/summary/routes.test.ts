@@ -23,6 +23,7 @@ import type { MarketingSummary } from './repo';
 let ctx: TestCtx;
 let owner: HttpClient;
 let writer: HttpClient;
+let marketing: HttpClient;
 let anon: HttpClient;
 
 const API = '/api/marketing';
@@ -99,6 +100,7 @@ beforeAll(async () => {
   ctx = await freshDb();
   owner = await login(ctx.users.owner);
   writer = await login(ctx.users.writer);
+  marketing = await login(ctx.users.marketing);
   anon = httpClient(ctx.db);
 });
 
@@ -125,8 +127,9 @@ describe('the marketing summary', () => {
     expect(await json(res)).toMatchObject({ error: 'unauthenticated' });
   });
 
-  it('serves a writer — the section landing is not owner-only', async () => {
-    const res = await writer.get(`${API}/summary`);
+  it('serves the marketing role — and refuses a content writer (migration 0680)', async () => {
+    expect((await writer.get(`${API}/summary`)).status).toBe(403);
+    const res = await marketing.get(`${API}/summary`);
     expect(res.status).toBe(200);
   });
 

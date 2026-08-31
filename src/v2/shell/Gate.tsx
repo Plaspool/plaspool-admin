@@ -65,6 +65,12 @@ function SignIn({ prefill = '' }: { prefill?: string }) {
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /* Non-null between the password verifying and the emailed code arriving —
+     the ticket is the server's proof the first factor happened, so the code
+     form never holds a password. */
+  const [challenge, setChallenge] = useState<{ ticket: string } | null>(null);
+  const [code, setCode] = useState('');
+  const [resent, setResent] = useState(false);
 
   useEffect(() => {
     if (prefill) setEmail(prefill);
@@ -76,17 +82,51 @@ function SignIn({ prefill = '' }: { prefill?: string }) {
     setBusy(true);
     setError(null);
     try {
-      const user = await api.login(email.trim(), password);
-      /* `adoptUser`, not local state: it decides whether this is the same
-         person coming back (keep everything) or a different one (clear the
-         cache), and scopes the offline cache to this account. */
-      await adoptUser(user);
+      const result = await api.login(email.trim(), password);
       /* v1's rule, kept: the password never sits in component state after the
          attempt resolves, successful or not. */
       setPassword('');
+      if (result.kind === 'code') {
+        setChallenge({ ticket: result.ticket });
+        setBusy(false);
+        return;
+      }
+      /* `adoptUser`, not local state: it decides whether this is the same
+         person coming back (keep everything) or a different one (clear the
+         cache), and scopes the offline cache to this account. */
+      await adoptUser(result.user);
     } catch (cause) {
       setError(messageFor(cause));
       setBusy(false);
+    }
+  }
+
+  async function onSubmitCode(event: FormEvent) {
+    event.preventDefault();
+    if (busy || !challenge) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const user = await api.loginCode(challenge.ticket, code.trim());
+      setCode('');
+      await adoptUser(user);
+    } catch (cause) {
+      setError(
+        cause instanceof ApiError && cause.status === 401
+          ? 'That code didn’t work. It may have expired — codes last ten minutes.'
+          : messageFor(cause),
+      );
+      setBusy(false);
+    }
+  }
+
+  async function resend() {
+    if (!challenge) return;
+    setResent(true);
+    try {
+      await api.resendLoginCode(challenge.ticket);
+    } catch {
+      /* 202-or-nothing by design; the button's own state is the feedback. */
     }
   }
 
@@ -101,52 +141,108 @@ function SignIn({ prefill = '' }: { prefill?: string }) {
           <span style={{ fontSize: 'var(--t-2xl)', fontWeight: 'var(--w-bold)' }}>{brand.name}</span>
         )}
 
-        <form className="signin__card" onSubmit={onSubmit} noValidate>
-          <h1 className="signin__title">Sign in</h1>
-          {/* v1's lede, kept word for word: the invitation sentence is doing
-              real work — it is the whole answer to "where do I sign up?". */}
-          <p className="signin__lede">
-            Accounts here are by invitation only, so there is nothing to sign up for — if you are
-            expecting an invitation, it arrives as a link.
-          </p>
-
-          <TextField
-            label="Email"
-            type="email"
-            name="email"
-            autoComplete="username"
-            required
-            autoFocus
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-          <TextField
-            label="Password"
-            type="password"
-            name="password"
-            autoComplete="current-password"
-            required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-
-          {error ? (
-            <p className="signin__error" role="alert">
-              {error}
+        {challenge ? (
+          <form className="signin__card" onSubmit={onSubmitCode} noValidate>
+            <h1 className="signin__title">Check your email</h1>
+            <p className="signin__lede">
+              A six-digit code is on its way to <strong>{email.trim()}</strong>. Enter it here to
+              finish signing in — it works once and expires in ten minutes.
             </p>
-          ) : null}
 
-          <Button
-            tone="primary"
-            size="lg"
-            type="submit"
-            busy={busy}
-            disabled={email.trim() === '' || password === ''}
-            onClick={() => {}}
-          >
-            Sign in
-          </Button>
-        </form>
+            <TextField
+              label="Sign-in code"
+              name="code"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              required
+              autoFocus
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+            />
+
+            {error ? (
+              <p className="signin__error" role="alert">
+                {error}
+              </p>
+            ) : null}
+
+            <Button
+              tone="primary"
+              size="lg"
+              type="submit"
+              busy={busy}
+              disabled={code.trim().length < 6}
+              onClick={() => {}}
+            >
+              Verify code
+            </Button>
+
+            <div className="row" style={{ justifyContent: 'space-between', marginTop: 'var(--s2)' }}>
+              <Button
+                tone="plain"
+                type="button"
+                onClick={() => {
+                  setChallenge(null);
+                  setCode('');
+                  setError(null);
+                  setResent(false);
+                }}
+              >
+                Start over
+              </Button>
+              <Button tone="plain" type="button" disabled={resent} onClick={() => void resend()}>
+                {resent ? 'Code re-sent' : 'Send a new code'}
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <form className="signin__card" onSubmit={onSubmit} noValidate>
+            <h1 className="signin__title">Sign in</h1>
+            {/* v1's lede, kept word for word: the invitation sentence is doing
+                real work — it is the whole answer to "where do I sign up?". */}
+            <p className="signin__lede">
+              Accounts here are by invitation only, so there is nothing to sign up for — if you are
+              expecting an invitation, it arrives as a link.
+            </p>
+
+            <TextField
+              label="Email"
+              type="email"
+              name="email"
+              autoComplete="username"
+              required
+              autoFocus
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <TextField
+              label="Password"
+              type="password"
+              name="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+
+            {error ? (
+              <p className="signin__error" role="alert">
+                {error}
+              </p>
+            ) : null}
+
+            <Button
+              tone="primary"
+              size="lg"
+              type="submit"
+              busy={busy}
+              disabled={email.trim() === '' || password === ''}
+              onClick={() => {}}
+            >
+              Sign in
+            </Button>
+          </form>
+        )}
 
         <p className="signin__foot">
           Password resets and invitations run on the current admin while this design preview is up.
