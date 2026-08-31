@@ -425,3 +425,104 @@ describe('the snapshot chain skips 0001', () => {
     }
   });
 });
+
+/**
+ * 0740 REWRITES MONEY HISTORY A CUSTOMER HAS ALREADY READ, which is the whole
+ * reason it is tested rather than eyeballed. `marketing_ledger.reason` is
+ * render-final — written once, never re-rendered — so a backfill that overreached
+ * would corrupt sentences with no template left to regenerate them from.
+ *
+ * The hazard it is written against is `_`. An order id looks like `ord_9_A_B`,
+ * and to LIKE every one of those underscores is a single-character wildcard, so
+ * the obvious `reason LIKE 'Order ' || order_id || ':%'` also matches prose the
+ * generator never wrote. The migration uses an exact prefix compare instead, and
+ * the near-miss row below is what tells the two predicates apart: under LIKE it
+ * is rewritten with another order's number, and the corruption is unrecoverable.
+ */
+describe('0740 puts the customer’s order number in the reasons already written', () => {
+  const BACKFILL = read('server/db/migrations/0740_ledger_reason_order_number.sql')
+    .split('--> statement-breakpoint')[0];
+
+  const order = (id: string, number: string) => sql`
+    INSERT INTO shop_orders (id, order_number, email, currency, subtotal,
+      shipping_total, tax_total, grand_total, status, shipping_address,
+      billing_address, placed_at, revision, source_event_id, checkout_id)
+    VALUES (${id}, ${number}, 'dara@example.test', 'NGN', 1000, 0, 0, 1000,
+      'paid', '{}'::jsonb, '{}'::jsonb, 1, 1, ${`evt_${id}`}, ${`chk_${id}`})`;
+
+  const entry = (id: string, kind: string, orderId: string | null, reason: string) => sql`
+    INSERT INTO marketing_ledger (id, customer_email, kind, delta, balance_after,
+      reason, order_id, actor_type, created_at)
+    VALUES (${id}, 'dara@example.test', ${kind}, ${kind === 'redemption' ? -100 : 100},
+      100, ${reason}, ${orderId}, 'system', 1)`;
+
+  async function seeded(): Promise<Db> {
+    const db = pglite();
+    await migrate(db as never, { migrationsFolder: MIGRATIONS });
+    await db.execute(order('ord_01H8XYZ', '2026-000009-D'));
+    await db.execute(order('ord_9_A_B', '2026-000010-D'));
+    await db.execute(order('ord_lonely', '2026-000011-D'));
+
+    await db.execute(entry('l1', 'redemption', 'ord_01H8XYZ', 'Order ord_01H8XYZ: 500 SpoolPoints spent'));
+    await db.execute(
+      entry('l2', 'redemption_release', 'ord_01H8XYZ',
+        'Order ord_01H8XYZ: 500 SpoolPoints returned — the order was cancelled'),
+    );
+    await db.execute(entry('l3', 'redemption', 'ord_9_A_B', 'Order ord_9_A_B: 40 SpoolPoints spent'));
+    /*
+      * THE NEAR MISS. Its own order id is `ord_9_A_B`, so the LIKE pattern built
+      * from that id — `Order ord_9_A_B:%` — matches the FOREIGN id this reason
+      * happens to name, every `_` standing in for the `X`. A release rather than
+      * a second redemption because `marketing_ledger_redemption_uq` allows only
+      * one of those per order.
+      */
+    await db.execute(
+      entry('l4', 'redemption_release', 'ord_9_A_B', 'Order ordX9XAXB: 40 SpoolPoints returned — cancelled'),
+    );
+    // Not a redemption, but shaped like one.
+    await db.execute(entry('l5', 'manual', 'ord_lonely', 'Order ord_lonely: 10 SpoolPoints spent'));
+    // Prose a person typed.
+    await db.execute(entry('l6', 'redemption', 'ord_lonely', 'Goodwill for a late delivery'));
+    return db;
+  }
+
+  const reasons = async (db: Db): Promise<Record<string, string>> => {
+    const res = await db.execute(sql`SELECT id, reason FROM marketing_ledger ORDER BY id`);
+    return Object.fromEntries(res.rows.map((r) => [String(r.id), String(r.reason)]));
+  };
+
+  it('restates the id as the number, carrying every other word across verbatim', async () => {
+    const db = await seeded();
+    await db.execute(sql.raw(BACKFILL));
+    const after = await reasons(db);
+
+    expect(after.l1).toBe('Order 2026-000009-D: 500 SpoolPoints spent');
+    // The amount, the points word, the em dash and the cancellation reason all
+    // survive: only the identifier moved.
+    expect(after.l2).toBe(
+      'Order 2026-000009-D: 500 SpoolPoints returned — the order was cancelled',
+    );
+    expect(after.l3).toBe('Order 2026-000010-D: 40 SpoolPoints spent');
+  });
+
+  it('leaves alone every row it did not write', async () => {
+    const db = await seeded();
+    await db.execute(sql.raw(BACKFILL));
+    const after = await reasons(db);
+
+    // THE ONE THAT WOULD HAVE BEEN CORRUPTED BY A `LIKE`, and silently: it would
+    // have been stamped with 2026-000010-D, a number belonging to another order.
+    expect(after.l4).toBe('Order ordX9XAXB: 40 SpoolPoints returned — cancelled');
+    expect(after.l5).toBe('Order ord_lonely: 10 SpoolPoints spent');
+    expect(after.l6).toBe('Goodwill for a late delivery');
+  });
+
+  it('is re-runnable — a second application changes nothing', async () => {
+    const db = await seeded();
+    await db.execute(sql.raw(BACKFILL));
+    const once = await reasons(db);
+    await db.execute(sql.raw(BACKFILL));
+
+    expect(await reasons(db)).toEqual(once);
+  });
+});

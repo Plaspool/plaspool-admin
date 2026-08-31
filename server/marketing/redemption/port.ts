@@ -24,26 +24,38 @@ import type { MarketingSettings } from '../settings/repo';
  * `PointsRedemptionPort`, implemented — the marketing half of spec D9's seam.
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * IT HAS NO CALLER YET, AND THAT IS THE POINT OF BUILDING IT NOW. The cart
- * hard-codes `adjustments: []`; wiring it is a change to shop-owned files and to
- * `server/index.ts`, both deferred. What lands here is the whole marketing side —
- * proven against real tables — so the day the shop takes the dependency there is
- * nothing to design, only a line to add at the composition root.
+ * IT IS WIRED, AND `server/index.ts` IS STILL THE ONLY FILE THAT KNOWS BOTH
+ * HALVES. It hands `redemptionPort` to Cart and to Orders as a factory over the
+ * request's handle, so nothing below it imports across the seam. The shop now
+ * holds the dependency, which costs this file the freedom it had while nothing
+ * called it: the signatures frozen in `shared/marketing/redemption.ts` are no
+ * longer its own to move, and widening one is a change to shop-owned files as
+ * well. `orderNumber` below was exactly that.
  *
  * THE THREE METHODS ARE THREE DIFFERENT KINDS OF PROMISE:
  *
  * - `quote()` WRITES NOTHING AND RESERVES NOTHING. It answers "what would this
  *   balance be worth against this cart", and `null` means "render no widget" —
  *   switched off, nothing affordable, or under the minimum. None of those is an
- *   error, because none of them is something the customer did wrong.
+ *   error, because none of them is something the customer did wrong. Called at
+ *   the checkout FREEZE, by `quoteRedemption`
+ *   (`server/shop/cart/checkout/repo.ts`), whose adjustment then goes into
+ *   `computeTotals`.
  * - `redeem()` is the debit, at order commit, and it is IDEMPOTENT PER ORDER by
  *   index rather than by check: `marketing_ledger_redemption_uq` refuses a second
  *   row for the same order with every guard in this file deleted (spec D3). A
  *   webhook that fires twice is therefore harmless, which is what makes it safe
- *   for the shop to retry.
+ *   for the shop to retry. `spendPoints` (`server/shop/orders/repo/consumer.ts`)
+ *   leans on exactly that: it runs on `payment.captured` AFTER the order is
+ *   marked paid, so it must never throw, and a re-swept event lands harmlessly
+ *   on the row the first pass wrote.
  * - `release()` gives the points back when a redeemed order is cancelled or
  *   refunded. Without it a cancellation strands a debit with no named recovery
- *   path and the customer is quietly out of pocket.
+ *   path and the customer is quietly out of pocket. `refundPoints` calls it on
+ *   `payment.failed` and `payment.refunded` — and so does the owner's cancel
+ *   route (`server/shop/orders/routes.ts`), which reaches no branch of that
+ *   consumer at all: an admin cancel emits `order.cancelled`, and the switch
+ *   ignores that as one of this subsystem's own emissions.
  *
  * IDEMPOTENCY OUTRANKS EVERY OTHER ANSWER, and the ordering in `redeem` says so:
  * the existing row is looked for BEFORE the switch, the currency and the balance
@@ -75,6 +87,15 @@ import type { MarketingSettings } from '../settings/repo';
  * earned under every program at once (spec D2) — and reaches the ledger row and
  * the checkout line through `fmtPoints`. The rendered strings are RENDER-FINAL:
  * a rename in June must not rewrite what a March receipt said.
+ *
+ * THE ORDER NUMBER IS THE CUSTOMER'S; THE ORDER ID IS THE INDEX'S. Both arrive
+ * on every call and they are not interchangeable: `orderId` is the idempotency
+ * key, the partial uniques and the `order_id` column, while `orderNumber`
+ * (`2026-000009-D`) is what the confirmation email and the order page already
+ * showed the shopper — so it is the ONLY one of the two that may appear in the
+ * sentence they read. Printing the internal id here was the bug that widened
+ * both inputs; the id is still written, structurally, to its own column, which
+ * is where a machine should have been reading it from all along.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
@@ -143,6 +164,15 @@ function requireOrderId(value: string): string {
   const orderId = value.trim();
   if (orderId === '') throw new BadRequestError('orderId');
   return orderId;
+}
+
+/** An order number reaches the ledger's PROSE and nothing else, so a blank one
+ *  freezes "Order : 500 points spent" — a sentence with a hole in it — into a
+ *  row that is never re-rendered. Refused rather than written. */
+function requireOrderNumber(value: string): string {
+  const orderNumber = value.trim();
+  if (orderNumber === '') throw new BadRequestError('orderNumber');
+  return orderNumber;
 }
 
 /**
@@ -362,6 +392,16 @@ export function redemptionPort(db: Db, now: () => number = Date.now): PointsRede
       if (!Number.isInteger(input.points) || input.points <= 0) {
         throw new BadRequestError('points');
       }
+      /*
+       * CHECKED HERE RATHER THAN AT THE TOP, and the replay above is exactly
+       * why: the order NUMBER is not the idempotency key, so a webhook that
+       * replays carrying a blank one must still be answered from the row that
+       * already exists instead of throwing. It sits beside the `points` check
+       * because it is the same kind of check — a malformed argument, which the
+       * frozen union has no code for — and both belong after the answer that
+       * outranks them.
+       */
+      const orderNumber = requireOrderNumber(input.orderNumber);
 
       /*
        * THE RULES ARE NOT RE-CHECKED HERE, and the frozen signature is why: this
@@ -374,7 +414,7 @@ export function redemptionPort(db: Db, now: () => number = Date.now): PointsRede
         const moved = await debit(db, {
           email: input.email,
           amount: input.points,
-          reason: `Order ${orderId}: ${fmtPoints(input.points, wordsFor(settings))} spent`,
+          reason: `Order ${orderNumber}: ${fmtPoints(input.points, wordsFor(settings))} spent`,
           kind: 'redemption',
           orderId,
           /* The customer spent their own points at a checkout; no admin was
@@ -411,6 +451,10 @@ export function redemptionPort(db: Db, now: () => number = Date.now): PointsRede
 
     async release(input): Promise<{ ok: true; entryId: string | null; balance: number | null }> {
       const orderId = requireOrderId(input.orderId);
+      /* Up front here, unlike `redeem`'s, to sit with `reason`: both are prose
+       * bound for the same frozen sentence, and this method already refuses a
+       * malformed one before it looks anything up. */
+      const orderNumber = requireOrderNumber(input.orderNumber);
       const reason = input.reason.trim();
       /* The ledger's own CHECK only refuses the empty string, so a field of
        * spaces would satisfy it and leave the one column that explains why a
@@ -466,7 +510,7 @@ export function redemptionPort(db: Db, now: () => number = Date.now): PointsRede
         const moved = await credit(db, {
           email: redeemed.email,
           amount: redeemed.points,
-          reason: `Order ${orderId}: ${fmtPoints(redeemed.points, words)} returned — ${reason}`,
+          reason: `Order ${orderNumber}: ${fmtPoints(redeemed.points, words)} returned — ${reason}`,
           kind: 'redemption_release',
           orderId,
           /* Nobody typed this. A release is issued by whatever cancelled or

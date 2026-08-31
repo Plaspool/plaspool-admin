@@ -68,6 +68,15 @@ export interface PointsRedemptionPort {
    */
   redeem(input: {
     orderId: string;
+    /**
+     * The number the CUSTOMER knows this order by (`2026-000009-D`), carried
+     * alongside the internal id because the ledger writes a sentence a shopper
+     * reads back in their rewards history. `orderId` is the idempotency key and
+     * the row's `order_id` column; this is the only one of the two that belongs
+     * in prose. The port cannot derive it — spec D9 forbids marketing reading
+     * `shop_orders` — so the caller holding the order passes both.
+     */
+    orderNumber: string;
     email: string;
     points: number;
     currency: string;
@@ -83,6 +92,12 @@ export interface PointsRedemptionPort {
    */
   release(input: {
     orderId: string;
+    /**
+     * As in `redeem`, and needed again for the same reason: the ledger row this
+     * reads back to find the debit carries the INTERNAL id only, so the number
+     * the customer reads cannot be recovered from it.
+     */
+    orderNumber: string;
     reason: string;
   }): Promise<{ ok: true; entryId: string | null; balance: number | null }>;
 }

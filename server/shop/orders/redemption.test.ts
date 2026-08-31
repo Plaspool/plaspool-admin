@@ -49,8 +49,14 @@ const POINTS = 250;
 /** Every call the shop made, in order, so a test can assert on the arguments and
  *  not merely on the outcome. */
 interface Recorder {
-  redeems: Array<{ orderId: string; email: string; points: number; currency: string }>;
-  releases: Array<{ orderId: string; reason: string }>;
+  redeems: Array<{
+    orderId: string;
+    orderNumber: string;
+    email: string;
+    points: number;
+    currency: string;
+  }>;
+  releases: Array<{ orderId: string; orderNumber: string; reason: string }>;
 }
 
 /**
@@ -119,6 +125,11 @@ describe('the point count survives the trip from the freeze to the capture', () 
     expect(rec.redeems).toEqual([
       {
         orderId: read!.order.id,
+        /* BOTH IDENTIFIERS REACH THE PORT, and this is the assertion that says
+         * the customer's one does: the ledger writes `orderNumber` into a
+         * sentence a shopper reads back, and it is not recoverable on the far
+         * side — marketing may not read `shop_orders`. */
+        orderNumber: read!.order.orderNumber,
         email: WALLET,
         points: POINTS,
         currency: read!.order.currency,
@@ -249,7 +260,9 @@ describe('giving the points back', () => {
 
     const read = await readOrderByCheckout(ctx.db, CHECKOUT);
     expect(read!.order.status).toBe('cancelled');
-    expect(rec.releases).toEqual([{ orderId: read!.order.id, reason: 'payment_failed' }]);
+    expect(rec.releases).toEqual([
+      { orderId: read!.order.id, orderNumber: read!.order.orderNumber, reason: 'payment_failed' },
+    ]);
   });
 
   it('releases on a refund', async () => {

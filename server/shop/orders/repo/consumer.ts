@@ -257,13 +257,16 @@ async function spendPoints(
      * response — and the wallet address is not something an order page needs.
      */
     const res = await db.execute(sql`
-      SELECT redemption_points, redemption_email, currency
+      SELECT redemption_points, redemption_email, currency, order_number
         FROM shop_orders WHERE id = ${orderId}`);
     const row = res.rows[0];
     if (!row || row.redemption_points == null || row.redemption_email == null) return null;
 
     const result = await deps.redemption(db).redeem({
       orderId,
+      /* The customer's number, off the row this statement already had to read —
+       * the ledger writes it into a sentence they will read back. */
+      orderNumber: String(row.order_number),
       email: String(row.redemption_email),
       points: Number(row.redemption_points),
       currency: String(row.currency),
@@ -301,11 +304,12 @@ export async function refundPoints(
   db: Db,
   redemption: ((handle: Db) => PointsRedemptionPort) | undefined,
   orderId: string,
+  orderNumber: string,
   reason: string,
 ): Promise<string | null> {
   if (!redemption) return null;
   try {
-    await redemption(db).release({ orderId, reason });
+    await redemption(db).release({ orderId, orderNumber, reason });
     return null;
   } catch (err: unknown) {
     return `anomaly: could not return redeemed points — ${err instanceof Error ? err.message : String(err)}; reconcile with marketing`;
@@ -468,7 +472,13 @@ async function dispatch(
       );
       /* The order never shipped and never will; the points it was frozen with go
        * back. Unconditional — see `refundPoints`. */
-      const released = await refundPoints(db, deps.redemption, read.order.id, 'payment_failed');
+      const released = await refundPoints(
+        db,
+        deps.redemption,
+        read.order.id,
+        read.order.orderNumber,
+        'payment_failed',
+      );
       return released === null ? { kind: 'applied' } : { kind: 'applied', detail: released };
     }
 
@@ -499,7 +509,13 @@ async function dispatch(
        * Returning the customer's points to them when the shop has kept some of
        * the money is the direction to round in; the alternative keeps both.
        */
-      const returned = await refundPoints(db, deps.redemption, read.order.id, 'payment_refunded');
+      const returned = await refundPoints(
+        db,
+        deps.redemption,
+        read.order.id,
+        read.order.orderNumber,
+        'payment_refunded',
+      );
       return returned === null ? { kind: 'applied' } : { kind: 'applied', detail: returned };
     }
 
