@@ -29,6 +29,7 @@ import { Modal } from '../ui/Modal';
 import { SearchSelect } from '../ui/SearchSelect';
 import { Timeline, type TimelineEvent } from '../ui/Timeline';
 import { useToast } from '../ui/Toast';
+import { isAdminRole } from '../../../shared/roles';
 
 /**
  * RETURNS — `/orders/returns`. The pickup queue: request → schedule → collect
@@ -413,7 +414,9 @@ function ReturnModal({
 }) {
   const toast = useToast();
   const session = getSession();
-  const isOwner = 'user' in session && session.user?.role === 'owner';
+  /* Owner-grade means owner OR developer since migration 0680 — the
+     server's requireAdmin() tier, mirrored (shared/roles.ts). */
+  const isOwner = 'user' in session && session.user != null && isAdminRole(session.user.role);
 
   const [detail, setDetail] = useState<ReturnDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);

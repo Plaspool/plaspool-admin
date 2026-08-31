@@ -25,6 +25,7 @@ import { DataTable, IdCell, TablePager, type Column } from '../ui/DataTable';
 import { Defs } from '../ui/Defs';
 import { Modal } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
+import { isAdminRole } from '../../../shared/roles';
 
 /**
  * REVIEWS — `/products/reviews`, the moderation queue.
@@ -68,7 +69,9 @@ export default function Reviews() {
   const [confirmDestroy, setConfirmDestroy] = useState<AdminReview | null>(null);
 
   const session = getSession();
-  const isOwner = 'user' in session && session.user?.role === 'owner';
+  /* Owner-grade means owner OR developer since migration 0680 — the
+     server's requireAdmin() tier, mirrored (shared/roles.ts). */
+  const isOwner = 'user' in session && session.user != null && isAdminRole(session.user.role);
 
   const { data, error, loading } = useAsync(
     () =>

@@ -253,7 +253,7 @@ const refundBodies = (): Record<string, unknown>[] =>
     .filter((c) => c.path.split('?')[0] === REFUNDS && c.init.method === 'POST')
     .map((c) => JSON.parse(String(c.init.body)) as Record<string, unknown>);
 
-const SETTLED_TOAST = 'Every parcel delivered — order fulfilled';
+const SETTLED_TOAST = 'Every parcel on its way — order fulfilled';
 
 // ============================================================================
 

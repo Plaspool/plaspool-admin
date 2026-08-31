@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Globe, MoreHorizontal, Plus, Settings as SettingsIcon, Trash2 } from 'lucide-react';
+import { Globe, Lock, MoreHorizontal, Plus, Settings as SettingsIcon, Trash2 } from 'lucide-react';
 import {
   moneyRefusalMessage,
   parseMajor,
@@ -17,6 +17,8 @@ import { Menu, MenuItem, MenuSeparator } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
 import { TagInput } from '../ui/TagInput';
 import { useToast } from '../ui/Toast';
+import { getSession } from '../../data/session';
+import { hasDomain } from '../../../shared/roles';
 
 /**
  * SHIPPING — `/settings/shipping`: shipping zones and their delivery options,
@@ -35,6 +37,12 @@ const STORE_CURRENCY = 'NGN';
 
 export default function SettingsShipping() {
   const toast = useToast();
+  /* The settings domain is owner/developer territory (shared/roles.ts) — the
+     same graceful absence the Team screen renders, instead of a screen of
+     controls that all 403. */
+  const session = getSession();
+  const viewer = 'user' in session ? session.user : null;
+  const scoped = viewer !== null && hasDomain(viewer.role, 'settings');
   const [zones, setZones] = useState<ShopShippingZone[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editing, setEditing] = useState<'closed' | 'new' | ShopShippingZone>('closed');
@@ -52,10 +60,11 @@ export default function SettingsShipping() {
   }, []);
 
   useEffect(() => {
+    if (!scoped) return;
     const controller = new AbortController();
     void load(controller.signal);
     return () => controller.abort();
-  }, [load]);
+  }, [load, scoped]);
 
   /* Keep a modal's zone in step with a fresh list, so option edits show
      through without closing anything. */
@@ -67,6 +76,26 @@ export default function SettingsShipping() {
 
   const allZeroTax = (zones ?? []).length > 0 && (zones ?? []).every((z) => z.taxRateBps === 0);
   const fallbackCount = (zones ?? []).filter((z) => z.isFallback).length;
+
+  if (!scoped) {
+    return (
+      <div className="page">
+        <PageHeader
+          icon={<SettingsIcon />}
+          title="Shipping"
+          backTo="/settings"
+          backLabel="Settings"
+        />
+        <div className="card">
+          <EmptyState
+            icon={<Lock />}
+            title="Owner and developer surface"
+            body="Shipping zones price real orders, so they belong to the settings domain — the owner and developers."
+          />
+        </div>
+      </div>
+    );
+  }
 
   async function deleteZone(zone: ShopShippingZone) {
     try {

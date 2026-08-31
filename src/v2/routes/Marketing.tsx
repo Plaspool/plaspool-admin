@@ -31,6 +31,7 @@ import { AffixField, Checkbox, Segmented, SelectField, TextField } from '../ui/F
 import { Menu, MenuItem } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
+import { isAdminRole } from '../../../shared/roles';
 
 /**
  * MARKETING — `/marketing`. The points machine: programmes, the redemption
@@ -52,7 +53,9 @@ function pluralise(n: number, one: string, other: string): string {
 export default function Marketing() {
   const toast = useToast();
   const session = getSession();
-  const isOwner = 'user' in session && session.user?.role === 'owner';
+  /* Owner-grade means owner OR developer since migration 0680 — the
+     server's requireAdmin() tier, mirrored (shared/roles.ts). */
+  const isOwner = 'user' in session && session.user != null && isAdminRole(session.user.role);
 
   const [programs, setPrograms] = useState<Program[] | null>(null);
   const [settings, setSettings] = useState<MarketingSettings | null>(null);

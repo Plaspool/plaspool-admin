@@ -24,6 +24,7 @@ import { MenuItem, MenuSeparator } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
 import { Timeline, type TimelineEvent } from '../ui/Timeline';
 import { useToast } from '../ui/Toast';
+import { isAdminRole } from '../../../shared/roles';
 
 /**
  * ORDER DETAIL — `/orders/:id`.
@@ -170,7 +171,9 @@ export default function OrderDetail() {
   /* Cancel and refund are OWNER-ONLY at the server; a writer gets no dead
      menu items to click into a 403. */
   const session = getSession();
-  const isOwner = 'user' in session && session.user?.role === 'owner';
+  /* Owner-grade means owner OR developer since migration 0680 — the
+     server's requireAdmin() tier, mirrored (shared/roles.ts). */
+  const isOwner = 'user' in session && session.user != null && isAdminRole(session.user.role);
 
   const canFulfil =
     (order.status === 'paid' || order.status === 'partially_refunded') && unfulfilled;
@@ -194,7 +197,7 @@ export default function OrderDetail() {
    *  ship dialog, and the next-step deliver all report here, so the settled
    *  toast has exactly one wording and one trigger. */
   const parcelChanged = (settled: boolean) => {
-    if (settled) toast.show('Every parcel delivered — order fulfilled');
+    if (settled) toast.show('Every parcel on its way — order fulfilled');
     reload();
   };
 

@@ -437,7 +437,7 @@ describe('the team screen', () => {
     const link = within(receipt).getByLabelText('Invite link') as HTMLInputElement;
     expect(link.value).toBe('https://admin.plaspool.com/#/accept-invite?token=tok_minted_once');
     expect(link.readOnly).toBe(true);
-    expect(within(receipt).getByText('Mail not configured — send them this link.')).toBeTruthy();
+    expect(within(receipt).getByText('The email didn’t go — send them this link.')).toBeTruthy();
   });
 
   it('confirms a disable, POSTs it, and shows a manage_peer 409 as the honest sentence', async () => {

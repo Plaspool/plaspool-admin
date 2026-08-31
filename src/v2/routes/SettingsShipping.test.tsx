@@ -29,6 +29,27 @@ vi.setConfig({ testTimeout: 20_000 });
 
 import { ToastHost } from '../ui/Toast';
 import type { ShopShippingZone } from '../../data/api-shop';
+/* The screen now gates on the settings domain (owner/developer) — the same
+ * graceful absence Team renders. The suite drives it as the owner. */
+const sessionFixture = {
+  session: {
+    status: 'authed' as const,
+    user: {
+      id: 'u_owner',
+      email: 'owner@plaspool.com',
+      displayName: 'Owner',
+      role: 'owner' as import('../../../shared/roles').Role,
+    },
+  },
+};
+
+vi.mock('../../data/session', () => ({
+  getSession: () => sessionFixture.session,
+  subscribe: () => () => {},
+  initSession: vi.fn(),
+  logout: vi.fn(),
+}));
+
 import SettingsShipping from './SettingsShipping';
 
 /**

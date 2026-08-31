@@ -6,6 +6,7 @@ import { FeaturedConflictError, NotFeaturableError } from '../data/errors';
 import { featureOne, unfeatureOne, useFeatured } from '../data/useFeatured';
 import type { AuthUser, FeaturedItem, Post } from '../data/types';
 import './featured-toggle.css';
+import { isAdminRole } from '../../../../shared/roles';
 
 /**
  * "Feature this post", with the counter and the swap that a refusal needs.
@@ -76,7 +77,7 @@ export function FeatureToggle({
   /** The four the server named in a 409, or `null` when nothing is being swapped. */
   const [swap, setSwap] = useState<FeaturedItem[] | null>(null);
 
-  const owner = user?.role === 'owner';
+  const owner = user != null && isAdminRole(user.role);
   const featured = post ? isFeatured(post.id) : false;
   const blocked = blockedReason(post);
 

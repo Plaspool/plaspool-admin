@@ -691,7 +691,7 @@ function InviteModal({
             <span className="muted" style={{ fontSize: 'var(--t-sm)' }}>
               {minted.emailed
                 ? `Emailed to ${minted.invite.email} ✓`
-                : 'Mail not configured — send them this link.'}
+                : 'The email didn’t go — send them this link.'}
             </span>
           </div>
         </div>
