@@ -83,6 +83,9 @@ export const SYSTEM_KEYS = [
      templates below for why that is the right table and not a shortcut. */
   'review.invite',
   'review.approved',
+  /* The catalog namespace: staff-facing, not customer-facing — see the
+     template for why it still lives beside the rest. */
+  'catalog.export',
 ] as const;
 
 export type SystemKey = (typeof SYSTEM_KEYS)[number];
@@ -875,6 +878,54 @@ Changed your mind about what you wrote? Reply to this message and we will
     orderFooterText(),
 };
 
+/* ------------------------------------------------------------------ catalog */
+
+/**
+ * THE EXPORT LINK, sent when an admin asks for the product catalogue as CSV
+ * (`POST /api/shop/admin/products/export`, migration 0720).
+ *
+ * TO AN ADMIN, NOT A CUSTOMER — the one message in this file whose reader is
+ * staff. It rides the same shell anyway, so the templates screen previews and
+ * edits it like any other, and the structure mirrors ACCOUNT_PASSWORD_RESET:
+ * one badge, one sentence, one button, one small print.
+ *
+ * THE LINK IS THE CREDENTIAL. The download route asks for no session — the
+ * mail lands in inboxes and gets opened from phones — so the URL's token is
+ * its whole authority, and the small print says so rather than letting the
+ * reader treat it as an ordinary page. {{expiry_days}} is enforced at read
+ * time against the row's created_at; nothing sweeps the table.
+ */
+const CATALOG_EXPORT: SystemTemplate = {
+  key: 'catalog.export',
+  name: 'Product export ready',
+  description: 'Sent to the admin who asked for a CSV export of the product catalogue.',
+  variables: ['{{download_url}}', '{{row_count}}', '{{expiry_days}}', '{{support_email}}'],
+  subject: 'Your product export is ready',
+  html: shell({
+    title: 'Your product export is ready',
+    preheader: 'The product CSV you asked for is ready to download.',
+    body:
+      badge('Export ready') +
+      h1('Your product export is ready') +
+      p(
+        'The product catalogue you asked for has been prepared — ' +
+        '<strong>{{row_count}}</strong> rows, one per variant, as CSV.',
+      ) +
+      button('Download the CSV', '{{download_url}}') +
+      small(
+        'The link works for {{expiry_days}} days and needs no sign-in — anyone ' +
+        'holding it can download the file, so treat it like the spreadsheet ' +
+        'itself. Not expecting this? Ignore it, or write to ' + SUPPORT + '.',
+      ),
+    footer: `Sent by PlaSpool. Did not ask for this? Write to ${SUPPORT}.`,
+  }),
+  text:
+    `Your product export is ready — {{row_count}} rows, one per variant, as CSV.\n\n` +
+    `{{download_url}}\n\n` +
+    `The link works for {{expiry_days}} days and needs no sign-in — anyone holding\n` +
+    `it can download the file, so treat it like the spreadsheet itself.\n`,
+};
+
 /**
  * Every default, by key.
  *
@@ -898,6 +949,7 @@ export const DEFAULT_TEMPLATES: Record<SystemKey, SystemTemplate> = {
   'return.rejected': RETURN_REJECTED,
   'review.invite': REVIEW_INVITE,
   'review.approved': REVIEW_APPROVED,
+  'catalog.export': CATALOG_EXPORT,
 };
 
 export function defaultTemplate(key: SystemKey): SystemTemplate {

@@ -51,6 +51,7 @@ import {
 } from './categories';
 import type { ShopCategoryPatch } from './categories';
 import type { ProductPatch } from './types';
+import { csvRoutes } from './csv';
 
 /**
  * Catalog's HTTP surface (brief §6).
@@ -879,3 +880,14 @@ routes.put('/admin/products/:id/bulk-tiers', auth, async (c) => {
     effective: await resolveTiersFor(db, id),
   });
 });
+
+// --------------------------------------------------------------- CSV export/import
+
+/**
+ * CSV export, its tokened download, and import (migration 0720) — in csv.ts,
+ * mounted here so the composition root (server/shop/app.ts) stays a one-line
+ * mount per subsystem. None of its paths collides with a route above: the
+ * export/import POSTs and the download GET all differ from every registered
+ * pattern in method or segment count.
+ */
+routes.route('/', csvRoutes);

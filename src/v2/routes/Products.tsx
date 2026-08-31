@@ -1,6 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Archive, Package, Plus, Tags, Trash2 } from 'lucide-react';
 import { shopApi, type ProductStatus, type ShopProduct, type ShopTag } from '../../data/api-shop';
+import {
+  shopCsvApi,
+  type CsvImportPreview,
+  type ProductExportResult,
+} from '../../data/api-shop-csv';
+import { getSession, subscribe } from '../../data/session';
 import { useAsync } from '../lib/useAsync';
 import { humanise, productTone, shortDate } from '../lib/format';
 import { AnalyticsBar, AnalyticsMenuItem, PageHeader, useAnalyticsBar, type Metric } from '../ui/Page';
@@ -44,6 +50,8 @@ export default function Products() {
   const [cursors, setCursors] = useState<(string | null)[]>([null]);
   const cursor = cursors[cursors.length - 1] ?? null;
   const [tagAction, setTagAction] = useState<{ mode: 'add' | 'remove'; keys: string[] } | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   const { data, error, loading, reload } = useAsync(
     (signal) =>
@@ -171,18 +179,18 @@ export default function Products() {
             <MenuItem
               onSelect={() => {
                 close();
-                toast.show('Export is not built yet');
+                setExportOpen(true);
               }}
             >
-              Export
+              Export…
             </MenuItem>
             <MenuItem
               onSelect={() => {
                 close();
-                toast.show('Import is not built yet');
+                setImportOpen(true);
               }}
             >
-              Import
+              Import…
             </MenuItem>
           </>
         )}
@@ -297,7 +305,7 @@ export default function Products() {
                     <Plus aria-hidden="true" />
                     Add product
                   </ButtonLink>
-                  <Button onClick={() => toast.show('Import is not built yet')}>Import</Button>
+                  <Button onClick={() => setImportOpen(true)}>Import</Button>
                 </>
               }
               shelf={<SpoolTiles />}
@@ -334,7 +342,217 @@ export default function Products() {
           }}
         />
       ) : null}
+
+      {exportOpen ? <ExportModal onClose={() => setExportOpen(false)} /> : null}
+      {importOpen ? (
+        <ImportModal
+          onClose={() => setImportOpen(false)}
+          onDone={() => {
+            setImportOpen(false);
+            reload();
+          }}
+        />
+      ) : null}
     </div>
+  );
+}
+
+/**
+ * Export: build the whole catalogue as CSV server-side, email the signed-in
+ * admin the download link, and offer the same link right here — the email is
+ * the convenience, never the only way out (a deployment with no mail still
+ * answers with the URL and says so).
+ */
+function ExportModal({ onClose }: { onClose: () => void }) {
+  const toast = useToast();
+  const session = useSyncExternalStore(subscribe, getSession, getSession);
+  const email = session.status === 'authed' ? session.user.email : null;
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<ProductExportResult | null>(null);
+
+  async function run() {
+    setBusy(true);
+    try {
+      setResult(await shopCsvApi.exportProducts());
+    } catch (err) {
+      toast.show(err instanceof Error ? err.message : 'Export failed', 'critical');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title="Export products"
+      onClose={onClose}
+      footer={
+        result ? (
+          <Button tone="primary" onClick={onClose}>
+            Done
+          </Button>
+        ) : (
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button tone="primary" busy={busy} onClick={() => void run()}>
+              Email me the export
+            </Button>
+          </>
+        )
+      }
+    >
+      {result ? (
+        <div className="stack">
+          <p style={{ fontSize: 'var(--t-md)' }}>
+            {`${result.export.rowCount} ${result.export.rowCount === 1 ? 'row' : 'rows'} exported.`}
+          </p>
+          <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
+            {result.emailed
+              ? 'The download link is on its way to your inbox, and works for 7 days.'
+              : 'Email is not configured on this deployment — use the link below; it works for 7 days.'}
+          </p>
+          <p style={{ fontSize: 'var(--t-md)' }}>
+            {/* A plain anchor on purpose: the response is Content-Disposition
+                attachment, so the browser downloads rather than navigates. */}
+            <a href={result.export.url}>Download now</a>
+          </p>
+          <div>
+            <Button
+              onClick={() => {
+                void navigator.clipboard
+                  ?.writeText(result.export.url)
+                  .then(() => toast.show('Link copied'))
+                  .catch(() => toast.show('Couldn’t copy — use the link above', 'critical'));
+              }}
+            >
+              Copy link
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
+          Every product, one row per variant. The download link goes to{' '}
+          <strong>{email ?? 'your email'}</strong> and works for 7 days.
+        </p>
+      )}
+    </Modal>
+  );
+}
+
+/**
+ * Import, easy like the reference admin: choose a file, see what it would do,
+ * then apply. The preview round trip runs the server's real parser, so the
+ * counts and the per-row problems here are the ones apply will act on — not a
+ * client-side guess that can disagree with it.
+ */
+function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const toast = useToast();
+  const [csv, setCsv] = useState<string | null>(null);
+  const [replace, setReplace] = useState(true);
+  const [preview, setPreview] = useState<CsvImportPreview | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function pick(file: File | undefined) {
+    if (!file) return;
+    setPreview(null);
+    setChecking(true);
+    try {
+      const text = await file.text();
+      setCsv(text);
+      setPreview(await shopCsvApi.previewImport(text, replace));
+    } catch (err) {
+      setCsv(null);
+      toast.show(err instanceof Error ? err.message : 'Couldn’t read that file', 'critical');
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function apply() {
+    if (csv === null) return;
+    setBusy(true);
+    try {
+      const r = await shopCsvApi.applyImport(csv, replace);
+      const parts = [`${r.created} created`, `${r.updated} updated`];
+      if (r.skipped > 0) parts.push(`${r.skipped} skipped`);
+      if (r.invalid.length > 0) {
+        parts.push(`${r.invalid.length} ${r.invalid.length === 1 ? 'row' : 'rows'} refused`);
+      }
+      toast.show(parts.join(' · '), r.invalid.length > 0 ? 'critical' : 'default');
+      onDone();
+    } catch (err) {
+      toast.show(err instanceof Error ? err.message : 'Import failed', 'critical');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title="Import products"
+      onClose={onClose}
+      wide
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button
+            tone="primary"
+            busy={busy}
+            disabled={csv === null || checking}
+            onClick={() => void apply()}
+          >
+            Import products
+          </Button>
+        </>
+      }
+    >
+      <div className="stack">
+        <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
+          One row per variant, matching the export: Handle is the product’s URL slug and is how
+          rows are matched to what you already have. Prices are in naira with two decimals; stock
+          is the absolute count.
+        </p>
+        <label className="field">
+          <span className="field__label">CSV file</span>
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            onChange={(event) => void pick(event.target.files?.[0])}
+          />
+        </label>
+        <Checkbox
+          label="Replace products with the same handle"
+          hint="Unticked, rows whose handle already exists are skipped rather than updated."
+          checked={replace}
+          onChange={setReplace}
+        />
+        {checking ? (
+          <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
+            Checking the file…
+          </p>
+        ) : null}
+        {preview ? (
+          <div className="stack stack--tight">
+            <p style={{ fontSize: 'var(--t-md)' }}>
+              <strong>
+                {`${preview.creates} new · ${preview.updates} to update · ${preview.invalid.length} ${
+                  preview.invalid.length === 1 ? 'row' : 'rows'
+                } with problems`}
+              </strong>
+            </p>
+            {preview.invalid.slice(0, 5).map((problem) => (
+              <p key={problem.line} className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+                {`Row ${problem.line}: ${problem.problem}`}
+              </p>
+            ))}
+            {preview.invalid.length > 5 ? (
+              <p className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+                {`…and ${preview.invalid.length - 5} more`}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </Modal>
   );
 }
 
