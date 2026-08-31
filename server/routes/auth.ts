@@ -43,6 +43,7 @@ import {
 } from '../repo/login-challenges';
 import { ASSIGNABLE_ROLES, canAssign } from '../../shared/roles';
 import { ForbiddenError } from '../middleware/errors';
+import { getEnv } from '../env';
 import { resendMailer } from '../mail/resend';
 import type { Mailer } from '../mail/port';
 import { BadRequestError, NotFoundError } from '../repo/errors';
@@ -848,12 +849,45 @@ export function createAuthRoutes(deps: AuthRouteDeps = {}): Hono<AppEnv> {
 
     const emailed = await deliverInvite(c, address, url, inviter.displayName);
 
+    /*
+     * THE CLERK HALF, BEST-EFFORT (2026-08-31). When the deployment has a
+     * Clerk secret, the address is also invited in Clerk, so their Google
+     * sign-up is pre-authorised and lands them straight at the exchange. OUR
+     * invite remains the authority — the account, the role and the invite-only
+     * property all live here — so a Clerk failure costs a nicer onboarding
+     * screen, never the invitation. Swallowed like a failed invite mail, and
+     * logged the same way.
+     */
+    let clerkInvited = false;
+    if (getEnv().CLERK_SECRET_KEY !== '') {
+      try {
+        const { createClerkClient } = await import('@clerk/backend');
+        await createClerkClient({ secretKey: getEnv().CLERK_SECRET_KEY }).invitations.createInvitation({
+          emailAddress: address,
+          notify: false,
+          ignoreExisting: true,
+        });
+        clerkInvited = true;
+      } catch (err) {
+        console.error(
+          '[api]',
+          JSON.stringify({
+            requestId: c.get('requestId') ?? '',
+            name: err instanceof Error ? err.name : 'Error',
+            message: err instanceof Error ? err.message : 'clerk invitation failed',
+            route: 'POST /api/invites',
+          }),
+        );
+      }
+    }
+
     return c.json(
       {
         // The token is returned exactly once, here, inside the URL. It is stored
         // only as an HMAC, so there is no second chance to read it.
         invite: { id: invite.id, email: address, role, expiresAt: invite.expiresAt, url },
         emailed,
+        clerkInvited,
       },
       201,
     );

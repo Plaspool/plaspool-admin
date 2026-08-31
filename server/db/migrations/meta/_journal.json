@@ -323,6 +323,13 @@
                         "when":  1786600003800,
                         "tag":  "0700_email_login_codes",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  46,
+                        "version":  "7",
+                        "when":  1786600003900,
+                        "tag":  "0720_product_exports",
+                        "breakpoints":  true
                     }
                 ]
 }

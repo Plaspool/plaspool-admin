@@ -34,6 +34,7 @@ import {
   primaryKey,
   text,
   uniqueIndex,
+  uuid,
 } from 'drizzle-orm/pg-core';
 
 // ============================================== THE OUTBOX (shared, contract §6)
@@ -371,6 +372,34 @@ export const shopOrderEmailIntents = pgTable(
       sql`${t.kind} IN ('placed', 'confirmation', 'shipment', 'delivered', 'cancellation',
                         'refund', 'refund_failed', 'review_invite', 'review_approved')`,
     ),
+  ],
+);
+
+/**
+ * A generated catalog CSV waiting to be downloaded (migration 0720). The file
+ * is stored inline (a catalog is text, not media); the emailed link's whole
+ * authority is the HMAC'd token; expiry is enforced at read time, seven days
+ * from created_at, so nothing sweeps this table.
+ */
+export const productExports = pgTable(
+  'product_exports',
+  {
+    id: text('id').primaryKey(),
+    /** uuid WITH NO FK, the actor_id rule: contract §3 makes users read-only
+     * from this side, and an FK is a constraint on a table commerce does not
+     * own. */
+    requestedBy: uuid('requested_by').notNull(),
+    /** Snapshotted — "where did this file go" must not move with an edit. */
+    requestedEmail: text('requested_email').notNull(),
+    csv: text('csv').notNull(),
+    rowCount: integer('row_count').notNull(),
+    tokenHash: text('token_hash').notNull(),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    downloadedAt: bigint('downloaded_at', { mode: 'number' }),
+  },
+  (t) => [
+    uniqueIndex('product_exports_token_uq').on(t.tokenHash),
+    check('product_exports_row_count_ck', sql`${t.rowCount} >= 0`),
   ],
 );
 

@@ -8,6 +8,7 @@ import { originGuard } from './middleware/origin';
 import { sessionMiddleware } from './middleware/session';
 import { rolePermissions } from './middleware/permissions';
 import { createAuthRoutes } from './routes/auth';
+import { createClerkRoutes } from './routes/clerk';
 import { routes as users } from './routes/users';
 import { routes as posts } from './routes/posts';
 import { routes as featured } from './routes/featured';
@@ -475,6 +476,14 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
   app.use(`${API_PREFIX}/*`, rolePermissions());
 
   app.route(API_PREFIX, createAuthRoutes({ mailer: deps.mailer }));
+  /*
+   * THE CLERK BRIDGE (2026-08-31): Google sign-in traded for the ordinary
+   * session cookie, invite-only preserved. Entirely inert until
+   * CLERK_SECRET_KEY is set — status answers false, exchange answers 501 —
+   * so a deployment without Clerk changes nothing. `server/routes/clerk.ts`
+   * carries the design.
+   */
+  app.route(API_PREFIX, createClerkRoutes());
   /*
    * THE TEAM ROUTES, and they are a separate router from auth deliberately.
    * `server/routes/auth.ts` is about the credential in front of you — who you

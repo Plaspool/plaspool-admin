@@ -1,11 +1,18 @@
-import { useEffect, useState, useSyncExternalStore, type FormEvent } from 'react';
+import { Suspense, lazy, useEffect, useState, useSyncExternalStore, type FormEvent } from 'react';
 import { adoptUser, getSession, subscribe } from '../../data/session';
 import { api } from '../../data/api';
 import { ApiError, OfflineError } from '../../data/errors';
 import { brand } from '../../brand';
-import { Button } from '../ui/primitives';
+import { Button, Spinner } from '../ui/primitives';
 import { TextField } from '../ui/Field';
 import { Shell } from './Shell';
+
+/**
+ * Clerk is a LAZY CHUNK, rendered only when the publishable key was baked in —
+ * a deployment without Clerk ships none of its code (see ClerkGate.tsx).
+ */
+const CLERK_KEY = (import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined) ?? '';
+const ClerkGate = lazy(() => import('./ClerkGate'));
 
 /**
  * v2's auth gate. The sign-in below is v1's page restated in v2's system —
@@ -71,6 +78,9 @@ function SignIn({ prefill = '' }: { prefill?: string }) {
   const [challenge, setChallenge] = useState<{ ticket: string } | null>(null);
   const [code, setCode] = useState('');
   const [resent, setResent] = useState(false);
+  /* 'clerk' swaps the card for Clerk's own flow (Google + whatever factors
+     the Clerk dashboard demands). Only offered when the key was baked in. */
+  const [mode, setMode] = useState<'password' | 'clerk'>('password');
 
   useEffect(() => {
     if (prefill) setEmail(prefill);
@@ -141,7 +151,17 @@ function SignIn({ prefill = '' }: { prefill?: string }) {
           <span style={{ fontSize: 'var(--t-2xl)', fontWeight: 'var(--w-bold)' }}>{brand.name}</span>
         )}
 
-        {challenge ? (
+        {mode === 'clerk' && CLERK_KEY ? (
+          <Suspense
+            fallback={
+              <div className="signin__card" role="status" style={{ display: 'grid', placeItems: 'center', minHeight: '12rem' }}>
+                <Spinner large />
+              </div>
+            }
+          >
+            <ClerkGate publishableKey={CLERK_KEY} onBack={() => setMode('password')} />
+          </Suspense>
+        ) : challenge ? (
           <form className="signin__card" onSubmit={onSubmitCode} noValidate>
             <h1 className="signin__title">Check your email</h1>
             <p className="signin__lede">
@@ -241,6 +261,25 @@ function SignIn({ prefill = '' }: { prefill?: string }) {
             >
               Sign in
             </Button>
+
+            {CLERK_KEY ? (
+              <>
+                <div
+                  className="row"
+                  style={{ gap: 'var(--s3)', alignItems: 'center', margin: 'var(--s2) 0' }}
+                  aria-hidden="true"
+                >
+                  <span style={{ flex: 1, borderTop: '1px solid var(--border)' }} />
+                  <span className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+                    or
+                  </span>
+                  <span style={{ flex: 1, borderTop: '1px solid var(--border)' }} />
+                </div>
+                <Button size="lg" type="button" onClick={() => setMode('clerk')}>
+                  Continue with Google
+                </Button>
+              </>
+            ) : null}
           </form>
         )}
 
