@@ -341,3 +341,43 @@ describe('the broadcasts screen', () => {
     expect(await screen.findByText('Sent to 4183')).toBeTruthy();
   });
 });
+
+describe('deleting a draft', () => {
+  it('confirms, DELETEs the route, and drops the row', async () => {
+    const user = userEvent.setup();
+    withBroadcasts([doneRow, draft]);
+    when(`${BROADCASTS}/${draft.id}`, { ok: true });
+    mount();
+
+    await screen.findByText('Fresh drums are back');
+    await user.click(screen.getByRole('button', { name: `Actions for ${draft.subject}` }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Delete draft…' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Delete this draft?' });
+    expect(dialog.textContent).toContain('Fresh drums are back');
+    // The irreversible thing has NOT happened while the question is open.
+    expect(sentNothing(`${BROADCASTS}/${draft.id}`)).toBe(true);
+
+    await user.click(within(dialog).getByRole('button', { name: 'Delete draft' }));
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) => c.path === `${BROADCASTS}/${draft.id}` && c.init.method === 'DELETE',
+        ),
+      ).toBe(true),
+    );
+    await waitFor(() => expect(screen.queryByText('Fresh drums are back')).toBeNull());
+    expect(screen.getByText('July clearance')).toBeTruthy();
+  });
+
+  it('offers no delete on anything that has started', async () => {
+    const user = userEvent.setup();
+    withBroadcasts([doneRow, sendingRow]);
+    mount();
+
+    await screen.findByText('July clearance');
+    await user.click(screen.getByRole('button', { name: `Actions for ${doneRow.subject}` }));
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).queryByRole('menuitem', { name: /Delete draft/ })).toBeNull();
+  });
+});

@@ -206,17 +206,6 @@ export default function Discounts() {
         menu={(close) => <AnalyticsMenuItem shown={shown} onToggle={toggle} close={close} />}
       />
 
-      {/*
-        THE GAP NOTICE, AND IT IS NOT DISMISSABLE.
-        Deleting this is the last step of shipping redemption, not a tidy-up.
-      */}
-      <Banner tone="warn" title="Codes do not apply at checkout yet">
-        The admin side is live — these codes are stored, counted and enforced here. The storefront
-        half is not built: <code className="mono">computeTotals</code> never reads these rows, so a
-        cart total is unaffected by any code below. Create and schedule freely; do not print one on
-        a flyer yet.
-      </Banner>
-
       {shown ? <AnalyticsBar range="All time" metrics={metrics} /> : null}
 
       {error ? (

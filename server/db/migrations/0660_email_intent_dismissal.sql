@@ -1,0 +1,32 @@
+-- EMAIL INTENT DISMISSAL (range 0660-0679; owner's queue, 2026-08-31).
+--
+-- HAND-WRITTEN IN FULL — `drizzle.config.ts` declares only `server/db/schema.ts`,
+-- so drizzle-kit has never seen `shop_order_email_intents`. Declared in
+-- `server/db/commerce-schema.ts`; `schema-parity.test.ts` reconciles the two.
+--
+-- WHAT IT CLOSES. A dead intent — `sent_at IS NULL AND attempts >= 8` — has had
+-- exactly one recovery since 0160: a human running `UPDATE … SET attempts = 0`
+-- against production (`server/shop/orders/repo/emails.ts` says so in its header).
+-- The dashboard counts these rows ("2 emails will never send") and offers no
+-- action, which makes the alert a standing accusation rather than a queue. The
+-- outbox screen this range ships gives the operator two verbs — retry, which is
+-- that UPDATE with a session and an audit surface, and DISMISS, which is this
+-- column: "I have seen this, it should not send, stop counting it at me."
+--
+-- A COLUMN AND NOT A DELETE, deliberately. An unsent intent is still the record
+-- of what the system TRIED to tell a customer, with the provider's refusal in
+-- last_error; deleting it would erase the one artifact a support conversation
+-- about a missing email has. NULL means live. Epoch-ms bigint like every other
+-- timestamp on the table.
+--
+-- THE SWEEPER AND THE BACKLOG BOTH LEARN THE COLUMN IN THE SAME CHANGE
+-- (`repo/emails.ts` adds `AND dismissed_at IS NULL` to the candidate select;
+-- `server/shop/admin/stats.ts` excludes dismissed rows from `pending` and
+-- `stuck`) — a dismissed row that still sent, or still alarmed, would make the
+-- verb a lie. Retry clears the column, so the two verbs invert each other.
+--
+-- NO INDEX. The sweeper's candidate select already walks unsent rows only, the
+-- table is small by construction (a handful of intents per order), and the
+-- outbox screen reads newest-first over the same rows.
+ALTER TABLE shop_order_email_intents
+  ADD COLUMN dismissed_at bigint;--> statement-breakpoint

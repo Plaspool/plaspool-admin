@@ -435,6 +435,19 @@ export const emailApi = {
     );
     return res.broadcast;
   },
+
+  /**
+   * Delete a DRAFT. Anything that has started is the record of what real
+   * inboxes were sent and answers 409 with the row attached — the same shape
+   * a system template's delete refusal takes.
+   */
+  async deleteBroadcast(id: string): Promise<void> {
+    await apiFetch<{ ok: true }>(`/admin/email/broadcasts/${seg(id)}`, {
+      method: 'DELETE',
+      id,
+      subject: 'Broadcast',
+    });
+  },
 };
 
 export type EmailApi = typeof emailApi;

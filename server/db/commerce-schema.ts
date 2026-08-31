@@ -342,6 +342,9 @@ export const shopOrderEmailIntents = pgTable(
         | 'refund'
         /** A refund the provider accepted failed to settle (migration 0380). */
         | 'refund_failed'
+        /** Review lifecycle mail (migration 0640). */
+        | 'review_invite'
+        | 'review_approved'
       >()
       .notNull(),
     toEmail: text('to_email').notNull(),
@@ -355,6 +358,9 @@ export const shopOrderEmailIntents = pgTable(
     sentAt: bigint('sent_at', { mode: 'number' }),
     attempts: integer('attempts').notNull().default(0),
     lastError: text('last_error'),
+    /** An operator gave up on this unsent intent (migration 0660). The sweeper
+     * skips it and the backlog stops counting it; retry clears it. */
+    dismissedAt: bigint('dismissed_at', { mode: 'number' }),
     /** "One confirmation per order" as a CONSTRAINT rather than as a convention. */
     dedupeKey: text('dedupe_key').notNull(),
   },
@@ -363,7 +369,7 @@ export const shopOrderEmailIntents = pgTable(
     check(
       'shop_order_email_intents_kind_ck',
       sql`${t.kind} IN ('placed', 'confirmation', 'shipment', 'delivered', 'cancellation',
-                        'refund', 'refund_failed')`,
+                        'refund', 'refund_failed', 'review_invite', 'review_approved')`,
     ),
   ],
 );

@@ -46,7 +46,14 @@ import {
   readFulfillment,
   shipFulfillment,
 } from './repo/fulfillments';
-import { listIntents, sweepEmailIntents } from './repo/emails';
+import {
+  countOutbox,
+  dismissIntent,
+  listIntents,
+  listOutbox,
+  retryIntent,
+  sweepEmailIntents,
+} from './repo/emails';
 import { MAX_SEARCH_LENGTH, readOrderByNumber, searchOrders } from '../admin/orders';
 
 /**
@@ -488,6 +495,54 @@ function registerAdminRoutes(
       now,
     );
     return c.json({ fulfillment, order: settled });
+  });
+
+  /**
+   * THE OUTBOX SCREEN'S ROUTES (migration 0660's range) — the first UI over
+   * `shop_order_email_intents` that is not scoped to one order.
+   *
+   * The Home banner has counted dead intents since `emailBacklog` existed and
+   * pointed at a screen that showed none of them; the documented recovery was a
+   * human running `UPDATE … SET attempts = 0` against production. These three
+   * routes are that count made actionable: list what the number is made of,
+   * retry the row (the documented UPDATE, plus an immediate sweep so "retry"
+   * means "try now" rather than "try within ten minutes"), or dismiss it.
+   */
+  const OutboxQuery = z
+    .object({
+      bucket: z.enum(['attention', 'queued', 'sent', 'dismissed']).optional(),
+    })
+    .strict();
+
+  routes.get('/admin/emails', auth, async (c) => {
+    const q = readQuery(c, OutboxQuery);
+    const db = currentDb(c);
+    return c.json({
+      items: await listOutbox(db, q.bucket ?? 'attention'),
+      counts: await countOutbox(db),
+    });
+  });
+
+  /**
+   * Retry = reset AND attempt, in that order. The reset alone would leave the
+   * operator watching an unchanged screen until the next cron pass; the sweep
+   * here is the same bounded `sweepEmailIntents` every other caller runs, so a
+   * retry cannot deliver anything the schedule would not. A sent intent is a
+   * 404 — retrying it would re-deliver a message the customer already has.
+   */
+  routes.post('/admin/emails/:id/retry', auth, async (c) => {
+    const db = currentDb(c);
+    const id = pathParam(c, 'id');
+    if (!(await retryIntent(db, id))) throw new NotFoundError(id);
+    const emails = await sweepEmailIntents(db, deps().mailer, deps().now());
+    return c.json({ ok: true, emails });
+  });
+
+  routes.post('/admin/emails/:id/dismiss', auth, async (c) => {
+    const db = currentDb(c);
+    const id = pathParam(c, 'id');
+    if (!(await dismissIntent(db, id, deps().now()))) throw new NotFoundError(id);
+    return c.json({ ok: true });
   });
 
   /**

@@ -29,6 +29,7 @@ import Settings from './routes/Settings';
 import EmailBroadcasts from './routes/EmailBroadcasts';
 import EmailTemplates from './routes/EmailTemplates';
 import EmailSubscribers from './routes/EmailSubscribers';
+import EmailOutbox from './routes/EmailOutbox';
 import Posts from './routes/Posts';
 import PostEditor from './routes/PostEditor';
 import PostEditorAdvanced from './routes/PostEditorAdvanced';
@@ -135,6 +136,7 @@ const router = createHashRouter([
       { path: '/emails/broadcasts', element: <EmailBroadcasts /> },
       { path: '/emails/templates', element: <EmailTemplates /> },
       { path: '/emails/subscribers', element: <EmailSubscribers /> },
+      { path: '/emails/outbox', element: <EmailOutbox /> },
       { path: '/analytics', element: <Analytics /> },
       { path: '/settings', element: <Settings /> },
 
