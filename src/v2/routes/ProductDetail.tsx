@@ -5,6 +5,7 @@ import {
   Boxes,
   MoreHorizontal,
   Package,
+  Pencil,
   Plus,
   Trash2,
 } from 'lucide-react';
@@ -25,6 +26,7 @@ import {
 } from '../../data/api-shop';
 import type { BulkTier } from '../../data/api-shop';
 import { ApiError } from '../../data/errors';
+import { brand } from '../../brand';
 import { dateTime, humanise, money, productTone, shortDate } from '../lib/format';
 import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, EmptyState } from '../ui/primitives';
@@ -63,6 +65,17 @@ import { useToast } from '../ui/Toast';
 /** The store currency, for a variant that has never been priced yet. Every
  *  priced variant carries its own. */
 const STORE_CURRENCY = 'NGN';
+
+/**
+ * The storefront's public origin, for the search-listing facsimile. Display
+ * only — nothing is fetched from it. There is no client-side constant to
+ * import for this: PR #85 pointed every customer-facing link at plaspool.com
+ * (`brand.url` is the ADMIN's own origin, which is exactly the wrong host to
+ * show a shopper), so this states that decision locally.
+ */
+const STOREFRONT_ORIGIN = 'https://plaspool.com';
+/** The origin as a URL-handle prefix draws it — scheme dropped. */
+const STOREFRONT_HOST = STOREFRONT_ORIGIN.replace(/^https:\/\//, '');
 
 function optionLabel(values: Record<string, string>): string | null {
   const parts = Object.values(values).filter(Boolean);
@@ -139,6 +152,10 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
   const [confirmTrash, setConfirmTrash] = useState(false);
   const [variantModal, setVariantModal] = useState<'closed' | 'new' | ShopVariant>('closed');
   const [confirmDeleteVariant, setConfirmDeleteVariant] = useState<ShopVariant | null>(null);
+  /** The search-listing card: the facsimile alone by default, the editors
+   *  after the pencil. Purely presentational — the SEO drafts above stay in
+   *  state either way, so collapsing loses nothing. */
+  const [seoOpen, setSeoOpen] = useState(false);
 
   const product = bundle?.product ?? null;
 
@@ -525,6 +542,9 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
   const inTrash = product?.status === 'trash';
   const categoryNames = bundle.categories.map((c) => c.name);
   const categoryKnown = category === '' || categoryNames.includes(category);
+  /** The facsimile's blue line: the hand-written SEO title, else the product
+   *  title — the same fallback the storefront's <title> applies. */
+  const serpTitle = seoTitle.trim() || title.trim();
 
   return (
     <div className="page">
@@ -656,7 +676,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
               hint={
                 overview.trim() === ''
                   ? 'Empty — the storefront shows the first paragraph of the description.'
-                  : seoCountHint(overview, 160)
+                  : charactersUsed(overview, 160)
               }
               onChange={(e) => setOverview(e.target.value)}
             />
@@ -839,37 +859,105 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
             ) : null}
           </Card>
 
-          <Card title="Search engine listing">
-            <TextField
-              label="SEO title"
-              value={seoTitle}
-              placeholder={title.trim() || 'Falls back to the product title'}
-              hint={seoCountHint(seoTitle, 70)}
-              onChange={(e) => setSeoTitle(e.target.value)}
-            />
-            <TextArea
-              label="SEO description"
-              value={seoDescription}
-              rows={3}
-              placeholder="Falls back to the first lines of the description"
-              hint={seoCountHint(seoDescription, 160)}
-              onChange={(e) => setSeoDescription(e.target.value)}
-            />
-            {title.trim() || seoTitle.trim() ? (
-              <div className="stack stack--tight" aria-hidden="true">
-                <span className="field__label">Preview</span>
-                <span style={{ color: 'var(--accent)', fontSize: 'var(--t-md)', fontWeight: 600 }}>
-                  {seoTitle.trim() || title.trim()}
+          <Card
+            title="Search engine listing"
+            action={
+              <Button
+                tone="plain"
+                iconOnly
+                aria-label="Edit search engine listing"
+                aria-expanded={seoOpen}
+                onClick={() => setSeoOpen((open) => !open)}
+              >
+                <Pencil aria-hidden="true" />
+              </Button>
+            }
+          >
+            {serpTitle === '' ? (
+              /* Nothing to draw a result FROM yet — the reference admin's
+                 exact sentence for a fresh create. */
+              <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
+                Add a title and description to see how this product might appear in a search
+                engine listing.
+              </p>
+            ) : (
+              /* A Google-result facsimile: site line, breadcrumb URL, blue
+                 title, description, price — the product page as a search
+                 result would draw it, updating live as the editors type. */
+              <div className="stack stack--tight">
+                <span style={{ fontSize: 'var(--t-sm)', fontWeight: 600 }}>{brand.name}</span>
+                <span className="muted" style={{ fontSize: 'var(--t-xs)' }}>
+                  {`${STOREFRONT_ORIGIN} › products${product?.slug ? ` › ${product.slug}` : ''}`}
                 </span>
-                {product?.slug ? (
-                  <span className="muted mono" style={{ fontSize: 'var(--t-xs)' }}>
-                    /products/{product.slug}
-                  </span>
-                ) : null}
-                <span className="muted" style={{ fontSize: 'var(--t-sm)', lineHeight: 1.5 }}>
+                <span
+                  style={{
+                    /* Google's own result-link blue, deliberately a literal
+                       and not a design token: this block mimics Google's
+                       page, not this admin's palette. */
+                    color: '#1a0dab',
+                    fontSize: 'var(--t-lg)',
+                    lineHeight: 1.3,
+                  }}
+                >
+                  {serpTitle}
+                </span>
+                <span
+                  className="muted"
+                  style={{
+                    fontSize: 'var(--t-sm)',
+                    lineHeight: 1.5,
+                    /* Two lines, which is where Google clips it. */
+                    display: '-webkit-box',
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: 'vertical',
+                    overflow: 'hidden',
+                  }}
+                >
                   {seoDescription.trim() || 'The description text stands in while this is empty.'}
                 </span>
+                {cheapest ? (
+                  <span className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+                    {serpPrice(cheapest.amount, cheapest.currency)}
+                  </span>
+                ) : null}
               </div>
+            )}
+
+            {seoOpen ? (
+              <>
+                <TextField
+                  label="Page title"
+                  value={seoTitle}
+                  placeholder={title.trim() || 'Falls back to the product title'}
+                  hint={charactersUsed(seoTitle, 70)}
+                  onChange={(e) => setSeoTitle(e.target.value)}
+                />
+                <TextArea
+                  label="Meta description"
+                  value={seoDescription}
+                  rows={3}
+                  placeholder="Falls back to the first lines of the description"
+                  hint={charactersUsed(seoDescription, 160)}
+                  onChange={(e) => setSeoDescription(e.target.value)}
+                />
+                {product?.slug ? (
+                  <AffixField
+                    label="URL handle"
+                    prefix={`${STOREFRONT_HOST}/products/`}
+                    value={product.slug}
+                    readOnly
+                    hint="Follows the title and is set by the server on publish — a published URL is a promise, so it is never rewritten."
+                  />
+                ) : (
+                  <div className="field">
+                    <span className="field__label">URL handle</span>
+                    <span className="field__hint">
+                      No handle yet — the server derives one from the title when the product is
+                      first published, and never rewrites it after: a published URL is a promise.
+                    </span>
+                  </div>
+                )}
+              </>
             ) : null}
           </Card>
 
@@ -1050,11 +1138,27 @@ function messageFor(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : 'Something went wrong.';
 }
 
-/** The ~70/~160 guidance search engines actually render — guidance, not a cap. */
-function seoCountHint(value: string, ideal: number): string {
-  const length = value.trim().length;
-  if (length === 0) return `Search results show about ${ideal} characters.`;
-  return `${length} of the ~${ideal} characters a search result shows.`;
+/**
+ * The reference admin's counter copy, verbatim: "12 of 70 characters used".
+ * Raw length, and it keeps counting past the ceiling on purpose — "78 of 70"
+ * is the actionable fact, and clamping there would hide exactly the state the
+ * counter exists to flag. 70/160 are what a search result typically renders;
+ * guidance, never a cap.
+ */
+function charactersUsed(value: string, ideal: number): string {
+  return `${value.length} of ${ideal} characters used`;
+}
+
+/**
+ * The facsimile's price line the way the reference admin draws it —
+ * "₦23,500.00 NGN", amount then code. `money` already spells the code out in
+ * locales whose NGN symbol IS the code ("NGN 23,500.00"), and
+ * "NGN 23,500.00 NGN" reads as a stutter, so the code is appended only when
+ * the locale used a bare symbol instead.
+ */
+function serpPrice(amount: number, currency: string): string {
+  const rendered = money(amount, currency);
+  return rendered.includes(currency) ? rendered : `${rendered} ${currency}`;
 }
 
 /* ═══════════════════════════════════════════════════════════ VARIANTS ════ */

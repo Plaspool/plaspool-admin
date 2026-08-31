@@ -515,7 +515,10 @@ describe('the product editor', () => {
     mountAt(spool.id);
     await screen.findByDisplayValue('Recycled Spool');
 
-    await user.clear(screen.getByLabelText('SEO title'));
+    /* The editors live behind the card's pencil since the Shopify-style
+       rebuild — the collapsed default shows the facsimile alone. */
+    await user.click(screen.getByRole('button', { name: 'Edit search engine listing' }));
+    await user.clear(screen.getByLabelText('Page title'));
     await user.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => expect(sent(productPath(spool.id), 'PATCH')).toBeTruthy());
@@ -596,6 +599,88 @@ describe('the product editor', () => {
         backorderable: true,
       }),
     );
+  });
+});
+
+// -------------------------------------------- the search engine listing card
+
+describe('the search engine listing card', () => {
+  /** The card, scoped — money and product names render in three other places
+   *  on this screen, so every facsimile assertion stays inside it. */
+  function serpCard(): HTMLElement {
+    return screen
+      .getByRole('heading', { name: 'Search engine listing' })
+      .closest('section') as HTMLElement;
+  }
+
+  it('collapses to a Google facsimile: site, breadcrumb slug, the SEO title winning, and the price', async () => {
+    withProduct(spool);
+    mountAt(spool.id);
+    await screen.findByDisplayValue('Recycled Spool');
+
+    const card = serpCard();
+    /* Site line is the brand; the breadcrumb is the STOREFRONT origin with the
+       slug — plaspool.com per PR #85, never this admin's own host. */
+    expect(within(card).getByText('PlaSpool')).toBeTruthy();
+    expect(
+      within(card).getByText('https://plaspool.com › products › recycled-petg-spool'),
+    ).toBeTruthy();
+    /* The stored SEO title beats the product title on the blue line. */
+    expect(within(card).getByText('Stored SEO title')).toBeTruthy();
+    expect(within(card).queryByText('Recycled Spool')).toBeNull();
+    expect(within(card).getByText('Stored SEO description')).toBeTruthy();
+    /* ₦23,000.00 off the variant fixture, carrying the currency code the way
+       the reference draws the line. Digits and code asserted apart, because
+       the symbol between them is the locale's ("₦" or "NGN"). */
+    const price = within(card).getByText(/23,000\.00/);
+    expect(price.textContent).toMatch(/NGN/);
+    /* Collapsed means collapsed: no editors until the pencil. */
+    expect(within(card).queryByLabelText('Page title')).toBeNull();
+    expect(within(card).queryByLabelText('Meta description')).toBeNull();
+  });
+
+  it('opens on the pencil with counters that follow the typing, past the ceiling included', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    mountAt(spool.id);
+    await screen.findByDisplayValue('Recycled Spool');
+
+    await user.click(screen.getByRole('button', { name: 'Edit search engine listing' }));
+
+    const pageTitle = screen.getByLabelText('Page title');
+    expect(pageTitle).toHaveProperty('value', 'Stored SEO title');
+    /* 'Stored SEO title' is 16 characters; 'Stored SEO description' is 22. */
+    expect(screen.getByText('16 of 70 characters used')).toBeTruthy();
+    expect(screen.getByText('22 of 160 characters used')).toBeTruthy();
+
+    await user.type(pageTitle, '!');
+    expect(screen.getByText('17 of 70 characters used')).toBeTruthy();
+
+    /* Past the ceiling it KEEPS counting — "80 of 70" is the actionable fact,
+       and a counter that clamps hides exactly the state it exists to flag. */
+    await user.clear(pageTitle);
+    await user.paste('x'.repeat(80));
+    expect(screen.getByText('80 of 70 characters used')).toBeTruthy();
+
+    /* The pencil is a toggle: clicking it again collapses the editors. */
+    await user.click(screen.getByRole('button', { name: 'Edit search engine listing' }));
+    expect(screen.queryByLabelText('Page title')).toBeNull();
+  });
+
+  it('shows the URL handle read-only under the storefront path, never as an editor', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    mountAt(spool.id);
+    await screen.findByDisplayValue('Recycled Spool');
+
+    await user.click(screen.getByRole('button', { name: 'Edit search engine listing' }));
+
+    const handle = screen.getByLabelText('URL handle') as HTMLInputElement;
+    expect(handle.value).toBe('recycled-petg-spool');
+    expect(handle.readOnly).toBe(true);
+    expect(screen.getByText('plaspool.com/products/')).toBeTruthy();
+    /* The sentence that explains WHY there is no editor here. */
+    expect(screen.getByText(/a published URL is a promise/)).toBeTruthy();
   });
 });
 
