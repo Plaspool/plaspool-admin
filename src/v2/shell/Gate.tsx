@@ -14,11 +14,37 @@ import { Shell } from './Shell';
 const CLERK_KEY = (import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined) ?? '';
 const ClerkGate = lazy(() => import('./ClerkGate'));
 
+/** The official four-colour G, inlined — Google's brand spec wants the real
+ *  mark on a sign-in button, and an icon font would ship a whole set for one
+ *  glyph. Sized to sit on the black button (`.signin__google`). */
+function GoogleG() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+      <path
+        fill="#4285F4"
+        d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62Z"
+      />
+      <path
+        fill="#34A853"
+        d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18Z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M3.97 10.72a5.41 5.41 0 0 1 0-3.44V4.95H.96a9 9 0 0 0 0 8.1l3.01-2.33Z"
+      />
+      <path
+        fill="#EA4335"
+        d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.59A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58Z"
+      />
+    </svg>
+  );
+}
+
 /**
- * v2's auth gate. The sign-in below is v1's page restated in v2's system —
- * same artwork, same lede, same invitation framing, and the same error
- * taxonomy — with none of v1's CSS imported, so the two builds still cannot
- * bleed into each other.
+ * v2's auth gate. The sign-in below keeps v1's error taxonomy with none of
+ * v1's CSS imported, so the two builds cannot bleed into each other. The
+ * invitation lede v1 carried was cut on the owner's instruction (2026-08-31):
+ * the card is title, Google door, fields — short and simple.
  */
 export function Gate() {
   const session = useSyncExternalStore(subscribe, getSession, getSession);
@@ -47,17 +73,17 @@ export function Gate() {
  */
 function messageFor(err: unknown): string {
   if (err instanceof OfflineError) {
-    return 'Could not reach the server. Check your connection and try again.';
+    return 'Couldn’t reach the server. Check your connection and try again.';
   }
   if (err instanceof ApiError) {
-    if (err.status === 401) return 'That email and password do not match an account.';
+    if (err.status === 401) return 'That email and password don’t match an account.';
     if (err.status === 429) {
       const seconds = err.retryAfter;
       return seconds
         ? `Too many attempts. Try again in ${Math.ceil(seconds)} seconds.`
         : 'Too many attempts. Try again shortly.';
     }
-    if (err.status === 400) return 'That does not look like an email address.';
+    if (err.status === 400) return 'That doesn’t look like an email address.';
     /* A 500's body carries nothing but the request id — quoting it is what
        makes the failure diagnosable from a bug report. */
     return err.requestId
@@ -218,12 +244,21 @@ function SignIn({ prefill = '' }: { prefill?: string }) {
         ) : (
           <form className="signin__card" onSubmit={onSubmit} noValidate>
             <h1 className="signin__title">Sign in</h1>
-            {/* v1's lede, kept word for word: the invitation sentence is doing
-                real work — it is the whole answer to "where do I sign up?". */}
-            <p className="signin__lede">
-              Accounts here are by invitation only, so there is nothing to sign up for — if you are
-              expecting an invitation, it arrives as a link.
-            </p>
+
+            {/* Google FIRST and black, with the real G — the owner's spec
+                (2026-08-31 follow-up). The invitation lede that used to live
+                here went with the same instruction: short and simple. */}
+            {CLERK_KEY ? (
+              <>
+                <button type="button" className="signin__google" onClick={() => setMode('clerk')}>
+                  <GoogleG />
+                  Continue with Google
+                </button>
+                <div className="signin__or" aria-hidden="true">
+                  or
+                </div>
+              </>
+            ) : null}
 
             <TextField
               label="Email"
@@ -262,30 +297,8 @@ function SignIn({ prefill = '' }: { prefill?: string }) {
               Sign in
             </Button>
 
-            {CLERK_KEY ? (
-              <>
-                <div
-                  className="row"
-                  style={{ gap: 'var(--s3)', alignItems: 'center', margin: 'var(--s2) 0' }}
-                  aria-hidden="true"
-                >
-                  <span style={{ flex: 1, borderTop: '1px solid var(--border)' }} />
-                  <span className="muted" style={{ fontSize: 'var(--t-sm)' }}>
-                    or
-                  </span>
-                  <span style={{ flex: 1, borderTop: '1px solid var(--border)' }} />
-                </div>
-                <Button size="lg" type="button" onClick={() => setMode('clerk')}>
-                  Continue with Google
-                </Button>
-              </>
-            ) : null}
           </form>
         )}
-
-        <p className="signin__foot">
-          Password resets and invitations run on the current admin while this design preview is up.
-        </p>
       </div>
     </div>
   );

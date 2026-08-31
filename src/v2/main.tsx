@@ -7,7 +7,8 @@ import './styles/ui.css';
 import './styles/page.css';
 import './styles/shell.css';
 
-import { initSession, startSessionWatch } from '../data/session';
+import { getSession, initSession, startSessionWatch, subscribe } from '../data/session';
+import { startSplash } from './shell/splash';
 import { syncDocumentBrand } from '../brand';
 import { ToastHost } from './ui/Toast';
 import { Gate } from './shell/Gate';
@@ -64,7 +65,10 @@ import DesignGallery from './routes/DesignGallery';
  * SHARED — the data layer only: `src/data/*` and `shared/*`. Those are the API
  * clients, the session machinery and the types. A second copy of `session.ts`
  * would be a second answer to "who is signed in" and a second scope key for the
- * offline cache.
+ * offline cache. One measured exception since 2026-08-31: the splash ENGINE
+ * (`src/components/splash-engine.js`), a standalone brand-agnostic ES5 asset
+ * with no CSS and no imports — shared like a font, orchestrated by v2's own
+ * `src/v2/shell/splash.ts`. No v1 screen or style rides along with it.
  *
  * NOT SHARED — every pixel. No v1 component is mounted anywhere in this build,
  * including on the routes v2 has not redesigned yet: those render `Soon`, a real
@@ -87,6 +91,26 @@ syncDocumentBrand();
    `Gate` renders null while it is `unknown`. Same contract as v1. */
 void initSession();
 startSessionWatch();
+
+/*
+ * The opening sequence (owner's instruction, 2026-08-31), up before
+ * `createRoot` so it is on screen ahead of React's first frame. It ends when
+ * the session stops being `unknown` — exactly the window `Gate` spends
+ * rendering nothing — so it decorates a blank the app was already showing
+ * rather than adding time to the boot. `subscribe` rather than awaiting
+ * `initSession()`: the answer can also arrive via `startSessionWatch`, and a
+ * promise here would miss that and leave the splash up until its own ceiling.
+ */
+const endSplash = startSplash();
+if (getSession().status !== 'unknown') {
+  endSplash();
+} else {
+  const stopWatching = subscribe(() => {
+    if (getSession().status === 'unknown') return;
+    stopWatching();
+    endSplash();
+  });
+}
 
 const router = createHashRouter([
   /*

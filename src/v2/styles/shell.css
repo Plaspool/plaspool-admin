@@ -542,6 +542,53 @@
   text-align: center;
 }
 
+/* The Google door — FIRST in the card, per the owner (2026-08-31 follow-up),
+   and BLACK: Google's own dark-button spec (colored G on a near-black field),
+   drawn with the topbar's ink so it reads as this app's dark rather than a
+   foreign widget. Sized to the oversized login inputs above it. */
+.signin__google {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s3);
+  width: 100%;
+  min-height: 2.625rem;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--topbar-bg);
+  color: #fff;
+  font: inherit;
+  font-size: var(--t-md);
+  font-weight: var(--w-medium);
+  cursor: pointer;
+  transition: background 120ms var(--ease);
+}
+.signin__google:hover {
+  background: #2b2b2b;
+}
+.signin__google:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.signin__google svg {
+  flex: none;
+}
+
+/* "or", ruled off on both sides — between the Google door and the fields. */
+.signin__or {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  color: var(--ink-muted);
+  font-size: var(--t-sm);
+}
+.signin__or::before,
+.signin__or::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
 /* ═══ TOPBAR SEARCH TRIGGER ═══════════════════════════════════════════════
    A button drawn as the field it opens. The real input lives in the palette;
    this is its handle, so it takes a button's states — hover brightens, the
