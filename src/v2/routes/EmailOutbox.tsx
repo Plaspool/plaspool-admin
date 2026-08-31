@@ -94,7 +94,7 @@ export default function EmailOutbox() {
   const toast = useToast();
   const [bucket, setBucket] = useState<OutboxBucket>('attention');
   const [viewing, setViewing] = useState<ShopOutboxItem | null>(null);
-  const { data, error, reload } = useAsync(
+  const { data, error, loading, reload } = useAsync(
     (signal) => shopApi.listEmailOutbox(bucket, signal),
     [bucket],
   );
@@ -284,9 +284,9 @@ export default function EmailOutbox() {
       <DataTable
         caption="Email outbox"
         columns={columns}
-        rows={data?.items ?? []}
+        rows={loading ? [] : (data?.items ?? [])}
         rowKey={(i) => i.id}
-        loading={data === null && !error}
+        loading={loading && !error}
         tabs={{ value: bucket, tabs, onChange: setBucket }}
         empty={
           <EmptyState
@@ -295,7 +295,11 @@ export default function EmailOutbox() {
             body={EMPTY[bucket].body}
           />
         }
-        footer={null}
+        footer={
+          data && counts && counts[bucket] > data.items.length ? (
+            <>Showing the newest {data.items.length} of {counts[bucket]}.</>
+          ) : null
+        }
       />
 
       <p className="page__learn">
@@ -327,7 +331,9 @@ export default function EmailOutbox() {
               </Banner>
             ) : null}
             <div>
-              <span className="field__label">Message, as the customer would read it</span>
+              <span className="field__label">
+                The text version — most inboxes render the designed HTML part of the same message
+              </span>
               <pre
                 className="mono"
                 style={{

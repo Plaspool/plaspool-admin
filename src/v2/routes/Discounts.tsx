@@ -23,12 +23,10 @@ import { useToast } from '../ui/Toast';
  * at checkout. v1 refused to ship a table of codes on the grounds that a table
  * implies the codes are the feature, when the feature is the half nobody built.
  *
- * v2 SHIPS THE TABLE AND SAYS SO IN A BANNER THAT CANNOT BE DISMISSED. That is
- * the trade the owner asked for: the admin side becomes real and usable now,
- * and the one thing it must never do — let somebody hand out a code believing
- * it will be honoured — is prevented by a notice sitting above the list rather
- * than by withholding the screen. The moment redemption ships, delete the
- * banner and nothing else here changes.
+ * v2 SHIPPED THE TABLE WITH A GAP NOTICE ABOVE IT; the owner had the notice
+ * removed on 2026-08-31, accepting the storefront gap as their own knowledge
+ * rather than a banner. The gap itself still holds until redemption ships —
+ * nothing on this screen changes when it does.
  *
  * ── WHAT THE UI DELIBERATELY DOES NOT OFFER ────────────────────────────────
  * There is no "Edit" on a row. The server has no route for changing what a code
