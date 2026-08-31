@@ -231,7 +231,7 @@ export async function uploadPrepared(prepared: PreparedImage): Promise<string> {
       credentials: 'omit',
     });
   } catch {
-    throw new ImageError(UPLOAD_UNREACHABLE);
+    throw new ImageError(browserIsOffline() ? UPLOAD_UNREACHABLE : UPLOAD_BLOCKED);
   }
   if (!res.ok) {
     /*
@@ -240,8 +240,14 @@ export async function uploadPrepared(prepared: PreparedImage): Promise<string> {
      * is no client-side delete route for a slot, and inventing a "cancel" call
      * that itself fails offline would only add a second thing to go wrong.
      */
+    /*
+     * NOT "check your connection". A status code means storage answered, so
+     * the connection is the one thing this branch has already proved works —
+     * and 403 here is the ordinary shape of a signature or CORS fault, which
+     * no amount of retrying by the writer will clear.
+     */
     throw new ImageError(
-      `The image couldn’t be uploaded (${res.status}). Check your connection and try again.`,
+      `Storage refused the image (${res.status}). That points at the blog’s setup rather than your file — please report it. It hasn’t been added to the post.`,
     );
   }
 
@@ -255,6 +261,41 @@ export async function uploadPrepared(prepared: PreparedImage): Promise<string> {
 
 const UPLOAD_UNREACHABLE =
   'The image couldn’t be uploaded — you may be offline. It hasn’t been added to the post.';
+
+/**
+ * THE SAME THROW, WHEN THE BROWSER IS NOT OFFLINE.
+ *
+ * A cross-origin PUT the browser refuses to send — because the bucket's CORS
+ * allow-list does not name this origin — rejects with exactly the `TypeError`
+ * a dead network produces. `fetch` cannot tell the two apart and neither can
+ * this `catch`. What can: `navigator.onLine`, and the fact that the slot
+ * request succeeded seconds earlier, which is proof the network works.
+ *
+ * IT COST A DAY OF SEARCHING THE WRONG THING (2026-08-31). `admin.plaspool.com`
+ * was aliased onto the admin while the bucket still listed only the
+ * `*.vercel.app` origins, so ten uploads in a row died at the preflight — each
+ * one telling the writer they might be offline while every other request on the
+ * page was succeeding. Naming storage is what turns that into a report somebody
+ * can act on; "you may be offline" sends them to their router.
+ */
+const UPLOAD_BLOCKED =
+  'The image couldn’t reach storage, though your connection is working. That points at the blog’s setup rather than your file — please report it. It hasn’t been added to the post.';
+
+/**
+ * Only claim the writer is offline when the BROWSER says so.
+ *
+ * Written as a check for the negative on purpose: `navigator.onLine === false`
+ * is a positive statement that there is no network, while `true` famously does
+ * not prove there is one. Absent altogether — node, where the `client` suite
+ * runs — is evidence of nothing, so it reads as "not known to be offline" and
+ * the message that names storage wins. That is the right way round: guessing
+ * "offline" and being wrong sends the writer to fix their connection, and
+ * guessing "storage" and being wrong costs a report somebody closes in a
+ * minute.
+ */
+function browserIsOffline(): boolean {
+  return typeof navigator !== 'undefined' && navigator.onLine === false;
+}
 
 async function createSlot(contentType: string, byteSize: number) {
   try {
@@ -271,7 +312,9 @@ async function createSlot(contentType: string, byteSize: number) {
  * deployment having no media storage configured at all
  * (`server/routes/images.ts` answers 400 `detail: 'storage'`, deliberately not
  * a 500, because it cannot change within a retry); `slots` and `quota` are
- * limits that clear with time; `exif` means the re-encode above did not run or
+ * limits that clear with time, but `slots` is nearly always a SYMPTOM of
+ * uploads failing before commit rather than a limit the writer walked into, so
+ * it says so and names the wait in hours; `exif` means the re-encode did not run or
  * did not strip, which is a bug rather than a writer's problem, so it says so
  * plainly rather than blaming the file.
  */
@@ -293,8 +336,24 @@ function asImageError(err: unknown, prefix: string): ImageError {
         from,
       );
     case 'slots':
+      /*
+       * NOTHING IS IN PROGRESS, AND A MOMENT IS THE WRONG UNIT.
+       *
+       * The server counts UNCOMMITTED rows, so a full slot list means ten
+       * uploads STARTED AND DIED — the opposite of in-flight work. And they
+       * are held for `SLOT_TTL_MS`, a day, not a moment: mirrored here as "24
+       * hours" the same way `MAX_IMAGE_BYTES` above mirrors its server twin,
+       * because a writer told to wait a moment retries all ten remaining
+       * attempts inside the first minute and learns nothing.
+       *
+       * The likely cause is named because it is nearly always the same one:
+       * slots only fill when uploads are failing between the slot and the
+       * commit, which is storage, which is not something the writer can fix.
+       */
       return new ImageError(
-        'Too many uploads are already in progress. Try again in a moment.',
+        'Earlier uploads were started but never finished, so there are no upload slots left. ' +
+          'That usually means images aren’t reaching storage — please report it. ' +
+          'Each slot frees up 24 hours after the attempt that took it.',
         from,
       );
     case 'quota':

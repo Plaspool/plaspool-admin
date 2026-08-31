@@ -445,9 +445,9 @@ describe('the product editor', () => {
     /* The sold variant's menu still works — edit and discontinue are there —
        so the missing item is the rule, not a broken menu. */
     const soldMenu = await openRowMenu(user, orderedVariant.sku);
-    expect(within(soldMenu).getByRole('menuitem', { name: 'Edit version…' })).toBeTruthy();
+    expect(within(soldMenu).getByRole('menuitem', { name: 'Edit variant…' })).toBeTruthy();
     expect(within(soldMenu).getByRole('menuitem', { name: 'Discontinue' })).toBeTruthy();
-    expect(within(soldMenu).queryByRole('menuitem', { name: 'Delete version…' })).toBeNull();
+    expect(within(soldMenu).queryByRole('menuitem', { name: 'Delete variant…' })).toBeNull();
 
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
@@ -455,7 +455,7 @@ describe('the product editor', () => {
     /* The never-ordered twin proves the control exists and is being withheld,
        not merely unimplemented. */
     const freshMenu = await openRowMenu(user, freshVariant.sku);
-    expect(within(freshMenu).getByRole('menuitem', { name: 'Delete version…' })).toBeTruthy();
+    expect(within(freshMenu).getByRole('menuitem', { name: 'Delete variant…' })).toBeTruthy();
   });
 
   it('omits the description key while the editor never produced a doc, and carries a stored one', async () => {
@@ -540,11 +540,11 @@ describe('the product editor', () => {
     await screen.findByDisplayValue('Recycled Spool');
 
     const menu = await openRowMenu(user, freshVariant.sku);
-    await user.click(within(menu).getByRole('menuitem', { name: 'Edit version…' }));
+    await user.click(within(menu).getByRole('menuitem', { name: 'Edit variant…' }));
     await screen.findByRole('dialog', { name: 'Edit SPL-BLU-1KG' });
 
     await retype(user, 'Original price', 'abc');
-    await user.click(screen.getByRole('button', { name: 'Save version' }));
+    await user.click(screen.getByRole('button', { name: 'Save variant' }));
 
     /* One shared parser, two boxes — the refusal has to say WHICH. */
     expect(await screen.findByRole('alert')).toHaveProperty(
@@ -554,7 +554,7 @@ describe('the product editor', () => {
 
     await user.clear(screen.getByLabelText('Original price'));
     await retype(user, 'Cost per item', 'abc');
-    await user.click(screen.getByRole('button', { name: 'Save version' }));
+    await user.click(screen.getByRole('button', { name: 'Save variant' }));
 
     expect(await screen.findByRole('alert')).toHaveProperty(
       'textContent',
@@ -578,9 +578,9 @@ describe('the product editor', () => {
     /* Saved untouched: the flag did not move, so it does not travel — a no-op
        `backorderable` would still bump the inventory row's clock. */
     const first = await openRowMenu(user, freshVariant.sku);
-    await user.click(within(first).getByRole('menuitem', { name: 'Edit version…' }));
+    await user.click(within(first).getByRole('menuitem', { name: 'Edit variant…' }));
     await screen.findByRole('dialog', { name: 'Edit SPL-BLU-1KG' });
-    await user.click(screen.getByRole('button', { name: 'Save version' }));
+    await user.click(screen.getByRole('button', { name: 'Save variant' }));
 
     await waitFor(() => expect(sent(variantPath(freshVariant.id), 'PATCH')).toBeTruthy());
     expect(sent(variantPath(freshVariant.id), 'PATCH')).toEqual(FRESH_PATCH_BASE);
@@ -588,10 +588,10 @@ describe('the product editor', () => {
     /* The modal closed and the page re-read; open it again and flip the flag. */
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     const second = await openRowMenu(user, freshVariant.sku);
-    await user.click(within(second).getByRole('menuitem', { name: 'Edit version…' }));
+    await user.click(within(second).getByRole('menuitem', { name: 'Edit variant…' }));
     await screen.findByRole('dialog', { name: 'Edit SPL-BLU-1KG' });
     await user.click(screen.getByRole('checkbox', { name: /Backorderable/ }));
-    await user.click(screen.getByRole('button', { name: 'Save version' }));
+    await user.click(screen.getByRole('button', { name: 'Save variant' }));
 
     await waitFor(() =>
       expect(sent(variantPath(freshVariant.id), 'PATCH')).toEqual({

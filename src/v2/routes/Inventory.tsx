@@ -59,7 +59,7 @@ export default function Inventory() {
 
   const metrics: Metric[] = useMemo(
     () => [
-      { label: 'Versions on this page', value: String(all.length) },
+      { label: 'Variants on this page', value: String(all.length) },
       { label: 'Units in stock', value: String(all.reduce((n, r) => n + r.onHand, 0)) },
       { label: 'Set aside', value: String(all.reduce((n, r) => n + r.reserved, 0)) },
       { label: 'Available', value: String(all.reduce((n, r) => n + r.available, 0)) },
@@ -73,7 +73,7 @@ export default function Inventory() {
   const columns: Column<InventoryRow>[] = [
     {
       key: 'variant',
-      header: 'Version',
+      header: 'Variant',
       primary: true,
       render: (r) => (
         <IdCell
@@ -173,28 +173,28 @@ export default function Inventory() {
         }}
         search={{
           value: search,
-          placeholder: 'Filter the versions on this page',
+          placeholder: 'Filter the variants on this page',
           onChange: setSearch,
         }}
         empty={
           search ? (
             <EmptyState
               icon={<Boxes />}
-              title="No versions match that filter"
-              body="This only searches the versions on this page."
+              title="No variants match that filter"
+              body="This only searches the variants on this page."
               actions={<Button onClick={() => setSearch('')}>Clear filter</Button>}
             />
           ) : tab === 'low' ? (
             <EmptyState
               icon={<Boxes />}
               title="Nothing is low on stock"
-              body="Versions at or below your low stock level show up here."
+              body="Variants at or below your low stock level show up here."
             />
           ) : (
             <EmptyState
               icon={<Boxes />}
               title="No inventory yet"
-              body="Each version has its own stock count. Add products and versions to see them here."
+              body="Each variant has its own stock count. Add products and variants to see them here."
             />
           )
         }

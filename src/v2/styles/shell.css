@@ -880,6 +880,55 @@
   text-align: center;
 }
 
+/* ═══ ALERTS ON A PHONE ═══════════════════════════════════════════════════
+   Below every base rule above on purpose: source order decides at equal
+   specificity, the same trap the burger's compound selector documents.
+
+   THE PANEL STOPS HANGING OFF THE BELL. 26rem of panel, plus the avatar and
+   the bar's own padding, is wider than a phone — and max-width only narrows
+   it, leaving it pinned to its trigger, so every pixel it gives up comes off
+   the LEFT. Photographed 2026-08-31 at 375px: the panel clamped to 343px,
+   hung off a bell whose right edge is ~315px in, and put its own title at
+   x = -28. Under the width where the wordmark already stands down it stops
+   being a popover and becomes a sheet pinned to the viewport, gutters
+   matching the bar's own padding so its edges line up with the burger and
+   the avatar above it. */
+@media (max-width: 32rem) {
+  .alerts {
+    position: fixed;
+    top: calc(var(--topbar-h) + var(--s2));
+    right: var(--s3);
+    left: var(--s3);
+    width: auto;
+    max-width: none;
+  }
+
+  /* A phone held sideways is ~375px tall, and the list is the only part that
+     scrolls. Without a ceiling that follows the screen the last rows sit
+     under the bottom edge of a panel that has nothing left to scroll. */
+  .alerts__list {
+    max-height: min(23rem, calc(100dvh - var(--topbar-h) - 11rem));
+  }
+}
+
+/* Mark-as-read is revealed BY HOVER, and a touch screen has none — so on a
+   phone the check was painted at opacity 0 and stayed there, and the only
+   way to clear one alert was to open it. Where there is no hover it is
+   simply present. The ::after is hit area only: 26px of drawn button sits
+   beside 15px of text, and a thumb wants ~44px without the button growing
+   into the row it belongs to. */
+@media (hover: none) {
+  .alerts__check {
+    opacity: 1;
+  }
+
+  .alerts__check::after {
+    content: '';
+    position: absolute;
+    inset: -9px;
+  }
+}
+
 /* ═══ SEARCH PALETTE ══════════════════════════════════════════════════════
    Ctrl+K. A panel dropped from the top of the screen, not a centred modal —
    search starts where the eye already is. Scope chips under the input,
