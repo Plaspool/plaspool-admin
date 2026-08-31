@@ -260,7 +260,7 @@ describe('the broadcasts screen', () => {
     when(TEMPLATES, { items: [ready, htmlOnly, welcome] });
     mount();
 
-    await user.click(await screen.findByRole('button', { name: 'New broadcast' }));
+    await user.click(await screen.findByRole('button', { name: 'New newsletter' }));
     await screen.findByText('August Restock News');
 
     /*
@@ -274,7 +274,7 @@ describe('the broadcasts screen', () => {
     expect(blocked).toHaveProperty('disabled', true);
     expect(within(blocked).getByText('No unsubscribe link')).toBeTruthy();
     expect(blocked.getAttribute('title')).toBe(
-      'Needs {{unsubscribe_url}} in both bodies before it can broadcast',
+      'Both versions need an unsubscribe link before this can be sent',
     );
 
     const blockedWelcome = screen.getByText('Welcome').closest('button');
@@ -328,7 +328,7 @@ describe('the broadcasts screen', () => {
     // The irreversible thing has NOT happened while the question is open.
     expect(sentNothing(`${BROADCASTS}/${draft.id}/send`)).toBe(true);
 
-    await user.click(within(dialog).getByRole('button', { name: 'Send broadcast' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Send newsletter' }));
 
     await waitFor(() =>
       expect(

@@ -66,7 +66,7 @@ export default function Featured() {
     } catch (cause) {
       if (cause instanceof FeaturedConflictError) {
         adopt(cause.items);
-        toast.show('The rail changed somewhere else — showing the latest order', 'critical');
+        toast.show('The featured posts changed somewhere else — showing the latest order', 'critical');
       } else {
         toast.show(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.', 'critical');
       }
@@ -80,7 +80,7 @@ export default function Featured() {
     setBusy(true);
     try {
       adopt(await api.unfeaturePost(item.id));
-      toast.show(`“${item.title}” removed from the rail`);
+      toast.show(`“${item.title}” is no longer featured`);
     } catch (cause) {
       toast.show(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.', 'critical');
     } finally {
@@ -93,7 +93,7 @@ export default function Featured() {
       <PageHeader
         icon={<Star />}
         title="Featured"
-        subtitle="The rail the storefront shows first — up to four published posts, in your order."
+        subtitle="The posts your shop shows first — up to four published posts, in the order you choose."
         actions={
           isOwner ? (
             <Button tone="primary" size="lg" onClick={() => setPicking(true)}>
@@ -105,14 +105,14 @@ export default function Featured() {
       />
 
       {loadError ? (
-        <Banner tone="critical" title="Couldn’t load the rail" action={<Button onClick={() => void load()}>Retry</Button>}>
+        <Banner tone="critical" title="Couldn’t load the featured posts" action={<Button onClick={() => void load()}>Retry</Button>}>
           {loadError}
         </Banner>
       ) : null}
 
       {!isOwner ? (
         <Banner tone="info" title="Read-only">
-          Curating the rail is the owner’s call — writers see it as the storefront will.
+          Only the owner can change these. Writers see them exactly as visitors will.
         </Banner>
       ) : null}
 
@@ -132,7 +132,7 @@ export default function Featured() {
           <EmptyState
             icon={<Star />}
             title="Nothing featured yet"
-            body="The storefront leads with this rail. Feature up to four published posts and put the best one first."
+            body="Your shop opens with these. Pick up to four published posts, and put the best one first."
             actions={
               isOwner ? (
                 <Button tone="primary" onClick={() => setPicking(true)}>
@@ -197,7 +197,7 @@ export default function Featured() {
                     <Button
                       tone="plain"
                       iconOnly
-                      aria-label={`Remove “${item.title}” from the rail`}
+                      aria-label={`Stop featuring “${item.title}”`}
                       disabled={busy}
                       onClick={() => void remove(item)}
                     >
@@ -214,7 +214,7 @@ export default function Featured() {
       ) : null}
 
       <p className="page__learn">
-        Only publicly visible posts can be featured — unpublishing one drops it off the rail.
+        Only posts that are published can be featured. Unpublishing one removes it from here.
       </p>
 
       {picking && items ? (
@@ -282,13 +282,13 @@ function FeaturePicker({
     setBusy(post.id);
     try {
       const next = await api.featurePost(post.id, replace);
-      toast.show(`“${post.title}” is on the rail`);
+      toast.show(`“${post.title}” is now featured`);
       onDone(next);
     } catch (cause) {
       if (cause instanceof FeaturedConflictError && cause.reason === 'featured_full') {
         setPending({ id: post.id, title: post.title, items: cause.items });
       } else if (cause instanceof FeaturedConflictError) {
-        toast.show('The rail changed somewhere else — showing the latest', 'critical');
+        toast.show('The featured posts changed somewhere else — showing the latest', 'critical');
         onDone(cause.items);
       } else {
         toast.show(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.', 'critical');
@@ -303,11 +303,11 @@ function FeaturePicker({
     setBusy(pending.id);
     try {
       const next = await api.featurePost(pending.id, replaceId);
-      toast.show(`“${pending.title}” is on the rail`);
+      toast.show(`“${pending.title}” is now featured`);
       onDone(next);
     } catch (cause) {
       if (cause instanceof FeaturedConflictError) {
-        toast.show('The rail changed somewhere else — showing the latest', 'critical');
+        toast.show('The featured posts changed somewhere else — showing the latest', 'critical');
         onDone(cause.items);
       } else {
         toast.show(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.', 'critical');
@@ -319,7 +319,7 @@ function FeaturePicker({
 
   if (pending) {
     return (
-      <Modal title="The rail is full" onClose={() => setPending(null)} flush>
+      <Modal title="No room for another" onClose={() => setPending(null)} flush>
         <div style={{ padding: 'var(--s2) var(--s5) var(--s3)' }}>
           <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.5 }}>
             Four posts is the rail’s whole width. Featuring{' '}
@@ -376,7 +376,7 @@ function FeaturePicker({
         <div style={{ padding: 'var(--s6) var(--s5)', textAlign: 'center' }} className="muted">
           {query
             ? 'No published post matches that.'
-            : 'Every published post is already on the rail — or nothing is published yet.'}
+            : 'Every published post is already featured — or you haven’t published anything yet.'}
         </div>
       ) : (
         rows.map((post) => (

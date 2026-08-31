@@ -190,7 +190,7 @@ export default function Returns() {
       label: 'Worth',
       numeric: true,
       render: (r) => (
-        <span className="num" title="Quantity × the rate promised at request time">
+        <span className="num" title="Number of items × the rate promised when they asked">
           {r.pointsAwarded !== null
             ? points(r.pointsAwarded, r.program)
             : points(r.qtyDeclared * r.pointsPerUnitSnapshot, r.program)}
@@ -244,7 +244,7 @@ export default function Returns() {
       <PageHeader
         icon={<Truck />}
         title="Returns"
-        subtitle="Request, schedule, collect, inspect, award — the spool pickup queue."
+        subtitle="Customers ask, you book a pickup, collect, check the items, then pay out points."
         actions={
           <>
             {boardOptions.length > 1 ? (
@@ -270,7 +270,7 @@ export default function Returns() {
       />
 
       {error ? (
-        <Banner tone="critical" title="Couldn’t load the queue">
+        <Banner tone="critical" title="Couldn’t load returns">
           {error}
         </Banner>
       ) : null}
@@ -317,7 +317,7 @@ export default function Returns() {
             <EmptyState
               icon={<PackageOpen />}
               title="Nothing needs you right now"
-              body="New requests and returns waiting on inspection land here — the two stages where the admin is the blocker."
+              body="New requests, and returns waiting to be checked. These are the two steps that need you."
             />
           ) : (
             <EmptyState icon={<PackageOpen />} title="No returns in this view" />
@@ -453,12 +453,12 @@ function ReturnModal({
       if (cause instanceof ApiError && cause.code === 'already_awarded') {
         /* The first attempt landed and its response was lost — a retry after a
            dropped connection is SUCCESS, the contract's own words. */
-        toast.show('Already awarded — the first attempt landed');
+        toast.show('Already paid out — your first attempt worked');
         await fetchDetail();
         onChanged();
         setStage('view');
       } else if (cause instanceof ApiError && cause.status === 409) {
-        setProblem('This return moved somewhere else — re-read and try again.');
+        setProblem('Someone else changed this return. Reload and try again.');
         await fetchDetail();
       } else {
         setProblem(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
@@ -508,7 +508,7 @@ function ReturnModal({
             <Badge tone={STATUS_TONE[request.status]}>{humanise(request.status)}</Badge>
             <span className="muted" style={{ fontSize: 'var(--t-sm)' }}>
               {detail.program.name} · requested {shortDate(request.createdAt)} ·{' '}
-              {request.source === 'admin' ? 'phoned in' : 'from the storefront'}
+              {request.source === 'admin' ? 'phoned in' : 'from your shop'}
             </span>
           </div>
 
@@ -594,11 +594,11 @@ function ReturnModal({
         />
       ) : stage === 'collect' || stage === 'receive' ? (
         <ConfirmStep
-          title={stage === 'collect' ? 'The driver has the goods?' : 'At the warehouse?'}
+          title={stage === 'collect' ? 'Has the driver picked these up?' : 'Have they arrived?'}
           body={
             stage === 'collect'
-              ? 'Marks it collected — the customer is told the spools are on their way in.'
-              : 'Marks it received and puts it in the inspection queue.'
+              ? 'Marks it as picked up. The customer is told their items are on the way in.'
+              : 'Marks it as arrived and adds it to the list waiting to be checked.'
           }
           confirmLabel={stage === 'collect' ? 'Mark collected' : 'Mark received'}
           busy={busy}
@@ -640,7 +640,7 @@ function ReturnModal({
       ) : stage === 'reject' ? (
         <ReasonStep
           title="Refuse this return?"
-          body="Pre-receipt refusal — nothing was collected, nothing is counted. Once goods are in hand, inspect with zero accepted instead, so the quantities are still recorded."
+          body="Use this before anything is collected — nothing gets counted. If the items are already with you, check them in and accept zero instead, so the numbers are still recorded."
           label="Why it is refused"
           required
           confirmLabel="Reject return"
@@ -658,7 +658,7 @@ function ReturnModal({
       ) : stage === 'cancel' ? (
         <ReasonStep
           title="Cancel this return?"
-          body="Closes it without an award. Collected returns can be cancelled too — that is the lost-in-transit escape."
+          body="Closes it without paying any points. You can also cancel a return you already collected — use that if it was lost on the way."
           label="Reason"
           required={false}
           confirmLabel="Cancel return"
@@ -680,7 +680,7 @@ function ReturnModal({
       ) : (
         <ReasonStep
           title="Add a note"
-          body="Notes are legal in every state and bump nothing — a note is not an edit."
+          body="You can add a note at any stage. A note doesn’t change the return."
           label="Note"
           required
           confirmLabel="Add note"
@@ -731,7 +731,7 @@ function ScheduleForm({
       return;
     }
     if (!request.pickupAddress && !address.trim()) {
-      setError('This request has no address on file — the driver needs one.');
+      setError('This request has no address saved. The driver needs one.');
       return;
     }
     onSubmit({
@@ -749,7 +749,7 @@ function ScheduleForm({
     <div className="stack">
       {reschedule ? (
         <Banner tone="info" title="Rescheduling">
-          A second scheduled event is emitted, so the history shows the pickup moved.
+          The history will show that the pickup was moved.
         </Banner>
       ) : null}
       <TextField
@@ -779,7 +779,7 @@ function ScheduleForm({
       <TextField
         label="Pickup address"
         value={address}
-        hint={request.pickupAddress ? 'Changing this updates the request.' : 'Required — nothing is on file yet.'}
+        hint={request.pickupAddress ? 'Changing this updates the request.' : 'Required — no address is saved yet.'}
         onChange={(e) => {
           setAddress(e.target.value);
           setError(null);
@@ -856,20 +856,20 @@ function InspectForm({
 
   function submit() {
     if (!valid) {
-      setError('Whole numbers, and accepted can’t exceed what arrived.');
+      setError('Use whole numbers. You can’t accept more than arrived.');
       return;
     }
     if (nRejected > 0 && !rejectedReason.trim()) {
-      setError('Rejecting units needs the reason — it is recorded and mailed.');
+      setError('Say why you turned items down. The customer is emailed this reason.');
       return;
     }
     const nBonus = bonus.trim() === '' ? undefined : Number(bonus);
     if (nBonus !== undefined && (!Number.isInteger(nBonus) || nBonus <= 0)) {
-      setError('A bonus is a positive whole number of points.');
+      setError('A bonus must be a whole number of points, above zero.');
       return;
     }
     if (nBonus !== undefined && !bonusReason.trim()) {
-      setError('A bonus needs its reason — stored verbatim and forever.');
+      setError('Say why you added a bonus. It is saved permanently.');
       return;
     }
     onSubmit(
@@ -882,7 +882,7 @@ function InspectForm({
       },
       nAccepted > 0
         ? `Awarded ${points(award, program)}${nBonus ? ` + ${nBonus} bonus` : ''}`
-        : 'Nothing accepted — return closed as rejected',
+        : 'Nothing accepted — return closed as turned down',
     );
   }
 
@@ -918,14 +918,14 @@ function InspectForm({
           />
         </div>
         <div style={{ flex: 1 }}>
-          <TextField label="Rejected" value={valid ? String(nRejected) : '—'} disabled hint="Derived — arrived minus accepted." onChange={() => {}} />
+          <TextField label="Rejected" value={valid ? String(nRejected) : '—'} disabled hint="Arrived minus accepted." onChange={() => {}} />
         </div>
       </div>
 
       <Banner tone={nAccepted > 0 ? 'info' : 'warn'} title={valid && nAccepted > 0 ? `Awards ${points(award, program)}` : 'Awards nothing'}>
         {valid && nAccepted > 0
-          ? `${nAccepted} × ${request.pointsPerUnitSnapshot} — the rate promised when the request was made, not today’s.`
-          : 'Zero accepted closes this return as rejected, with the quantities on record.'}
+          ? `${nAccepted} × ${request.pointsPerUnitSnapshot} — the rate promised when they asked, not today’s.`
+          : 'Accepting zero closes this return as turned down. The numbers are still recorded.'}
       </Banner>
 
       {nRejected > 0 ? (
@@ -949,7 +949,7 @@ function InspectForm({
               step={1}
               value={bonus}
               placeholder="Optional"
-              hint="A second ledger row — never a bigger award."
+              hint="Added as a separate entry, on top of the points above."
               onChange={(e) => {
                 setBonus(e.target.value);
                 setError(null);
@@ -1084,7 +1084,7 @@ function ReasonStep({
           busy={busy}
           onClick={() => {
             if (required && !reason.trim()) {
-              setError('This one needs its words.');
+              setError('Fill this in.');
               return;
             }
             onConfirm(reason.trim());
@@ -1138,7 +1138,7 @@ function IntakeModal({
   async function commit() {
     const n = Number(qty);
     if (!email.trim() || !email.includes('@')) {
-      setError('The customer’s email is the return’s identity.');
+      setError('Enter the customer’s email address.');
       return;
     }
     if (!Number.isInteger(n) || n < 1) {
@@ -1161,7 +1161,7 @@ function IntakeModal({
       onDone(detail);
     } catch (cause) {
       if (cause instanceof ApiError && cause.code === 'outside_service_area') {
-        setError('That area isn’t served — leave the board empty to file it as out-of-area instead.');
+        setError('You don’t deliver to that area. Leave the board empty to file it as out of area instead.');
       } else {
         setError(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
       }
@@ -1186,8 +1186,8 @@ function IntakeModal({
     >
       <div className="stack">
         <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.5 }}>
-          The phone-in path. A request from outside the served districts is still real — it lands
-          in the out-of-area footer, can be closed with a reason, and can never be awarded.
+          For a customer who phoned or walked in. A request from an area you don’t serve still counts — it goes
+          to the out-of-area list, can be closed with a reason, but can never earn points.
         </p>
         <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
           <div style={{ flex: 1.4 }}>
@@ -1224,13 +1224,13 @@ function IntakeModal({
             <TextField label="Phone" value={phone} placeholder="Optional" inputMode="tel" onChange={(e) => setPhone(e.target.value)} />
           </div>
         </div>
-        <TextField label="Pickup address" value={address} placeholder="Optional now, needed to schedule" onChange={(e) => setAddress(e.target.value)} />
+        <TextField label="Pickup address" value={address} placeholder="Optional now — needed before you can book a pickup" onChange={(e) => setAddress(e.target.value)} />
         <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
           <div style={{ flex: 1 }}>
             <SelectField
               label="Board"
               value={areaId}
-              hint="Chosen, never parsed — no geocoding here."
+              hint="Pick from the list. Addresses aren’t looked up automatically."
               onChange={(e) => setAreaId(e.target.value)}
             >
               <option value="">Out of area / not sure</option>
@@ -1245,7 +1245,7 @@ function IntakeModal({
             <SelectField
               label="Programme"
               value={programId}
-              hint={programs === null ? 'Loading…' : 'Empty uses the store default.'}
+              hint={programs === null ? 'Loading…' : 'Leave empty to use the store default.'}
               onChange={(e) => setProgramId(e.target.value)}
             >
               <option value="">Store default</option>

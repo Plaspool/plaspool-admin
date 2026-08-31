@@ -45,8 +45,8 @@ describe('the settings index', () => {
 
     // Each door says what is behind it, not just its name.
     expect(
-      screen.getByText('Zones, rates and tax — what a region pays to receive a parcel.'),
+      screen.getByText('What each part of the country pays for delivery, and how much tax is added.'),
     ).toBeTruthy();
-    expect(screen.getByText('Who can sign in, and what each role may touch.')).toBeTruthy();
+    expect(screen.getByText('Who can sign in, and what each of them is allowed to do.')).toBeTruthy();
   });
 });

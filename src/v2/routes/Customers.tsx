@@ -102,7 +102,7 @@ export default function Customers() {
       <PageHeader
         icon={<Users />}
         title="Customers"
-        subtitle="Everyone who has checked out, registered or not."
+        subtitle="Everyone who has bought from you, whether or not they made an account."
         menu={(close) => <AnalyticsMenuItem shown={shown} onToggle={toggle} close={close} />}
       />
 
@@ -133,8 +133,8 @@ export default function Customers() {
               title={search ? 'No customers match that filter' : 'No customers yet'}
               body={
                 search
-                  ? 'The filter only searches the customers on this page.'
-                  : 'Anyone who completes a checkout appears here, whether or not they registered.'
+                  ? 'This only searches the customers on this page.'
+                  : 'Anyone who completes a checkout appears here, whether or not they made an account.'
               }
               actions={search ? <Button onClick={() => setSearch('')}>Clear filter</Button> : null}
             />

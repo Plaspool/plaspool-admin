@@ -262,7 +262,7 @@ describe('the team screen', () => {
     withTeam([owner, writer]);
     mount();
 
-    expect(await screen.findByText('Owner and developer surface')).toBeTruthy();
+    expect(await screen.findByText('Only the owner and developers can change this')).toBeTruthy();
     // Not a hidden screen over a live fetch — the list was never requested.
     expect(calls.some((c) => c.path.split('?')[0] === USERS)).toBe(false);
     expect(calls.some((c) => c.path.split('?')[0] === INVITES)).toBe(false);
@@ -305,7 +305,7 @@ describe('the team screen', () => {
 
     /* The owner's explicit ask: what each role ENTAILS, all six, in the words
        of ROLE_INFO itself — the same table the server enforces. */
-    const rolesCard = screen.getByText('What each role entails').closest('section');
+    const rolesCard = screen.getByText('What each role can do').closest('section');
     if (rolesCard === null) throw new Error('no roles card');
     for (const role of ALL_ROLES) {
       expect(within(rolesCard as HTMLElement).getByText(ROLE_INFO[role].label)).toBeTruthy();
@@ -437,7 +437,7 @@ describe('the team screen', () => {
     const link = within(receipt).getByLabelText('Invite link') as HTMLInputElement;
     expect(link.value).toBe('https://admin.plaspool.com/#/accept-invite?token=tok_minted_once');
     expect(link.readOnly).toBe(true);
-    expect(within(receipt).getByText('The email didn’t go — send them this link.')).toBeTruthy();
+    expect(within(receipt).getByText('The email didn’t send. Give them this link instead.')).toBeTruthy();
   });
 
   it('confirms a disable, POSTs it, and shows a manage_peer 409 as the honest sentence', async () => {
@@ -458,7 +458,7 @@ describe('the team screen', () => {
 
     // The modal ASKS, and names the destructive half: sessions are destroyed.
     const dialog = await screen.findByRole('dialog', { name: 'Disable Wole Writer?' });
-    expect(dialog.textContent).toContain('every session the account holds is destroyed');
+    expect(dialog.textContent).toContain('signed out everywhere the moment you confirm, on every device they use');
     // The irreversible thing has NOT happened while the question is open.
     expect(sentNothing(`${USERS}/${writer.id}/disable`)).toBe(true);
 

@@ -64,7 +64,7 @@ export default function DiscountNew() {
   const codeError = useMemo(() => {
     if (!normalised) return 'Enter a code.';
     if (!CODE_PATTERN.test(normalised))
-      return '3–32 characters. Start with a letter or digit, then letters, digits, - or _.';
+      return 'Use 3–32 characters. Start with a letter or number, then letters, numbers, - or _.';
     return null;
   }, [normalised]);
 
@@ -82,13 +82,13 @@ export default function DiscountNew() {
   const endMs = parseWhen(endsAt);
   const windowError =
     startMs !== null && endMs !== null && endMs <= startMs
-      ? 'The end has to come after the start.'
+      ? 'The end date must come after the start date.'
       : null;
 
   const capValue = Number(maxRedemptions);
   const capError =
     capped && (!Number.isInteger(capValue) || capValue < 1)
-      ? 'A cap has to be a whole number of at least 1.'
+      ? 'The limit must be a whole number, 1 or more.'
       : null;
 
   const automaticBlocked = method === 'automatic';
@@ -129,7 +129,7 @@ export default function DiscountNew() {
       navigate('/discounts');
     } catch (cause) {
       toast.show(
-        cause instanceof Error && cause.message ? cause.message : 'Could not create that code.',
+        cause instanceof Error && cause.message ? cause.message : 'Couldn’t create that code.',
         'critical',
       );
       setSaving(false);
@@ -170,8 +170,8 @@ export default function DiscountNew() {
       />
 
       {automaticBlocked ? (
-        <Banner tone="warn" title="Automatic discounts are not built">
-          The model has no automatic-discount kind — a code is something a customer types. Switch
+        <Banner tone="warn" title="Automatic discounts aren’t available yet">
+          Right now a discount has to be a code the customer types in. Switch
           back to <strong>Discount code</strong> to save this.
         </Banner>
       ) : null}
@@ -196,7 +196,7 @@ export default function DiscountNew() {
                     value: 'automatic',
                     label: 'Automatic discount',
                     disabled: false,
-                    title: 'Not built yet',
+                    title: 'Not available yet',
                   },
                 ]}
               />
@@ -222,7 +222,7 @@ export default function DiscountNew() {
                   placeholder="SUMMER20"
                   className="input mono"
                   error={show(codeError, code.length > 0)}
-                  hint="Customers type this at checkout. Stored upper-case."
+                  hint="Customers type this at checkout. It is saved in capitals."
                   onChange={(e) => setCode(e.target.value)}
                 />
               </div>
@@ -297,7 +297,7 @@ export default function DiscountNew() {
                     label="Starts"
                     type="datetime-local"
                     value={startsAt}
-                    hint="Leave empty to start as soon as it is active."
+                    hint="Leave empty to start straight away."
                     onChange={(e) => setStartsAt(e.target.value)}
                   />
                 </div>
@@ -307,7 +307,7 @@ export default function DiscountNew() {
                     type="datetime-local"
                     value={endsAt}
                     error={show(windowError, endsAt.length > 0)}
-                    hint="Leave empty to run until somebody turns it off."
+                    hint="Leave empty to keep it running until you turn it off."
                     onChange={(e) => setEndsAt(e.target.value)}
                   />
                 </div>
@@ -328,7 +328,7 @@ export default function DiscountNew() {
               />
               {capped ? (
                 <TextField
-                  label="Maximum redemptions"
+                  label="Most times it can be used"
                   type="number"
                   min={1}
                   step={1}
@@ -341,7 +341,7 @@ export default function DiscountNew() {
                 label="Internal note"
                 rows={3}
                 value={note}
-                hint="Never shown to a customer. Emptying it clears the stored note."
+                hint="Customers never see this. Clearing the box deletes the note."
                 onChange={(e) => setNote((e.target as HTMLTextAreaElement).value)}
               />
             </div>
@@ -370,7 +370,7 @@ export default function DiscountNew() {
                 <li>Applies to the whole cart</li>
                 <li>{startMs ? `Starts ${new Date(startMs).toLocaleString()}` : 'Active from today'}</li>
                 <li>{endMs ? `Ends ${new Date(endMs).toLocaleString()}` : 'No end date'}</li>
-                <li>{capped ? `Limited to ${capValue} redemptions` : 'No usage limits'}</li>
+                <li>{capped ? `Can be used ${capValue} times` : 'No usage limits'}</li>
                 <li>Cannot be combined with other codes</li>
               </ul>
             </div>
@@ -380,9 +380,9 @@ export default function DiscountNew() {
             <div className="card__body stack stack--tight">
               <h3 style={{ fontSize: 'var(--t-md)' }}>Storefront</h3>
               <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.5 }}>
-                This code will be stored and counted, but the checkout does not read discount rows
-                yet — the cart total will not change. Nothing here is wasted: the moment redemption
-                ships, existing codes start working.
+                The code will be saved and counted, but checkout can’t use discount codes
+                yet, so the cart total won’t change. Nothing is wasted — as soon as that
+                is switched on, codes you have already made start working.
               </p>
             </div>
           </section>

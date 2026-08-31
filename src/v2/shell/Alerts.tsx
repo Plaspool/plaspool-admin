@@ -152,7 +152,7 @@ export function AlertsBell() {
               </span>
               <span className="alerts__itemtitle">You’re all caught up</span>
               <span className="alerts__body">
-                Stuck emails, waiting reviews and low stock will show up here.
+                Failed emails, reviews waiting to be checked, and low stock show up here.
               </span>
             </div>
           ) : (

@@ -63,7 +63,7 @@ export default function Categories() {
             />
           }
           title={c.name}
-          meta={c.slug ? <span className="mono">/{c.slug}</span> : 'Not on the storefront'}
+          meta={c.slug ? <span className="mono">/{c.slug}</span> : 'Not shown in your shop'}
         />
       ),
     },
@@ -97,12 +97,12 @@ export default function Categories() {
       <PageHeader
         icon={<Layers />}
         title="Categories"
-        subtitle="What the storefront groups products by."
+        subtitle="How products are grouped in your shop."
         actions={
           <Button
             tone="primary"
             size="lg"
-            onClick={() => toast.show('Creating a category lands with the v2 product editor')}
+            onClick={() => toast.show('Adding categories is coming with the new product editor')}
           >
             Add category
           </Button>
@@ -119,9 +119,9 @@ export default function Categories() {
       ) : null}
 
       {unmanaged > 0 ? (
-        <Banner tone="warn" title={`${unmanaged} category name${unmanaged === 1 ? '' : 's'} is in use but not managed`}>
-          These are free-text values on products. They have no slug, so the storefront has no page
-          to route to — adopt one to give it a URL, a blurb and a tint.
+        <Banner tone="warn" title={`${unmanaged} category name${unmanaged === 1 ? '' : 's'} in use, but not set up properly`}>
+          These are typed straight onto products. They have no page of their own in your shop,
+          so add one properly to give it a page, a short description and a colour.
         </Banner>
       ) : null}
 
@@ -141,7 +141,7 @@ export default function Categories() {
               body={
                 search
                   ? 'Try a shorter search term.'
-                  : 'Categories group products on the storefront. Add one to give it a page.'
+                  : 'Categories group products in your shop. Add one to give it a page.'
               }
               actions={search ? <Button onClick={() => setSearch('')}>Clear filter</Button> : null}
             />

@@ -40,8 +40,8 @@ function MarketingOnly() {
       <div className="card">
         <EmptyState
           icon={<Lock />}
-          title="A marketing surface"
-          body="Everything on the email side — templates, subscribers, broadcasts — belongs to the marketing role and the admins."
+          title="This is a marketing screen"
+          body="Everything to do with email — templates, subscribers and newsletters — is handled by the marketing team and admins."
         />
       </div>
     </div>
@@ -217,7 +217,7 @@ export default function EmailTemplates() {
       <PageHeader
         icon={<Mail />}
         title="Email templates"
-        subtitle="System messages the store sends, and the custom ones you broadcast from."
+        subtitle="The automatic messages your store sends, plus the ones you write for newsletters."
         actions={
           <Button tone="primary" size="lg" onClick={() => setEditing('new')}>
             <Plus aria-hidden="true" />
@@ -243,7 +243,7 @@ export default function EmailTemplates() {
           <EmptyState
             icon={<Mail />}
             title="No templates yet"
-            body="The system defaults appear here once the mail migration has run."
+            body="The store’s built-in templates appear here once they have been set up."
           />
         }
         footer={null}
@@ -274,8 +274,8 @@ export default function EmailTemplates() {
           }
         >
           <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
-            Broadcasts already sent keep their snapshots — deleting the template rewrites nothing
-            that reached an inbox.
+            Newsletters already sent keep their own copy. Deleting this template changes nothing
+            that has already reached an inbox.
           </p>
         </Modal>
       ) : null}
@@ -308,7 +308,7 @@ function TemplateModal({
 
   async function commit() {
     if (!name.trim() || !subject.trim()) {
-      setError('A template needs its name and subject.');
+      setError('Fill in the name and the subject.');
       return;
     }
     const draft: TemplateDraft = {
@@ -351,8 +351,8 @@ function TemplateModal({
       <div className="stack">
         {system ? (
           <Banner tone="info" title={SYSTEM_TEMPLATE_STAGES[template.systemKey!] ?? 'System template'}>
-            The store renders this customer mail from this row. Edit freely — it cannot be renamed
-            or deleted, and Duplicate makes a safe playground copy.
+            Your store sends this email to customers using this template. Edit it freely — it can’t be renamed
+            or deleted, and Duplicate gives you a copy that is safe to experiment with.
           </Banner>
         ) : null}
 
@@ -362,7 +362,7 @@ function TemplateModal({
               label="Name"
               value={name}
               disabled={system}
-              hint={system ? 'System templates keep their names.' : undefined}
+              hint={system ? 'Built-in templates keep their names.' : undefined}
               onChange={(e) => setName(e.target.value)}
             />
           </div>
@@ -415,12 +415,12 @@ function TemplateModal({
           label="Plain-text body"
           rows={5}
           value={text}
-          hint="Both parts are delivered — a reader whose client shows text only still needs the whole message."
+          hint="Both versions are sent. Some people’s email apps show only the plain-text one, so it needs the whole message too."
           onChange={(e) => setText((e.target as HTMLTextAreaElement).value)}
         />
 
         {unsubMissing ? (
-          <Banner tone="warn" title="Not broadcastable yet">
+          <Banner tone="warn" title="Can’t be used for a newsletter yet">
             Add <code className="mono">{'{{unsubscribe_url}}'}</code> to both bodies. Saving is
             fine — a half-written template is a normal state to save and an abnormal one to
             broadcast.

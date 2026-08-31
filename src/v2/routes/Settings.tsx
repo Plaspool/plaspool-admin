@@ -31,25 +31,25 @@ const DOORS: SettingsDoor[] = [
     to: '/settings/shipping',
     icon: <Truck />,
     title: 'Shipping',
-    body: 'Zones, rates and tax — what a region pays to receive a parcel.',
+    body: 'What each part of the country pays for delivery, and how much tax is added.',
   },
   {
     to: '/settings/team',
     icon: <Users />,
     title: 'Team',
-    body: 'Who can sign in, and what each role may touch.',
+    body: 'Who can sign in, and what each of them is allowed to do.',
   },
   {
     to: '/settings/writing',
     icon: <PenLine />,
     title: 'Writing',
-    body: 'Editor preferences for blog posts.',
+    body: 'How the blog post editor works for you.',
   },
   {
     to: '/orders/delivery',
     icon: <MapPinned />,
     title: 'Delivery areas',
-    body: 'District-by-district overrides on what the zones charge.',
+    body: 'Charge a different delivery price for particular districts.',
   },
 ];
 

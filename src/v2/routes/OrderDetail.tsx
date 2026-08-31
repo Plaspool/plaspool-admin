@@ -197,7 +197,7 @@ export default function OrderDetail() {
    *  ship dialog, and the next-step deliver all report here, so the settled
    *  toast has exactly one wording and one trigger. */
   const parcelChanged = (settled: boolean) => {
-    if (settled) toast.show('Every parcel on its way — order fulfilled');
+    if (settled) toast.show('Every parcel is on its way — order complete');
     reload();
   };
 
@@ -223,7 +223,7 @@ export default function OrderDetail() {
   function nextStepItem(close: () => void) {
     switch (nextStep.kind) {
       case 'awaiting':
-        return <MenuItem onSelect={close}>Awaiting payment — nothing to run</MenuItem>;
+        return <MenuItem onSelect={close}>Waiting for payment — nothing to do yet</MenuItem>;
       case 'settled':
         return <MenuItem onSelect={close}>Nothing to do — this order is settled</MenuItem>;
       case 'fulfil':
@@ -235,7 +235,7 @@ export default function OrderDetail() {
               setModal('fulfil');
             }}
           >
-            Next step: Fulfil items…
+            Next step: Send out items…
           </MenuItem>
         );
       case 'ship':
@@ -278,7 +278,7 @@ export default function OrderDetail() {
           canFulfil ? (
             <Button tone="primary" size="lg" onClick={() => setModal('fulfil')}>
               <PackageCheck aria-hidden="true" />
-              Fulfil items
+              Send out items
             </Button>
           ) : undefined
         }
@@ -315,9 +315,9 @@ export default function OrderDetail() {
       />
 
       {order.status === 'pending' ? (
-        <Banner tone="warn" title="Awaiting payment">
-          The shopper reached checkout and the money has not landed. It confirms itself when
-          Paystack settles — nothing to do here yet.
+        <Banner tone="warn" title="Waiting for payment">
+          The customer reached checkout but the money hasn’t arrived yet. This updates on its own
+          once Paystack confirms. Nothing to do here yet.
         </Banner>
       ) : null}
 
@@ -332,7 +332,7 @@ export default function OrderDetail() {
               {canFulfil ? (
                 <Button onClick={() => setModal('fulfil')}>
                   <PackageCheck aria-hidden="true" />
-                  Fulfil items
+                  Send out items
                 </Button>
               ) : null}
             </div>
@@ -388,11 +388,11 @@ export default function OrderDetail() {
           </section>
 
           {/* ── fulfilments ───────────────────────────────────────────── */}
-          <Card title="Fulfilments">
+          <Card title="Parcels">
             {fulfillments.length === 0 ? (
               <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
                 Nothing packed yet.{' '}
-                {canFulfil ? 'Fulfil items to start a parcel.' : ''}
+                {canFulfil ? 'Send out some items to start a parcel.' : ''}
               </p>
             ) : (
               <div className="stack">
@@ -417,7 +417,7 @@ export default function OrderDetail() {
           <Card title="Emails">
             {emails.length === 0 ? (
               <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
-                No emails queued against this order.
+                No emails sent for this order yet.
               </p>
             ) : (
               <div className="stack stack--tight">
@@ -429,7 +429,7 @@ export default function OrderDetail() {
           </Card>
 
           {/* ── timeline ──────────────────────────────────────────────── */}
-          <Card title="Timeline">
+          <Card title="History">
             {timeline.length === 0 ? (
               <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
                 Nothing recorded yet.
@@ -486,7 +486,7 @@ export default function OrderDetail() {
               ]}
             />
             <span className="field__hint">
-              Frozen at checkout — these figures are the order’s record, never recomputed.
+              Saved at checkout. These are the amounts the customer agreed to, and they never change.
             </span>
             {payment ? (
               <div className="row" style={{ gap: 'var(--s2)', flexWrap: 'wrap' }}>
@@ -511,7 +511,7 @@ export default function OrderDetail() {
                 [
                   ['Placed', order.placedAt],
                   ['Paid', order.paidAt],
-                  ['Fulfilled', order.fulfilledAt],
+                  ['Sent out', order.fulfilledAt],
                   ['Delivered', order.deliveredAt],
                   ['Cancelled', order.cancelledAt],
                 ] as const
@@ -781,8 +781,8 @@ function ShipDialog({
         </div>
         <p className="muted" style={{ fontSize: 'var(--t-sm)', lineHeight: 1.5, margin: 0 }}>
           {mode === 'ship'
-            ? 'This goes into the shipping email the customer gets the moment you confirm.'
-            : 'Saved to the parcel now — the shipping email will carry whatever is here when it ships.'}
+            ? 'This goes into the shipping email the customer gets as soon as you confirm.'
+            : 'Saved to the parcel now. The shipping email will use whatever is here when it ships.'}
         </p>
         {error ? (
           <span className="field__error" role="alert">
@@ -827,7 +827,7 @@ function FulfilModal({
       if (n > 0) picked.push({ orderLineId: line.id, qty: n });
     }
     if (picked.length === 0) {
-      setError('Nothing selected — set at least one quantity.');
+      setError('Nothing selected. Enter at least one quantity.');
       return;
     }
     setBusy(true);
@@ -847,7 +847,7 @@ function FulfilModal({
 
   return (
     <Modal
-      title="Fulfil items"
+      title="Send out items"
       onClose={onClose}
       footer={
         <>
@@ -861,7 +861,7 @@ function FulfilModal({
     >
       <div className="stack">
         <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.5 }}>
-          A partial parcel is normal — what is left stays open for the next one.
+          Sending part of an order is normal. Whatever is left stays open for the next parcel.
         </p>
         {open.map((line) => (
           <div key={line.id} className="row" style={{ gap: 'var(--s3)', alignItems: 'center' }}>
@@ -974,8 +974,8 @@ function CancelModal({
     >
       <div className="stack">
         <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
-          Cancelling releases the reserved stock and stops this order ever shipping.
-          {paid ? ' The customer has paid, so decide what happens to the money now:' : ''}
+          Cancelling puts the stock back and stops this order ever shipping.
+          {paid ? ' The customer has paid, so choose what happens to the money:' : ''}
         </p>
         {paid ? (
           <div className="stack stack--tight">
@@ -988,7 +988,7 @@ function CancelModal({
             <Radio
               name="cancel-refund"
               label={`Refund 75% — ${money(Math.round(max * 0.75), currency)}`}
-              hint="Keeps a handling share."
+              hint="Keeps part of the money as a handling fee."
               checked={choice === 'threequarters'}
               onChange={() => setChoice('threequarters')}
             />
@@ -1015,7 +1015,7 @@ function CancelModal({
             <Radio
               name="cancel-refund"
               label="Cancel without refunding"
-              hint="A deliberate choice, recorded as one — not a default."
+              hint="Only pick this on purpose. It is recorded as your decision."
               checked={choice === 'none'}
               onChange={() => setChoice('none')}
             />
@@ -1092,7 +1092,7 @@ function RefundModal({
     >
       <div className="stack">
         <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.5 }}>
-          Money moves back through Paystack. The order stays as it is — refunding does not cancel
+          The money goes back through Paystack. The order itself stays as it is — a refund does not cancel
           it.
         </p>
         <AffixField
@@ -1111,7 +1111,7 @@ function RefundModal({
         <TextField
           label="Reason"
           value={reason}
-          placeholder="Optional — the customer sees nothing of this"
+          placeholder="Optional — the customer never sees this"
           onChange={(e) => setReason(e.target.value)}
         />
       </div>
@@ -1145,7 +1145,7 @@ function EmailRow({ mail }: { mail: ShopEmailIntent }) {
         ) : null}
       </div>
       <Badge tone={mail.sentAt ? 'ok' : stuck ? 'critical' : 'neutral'}>
-        {mail.sentAt ? 'Handed to mailer' : dismissed ? 'Dismissed' : stuck ? 'Won’t send' : 'Queued'}
+        {mail.sentAt ? 'Sent' : dismissed ? 'Dismissed' : stuck ? 'Won’t send' : 'Waiting to send'}
       </Badge>
     </div>
   );

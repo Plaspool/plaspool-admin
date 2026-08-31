@@ -72,7 +72,7 @@ export default function Marketing() {
      the redemption card — the numbers and the feed are a More-actions reveal,
      remembered for the session like every analytics bar. */
   const [barShown, toggleBar] = useAnalyticsBar('marketing');
-  const [activityShown, toggleActivity] = useRevealPanel('marketing-activity', 'Latest activity');
+  const [activityShown, toggleActivity] = useRevealPanel('marketing-activity', 'Points history');
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -123,7 +123,7 @@ export default function Marketing() {
           meta={
             <>
               <span className="mono">{p.key}</span>
-              {p.seeded ? ' · seeded preset' : ''}
+              {p.seeded ? ' · built in' : ''}
             </>
           }
         />
@@ -131,10 +131,10 @@ export default function Marketing() {
     },
     {
       key: 'kind',
-      header: 'Kind',
-      label: 'Kind',
+      header: 'Type',
+      label: 'Type',
       tight: true,
-      render: (p) => <Badge>{p.kind === 'unit_return' ? 'Unit return' : 'Ad hoc'}</Badge>,
+      render: (p) => <Badge>{p.kind === 'unit_return' ? 'Per item returned' : 'Manual points'}</Badge>,
     },
     {
       key: 'rate',
@@ -143,7 +143,7 @@ export default function Marketing() {
       render: (p) => {
         const labels = labelsOf(p);
         if (p.kind !== 'unit_return' || p.pointsPerUnit === null) {
-          return <span className="muted">Manual credits only</span>;
+          return <span className="muted">Manual points only</span>;
         }
         return (
           <span>
@@ -257,7 +257,7 @@ export default function Marketing() {
       <PageHeader
         icon={<Megaphone />}
         title="Marketing"
-        subtitle="The points programmes, what they pay, and what points are worth at checkout."
+        subtitle="Your points programmes, what they pay out, and what a point is worth at checkout."
         menu={(close) => (
           <>
             <AnalyticsMenuItem shown={barShown} onToggle={toggleBar} close={close} />
@@ -265,7 +265,7 @@ export default function Marketing() {
               shown={activityShown}
               onToggle={toggleActivity}
               close={close}
-              noun="latest activity"
+              noun="points history"
             />
           </>
         )}
@@ -300,21 +300,21 @@ export default function Marketing() {
               <EmptyState
                 icon={<BadgePercent />}
                 title="No programmes"
-                body="A programme names what customers earn and what a returned unit pays."
+                body="A programme sets what customers earn and what you pay for each item they send back."
               />
             }
             footer={null}
           />
 
           {activityShown ? (
-          <Card title="Latest activity">
+          <Card title="Points history">
             {latest === null ? (
               <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
-                The activity feed didn’t load — the ledger itself is unaffected.
+                The history didn’t load. Nobody’s points are affected.
               </p>
             ) : latest.length === 0 ? (
               <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
-                Nothing in the ledger yet — awards land here as returns are inspected.
+                No points given out yet. Awards show up here once you check returns.
               </p>
             ) : (
               <div className="stack stack--tight">
@@ -351,7 +351,7 @@ export default function Marketing() {
 
         <aside className="form2__side">
           <Card
-            title="Redemption"
+            title="Spending points"
             action={
               isOwner && settings ? (
                 <Button onClick={() => setSettingsOpen(true)}>Edit</Button>
@@ -386,7 +386,7 @@ export default function Marketing() {
                     },
                     { label: 'Minimum spend', value: `${settings.minRedeemPoints} ${words!.points.other}` },
                     {
-                      label: 'Cart cap',
+                      label: 'Order limit',
                       value: `${(settings.maxRedeemBps / 100).toFixed(settings.maxRedeemBps % 100 === 0 ? 0 : 2)}% of the order`,
                     },
                     {
@@ -399,17 +399,17 @@ export default function Marketing() {
                   ]}
                 />
                 <span className="field__hint">
-                  The rate every checkout redemption prices from. Points already held keep their
-                  count — a rate change moves what they buy.
+                  This is what points are worth at checkout. Changing it doesn’t change anyone’s
+                  points — only what those points can buy.
                 </span>
               </>
             )}
           </Card>
 
-          <Card title="Credit points">
+          <Card title="Add points by hand">
             <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.5 }}>
-              A manual ledger entry — a goodwill credit, or a debit with its reason. An unknown
-              email is a zero balance, not an error, so a walk-in is creditable.
+              Add or take away points yourself, with a reason. An email you don’t recognise
+              simply starts at zero, so you can credit a walk-in customer too.
             </p>
             {isOwner ? (
               <div>
@@ -419,7 +419,7 @@ export default function Marketing() {
                 </Button>
               </div>
             ) : (
-              <span className="field__hint">Owner-only.</span>
+              <span className="field__hint">Only the owner can do this.</span>
             )}
           </Card>
         </aside>
@@ -444,7 +444,7 @@ export default function Marketing() {
           onDone={(next) => {
             setSettingsOpen(false);
             setSettings(next);
-            toast.show('Redemption settings saved');
+            toast.show('Spending settings saved');
           }}
         />
       ) : null}
@@ -456,7 +456,7 @@ export default function Marketing() {
           onDone={(result) => {
             setCrediting(false);
             void load();
-            toast.show(`Done — balance is now ${result.balance}`);
+            toast.show(`Done — their balance is now ${result.balance}`);
           }}
         />
       ) : null}
@@ -495,7 +495,7 @@ function ProgramModal({
 
   async function commit() {
     if (!name.trim() || !pointsOne.trim() || !pointsMany.trim()) {
-      setError('Name and both points labels are required.');
+      setError('Fill in the name and both point words.');
       return;
     }
     const unit = kind === 'unit_return';
@@ -503,15 +503,15 @@ function ProgramModal({
     const nMin = Number(minUnits);
     if (unit) {
       if (!unitOne.trim() || !unitMany.trim()) {
-        setError('A unit-return programme needs its unit words — “spool”, “spools”.');
+        setError('Fill in both item words — for example “spool” and “spools”.');
         return;
       }
       if (!Number.isInteger(nPerUnit) || nPerUnit < 1) {
-        setError('Points per unit is a whole number of at least 1.');
+        setError('Points per item must be a whole number, 1 or more.');
         return;
       }
       if (!Number.isInteger(nMin) || nMin < 1) {
-        setError('Minimum units is a whole number of at least 1.');
+        setError('Fewest items must be a whole number, 1 or more.');
         return;
       }
     }
@@ -521,7 +521,7 @@ function ProgramModal({
       if (creating) {
         const machineKey = key.trim().toLowerCase();
         if (!/^[a-z0-9][a-z0-9_-]{2,31}$/.test(machineKey)) {
-          setError('The key is the immutable machine handle: 3–32 of a-z, 0-9, - or _.');
+          setError('The ID code needs 3–32 characters: lowercase letters, numbers, - or _.');
           setBusy(false);
           return;
         }
@@ -583,18 +583,18 @@ function ProgramModal({
       <div className="stack">
         {creating ? (
           <Segmented
-            label="Kind"
+            label="Type"
             value={kind}
             onChange={setKind}
             options={[
-              { value: 'unit_return', label: 'Unit return' },
-              { value: 'adhoc', label: 'Ad hoc' },
+              { value: 'unit_return', label: 'Per item returned' },
+              { value: 'adhoc', label: 'Manual points' },
             ]}
-            hint="Unit return pays per accepted unit; ad hoc is a bucket for manual credits."
+            hint="Per item returned pays points for each item you accept back. Manual points lets you add points yourself."
           />
         ) : (
           <span className="field__hint">
-            Kind and key never change — the ledger’s rows point at them.{' '}
+            The type and ID code can’t be changed. Customers’ past points are linked to them.{' '}
             <span className="mono">{program.key}</span>
           </span>
         )}
@@ -602,12 +602,12 @@ function ProgramModal({
           {creating ? (
             <div style={{ flex: 0.8 }}>
               <TextField
-                label="Key"
+                label="ID code"
                 value={key}
                 className="input mono"
                 placeholder="spool-return"
                 spellCheck={false}
-                hint="Immutable machine handle."
+                hint="You can’t change this later."
                 onChange={(e) => setKey(e.target.value)}
               />
             </div>
@@ -618,37 +618,37 @@ function ProgramModal({
         </div>
         <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
           <div style={{ flex: 1 }}>
-            <TextField label="Point, singular" value={pointsOne} onChange={(e) => setPointsOne(e.target.value)} />
+            <TextField label="Word for one point" value={pointsOne} onChange={(e) => setPointsOne(e.target.value)} />
           </div>
           <div style={{ flex: 1 }}>
-            <TextField label="Points, plural" value={pointsMany} onChange={(e) => setPointsMany(e.target.value)} />
+            <TextField label="Word for many points" value={pointsMany} onChange={(e) => setPointsMany(e.target.value)} />
           </div>
         </div>
         {kind === 'unit_return' ? (
           <>
             <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
               <div style={{ flex: 1 }}>
-                <TextField label="Unit, singular" value={unitOne} placeholder="spool" onChange={(e) => setUnitOne(e.target.value)} />
+                <TextField label="Word for one item" value={unitOne} placeholder="spool" onChange={(e) => setUnitOne(e.target.value)} />
               </div>
               <div style={{ flex: 1 }}>
-                <TextField label="Units, plural" value={unitMany} placeholder="spools" onChange={(e) => setUnitMany(e.target.value)} />
+                <TextField label="Word for many items" value={unitMany} placeholder="spools" onChange={(e) => setUnitMany(e.target.value)} />
               </div>
             </div>
             <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
               <div style={{ flex: 1 }}>
                 <TextField
-                  label="Points per unit"
+                  label="Points per item"
                   type="number"
                   min={1}
                   step={1}
                   value={perUnit}
-                  hint="Snapshotted onto every request — a change never restates old cards."
+                  hint="Saved onto each return as it comes in. Changing this won’t change older returns."
                   onChange={(e) => setPerUnit(e.target.value)}
                 />
               </div>
               <div style={{ flex: 1 }}>
                 <TextField
-                  label="Minimum units per return"
+                  label="Fewest items per return"
                   type="number"
                   min={1}
                   step={1}
@@ -701,23 +701,23 @@ function SettingsModal({
     const nMin = Number(minPoints);
     const pct = Number(capPercent);
     if (!Number.isInteger(nRatePoints) || nRatePoints < 1) {
-      setError('The points side of the rate is a whole number of at least 1.');
+      setError('The number of points must be a whole number, 1 or more.');
       return;
     }
     if (!Number.isFinite(nRateMinor) || nRateMinor < 1) {
-      setError('The money side of the rate has to be a positive amount.');
+      setError('The money amount must be more than zero.');
       return;
     }
     if (!Number.isInteger(nMin) || nMin < 0) {
-      setError('Minimum spend is a whole number of points.');
+      setError('Minimum spend must be a whole number of points.');
       return;
     }
     if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
-      setError('The cart cap is a percentage between 0 and 100.');
+      setError('The order limit must be a percentage between 0 and 100.');
       return;
     }
     if (!labelOne.trim() || !labelMany.trim()) {
-      setError('Both points words are required — balances render with them.');
+      setError('Fill in both point words. Balances are shown using them.');
       return;
     }
     setBusy(true);
@@ -737,7 +737,7 @@ function SettingsModal({
       onDone(next);
     } catch (cause) {
       if (cause instanceof ApiError && cause.detail === 'defaultReturnProgramId') {
-        setError('That programme is gone — pick another default.');
+        setError('That programme no longer exists. Pick another one.');
       } else {
         setError(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
       }
@@ -747,7 +747,7 @@ function SettingsModal({
 
   return (
     <Modal
-      title="Redemption settings"
+      title="How points are spent"
       onClose={onClose}
       footer={
         <>
@@ -761,14 +761,14 @@ function SettingsModal({
       <div className="stack">
         <Checkbox
           label="Points can be spent at checkout"
-          hint="Off keeps earning on while spending waits."
+          hint="Turning this off stops spending. Customers still earn."
           checked={enabled}
           onChange={setEnabled}
         />
         <div className="row" style={{ alignItems: 'flex-end', gap: 'var(--s3)' }}>
           <div style={{ flex: 1 }}>
             <TextField
-              label="Rate — points"
+              label="How many points"
               type="number"
               min={1}
               step={1}
@@ -784,7 +784,7 @@ function SettingsModal({
           </span>
           <div style={{ flex: 1 }}>
             <AffixField
-              label="Rate — money"
+              label="How much money"
               prefix={settings.redemptionCurrency}
               inputMode="decimal"
               value={rateMajor}
@@ -808,27 +808,27 @@ function SettingsModal({
           </div>
           <div style={{ flex: 1 }}>
             <AffixField
-              label="Cart cap"
+              label="Order limit"
               suffix="%"
               inputMode="decimal"
               value={capPercent}
-              hint="The share of an order points may pay."
+              hint="The most of an order that points can pay for."
               onChange={(e) => setCapPercent(e.target.value)}
             />
           </div>
         </div>
         <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
           <div style={{ flex: 1 }}>
-            <TextField label="Point, singular" value={labelOne} onChange={(e) => setLabelOne(e.target.value)} />
+            <TextField label="Word for one point" value={labelOne} onChange={(e) => setLabelOne(e.target.value)} />
           </div>
           <div style={{ flex: 1 }}>
-            <TextField label="Points, plural" value={labelMany} onChange={(e) => setLabelMany(e.target.value)} />
+            <TextField label="Word for many points" value={labelMany} onChange={(e) => setLabelMany(e.target.value)} />
           </div>
         </div>
         <SelectField
           label="Default returns programme"
           value={defaultProgram}
-          hint="What a new return lands on when nothing names one."
+          hint="New returns use this programme unless you pick another."
           onChange={(e) => setDefaultProgram(e.target.value)}
         >
           <option value="">None</option>
@@ -879,15 +879,15 @@ function CreditModal({
     const addr = email.trim().toLowerCase();
     const n = Number(delta);
     if (!addr.includes('@')) {
-      setError('The customer’s email is the ledger’s identity.');
+      setError('Enter the customer’s email address.');
       return;
     }
     if (!Number.isInteger(n) || n === 0) {
-      setError('A whole number of points — negative debits, and zero is nothing.');
+      setError('Enter a whole number of points. Use a minus sign to take points away.');
       return;
     }
     if (!reason.trim()) {
-      setError('The reason is stored verbatim, forever — it is required.');
+      setError('Enter a reason. It is saved permanently.');
       return;
     }
     setBusy(true);
@@ -902,7 +902,7 @@ function CreditModal({
       onDone(result);
     } catch (cause) {
       if (cause instanceof ApiError && cause.code === 'insufficient_balance') {
-        setError('That debit would take the balance below zero — the ledger refuses it.');
+        setError('That would take their balance below zero.');
       } else {
         setError(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
       }
@@ -912,14 +912,14 @@ function CreditModal({
 
   return (
     <Modal
-      title="Credit points"
+      title="Add points by hand"
       onClose={onClose}
       footer={
         <>
           <Button onClick={onClose}>Cancel</Button>
           <Button tone="primary" busy={busy} onClick={() => void commit()}>
             <Coins aria-hidden="true" />
-            Write the entry
+            Save entry
           </Button>
         </>
       }
@@ -932,8 +932,8 @@ function CreditModal({
           autoFocus
           hint={
             lookup
-              ? `Balance: ${lookup.balance} · lifetime ${lookup.lifetimeEarned}${lookup.displayName ? ` · ${lookup.displayName}` : ''}`
-              : 'An unknown email is a zero balance, not an error.'
+              ? `Balance: ${lookup.balance} · earned in total ${lookup.lifetimeEarned}${lookup.displayName ? ` · ${lookup.displayName}` : ''}`
+              : 'An email you don’t recognise simply starts at zero.'
           }
           onChange={(e) => {
             setEmail(e.target.value);

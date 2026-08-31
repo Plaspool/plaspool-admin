@@ -235,7 +235,7 @@ describe('the featured rail', () => {
     // server's items in the server's rank order, and says what happened.
     await waitFor(() => expect(railTitles()).toEqual([third.title, first.title]));
     expect(
-      await screen.findByText('The rail changed somewhere else — showing the latest order'),
+      await screen.findByText('The featured posts changed somewhere else — showing the latest order'),
     ).toBeTruthy();
 
     // And that adoption was the WHOLE recovery: no second PUT went out, and
@@ -271,7 +271,7 @@ describe('the featured rail', () => {
      * the four posts the payload named, and never an error about a rule the
      * operator could not see.
      */
-    const full = await screen.findByRole('dialog', { name: 'The rail is full' });
+    const full = await screen.findByRole('dialog', { name: 'No room for another' });
     for (const on of rail) {
       expect(within(full).getByText(on.title)).toBeTruthy();
     }
@@ -292,6 +292,6 @@ describe('the featured rail', () => {
     await waitFor(() =>
       expect(railTitles()).toEqual([first.title, candidate.title, third.title, fourth.title]),
     );
-    expect(screen.queryByText('The rail is full')).toBeNull();
+    expect(screen.queryByText('No room for another')).toBeNull();
   });
 });

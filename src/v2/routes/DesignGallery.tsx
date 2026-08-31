@@ -74,7 +74,7 @@ const COLUMNS: Column<SampleRow>[] = [
     ),
   },
   { key: 'status', header: 'Status', label: 'Status', tight: true, render: (r) => <Badge tone={r.status}>{r.statusLabel}</Badge> },
-  { key: 'qty', header: 'On hand', label: 'On hand', numeric: true, render: (r) => r.qty },
+  { key: 'qty', header: 'In stock', label: 'In stock', numeric: true, render: (r) => r.qty },
   { key: 'total', header: 'Price', label: 'Price', numeric: true, render: (r) => <strong className="num">{r.total}</strong> },
 ];
 
@@ -416,10 +416,10 @@ export default function DesignGallery() {
           range="Today"
           metrics={[
             { label: 'Orders', value: '32', delta: '+8%', series: [4, 6, 5, 9, 7, 12, 14] },
-            { label: 'Net revenue', value: '₦156,450.00', series: [20, 24, 18, 30, 28, 41, 46] },
+            { label: 'Sales after refunds', value: '₦156,450.00', series: [20, 24, 18, 30, 28, 41, 46] },
             { label: 'Items ordered', value: '61', series: [8, 9, 12, 10, 16, 15, 21] },
             { label: 'Sales reversals', value: '₦0.00' },
-            { label: 'Fulfilled', value: '27', series: [3, 5, 5, 8, 7, 11, 13] },
+            { label: 'Sent out', value: '27', series: [3, 5, 5, 8, 7, 11, 13] },
           ]}
         />
 
@@ -784,7 +784,7 @@ export default function DesignGallery() {
                 {
                   id: '1',
                   tone: 'ok',
-                  message: 'Fulfilment marked delivered',
+                  message: 'Parcel marked delivered',
                   meta: '21 Aug, 14:02 · admin',
                 },
                 {

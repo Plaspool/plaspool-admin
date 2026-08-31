@@ -62,7 +62,7 @@ export default function Home() {
         series: rev ? [rev.last30d / 30, rev.last7d / 7, rev.last24h] : undefined,
       },
       { label: 'Orders all time', value: String(orderCount) },
-      { label: 'Awaiting payment', value: String(pending) },
+      { label: 'Waiting for payment', value: String(pending) },
       { label: 'Paid', value: String(paid) },
       { label: 'Low stock', value: `${data.lowStock.length}${data.lowStockMore ? '+' : ''}` },
     ];
@@ -100,7 +100,7 @@ export default function Home() {
           title={`${stuck} email${stuck === 1 ? '' : 's'} will never send`}
           action={<ButtonLink to="/emails/outbox">Open the outbox</ButtonLink>}
         >
-          These are out of retry attempts. Retry or dismiss them from the outbox.
+          These have stopped trying to send. Retry or dismiss them under Sent emails.
         </Banner>
       ) : null}
 
@@ -113,7 +113,7 @@ export default function Home() {
           <span className="bento__kicker">Orders</span>
           <span className="bento__title">Work through orders</span>
           <span className="bento__body">
-            Fulfil what is paid for, chase what is not, and refund what came back.
+            Send out what has been paid for, chase what hasn’t, and refund what came back.
           </span>
           <span className="bento__go" aria-hidden="true">
             <ArrowRight />
@@ -127,7 +127,7 @@ export default function Home() {
           <span className="bento__kicker">Discounts</span>
           <span className="bento__title">Set up a discount</span>
           <span className="bento__body">
-            A code a customer types at checkout — a percentage or a flat amount off.
+            A code customers type at checkout, for a percentage or a fixed amount off.
           </span>
           <span className="bento__go" aria-hidden="true">
             <ArrowRight />
@@ -172,7 +172,7 @@ export default function Home() {
             <span className="bento__kicker">Content</span>
             <span className="bento__title">Write for the blog</span>
             <span className="bento__body">
-              The publication side of the shop — drafts, published posts and word counts.
+              The writing side of the shop: drafts, published posts and word counts.
             </span>
           </span>
           <span className="bento__art">

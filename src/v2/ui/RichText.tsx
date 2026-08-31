@@ -253,7 +253,7 @@ export function RichText({
     }
     const href = /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : `https://${raw}`;
     if (!isAllowedHref(href)) {
-      setLinkError('That kind of link is not allowed here.');
+      setLinkError('That kind of link isn’t allowed here.');
       return;
     }
     editor.chain().focus().extendMarkRange('link').setLink({ href }).run();
@@ -403,8 +403,8 @@ export function RichText({
           style={{ padding: 'var(--s2) var(--s4)', borderTop: '1px solid var(--border-sub)' }}
           role="status"
         >
-          Part of this description uses blocks v2 cannot edit yet, so editing is locked here to
-          protect it. The current admin still edits it fully.
+          Part of this description uses formatting this editor can’t handle yet, so editing is locked
+          to keep it safe. You can still edit it in the advanced editor.
         </div>
       ) : null}
     </div>

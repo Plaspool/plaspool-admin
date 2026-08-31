@@ -219,7 +219,7 @@ export default function DeliveryAreas() {
       <PageHeader
         icon={<Truck />}
         title="Delivery areas"
-        subtitle="Per-district rates over the state zones."
+        subtitle="Charge a different delivery price for particular districts."
         actions={
           groups.length > 0 && region ? (
             <SearchSelect
@@ -239,10 +239,10 @@ export default function DeliveryAreas() {
         }
       />
 
-      <Banner tone="info" title="How these rows price delivery">
-        Checkout prices by the district the customer picks: a rate here replaces the state’s zone
-        price, and a switched-off district is refused at checkout. Customers who don’t pick one pay
-        the state’s zone rate.
+      <Banner tone="info" title="How these prices work">
+        Checkout uses the district the customer picks. A price set here replaces the state’s usual
+        price, and a district you switch off can’t be ordered to at all. Customers who don’t pick a district pay
+        the state’s usual price.
       </Banner>
 
       {loadError ? (
@@ -302,7 +302,7 @@ export default function DeliveryAreas() {
             <EmptyState
               icon={<MapPin />}
               title="No districts yet"
-              body="Districts are managed on the returns side — the delivery board shares them."
+              body="Districts are set up under Returns, and shared with delivery."
             />
           )
         }
@@ -310,8 +310,8 @@ export default function DeliveryAreas() {
       />
 
       <p className="page__learn">
-        No override means the district ships at its state zone’s rate. An override never means
-        free — clearing it returns to the zone.
+        A district with no price of its own uses the state’s usual price. Setting one never means
+        free delivery — clearing it goes back to the state price.
       </p>
     </div>
   );
@@ -416,7 +416,7 @@ function RateCell({
           <PopEditFoot>
             {override !== null ? (
               <Button tone="plain" busy={busy} onClick={() => void clear(close)}>
-                Clear override
+                Use the state price
               </Button>
             ) : null}
             <span className="spacer" />

@@ -253,7 +253,7 @@ const refundBodies = (): Record<string, unknown>[] =>
     .filter((c) => c.path.split('?')[0] === REFUNDS && c.init.method === 'POST')
     .map((c) => JSON.parse(String(c.init.body)) as Record<string, unknown>);
 
-const SETTLED_TOAST = 'Every parcel on its way — order fulfilled';
+const SETTLED_TOAST = 'Every parcel is on its way — order complete';
 
 // ============================================================================
 
@@ -470,7 +470,7 @@ describe('the order detail screen', () => {
 // ============================================================================
 
 describe('the next-step menu item', () => {
-  it('names "Fulfil items…" for a paid order with an unfulfilled remainder, and opens the modal', async () => {
+  it('names "Send out items…" for a paid order with items left to send, and opens the modal', async () => {
     const user = userEvent.setup();
     withOrder(); // paid, qty 2 of which 0 fulfilled — the remainder decides.
     mount();
@@ -478,10 +478,10 @@ describe('the next-step menu item', () => {
 
     await user.click(screen.getByRole('button', { name: 'More actions' }));
     await user.click(
-      await screen.findByRole('menuitem', { name: 'Next step: Fulfil items…' }),
+      await screen.findByRole('menuitem', { name: 'Next step: Send out items…' }),
     );
 
-    expect(await screen.findByRole('dialog', { name: 'Fulfil items' })).toBeTruthy();
+    expect(await screen.findByRole('dialog', { name: 'Send out items' })).toBeTruthy();
   });
 
   it('names "Mark Parcel 1 shipped…" once the remainder is packed, and the dialog ships it', async () => {
@@ -548,7 +548,7 @@ describe('the next-step menu item', () => {
     expect(screen.queryByText(SETTLED_TOAST)).toBeNull();
   });
 
-  it('says "Awaiting payment — nothing to run" on a pending order', async () => {
+  it('says "Waiting for payment — nothing to do yet" on a pending order', async () => {
     const user = userEvent.setup();
     when(ORDER, {
       order: { ...order, status: 'pending', paidAt: null },
@@ -563,7 +563,7 @@ describe('the next-step menu item', () => {
 
     await user.click(screen.getByRole('button', { name: 'More actions' }));
     expect(
-      await screen.findByRole('menuitem', { name: 'Awaiting payment — nothing to run' }),
+      await screen.findByRole('menuitem', { name: 'Waiting for payment — nothing to do yet' }),
     ).toBeTruthy();
   });
 });

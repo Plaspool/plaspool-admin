@@ -195,7 +195,7 @@ export default function Discounts() {
       <PageHeader
         icon={<TicketPercent />}
         title="Discounts"
-        subtitle="Codes a customer types at checkout."
+        subtitle="Codes customers type in at checkout."
         actions={
           <Button tone="primary" size="lg" onClick={() => setPicking(true)}>
             Create discount
@@ -226,7 +226,7 @@ export default function Discounts() {
               icon={all.length === 0 ? undefined : <TicketPercent />}
               art={all.length === 0 ? <CouponArt /> : undefined}
               title={
-                all.length === 0 ? 'Manage discounts and promotions' : 'No codes match that filter'
+                all.length === 0 ? 'No discount codes yet' : 'No codes match that filter'
               }
               body={
                 all.length === 0

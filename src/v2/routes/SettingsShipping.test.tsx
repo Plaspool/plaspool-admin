@@ -225,18 +225,18 @@ describe('the zones screen', () => {
 
     const modal = await screen.findByRole('dialog', { name: 'Edit Everywhere else' });
     const flag = within(modal).getByRole('checkbox', {
-      name: /Fallback zone/,
+      name: /Catch-all zone/,
     }) as HTMLInputElement;
     expect(flag.checked).toBe(true);
     // The hint says WHY the press will not take, before it is tried.
     expect(modal.textContent).toContain(
-      'This is the only fallback — every store needs exactly one, so the flag stays on.',
+      'This is your only catch-all zone. Every store needs exactly one, so it can’t be turned off.',
     );
 
     // The press bounces off the pin, not off a 409 later.
     await user.click(flag);
     expect(
-      (within(modal).getByRole('checkbox', { name: /Fallback zone/ }) as HTMLInputElement).checked,
+      (within(modal).getByRole('checkbox', { name: /Catch-all zone/ }) as HTMLInputElement).checked,
     ).toBe(true);
 
     await user.click(within(modal).getByRole('button', { name: 'Save zone' }));

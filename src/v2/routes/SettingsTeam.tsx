@@ -86,8 +86,8 @@ function AdminOnly() {
       <div className="card">
         <EmptyState
           icon={<Lock />}
-          title="Owner and developer surface"
-          body="Accounts, roles and invites are managed by the owner and the developers. Ask one of them if the team needs changing."
+          title="Only the owner and developers can change this"
+          body="Only the owner and developers can add people or change what they can do. Ask one of them if the team needs changing."
         />
       </div>
     </div>
@@ -179,7 +179,7 @@ export default function SettingsTeam() {
   async function enable(u: TeamUser) {
     try {
       await teamApi.enableUser(u.id);
-      toast.show(`${who(u)} can sign in again — the sessions ended on disable stay gone`);
+      toast.show(`${who(u)} can sign in again — they will need to sign in fresh`);
       void load();
     } catch (cause) {
       plainToast(cause);
@@ -365,15 +365,15 @@ export default function SettingsTeam() {
           <EmptyState
             icon={<Users />}
             title="Nobody here yet"
-            body="An invite is the only door into this admin — mint one and the account exists when it is accepted."
+            body="An invite is the only way in. Create one, and the account exists as soon as they accept it."
           />
         }
         footer={null}
       />
 
       <p className="page__learn">
-        Disabling an account destroys every session it holds, on the spot. Enabling it later
-        restores the ability to sign in — the destroyed sessions do not come back.
+        Disabling an account signs that person out everywhere immediately. Enabling it later
+        lets them sign in again, but they will have to sign in fresh.
       </p>
 
       <Card title="Invites">
@@ -384,8 +384,8 @@ export default function SettingsTeam() {
           </div>
         ) : (invites ?? []).length === 0 ? (
           <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.5, margin: 0 }}>
-            Nobody is waiting on an invite. “Invite member” mints a link that can go by mail or by
-            hand — it is the only way a new person ever gets in.
+            Nobody is waiting on an invite. “Invite member” creates a link you can email or hand
+            over. It is the only way a new person can get in.
           </p>
         ) : (
           (invites ?? []).map((inv) => (
@@ -413,7 +413,7 @@ export default function SettingsTeam() {
       {/* ═══ WHAT EACH ROLE ENTAILS ═══ The owner's explicit ask: the words on
           this card are `ROLE_INFO` itself — the same table the server enforces
           — so the description and the permission cannot drift apart. */}
-      <Card title="What each role entails">
+      <Card title="What each role can do">
         {ALL_ROLES.map((role, index) => {
           const info = ROLE_INFO[role];
           return (
@@ -472,8 +472,8 @@ export default function SettingsTeam() {
           }
         >
           <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
-            They are signed out everywhere the moment you confirm — every session the account
-            holds is destroyed — and they cannot sign in again until somebody re-enables it.
+            They are signed out everywhere the moment you confirm, on every device they use,
+            and they can’t sign in again until somebody re-enables the account.
             Their posts and history stay.
           </p>
         </Modal>
@@ -628,7 +628,7 @@ function InviteModal({
   async function commit() {
     const address = email.trim();
     if (!EMAILISH.test(address)) {
-      setError('That does not look like an email address.');
+      setError('That doesn’t look like an email address.');
       return;
     }
     setBusy(true);
@@ -657,7 +657,7 @@ function InviteModal({
       await navigator.clipboard.writeText(url);
       toast.show('Invite link copied');
     } catch {
-      toast.show('Copy failed — select the link and copy it yourself', 'critical');
+      toast.show('Couldn’t copy — select the link and copy it yourself', 'critical');
     }
   }
 
@@ -691,7 +691,7 @@ function InviteModal({
             <span className="muted" style={{ fontSize: 'var(--t-sm)' }}>
               {minted.emailed
                 ? `Emailed to ${minted.invite.email} ✓`
-                : 'The email didn’t go — send them this link.'}
+                : 'The email didn’t send. Give them this link instead.'}
             </span>
           </div>
         </div>

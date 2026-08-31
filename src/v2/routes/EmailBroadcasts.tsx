@@ -41,12 +41,12 @@ const STATUS_TONE: Record<BroadcastStatus, BadgeTone> = {
 function MarketingOnly() {
   return (
     <div className="page">
-      <PageHeader icon={<Send />} title="Broadcasts" />
+      <PageHeader icon={<Send />} title="Newsletters" />
       <div className="card">
         <EmptyState
           icon={<Lock />}
-          title="A marketing surface"
-          body="Everything on the email side — templates, subscribers, broadcasts — belongs to the marketing role and the admins."
+          title="This is a marketing screen"
+          body="Everything to do with email — templates, subscribers and newsletters — is handled by the marketing team and admins."
         />
       </div>
     </div>
@@ -118,7 +118,7 @@ export default function EmailBroadcasts() {
   const columns: Column<EmailBroadcast>[] = [
     {
       key: 'broadcast',
-      header: 'Broadcast',
+      header: 'Newsletter',
       primary: true,
       render: (b) => (
         <IdCell
@@ -194,7 +194,7 @@ export default function EmailBroadcasts() {
                     void drain(b);
                   }}
                 >
-                  Continue sending now
+                  Send the next batch now
                 </MenuItem>
               ) : null}
               {b.status === 'draft' ? (
@@ -233,28 +233,28 @@ export default function EmailBroadcasts() {
     <div className="page">
       <PageHeader
         icon={<Send />}
-        title="Broadcasts"
+        title="Newsletters"
         subtitle={
           audience
             ? `${audience.subscribed} would receive the next one · ${audience.suppressed} unsubscribed`
-            : 'A broadcast snapshots its template — editing the template later rewrites nothing already sent.'
+            : 'A newsletter copies the template when you create it. Editing the template later won’t change anything already sent.'
         }
         actions={
           <Button tone="primary" size="lg" onClick={() => setCreating(true)}>
             <Plus aria-hidden="true" />
-            New broadcast
+            New newsletter
           </Button>
         }
       />
 
       {loadError ? (
-        <Banner tone="critical" title="Couldn’t load broadcasts" action={<Button onClick={() => void load()}>Retry</Button>}>
+        <Banner tone="critical" title="Couldn’t load newsletters" action={<Button onClick={() => void load()}>Retry</Button>}>
           {loadError}
         </Banner>
       ) : null}
 
       <DataTable
-        caption="Broadcasts"
+        caption="Newsletters"
         columns={columns}
         rows={broadcasts ?? []}
         rowKey={(b) => b.id}
@@ -262,16 +262,16 @@ export default function EmailBroadcasts() {
         empty={
           <EmptyState
             icon={<Send />}
-            title="Nothing broadcast yet"
-            body="Create one from a template — it lands as a draft with a real recipient count, and sends only when you confirm."
+            title="No newsletters yet"
+            body="Create one from a template. It starts as a draft showing how many people it will reach, and only sends when you confirm."
           />
         }
         footer={null}
       />
 
       <p className="page__learn">
-        A started broadcast drains with the daily sweep; “Continue sending now” pushes the next
-        batch without waiting.
+        A newsletter that has started sends a batch at a time, once a day. “Send the next batch now” sends the next
+        batch straight away.
       </p>
 
       {creating ? (
@@ -324,7 +324,7 @@ export default function EmailBroadcasts() {
         >
           <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
             <strong>“{confirmDelete.subject}”</strong> has been sent to nobody — deleting it
-            removes the snapshot for good. Broadcasts that have started sending keep their
+            removes that copy for good. Newsletters that have started sending keep their
             record and cannot be deleted.
           </p>
         </Modal>
@@ -362,7 +362,7 @@ export default function EmailBroadcasts() {
                 }}
               >
                 <Send aria-hidden="true" />
-                Send broadcast
+                Send newsletter
               </Button>
             </>
           }
@@ -414,11 +414,11 @@ function NewBroadcastModal({
   }
 
   return (
-    <Modal title="New broadcast" onClose={onClose} flush wide>
+    <Modal title="New newsletter" onClose={onClose} flush wide>
       <div style={{ padding: 'var(--s2) var(--s5) var(--s3)' }}>
         <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.5 }}>
-          Pick the template to snapshot. Creating sends nothing — the draft shows its real
-          recipient count first.
+          Pick a template to copy. Creating it sends nothing — the draft first shows how many
+          people it will reach.
         </p>
       </div>
       {templates === null ? (
@@ -439,7 +439,7 @@ function NewBroadcastModal({
               type="button"
               className="pick"
               disabled={blocked || busy !== null}
-              title={blocked ? 'Needs {{unsubscribe_url}} in both bodies before it can broadcast' : undefined}
+              title={blocked ? 'Both versions need an unsubscribe link before this can be sent' : undefined}
               style={blocked ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
               onClick={() => void pick(t)}
             >

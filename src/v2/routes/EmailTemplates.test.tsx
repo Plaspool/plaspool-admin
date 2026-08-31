@@ -291,7 +291,7 @@ describe('the email templates screen', () => {
 
     await user.click(screen.getByText(spaced.name));
     await screen.findByRole('dialog');
-    expect(screen.queryByText('Not broadcastable yet')).toBeNull();
+    expect(screen.queryByText('Can’t be used for a newsletter yet')).toBeNull();
 
     // Deciding this needed no server: one list read, no writes.
     expect(writes()).toHaveLength(0);
@@ -307,7 +307,7 @@ describe('the email templates screen', () => {
     await screen.findByRole('dialog');
 
     // Both bodies carry the link, so the editor opens quiet.
-    expect(screen.queryByText('Not broadcastable yet')).toBeNull();
+    expect(screen.queryByText('Can’t be used for a newsletter yet')).toBeNull();
 
     /*
      * Empty the PLAIN-TEXT body while the HTML part keeps its link. One body
@@ -317,11 +317,11 @@ describe('the email templates screen', () => {
      */
     const text = screen.getByLabelText('Plain-text body');
     await user.clear(text);
-    expect(await screen.findByText('Not broadcastable yet')).toBeTruthy();
+    expect(await screen.findByText('Can’t be used for a newsletter yet')).toBeTruthy();
 
     await user.click(text);
     await user.paste(`Hello again.\nUnsubscribe: ${UNSUB}`);
-    await waitFor(() => expect(screen.queryByText('Not broadcastable yet')).toBeNull());
+    await waitFor(() => expect(screen.queryByText('Can’t be used for a newsletter yet')).toBeNull());
 
     // The whole exchange was client-side: one list read, zero writes.
     expect(writes()).toHaveLength(0);
@@ -341,7 +341,7 @@ describe('the email templates screen', () => {
     await user.click(await screen.findByText('Order confirmation'));
     const sysDialog = await screen.findByRole('dialog');
     expect(within(sysDialog).getByText('Step 2 — payment confirmed')).toBeTruthy();
-    expect(screen.queryByText('Not broadcastable yet')).toBeNull();
+    expect(screen.queryByText('Can’t be used for a newsletter yet')).toBeNull();
     await user.click(within(sysDialog).getByRole('button', { name: 'Cancel' }));
 
     /*
@@ -351,6 +351,6 @@ describe('the email templates screen', () => {
      */
     await user.click(screen.getByText('Welcome'));
     await screen.findByRole('dialog');
-    expect(await screen.findByText('Not broadcastable yet')).toBeTruthy();
+    expect(await screen.findByText('Can’t be used for a newsletter yet')).toBeTruthy();
   });
 });

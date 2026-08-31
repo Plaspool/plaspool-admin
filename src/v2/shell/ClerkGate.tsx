@@ -66,8 +66,8 @@ function Exchange({ onBack }: { onBack: () => void }) {
       <div className="signin__card stack">
         <h1 className="signin__title">Not on the team yet</h1>
         <p className="signin__lede">
-          That Google account verified fine, but it isn’t on this store’s team list. Accounts
-          exist by invitation only — ask an owner or developer to invite this address, then try
+          That Google account signed in fine, but it isn’t on this store’s team. Accounts
+          are by invitation only, so ask an owner or developer to invite this address, then try
           again.
         </p>
         <Button
@@ -91,8 +91,8 @@ function Exchange({ onBack }: { onBack: () => void }) {
       <div className="signin__card stack">
         <h1 className="signin__title">That didn’t go through</h1>
         <p className="signin__lede">
-          Signing in with Google worked, but trading it for an admin session failed. Try again,
-          or use the password sign-in.
+          Google signed you in, but this admin couldn’t finish setting up your session. Try again,
+          or sign in with your password instead.
         </p>
         <Button
           tone="primary"

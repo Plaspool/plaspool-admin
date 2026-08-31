@@ -64,8 +64,8 @@ export default function AnalyticsProducts() {
         <div className="card">
           <EmptyState
             icon={<Lock />}
-            title="Not your surface"
-            body="Analytics is for the owner, developers, and the operations and marketing roles."
+            title="You don’t have access to this"
+            body="Analytics is for the owner, developers, and the operations and marketing teams."
           />
         </div>
       </div>
@@ -97,16 +97,16 @@ export default function AnalyticsProducts() {
     },
     {
       key: 'gross',
-      header: 'Gross revenue',
-      label: 'Gross revenue',
+      header: 'Total sales',
+      label: 'Total sales',
       numeric: true,
       mobile: 'keep',
       render: (r) => <strong className="num">{money(r.gross, ANALYTICS_CURRENCY)}</strong>,
     },
     {
       key: 'share',
-      header: 'Share of gross',
-      label: 'Share of gross',
+      header: 'Share of sales',
+      label: 'Share of sales',
       numeric: true,
       /* Of the range's summed gross, one decimal. Guarded: a window with rows
          but zero gross (free items) must not print NaN%. */
@@ -155,15 +155,15 @@ export default function AnalyticsProducts() {
             <EmptyState
               icon={<Package />}
               title="Nothing sold in this window yet"
-              body="Products rank here by gross line revenue the moment a paid order lands."
+              body="Products appear here, ranked by sales, as soon as a paid order comes in."
             />
           }
           footer={
             rows.length > 0 ? (
               <div className="tfoot">
                 <span>
-                  Gross line revenue over paid orders in the window — refunds are order-level and
-                  netted on the Analytics page, not per product.
+                  Total sales from paid orders in this period, before refunds. Refunds apply to whole
+                  orders, so they are shown on the Analytics page rather than per product.
                 </span>
               </div>
             ) : null

@@ -119,7 +119,7 @@ export default function Banners() {
       adopt(next);
       toast.show(
         status === 'live'
-          ? `“${banner.title}” is on — the clock decides when it shows`
+          ? `“${banner.title}” is on — its dates decide when it shows`
           : status === 'draft'
             ? `“${banner.title}” back to draft`
             : `“${banner.title}” archived`,
@@ -185,7 +185,7 @@ export default function Banners() {
       <PageHeader
         icon={<LayoutTemplate />}
         title="Banners"
-        subtitle="Promotional strips on the storefront — the clock decides what actually shows."
+        subtitle="Promotional strips in your shop. Their dates decide which ones actually appear."
         actions={
           <Button tone="primary" size="lg" onClick={() => setEditing('new')}>
             <Plus aria-hidden="true" />
@@ -220,7 +220,7 @@ export default function Banners() {
             <EmptyState
               icon={<Megaphone />}
               title="No banners yet"
-              body="A banner is a strip at the top of the storefront, a popup, or a section — with an optional schedule."
+              body="A banner is a strip at the top of your shop, a popup, or a section. You can set dates for it, or leave it running."
               actions={
                 <Button tone="primary" onClick={() => setEditing('new')}>
                   <Plus aria-hidden="true" />
@@ -355,24 +355,24 @@ function BannerModal({
   async function commit() {
     setError(null);
     if (!title.trim()) {
-      setError('A banner needs a title.');
+      setError('Give the banner a title.');
       return;
     }
     const hasText = ctaText.trim() !== '';
     const hasUrl = ctaUrl.trim() !== '';
     if (hasText !== hasUrl) {
-      setError('A call to action needs both its words and its link — or neither.');
+      setError('A button needs both its text and its link. Fill in both, or leave both empty.');
       return;
     }
     const startMs = parseWhen(startsAt);
     const endMs = parseWhen(endsAt);
     if (startMs !== null && endMs !== null && endMs <= startMs) {
-      setError('The end has to come after the start.');
+      setError('The end date must come after the start date.');
       return;
     }
     const prio = Number(priority);
     if (!Number.isInteger(prio) || prio < 0) {
-      setError('Priority is a whole number of zero or more — higher shows first.');
+      setError('Order must be a whole number, zero or more. A higher number shows first.');
       return;
     }
 
@@ -427,7 +427,7 @@ function BannerModal({
           label="Body"
           rows={2}
           value={body}
-          hint="One sentence — a banner is a strip, not a page."
+          hint="Keep it to one sentence. A banner is a thin strip, not a page."
           onChange={(e) => setBody((e.target as HTMLTextAreaElement).value)}
         />
         <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
@@ -438,7 +438,7 @@ function BannerModal({
             <TextField
               label="Button link"
               value={ctaUrl}
-              placeholder="/products or a full URL"
+              placeholder="/products, or a full web address"
               className="input mono"
               spellCheck={false}
               onChange={(e) => setCtaUrl(e.target.value)}
@@ -464,7 +464,7 @@ function BannerModal({
               min={0}
               step={1}
               value={priority}
-              hint="Higher shows first when two overlap."
+              hint="If two banners run at once, the higher number shows first."
               onChange={(e) => setPriority(e.target.value)}
             />
           </div>
@@ -475,7 +475,7 @@ function BannerModal({
               label="Starts"
               type="datetime-local"
               value={startsAt}
-              hint="Empty starts the moment it is on."
+              hint="Leave empty to start as soon as you turn it on."
               onChange={(e) => setStartsAt(e.target.value)}
             />
           </div>
@@ -484,7 +484,7 @@ function BannerModal({
               label="Ends"
               type="datetime-local"
               value={endsAt}
-              hint="Empty runs until somebody turns it off."
+              hint="Leave empty to keep it running until you turn it off."
               onChange={(e) => setEndsAt(e.target.value)}
             />
           </div>

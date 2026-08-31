@@ -95,9 +95,9 @@ function opsFor(from: ProductStatus, to: ProductStatus): ProductLifecycleOp[] | 
 }
 
 const STATUS_OPTIONS: StatusOption<ProductStatus>[] = [
-  { value: 'active', label: 'Active', description: 'For sale on the storefront and in search.' },
+  { value: 'active', label: 'Active', description: 'On sale in your shop and findable in search.' },
   { value: 'draft', label: 'Draft', description: 'Not visible to customers until published.' },
-  { value: 'archived', label: 'Archived', description: 'Off the storefront, kept for the record.' },
+  { value: 'archived', label: 'Archived', description: 'Taken out of your shop, but kept on record.' },
 ];
 
 interface Bundle {
@@ -296,11 +296,11 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
     const seen = new Set<number>();
     for (const r of tierOwn) {
       if (!Number.isInteger(r.minQty) || r.minQty < 2) {
-        setTierError('Every rung needs a quantity of 2 or more.');
+        setTierError('Every row needs a quantity of 2 or more.');
         return;
       }
       if (seen.has(r.minQty)) {
-        setTierError(`Two rungs both start at ${r.minQty}. Each quantity can appear once.`);
+        setTierError(`Two rows both start at ${r.minQty}. Each quantity can only appear once.`);
         return;
       }
       seen.add(r.minQty);
@@ -319,9 +319,9 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
       const rows = next.inherited ? null : next.tiers;
       setTierOwn(rows);
       setTierSaved(rows);
-      toast.show(next.inherited ? 'Back to the shop default' : 'Bulk ladder saved');
+      toast.show(next.inherited ? 'Back to the shop default' : 'Bulk discounts saved');
     } catch (err) {
-      setTierError(err instanceof ApiError ? err.message : 'Could not save the ladder.');
+      setTierError(err instanceof ApiError ? err.message : 'Could not save the discounts.');
     } finally {
       setTierBusy(false);
     }
@@ -341,7 +341,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
       setTierSaved(null);
       toast.show('Back to the shop default');
     } catch (err) {
-      setTierError(err instanceof ApiError ? err.message : 'Could not reset the ladder.');
+      setTierError(err instanceof ApiError ? err.message : 'Could not reset the discounts.');
     } finally {
       setTierBusy(false);
     }
@@ -609,7 +609,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
             </Button>
           }
         >
-          Probably another tab. Reloading picks up those changes and discards the edits here.
+          Probably another tab. Reloading gets those changes and throws away your edits here.
         </Banner>
       ) : null}
 
@@ -619,7 +619,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
           title="In the trash"
           action={<Button busy={statusBusy} onClick={() => void restore()}>Restore</Button>}
         >
-          This product is off the storefront and out of every list. Restore it to edit or sell it
+          This product is hidden from your shop and every list. Restore it to edit or sell it
           again.
         </Banner>
       ) : null}
@@ -640,7 +640,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                     slug follows the title and is set by the server on publish.
                   </>
                 ) : (
-                  'No slug yet — one is assigned when the product is first published.'
+                  'No link name yet — one is created when you first publish the product.'
                 )
               }
             />
@@ -671,11 +671,11 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                */
               placeholder={
                 product?.overviewFallback?.trim() ||
-                'Falls back to the first paragraph of the description'
+                'Uses the first paragraph of the description'
               }
               hint={
                 overview.trim() === ''
-                  ? 'Empty — the storefront shows the first paragraph of the description.'
+                  ? 'Left empty, so your shop shows the first paragraph of the description.'
                   : charactersUsed(overview, 160)
               }
               onChange={(e) => setOverview(e.target.value)}
@@ -687,9 +687,9 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
           </Card>
 
           {create ? (
-            <Card title="Variants">
+            <Card title="Versions">
               <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
-                Save the product first — variants, prices and stock attach to a saved product.
+                Save the product first. Versions, prices and stock can only be added afterwards.
               </p>
             </Card>
           ) : (
@@ -705,7 +705,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
           <Card title="Bulk discount">
             <Checkbox
               label="Offer a quantity discount on this product"
-              hint="Customers buying several get a lower price per item. Quantity counts across every variant of this product, so three black plus two white is five."
+              hint="Customers who buy several get a lower price each. The count adds up across every version of this product, so three black plus two white counts as five."
               checked={bulkEnabled}
               onChange={setBulkEnabled}
             />
@@ -730,7 +730,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                     </Button>
                   ) : (
                     <Button tone="plain" onClick={beginOverride} disabled={tierBusy}>
-                      Set a different ladder
+                      Set different discounts for this product
                     </Button>
                   )}
                 </div>
@@ -738,8 +738,8 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                 {tierRows.length === 0 ? (
                   <p className="field__hint">
                     {overriding
-                      ? 'No rungs — this product sells at full price whatever the quantity.'
-                      : 'No ladder is set up for the shop yet.'}
+                      ? 'No discounts — this product sells at full price whatever the quantity.'
+                      : 'No shop-wide discounts are set up yet.'}
                   </p>
                 ) : (
                   <table className="table pd__tiers-table">
@@ -748,7 +748,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                         <th>Buy at least</th>
                         <th>Discount</th>
                         <th>Price each</th>
-                        {overriding ? <th aria-label="Remove rung" /> : null}
+                        {overriding ? <th aria-label="Remove row" /> : null}
                       </tr>
                     </thead>
                     <tbody>
@@ -760,7 +760,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                                 className="input input--tiny"
                                 type="number"
                                 min={2}
-                                aria-label={'Minimum quantity for rung ' + (i + 1)}
+                                aria-label={'Smallest quantity for row ' + (i + 1)}
                                 value={t.minQty}
                                 onChange={(e) => editRung(i, { minQty: Number(e.target.value) })}
                               />
@@ -777,7 +777,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                                   min={1}
                                   max={50}
                                   step={0.5}
-                                  aria-label={'Discount for rung ' + (i + 1)}
+                                  aria-label={'Discount for row ' + (i + 1)}
                                   /* bps ↔ percent converted at the BOUNDARY only.
                                      The wire and the engine are basis points; a
                                      percent held in state would round-trip 12.5%
@@ -810,7 +810,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                             <td>
                               <Button
                                 tone="plain"
-                                aria-label={'Remove rung ' + (i + 1)}
+                                aria-label={'Remove row ' + (i + 1)}
                                 onClick={() => removeRung(i)}
                                 disabled={tierBusy}
                               >
@@ -829,7 +829,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                     {tierError ? <Banner tone="critical">{tierError}</Banner> : null}
                     <div className="pd__tiers-foot">
                       <Button tone="plain" onClick={addRung} disabled={tierBusy}>
-                        Add a rung
+                        Add a row
                       </Button>
                       {/* `busy` and NOT a swapped label: primitives.tsx says
                           why — replacing the text with "Saving…" resizes the
@@ -840,19 +840,19 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                         onClick={() => void saveTiers()}
                         disabled={!tiersDirty}
                       >
-                        Save ladder
+                        Save discounts
                       </Button>
                     </div>
                     <p className="field__hint">
-                      Saved on its own, not with the product — it is a separate
-                      record on a separate endpoint, and half a saved price is
-                      worse than two buttons.
+                      These save on their own, separately from the rest of the
+                      product — so use this button, not the one at the top of the
+                      page.
                     </p>
                   </>
                 ) : (
                   <p className="field__hint">
-                    Inherited, so it follows the shop default if that changes. The
-                    switch above only decides whether a ladder applies here at all.
+                    This product follows the shop-wide discounts, so it changes when they do.
+                    The switch above only decides whether any discount applies here at all.
                   </p>
                 )}
               </div>
@@ -877,7 +877,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
               /* Nothing to draw a result FROM yet — the reference admin's
                  exact sentence for a fresh create. */
               <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
-                Add a title and description to see how this product might appear in a search
+                Add a title and description to see how this product might look in a search
                 engine listing.
               </p>
             ) : (
@@ -913,7 +913,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                     overflow: 'hidden',
                   }}
                 >
-                  {seoDescription.trim() || 'The description text stands in while this is empty.'}
+                  {seoDescription.trim() || 'While this is empty, the description is used instead.'}
                 </span>
                 {cheapest ? (
                   <span className="muted" style={{ fontSize: 'var(--t-sm)' }}>
@@ -928,32 +928,32 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                 <TextField
                   label="Page title"
                   value={seoTitle}
-                  placeholder={title.trim() || 'Falls back to the product title'}
+                  placeholder={title.trim() || 'Uses the product title'}
                   hint={charactersUsed(seoTitle, 70)}
                   onChange={(e) => setSeoTitle(e.target.value)}
                 />
                 <TextArea
-                  label="Meta description"
+                  label="Search description"
                   value={seoDescription}
                   rows={3}
-                  placeholder="Falls back to the first lines of the description"
+                  placeholder="Uses the first lines of the description"
                   hint={charactersUsed(seoDescription, 160)}
                   onChange={(e) => setSeoDescription(e.target.value)}
                 />
                 {product?.slug ? (
                   <AffixField
-                    label="URL handle"
+                    label="Link name"
                     prefix={`${STOREFRONT_HOST}/products/`}
                     value={product.slug}
                     readOnly
-                    hint="Follows the title and is set by the server on publish — a published URL is a promise, so it is never rewritten."
+                    hint="Made from the title when you first publish. It never changes after that, so links people saved keep working."
                   />
                 ) : (
                   <div className="field">
-                    <span className="field__label">URL handle</span>
+                    <span className="field__label">Link name</span>
                     <span className="field__hint">
-                      No handle yet — the server derives one from the title when the product is
-                      first published, and never rewrites it after: a published URL is a promise.
+                      No link name yet — one is made from the title when the product is
+                      first published. It never changes after that, so saved links keep working.
                     </span>
                   </div>
                 )}
@@ -974,7 +974,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                 </div>
               ) : audit.length === 0 ? (
                 <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
-                  No stock or price changes recorded yet. Every adjustment lands here with its
+                  No stock or price changes recorded yet. Every change appears here with its
                   reason.
                 </p>
               ) : (
@@ -1037,7 +1037,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
               <SelectField
                 label="Category"
                 value={categoryKnown ? category : ' keep'}
-                hint="Determines where it appears on the storefront."
+                hint="Sets where it appears in your shop."
                 onChange={(e) => {
                   const v = e.target.value;
                   if (v === ' new') {
@@ -1063,7 +1063,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
               value={tags}
               onChange={setTags}
               suggestions={bundle.tags}
-              hint="Shoppers filter by these. Existing spellings are offered first."
+              hint="Shoppers use these to filter. Tags you already use are suggested first."
             />
           </Card>
 
@@ -1077,7 +1077,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                     label: 'Published',
                     value: product!.publishedAt ? shortDate(product!.publishedAt) : '—',
                   },
-                  { label: 'Variants', value: product!.variants.length },
+                  { label: 'Versions', value: product!.variants.length },
                 ]}
               />
             </Card>
@@ -1100,7 +1100,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
         >
           <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
             <strong>{product.title || 'This product'}</strong> leaves the storefront immediately.
-            Nothing is deleted — you can restore it from here later.
+            Nothing is deleted. You can restore it later.
           </p>
         </Modal>
       ) : null}
@@ -1133,7 +1133,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
 
 function messageFor(cause: unknown): string {
   if (cause instanceof ApiError && cause.status === 422) {
-    return 'That description was refused as unsafe.';
+    return 'That description was rejected as unsafe.';
   }
   return cause instanceof Error && cause.message ? cause.message : 'Something went wrong.';
 }
@@ -1192,31 +1192,31 @@ function VariantsCard({
   return (
     <section className="card">
       <div className="card__head">
-        <h2 className="card__title">Variants</h2>
+        <h2 className="card__title">Versions</h2>
         <Button onClick={onAdd}>
           <Plus aria-hidden="true" />
-          Add variant
+          Add version
         </Button>
       </div>
       {variants.length === 0 ? (
         <EmptyState
           icon={<Boxes />}
-          title="No variants yet"
-          body="A product sells through its variants — each one carries the SKU, the price and the stock."
+          title="No versions yet"
+          body="A product sells through its versions — each one has its own product code, price and stock."
           actions={
             <Button tone="primary" onClick={onAdd}>
               <Plus aria-hidden="true" />
-              Add variant
+              Add version
             </Button>
           }
         />
       ) : (
         <TableScroll className="tscroll">
           <table className="table">
-            <caption className="sr">Variants of {product.title}</caption>
+            <caption className="sr">Versions of {product.title}</caption>
             <thead>
               <tr>
-                <th scope="col">Variant</th>
+                <th scope="col">Version</th>
                 <th scope="col" className="th--num">Price</th>
                 <th scope="col" className="th--num">Available</th>
                 <th scope="col" className="th--tight">Status</th>
@@ -1285,7 +1285,7 @@ function VariantsCard({
                               onEdit(v);
                             }}
                           >
-                            Edit variant…
+                            Edit version…
                           </MenuItem>
                           <MenuItem
                             onSelect={() => {
@@ -1307,7 +1307,7 @@ function VariantsCard({
                                   onDelete(v);
                                 }}
                               >
-                                Delete variant…
+                                Delete version…
                               </MenuItem>
                             </>
                           )}
@@ -1402,7 +1402,7 @@ function PriceCell({ variant, onWrite }: { variant: ShopVariant; onWrite: () => 
             label="Reason"
             value={reason}
             placeholder="Optional"
-            hint="Recorded in the price history."
+            hint="Saved in the price history."
             onChange={(e) => setReason(e.target.value)}
           />
           <PopEditFoot>
@@ -1431,11 +1431,11 @@ function StockCell({ variant, onWrite }: { variant: ShopVariant; onWrite: () => 
 
   async function commit(close: () => void) {
     if (!deltaOk) {
-      setError('A whole number, positive or negative — and not zero.');
+      setError('Enter a whole number, above or below zero — but not zero.');
       return;
     }
     if (!reason.trim()) {
-      setError('The audit trail refuses a stock change without a reason.');
+      setError('A stock change needs a reason. It is kept on record.');
       return;
     }
     setBusy(true);
@@ -1481,7 +1481,7 @@ function StockCell({ variant, onWrite }: { variant: ShopVariant; onWrite: () => 
               available !== null && deltaOk
                 ? `Available ${available} → ${available + parsedDelta}`
                 : variant.backorderable
-                  ? 'Backorderable — available may go negative on purpose.'
+                  ? 'Can be back-ordered, so stock is allowed to go below zero.'
                   : undefined
             }
             onChange={(e) => {
@@ -1492,7 +1492,7 @@ function StockCell({ variant, onWrite }: { variant: ShopVariant; onWrite: () => 
           <TextField
             label="Reason"
             value={reason}
-            placeholder="Stocktake, damage, correction…"
+            placeholder="Stock count, damage, correction…"
             error={error}
             onChange={(e) => {
               setReason(e.target.value);
@@ -1570,19 +1570,19 @@ function VariantModal({
   const price = variant?.price ?? null;
   const costParsed = cost.trim() === '' ? null : parseMajor(cost, currency);
   const marginHint = (() => {
-    if (!price) return 'Margin shows once the variant is priced from the variants table.';
+    if (!price) return 'Profit shows once you set a price in the versions table.';
     if (costParsed === null || !costParsed.ok || price.amount === 0) {
       return `Against the current price of ${money(price.amount, currency)}.`;
     }
     const profit = price.amount - costParsed.minor;
     const pct = Math.round(((profit / price.amount) * 1000)) / 10;
-    return `Margin ${pct}% · profit ${money(profit, currency)}`;
+    return `${pct}% profit · ${money(profit, currency)} per sale`;
   })();
   const compareParsed = compareAt.trim() === '' ? null : parseMajor(compareAt, currency);
   const compareHint =
     price && compareParsed?.ok && compareParsed.minor <= price.amount
-      ? 'At or below the current price — the storefront will not show a sale.'
-      : 'Struck through on the storefront while it is above the price.';
+      ? 'At or below the current price, so your shop won’t show this as a sale.'
+      : 'Shown crossed out in your shop while it is above the price.';
 
   /* The owner's quick-fill rules (2026-08-25): compare-at offers price +20%,
      cost offers price −15%, both rounded to the whole naira — the same 85%
@@ -1616,7 +1616,7 @@ function VariantModal({
        fields parse only when there is something to parse. */
     const compareAtMinor = compareAt.trim() === '' ? null : parseMajor(compareAt, currency);
     if (compareAtMinor !== null && !compareAtMinor.ok) {
-      setError(`Compare-at: ${moneyRefusalMessage(compareAtMinor.reason, currency)}`);
+      setError(`Original price: ${moneyRefusalMessage(compareAtMinor.reason, currency)}`);
       return;
     }
     const costMinor = cost.trim() === '' ? null : parseMajor(cost, currency);
@@ -1668,21 +1668,21 @@ function VariantModal({
 
   return (
     <Modal
-      title={creating ? 'Add variant' : `Edit ${variant.sku}`}
+      title={creating ? 'Add version' : `Edit ${variant.sku}`}
       onClose={onClose}
       wide
       footer={
         <>
           <Button onClick={onClose}>Cancel</Button>
           <Button tone="primary" busy={busy} onClick={() => void commit()}>
-            {creating ? 'Add variant' : 'Save variant'}
+            {creating ? 'Add version' : 'Save version'}
           </Button>
         </>
       }
     >
       <div className="stack">
         <TextField
-          label="SKU"
+          label="Product code"
           value={sku}
           placeholder={creating ? 'Left empty, the server derives one' : undefined}
           className="input mono"
@@ -1750,7 +1750,7 @@ function VariantModal({
               placeholder="#8b5a2b"
               className="input mono"
               spellCheck={false}
-              hint="The swatch shown while the variant has no photo."
+              hint="The colour shown while this version has no photo."
               onChange={(e) => setColorHex(e.target.value)}
             />
           </div>
@@ -1761,7 +1761,7 @@ function VariantModal({
           <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
             <div style={{ flex: 1 }}>
               <AffixField
-                label="Compare-at price"
+                label="Original price"
                 prefix={currency}
                 inputMode="decimal"
                 value={compareAt}
@@ -1800,7 +1800,7 @@ function VariantModal({
 
         {productImages.length > 0 ? (
           <div className="stack stack--tight">
-            <span className="field__label">Variant photo</span>
+            <span className="field__label">Version photo</span>
             <div className="row" style={{ flexWrap: 'wrap', gap: 'var(--s2)' }}>
               <button
                 type="button"
@@ -1930,7 +1930,7 @@ function DeleteVariantModal({
         <>
           <Button onClick={onClose}>Cancel</Button>
           <Button tone="critical" busy={busy} onClick={() => void commit()}>
-            Delete variant
+            Delete version
           </Button>
         </>
       }

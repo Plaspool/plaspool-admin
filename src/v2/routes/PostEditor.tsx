@@ -42,9 +42,9 @@ import { isAdminRole } from '../../../shared/roles';
  */
 
 const STATUS_OPTIONS: StatusOption<PostStatus>[] = [
-  { value: 'published', label: 'Published', description: 'Live on the blog and in feeds.' },
-  { value: 'draft', label: 'Draft', description: 'Only visible in this admin.' },
-  { value: 'archived', label: 'Archived', description: 'Off the blog, kept for the record.' },
+  { value: 'published', label: 'Published', description: 'Live on the blog for everyone to read.' },
+  { value: 'draft', label: 'Draft', description: 'Only you and your team can see it.' },
+  { value: 'archived', label: 'Archived', description: 'Taken off the blog, but kept on record.' },
 ];
 
 function postTone(status: PostStatus): BadgeTone {
@@ -394,7 +394,7 @@ export default function PostEditor({ create = false }: { create?: boolean }) {
             </Button>
           }
         >
-          Probably the v1 studio or another tab. Reloading picks up those changes and discards the
+          Probably another tab, or the other editor. Reloading gets those changes and throws away the
           edits here.
         </Banner>
       ) : null}
@@ -425,7 +425,7 @@ export default function PostEditor({ create = false }: { create?: boolean }) {
                     stable once published.
                   </>
                 ) : (
-                  'No slug yet — assigned when titled or published.'
+                  'No link name yet — one is made when you give it a title or publish it.'
                 )
               }
             />
@@ -560,7 +560,7 @@ export default function PostEditor({ create = false }: { create?: boolean }) {
               value={excerpt}
               hint={
                 !excerptTouched && post?.excerptSource === 'derived'
-                  ? 'Currently derived from the opening and tracks it. Editing pins it as written.'
+                  ? 'Taken from the opening lines, and follows them. Edit it to fix your own wording.'
                   : 'Shown on cards and in search results.'
               }
               onChange={(e) => {
@@ -641,7 +641,7 @@ export default function PostEditor({ create = false }: { create?: boolean }) {
           }
         >
           <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
-            Gone including its history and revisions — this is the one that cannot be undone.
+            This deletes the post and all its earlier drafts. It cannot be undone.
           </p>
         </Modal>
       ) : null}
