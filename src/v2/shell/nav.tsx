@@ -87,9 +87,23 @@ export const NAV: NavEntry[] = [
       { to: '/emails/outbox', label: 'Outbox' },
     ],
   },
-  { to: '/analytics', label: 'Analytics', icon: <BarChart3 /> },
+  {
+    to: '/analytics',
+    label: 'Analytics',
+    icon: <BarChart3 />,
+    children: [{ to: '/analytics/products', label: 'Best sellers' }],
+  },
 ];
 
 export const NAV_FOOT: NavEntry[] = [
-  { to: '/settings', label: 'Settings', icon: <Settings /> },
+  {
+    to: '/settings',
+    label: 'Settings',
+    icon: <Settings />,
+    children: [
+      { to: '/settings/shipping', label: 'Shipping' },
+      { to: '/settings/team', label: 'Team' },
+      { to: '/settings/writing', label: 'Writing' },
+    ],
+  },
 ];

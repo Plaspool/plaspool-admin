@@ -45,6 +45,8 @@ import {
   listFulfillments,
   readFulfillment,
   shipFulfillment,
+  updateFulfillmentDetails,
+  type Fulfillment,
 } from './repo/fulfillments';
 import {
   countOutbox,
@@ -189,9 +191,31 @@ const FulfillmentBody = z
  * offering an un-ship, which the database refuses anyway (`shop_fulfillments_release`
  * raises `ORD05` for un-cancelling, and `SHIP`'s guard refuses a re-ship) — so accepting it
  * here would produce a 409 for a value the schema should never have admitted.
+ *
+ * `status` IS NOW OPTIONAL, because the ship dialog grew a second job: editing
+ * carrier/tracking on a parcel that has not shipped, with no transition. The
+ * schema only fixes SHAPES — which field combinations mean what is decided in
+ * the handler, against the fulfilment it actually read:
+ *
+ *  - `{ status: 'shipped', carrier?, trackingNumber? }` — ship, writing the
+ *    details in the same statement so the shipment email reads the new values.
+ *  - `{ carrier and/or trackingNumber }` — details-only edit, pending parcels
+ *    only (a shipped parcel's details are frozen: the email already told the
+ *    customer).
+ *  - `{}` — refused: nothing to do is a caller mistake, not a no-op.
+ *  - `delivered`/`cancelled` REFUSE the two fields rather than ignoring them —
+ *    a caller sending tracking with `delivered` believed it would be recorded,
+ *    and silence would confirm the belief.
+ *
+ * Per field: absent means keep, explicit `null` means clear (see
+ * `FulfillmentDetails`).
  */
 const FulfillmentStatusBody = z
-  .object({ status: z.enum(['shipped', 'delivered', 'cancelled']) })
+  .object({
+    status: z.enum(['shipped', 'delivered', 'cancelled']).optional(),
+    carrier: str().max(300).nullable().optional(),
+    trackingNumber: str().max(300).nullable().optional(),
+  })
   .strict();
 
 /**
@@ -242,10 +266,55 @@ function refundPercentOf(grandTotal: number, percent: 75 | 100): number {
  * shipping them invites a client to start addressing Cart's and Payments' aggregates
  * directly, which is the coupling contract §2 exists to prevent. The admin view keeps them,
  * because an operator chasing a chargeback needs exactly those two strings.
+ *
+ * `fulfillments` IS PRESENT ONLY WHEN THE CALLER FETCHED THEM — the DETAIL
+ * routes do, the LIST does not. The list is a page of orders assembled by one
+ * statement, and bolting a per-order fulfilment read onto it would be N extra
+ * queries for a surface whose tracking UI lives on the detail page anyway. The
+ * key is genuinely absent there rather than `[]`, so a storefront cannot read
+ * an empty array as "nothing shipped".
  */
-function customerView(order: Order, lines: OrderLine[]) {
+function customerView(order: Order, lines: OrderLine[], fulfillments?: Fulfillment[]) {
   const { checkoutId: _checkout, paymentIntentId: _intent, ...rest } = order;
-  return { order: rest, lines };
+  return {
+    order: rest,
+    lines,
+    ...(fulfillments === undefined
+      ? {}
+      : { fulfillments: fulfillments.flatMap(customerFulfillmentView) }),
+  };
+}
+
+/**
+ * One parcel, as the CUSTOMER may see it: identity, where it is in its life,
+ * and the tracking details — nothing else.
+ *
+ * AN ALLOW-LIST, NOT AN OMIT. `revision` and the lifecycle machinery are this
+ * subsystem's concurrency internals; `lines` carries order-line ids a
+ * storefront has no business addressing. Spreading-and-deleting would leak the
+ * next field anyone adds to the row; naming what ships means a new column is
+ * private until somebody decides otherwise.
+ *
+ * A CANCELLED PARCEL IS NOT IN THE PROJECTION AT ALL. `CANCEL_FULFILLMENT`'s
+ * own comment states the doctrine: a cancelled parcel is an internal re-plan —
+ * the quantity is released and re-fulfilled — not a fact about the customer's
+ * order, which is why cancelling one mails nothing. Showing "Parcel 2:
+ * cancelled" on the storefront would announce the re-plan the system
+ * deliberately never announces.
+ */
+function customerFulfillmentView(f: Fulfillment) {
+  if (f.status === 'cancelled') return [];
+  return [
+    {
+      id: f.id,
+      status: f.status,
+      carrier: f.carrier,
+      trackingNumber: f.trackingNumber,
+      shippedAt: f.shippedAt,
+      deliveredAt: f.deliveredAt,
+      createdAt: f.createdAt,
+    },
+  ];
 }
 
 // ---------------------------------------------------------- customer surface
@@ -293,7 +362,14 @@ function registerCustomerRoutes(routes: Hono<AppEnv>, deps: Deps): void {
 
   routes.get('/orders/:orderNumber', async (c) => {
     const read = await authorizeLookup(c, deps());
-    return c.json(customerView(read.order, read.lines));
+    /*
+     * TRACKING ON THE CUSTOMER SURFACE. Fetched AFTER `authorizeLookup`, so the
+     * fulfilment read is scoped by an order id that has already been proven to
+     * be this caller's — both the session path and the guest-token path arrive
+     * here through the same check, so both get the same body.
+     */
+    const fulfillments = await listFulfillments(currentDb(c), read.order.id);
+    return c.json(customerView(read.order, read.lines, fulfillments));
   });
 
   routes.get('/orders/:orderNumber/events', async (c) => {
@@ -433,7 +509,7 @@ function registerAdminRoutes(
   });
 
   /**
-   * `PATCH /shop/admin/fulfillments/:id { status }`.
+   * `PATCH /shop/admin/fulfillments/:id { status?, carrier?, trackingNumber? }`.
    *
    * THE ORDER'S OWN `fulfilled` TRANSITION IS ATTEMPTED AFTER A SHIPMENT, and it is
    * separate on purpose: it is the only thing here that nobody asked for, so its ordinary
@@ -441,6 +517,10 @@ function registerAdminRoutes(
    * Folding it into the shipment statement would either make a partial shipment an error or
    * make the shipment's own guard depend on a coverage predicate that has nothing to do
    * with it.
+   *
+   * The field-combination semantics are on `FulfillmentStatusBody` above; the
+   * details-only branch answers `{ fulfillment }` with no `order` key, exactly
+   * like `delivered`/`cancelled` — there is no settlement to attempt.
    */
   routes.patch('/admin/fulfillments/:id', auth, async (c) => {
     const db = currentDb(c);
@@ -451,6 +531,29 @@ function registerAdminRoutes(
 
     const actorId = currentUser(c).id;
     const now = deps().now();
+
+    const hasDetails = body.carrier !== undefined || body.trackingNumber !== undefined;
+
+    if (body.status === undefined) {
+      /* Nothing at all was asked for. `.strict()` already refused unknown keys,
+       * so an empty object is a caller that meant to send something. */
+      if (!hasDetails) throw new BadRequestError('status');
+      const fulfillment = await updateFulfillmentDetails(db, id, {
+        carrier: body.carrier,
+        trackingNumber: body.trackingNumber,
+      });
+      return c.json({ fulfillment });
+    }
+
+    /*
+     * `delivered` AND `cancelled` REFUSE THE DETAIL FIELDS, naming the field.
+     * Both moments come after the shipment email went out, so the details are
+     * frozen; accepting-and-ignoring would tell the caller their tracking
+     * number was recorded when it was not.
+     */
+    if (body.status !== 'shipped' && hasDetails) {
+      throw new BadRequestError(body.carrier !== undefined ? 'carrier' : 'trackingNumber');
+    }
 
     if (body.status === 'delivered') {
       /*
@@ -483,6 +586,10 @@ function registerAdminRoutes(
       linkFor(c, order, deps()),
       actorId,
       await loadTemplates(db),
+      /* Ship-time details ride the SAME statement as the transition, so the
+       * shipment email renders the values the operator just confirmed — see
+       * `shipTransition`. Absent fields keep whatever the parcel holds. */
+      hasDetails ? { carrier: body.carrier, trackingNumber: body.trackingNumber } : undefined,
     );
     const settled = await settleOrderFulfilled(
       db,

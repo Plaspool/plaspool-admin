@@ -22,6 +22,7 @@ import { SaveBar } from '../ui/SaveBar';
 import { StatusPicker, type StatusOption } from '../ui/StatusPicker';
 import { TagInput } from '../ui/TagInput';
 import { useToast } from '../ui/Toast';
+import { isAdminRole } from '../../../shared/roles';
 
 /**
  * POST EDITOR — `/content/posts/:id`, and `/content/posts/new`.
@@ -71,7 +72,9 @@ export default function PostEditor({ create = false }: { create?: boolean }) {
   const quickOverride = searchParams.get('editor') === 'quick';
   const toast = useToast();
   const session = getSession();
-  const isOwner = 'user' in session && session.user?.role === 'owner';
+  /* Owner-grade means owner OR developer since migration 0680 — the
+     server's requireAdmin() tier, mirrored (shared/roles.ts). */
+  const isOwner = 'user' in session && session.user != null && isAdminRole(session.user.role);
 
   const [post, setPost] = useState<Post | null>(null);
   const [categories, setCategories] = useState<CategorySummary[]>([]);

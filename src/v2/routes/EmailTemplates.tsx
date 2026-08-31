@@ -10,6 +10,7 @@ import {
   type TemplateDraft,
 } from '../../data/api-email';
 import { getSession } from '../../data/session';
+import { hasDomain } from '../../../shared/roles';
 import { dateTime } from '../lib/format';
 import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, EmptyState } from '../ui/primitives';
@@ -32,15 +33,15 @@ import { useToast } from '../ui/Toast';
  * marketing — except account.welcome, the one that genuinely subscribes.
  */
 
-function OwnerOnly() {
+function MarketingOnly() {
   return (
     <div className="page">
       <PageHeader icon={<Mail />} title="Email templates" />
       <div className="card">
         <EmptyState
           icon={<Lock />}
-          title="Owner-only surface"
-          body="Everything on the email side — templates, subscribers, broadcasts — belongs to the owner account."
+          title="A marketing surface"
+          body="Everything on the email side — templates, subscribers, broadcasts — belongs to the marketing role and the admins."
         />
       </div>
     </div>
@@ -50,7 +51,9 @@ function OwnerOnly() {
 export default function EmailTemplates() {
   const toast = useToast();
   const session = getSession();
-  const isOwner = 'user' in session && session.user?.role === 'owner';
+  /* The GATE IS THE DOMAIN, NOT A ROLE NAME — see `EmailBroadcasts.tsx`. */
+  const role = 'user' in session ? session.user?.role : undefined;
+  const allowed = role !== undefined && hasDomain(role, 'marketing');
 
   const [templates, setTemplates] = useState<EmailTemplate[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -68,13 +71,13 @@ export default function EmailTemplates() {
   }, []);
 
   useEffect(() => {
-    if (!isOwner) return;
+    if (!allowed) return;
     const controller = new AbortController();
     void load(controller.signal);
     return () => controller.abort();
-  }, [load, isOwner]);
+  }, [load, allowed]);
 
-  if (!isOwner) return <OwnerOnly />;
+  if (!allowed) return <MarketingOnly />;
 
   async function duplicate(template: EmailTemplate) {
     try {

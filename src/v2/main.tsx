@@ -26,6 +26,9 @@ import Banners from './routes/Banners';
 import Returns from './routes/Returns';
 import Marketing from './routes/Marketing';
 import Settings from './routes/Settings';
+import SettingsShipping from './routes/SettingsShipping';
+import SettingsTeam from './routes/SettingsTeam';
+import SettingsWriting from './routes/SettingsWriting';
 import EmailBroadcasts from './routes/EmailBroadcasts';
 import EmailTemplates from './routes/EmailTemplates';
 import EmailSubscribers from './routes/EmailSubscribers';
@@ -34,6 +37,7 @@ import Posts from './routes/Posts';
 import PostEditor from './routes/PostEditor';
 import PostEditorAdvanced from './routes/PostEditorAdvanced';
 import Analytics from './routes/Analytics';
+import AnalyticsProducts from './routes/AnalyticsProducts';
 import Discounts from './routes/Discounts';
 import DiscountNew from './routes/DiscountNew';
 import DesignGallery from './routes/DesignGallery';
@@ -138,7 +142,13 @@ const router = createHashRouter([
       { path: '/emails/subscribers', element: <EmailSubscribers /> },
       { path: '/emails/outbox', element: <EmailOutbox /> },
       { path: '/analytics', element: <Analytics /> },
+      { path: '/analytics/products', element: <AnalyticsProducts /> },
+
+      /* ── settings ────────────────────────────────────────────────────── */
       { path: '/settings', element: <Settings /> },
+      { path: '/settings/shipping', element: <SettingsShipping /> },
+      { path: '/settings/team', element: <SettingsTeam /> },
+      { path: '/settings/writing', element: <SettingsWriting /> },
 
       /* A typo lands on Home rather than on a blank. `replace`, so Back does
          not return to the URL that matched nothing. */

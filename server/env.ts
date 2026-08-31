@@ -30,12 +30,31 @@ const Schema = z.object({
    * fails, with a named 501 rather than an import-time crash.
    */
   SHOP_AUTH_BRIDGE_SECRET: z.string().default(''),
+  /*
+   * Clerk, for the Google-sign-in bridge (admin auth). `.default('')` for the
+   * same reason as everything above it: a deployment without Clerk still boots
+   * and the password login carries the team — only the Clerk exchange answers
+   * 501, and the sign-in screen never offers the button (the client half keys
+   * off VITE_CLERK_PUBLISHABLE_KEY at build time).
+   */
+  CLERK_SECRET_KEY: z.string().default(''),
   NODE_ENV: z.string().default('development'),
 });
 
 export type Env = z.infer<typeof Schema>;
 
 let cached: Env | null = null;
+
+/**
+ * FOR SUITES ONLY. A test that must run with a variable the worker's earlier
+ * imports already cached without (the Clerk suite sets CLERK_SECRET_KEY)
+ * clears the memo and lets the next `getEnv()` re-read `process.env`.
+ * Production never calls this; the cache exists to keep the parse off the
+ * request path, not to freeze configuration.
+ */
+export function resetEnvCacheForTests(): void {
+  cached = null;
+}
 
 export function getEnv(): Env {
   if (cached) return cached;

@@ -11,6 +11,7 @@ import { Card } from '../ui/Card';
 import { StoredImg } from '../ui/Img';
 import { Modal } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
+import { isAdminRole } from '../../../shared/roles';
 
 /**
  * FEATURED — `/content/featured`. The curated rail the storefront shows
@@ -26,7 +27,9 @@ import { useToast } from '../ui/Toast';
 export default function Featured() {
   const toast = useToast();
   const session = getSession();
-  const isOwner = 'user' in session && session.user?.role === 'owner';
+  /* Owner-grade means owner OR developer since migration 0680 — the
+     server's requireAdmin() tier, mirrored (shared/roles.ts). */
+  const isOwner = 'user' in session && session.user != null && isAdminRole(session.user.role);
 
   const [items, setItems] = useState<FeaturedItem[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);

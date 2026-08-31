@@ -1,6 +1,15 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Archive, Package, Plus, Tags, Trash2 } from 'lucide-react';
 import { shopApi, type ProductStatus, type ShopProduct, type ShopTag } from '../../data/api-shop';
+import {
+  shopCsvApi,
+  type CsvImportPreview,
+  type CsvImportProblem,
+  type CsvImportResult,
+  type ProductExportResult,
+} from '../../data/api-shop-csv';
+import { ApiError } from '../../data/errors';
+import { getSession, subscribe } from '../../data/session';
 import { useAsync } from '../lib/useAsync';
 import { humanise, productTone, shortDate } from '../lib/format';
 import { AnalyticsBar, AnalyticsMenuItem, PageHeader, useAnalyticsBar, type Metric } from '../ui/Page';
@@ -44,6 +53,8 @@ export default function Products() {
   const [cursors, setCursors] = useState<(string | null)[]>([null]);
   const cursor = cursors[cursors.length - 1] ?? null;
   const [tagAction, setTagAction] = useState<{ mode: 'add' | 'remove'; keys: string[] } | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   const { data, error, loading, reload } = useAsync(
     (signal) =>
@@ -171,18 +182,18 @@ export default function Products() {
             <MenuItem
               onSelect={() => {
                 close();
-                toast.show('Export is not built yet');
+                setExportOpen(true);
               }}
             >
-              Export
+              Export…
             </MenuItem>
             <MenuItem
               onSelect={() => {
                 close();
-                toast.show('Import is not built yet');
+                setImportOpen(true);
               }}
             >
-              Import
+              Import…
             </MenuItem>
           </>
         )}
@@ -297,7 +308,7 @@ export default function Products() {
                     <Plus aria-hidden="true" />
                     Add product
                   </ButtonLink>
-                  <Button onClick={() => toast.show('Import is not built yet')}>Import</Button>
+                  <Button onClick={() => setImportOpen(true)}>Import</Button>
                 </>
               }
               shelf={<SpoolTiles />}
@@ -334,7 +345,286 @@ export default function Products() {
           }}
         />
       ) : null}
+
+      {exportOpen ? <ExportModal onClose={() => setExportOpen(false)} /> : null}
+      {importOpen ? (
+        <ImportModal
+          onClose={() => setImportOpen(false)}
+          onDone={() => {
+            setImportOpen(false);
+            reload();
+          }}
+        />
+      ) : null}
     </div>
+  );
+}
+
+/**
+ * Export: build the whole catalogue as CSV server-side, email the signed-in
+ * admin the download link, and offer the same link right here — the email is
+ * the convenience, never the only way out (a deployment with no mail still
+ * answers with the URL and says so).
+ */
+function ExportModal({ onClose }: { onClose: () => void }) {
+  const toast = useToast();
+  const session = useSyncExternalStore(subscribe, getSession, getSession);
+  const email = session.status === 'authed' ? session.user.email : null;
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<ProductExportResult | null>(null);
+
+  async function run() {
+    setBusy(true);
+    try {
+      setResult(await shopCsvApi.exportProducts());
+    } catch (err) {
+      toast.show(err instanceof Error ? err.message : 'Export failed', 'critical');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title="Export products"
+      onClose={onClose}
+      footer={
+        result ? (
+          <Button tone="primary" onClick={onClose}>
+            Done
+          </Button>
+        ) : (
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button tone="primary" busy={busy} onClick={() => void run()}>
+              Email me the export
+            </Button>
+          </>
+        )
+      }
+    >
+      {result ? (
+        <div className="stack">
+          <p style={{ fontSize: 'var(--t-md)' }}>
+            {`${result.export.rowCount} ${result.export.rowCount === 1 ? 'row' : 'rows'} exported.`}
+          </p>
+          <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
+            {result.emailed
+              ? 'The download link is on its way to your inbox, and works for 7 days.'
+              : 'Email is not configured on this deployment — use the link below; it works for 7 days.'}
+          </p>
+          <p style={{ fontSize: 'var(--t-md)' }}>
+            {/* A plain anchor on purpose: the response is Content-Disposition
+                attachment, so the browser downloads rather than navigates. */}
+            <a href={result.export.url}>Download now</a>
+          </p>
+          <div>
+            <Button
+              onClick={() => {
+                void navigator.clipboard
+                  ?.writeText(result.export.url)
+                  .then(() => toast.show('Link copied'))
+                  .catch(() => toast.show('Couldn’t copy — use the link above', 'critical'));
+              }}
+            >
+              Copy link
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
+          Every product, one row per variant. The download link goes to{' '}
+          <strong>{email ?? 'your email'}</strong> and works for 7 days.
+        </p>
+      )}
+    </Modal>
+  );
+}
+
+/**
+ * Import, easy like the reference admin: choose a file, see what it would do,
+ * then apply. The preview round trip runs the server's real parser, so the
+ * counts and the per-row problems here are the ones apply will act on — not a
+ * client-side guess that can disagree with it.
+ */
+/** Turn an import failure into a sentence the operator can act on — the
+ *  row-cap 400 in particular, which otherwise reads as a bare "bad_request". */
+function importError(err: unknown): string {
+  if (err instanceof ApiError && err.status === 400) {
+    if (err.detail === 'too_many_rows') return 'That file has too many rows — the limit is 1,000.';
+    if (err.detail === 'csv') return 'That file could not be read as CSV.';
+  }
+  return err instanceof Error && err.message ? err.message : 'Import failed';
+}
+
+/** A short list of per-row problems, header + up to five + a "more" tail. */
+function ProblemList({ title, problems }: { title: string; problems: CsvImportProblem[] }) {
+  if (problems.length === 0) return null;
+  return (
+    <div className="stack stack--tight">
+      <p style={{ fontSize: 'var(--t-sm)', fontWeight: 'var(--w-medium)' }}>{title}</p>
+      {problems.slice(0, 5).map((problem) => (
+        <p key={problem.line} className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+          {`Row ${problem.line}: ${problem.problem}`}
+        </p>
+      ))}
+      {problems.length > 5 ? (
+        <p className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+          {`…and ${problems.length - 5} more`}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const toast = useToast();
+  const [csv, setCsv] = useState<string | null>(null);
+  const [replace, setReplace] = useState(true);
+  const [preview, setPreview] = useState<CsvImportPreview | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  /* Set when apply finishes with per-row problems: the modal STAYS open and
+     shows exactly which rows the server refused, rather than a bare toast
+     count — the conflicts only apply can find (a SKU already on another
+     product, a bad option combination) are visible nowhere else. */
+  const [result, setResult] = useState<CsvImportResult | null>(null);
+
+  async function runPreview(text: string, withReplace: boolean) {
+    setChecking(true);
+    try {
+      setPreview(await shopCsvApi.previewImport(text, withReplace));
+    } catch (err) {
+      toast.show(importError(err), 'critical');
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function pick(file: File | undefined) {
+    if (!file) return;
+    setPreview(null);
+    setResult(null);
+    try {
+      const text = await file.text();
+      setCsv(text);
+      await runPreview(text, replace);
+    } catch {
+      setCsv(null);
+      toast.show('Couldn’t read that file', 'critical');
+    }
+  }
+
+  /* Re-preview when the replace toggle flips, so the counts always describe
+     the mode apply will actually run — preview and apply cannot disagree. */
+  function toggleReplace(next: boolean) {
+    setReplace(next);
+    if (csv !== null) void runPreview(csv, next);
+  }
+
+  async function apply() {
+    if (csv === null) return;
+    setBusy(true);
+    try {
+      const r = await shopCsvApi.applyImport(csv, replace);
+      if (r.invalid.length > 0) {
+        setResult(r);
+        setBusy(false);
+        return;
+      }
+      const parts = [`${r.created} created`, `${r.updated} updated`];
+      if (r.skipped > 0) parts.push(`${r.skipped} skipped`);
+      toast.show(parts.join(' · '));
+      onDone();
+    } catch (err) {
+      toast.show(importError(err), 'critical');
+      setBusy(false);
+    }
+  }
+
+  if (result) {
+    return (
+      <Modal
+        title="Import finished"
+        onClose={onDone}
+        wide
+        footer={<Button tone="primary" onClick={onDone}>Done</Button>}
+      >
+        <div className="stack">
+          <p style={{ fontSize: 'var(--t-md)' }}>
+            <strong>
+              {`${result.created} created · ${result.updated} updated${
+                result.skipped > 0 ? ` · ${result.skipped} skipped` : ''
+              } · ${result.invalid.length} refused`}
+            </strong>
+          </p>
+          <ProblemList title="These rows were skipped:" problems={result.invalid} />
+        </div>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal
+      title="Import products"
+      onClose={onClose}
+      wide
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button
+            tone="primary"
+            busy={busy}
+            disabled={csv === null || checking}
+            onClick={() => void apply()}
+          >
+            Import products
+          </Button>
+        </>
+      }
+    >
+      <div className="stack">
+        <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
+          One row per variant, matching the export: Handle is the product’s URL slug and is how
+          rows are matched to what you already have (case and punctuation are normalised).
+          Columns you leave out are kept as they are. Prices are in naira with two decimals;
+          stock is the absolute count.
+        </p>
+        <label className="field">
+          <span className="field__label">CSV file</span>
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            onChange={(event) => void pick(event.target.files?.[0])}
+          />
+        </label>
+        <Checkbox
+          label="Replace products with the same handle"
+          hint="Unticked, rows whose handle already exists are skipped rather than updated."
+          checked={replace}
+          onChange={toggleReplace}
+        />
+        {checking ? (
+          <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
+            Checking the file…
+          </p>
+        ) : null}
+        {preview ? (
+          <div className="stack stack--tight">
+            <p style={{ fontSize: 'var(--t-md)' }}>
+              <strong>
+                {`${preview.creates} new · ${preview.updates} to update${
+                  preview.skips > 0 ? ` · ${preview.skips} skipped` : ''
+                } · ${preview.invalid.length} ${
+                  preview.invalid.length === 1 ? 'row' : 'rows'
+                } with problems`}
+              </strong>
+            </p>
+            <ProblemList title="Problems found:" problems={preview.invalid} />
+          </div>
+        ) : null}
+      </div>
+    </Modal>
   );
 }
 

@@ -9,6 +9,7 @@ import {
   type EmailTemplate,
 } from '../../data/api-email';
 import { getSession } from '../../data/session';
+import { hasDomain } from '../../../shared/roles';
 import { dateTime } from '../lib/format';
 import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, EmptyState, type BadgeTone } from '../ui/primitives';
@@ -37,15 +38,15 @@ const STATUS_TONE: Record<BroadcastStatus, BadgeTone> = {
   failed: 'critical',
 };
 
-function OwnerOnly() {
+function MarketingOnly() {
   return (
     <div className="page">
       <PageHeader icon={<Send />} title="Broadcasts" />
       <div className="card">
         <EmptyState
           icon={<Lock />}
-          title="Owner-only surface"
-          body="Everything on the email side — templates, subscribers, broadcasts — belongs to the owner account."
+          title="A marketing surface"
+          body="Everything on the email side — templates, subscribers, broadcasts — belongs to the marketing role and the admins."
         />
       </div>
     </div>
@@ -55,7 +56,11 @@ function OwnerOnly() {
 export default function EmailBroadcasts() {
   const toast = useToast();
   const session = getSession();
-  const isOwner = 'user' in session && session.user?.role === 'owner';
+  /* The GATE IS THE DOMAIN, NOT A ROLE NAME: `hasDomain` reads the same
+     `ROLE_INFO` table the server's permission middleware enforces, so who may
+     stand here and who the API answers cannot drift apart. */
+  const role = 'user' in session ? session.user?.role : undefined;
+  const allowed = role !== undefined && hasDomain(role, 'marketing');
 
   const [broadcasts, setBroadcasts] = useState<EmailBroadcast[] | null>(null);
   const [audience, setAudience] = useState<Audience | null>(null);
@@ -80,13 +85,13 @@ export default function EmailBroadcasts() {
   }, []);
 
   useEffect(() => {
-    if (!isOwner) return;
+    if (!allowed) return;
     const controller = new AbortController();
     void load(controller.signal);
     return () => controller.abort();
-  }, [load, isOwner]);
+  }, [load, allowed]);
 
-  if (!isOwner) return <OwnerOnly />;
+  if (!allowed) return <MarketingOnly />;
 
   const adopt = (next: EmailBroadcast) =>
     setBroadcasts((list) => (list === null ? list : list.map((b) => (b.id === next.id ? next : b))));

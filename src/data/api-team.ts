@@ -90,9 +90,9 @@ export interface DisableResult {
 }
 
 /**
- * The two refusals `POST /api/users/:id/disable` can answer with.
+ * The refusals the user-management routes can answer with (409).
  *
- * TWO OPERATIONS AND NOT ONE, because the screen has to say two different
+ * SEPARATE OPERATIONS AND NOT ONE, because the screen has to say different
  * things: "ask another owner to do it" is useless advice on a blog with one
  * owner, and "promote somebody first" is the sentence that actually leads
  * somewhere. A client that told them apart by parsing prose would get it wrong
@@ -113,11 +113,25 @@ export type TeamRefusal =
  * whose `post` field is undefined on this surface — there is no post, and the
  * shared class predates a refusal that is about a user. `operation` is the field
  * that survives the wire intact and is the one worth reading.
+ *
+ * ALL FIVE CODES, matching `server/routes/users.ts`'s `Refusal` union exactly.
+ * This recognised only the two disable refusals until the team screen grew role
+ * changes (migration 0680) — a `manage_peer` arriving then fell through to the
+ * generic toast, which told a developer "precondition_failed" instead of the
+ * sentence about seniority the code exists to carry.
  */
+const TEAM_REFUSALS: readonly TeamRefusal[] = [
+  'disable_self',
+  'disable_last_owner',
+  'manage_peer',
+  'role_self',
+  'role_owner',
+];
+
 export function refusalOf(err: unknown): TeamRefusal | null {
   if (!(err instanceof PreconditionFailedError)) return null;
-  return err.operation === 'disable_self' || err.operation === 'disable_last_owner'
-    ? err.operation
+  return (TEAM_REFUSALS as readonly string[]).includes(err.operation)
+    ? (err.operation as TeamRefusal)
     : null;
 }
 

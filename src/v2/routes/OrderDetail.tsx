@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { Ban, CreditCard, PackageCheck, Receipt, Truck, Undo2 } from 'lucide-react';
+import { Ban, Check, CreditCard, PackageCheck, Receipt, Truck, Undo2 } from 'lucide-react';
 import {
   moneyRefusalMessage,
   parseRefund,
@@ -24,6 +24,7 @@ import { MenuItem, MenuSeparator } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
 import { Timeline, type TimelineEvent } from '../ui/Timeline';
 import { useToast } from '../ui/Toast';
+import { isAdminRole } from '../../../shared/roles';
 
 /**
  * ORDER DETAIL — `/orders/:id`.
@@ -62,6 +63,58 @@ function addressLines(addr: Record<string, unknown> | null | undefined): string[
   return lines.filter((l): l is string => Boolean(l));
 }
 
+/* ═══════════════════════════════════════════════════════════ NEXT STEP ════ */
+
+/**
+ * The one lifecycle move this order is waiting on, derived from the loaded
+ * order + parcels — so the More actions menu can always NAME it and run it.
+ *
+ * The derivation mirrors the server's own ordering: money first (nothing to do
+ * until it lands), then unpacked quantity, then parcels in flight. A settled
+ * order — everything delivered, or cancelled/refunded — has no step, and says
+ * so rather than hiding the item.
+ */
+type NextStep =
+  | { kind: 'awaiting' }
+  | { kind: 'settled' }
+  | { kind: 'fulfil' }
+  | { kind: 'ship'; parcel: ShopFulfillment; index: number }
+  | { kind: 'deliver'; parcel: ShopFulfillment; index: number };
+
+/** The first parcel in `status`, with its 1-based position — the SAME number
+ *  the FulfilmentRow list paints, because the menu names "Parcel N" and the
+ *  two must agree. */
+function firstParcel(
+  fulfillments: ShopFulfillment[],
+  status: 'pending' | 'shipped',
+): { parcel: ShopFulfillment; index: number } | null {
+  for (let i = 0; i < fulfillments.length; i += 1) {
+    const parcel = fulfillments[i];
+    if (parcel && parcel.status === status) return { parcel, index: i + 1 };
+  }
+  return null;
+}
+
+function deriveNextStep(
+  order: ShopOrderDetail['order'],
+  lines: ShopOrderLine[],
+  fulfillments: ShopFulfillment[],
+): NextStep {
+  if (order.status === 'pending') return { kind: 'awaiting' };
+  if (order.status === 'cancelled' || order.status === 'refunded') return { kind: 'settled' };
+
+  const remainder = lines.reduce((n, l) => n + (l.qty - l.fulfilledQty), 0);
+  if ((order.status === 'paid' || order.status === 'partially_refunded') && remainder > 0) {
+    return { kind: 'fulfil' };
+  }
+
+  const pending = firstParcel(fulfillments, 'pending');
+  if (pending) return { kind: 'ship', ...pending };
+  const shipped = firstParcel(fulfillments, 'shipped');
+  if (shipped) return { kind: 'deliver', ...shipped };
+  return { kind: 'settled' };
+}
+
 function timelineEvent(entry: ShopTimelineEntry): TimelineEvent {
   const t = entry.type.toLowerCase();
   const tone: TimelineEvent['tone'] = /cancel|refund|fail/.test(t)
@@ -88,6 +141,14 @@ export default function OrderDetail() {
   );
 
   const [modal, setModal] = useState<'none' | 'fulfil' | 'cancel' | 'refund'>('none');
+  /** The ship dialog carries a payload — WHICH parcel, and whether the confirm
+   *  transitions it or only saves details — so it is state of its own rather
+   *  than a fifth arm of `modal`. */
+  const [shipDialog, setShipDialog] = useState<{
+    parcel: ShopFulfillment;
+    index: number;
+    mode: 'ship' | 'details';
+  } | null>(null);
 
   if (error) {
     return (
@@ -110,7 +171,9 @@ export default function OrderDetail() {
   /* Cancel and refund are OWNER-ONLY at the server; a writer gets no dead
      menu items to click into a 403. */
   const session = getSession();
-  const isOwner = 'user' in session && session.user?.role === 'owner';
+  /* Owner-grade means owner OR developer since migration 0680 — the
+     server's requireAdmin() tier, mirrored (shared/roles.ts). */
+  const isOwner = 'user' in session && session.user != null && isAdminRole(session.user.role);
 
   const canFulfil =
     (order.status === 'paid' || order.status === 'partially_refunded') && unfulfilled;
@@ -129,6 +192,78 @@ export default function OrderDetail() {
     setModal('none');
     reload();
   };
+
+  /** What every parcel change funnels through — the FulfilmentRow buttons, the
+   *  ship dialog, and the next-step deliver all report here, so the settled
+   *  toast has exactly one wording and one trigger. */
+  const parcelChanged = (settled: boolean) => {
+    if (settled) toast.show('Every parcel on its way — order fulfilled');
+    reload();
+  };
+
+  /** The next-step deliver: the EXISTING direct flow, with the existing
+   *  toasts — no dialog, because delivery has nothing to confirm. */
+  async function deliverParcel(parcel: ShopFulfillment, index: number) {
+    try {
+      const res = await shopApi.setFulfillmentStatus(parcel.id, 'delivered');
+      toast.show(`Parcel ${index} ${humanise(res.fulfillment.status).toLowerCase()}`);
+      parcelChanged(Boolean(res.order));
+    } catch (cause) {
+      toast.show(
+        cause instanceof Error && cause.message ? cause.message : 'Something went wrong.',
+        'critical',
+      );
+    }
+  }
+
+  const nextStep = deriveNextStep(order, lines, fulfillments);
+
+  /** The FIRST item of More actions, always present: it names the next
+   *  lifecycle move and runs it — or says honestly that there is none. */
+  function nextStepItem(close: () => void) {
+    switch (nextStep.kind) {
+      case 'awaiting':
+        return <MenuItem onSelect={close}>Awaiting payment — nothing to run</MenuItem>;
+      case 'settled':
+        return <MenuItem onSelect={close}>Nothing to do — this order is settled</MenuItem>;
+      case 'fulfil':
+        return (
+          <MenuItem
+            icon={<PackageCheck aria-hidden="true" />}
+            onSelect={() => {
+              close();
+              setModal('fulfil');
+            }}
+          >
+            Next step: Fulfil items…
+          </MenuItem>
+        );
+      case 'ship':
+        return (
+          <MenuItem
+            icon={<Truck aria-hidden="true" />}
+            onSelect={() => {
+              close();
+              setShipDialog({ parcel: nextStep.parcel, index: nextStep.index, mode: 'ship' });
+            }}
+          >
+            Next step: Mark Parcel {nextStep.index} shipped…
+          </MenuItem>
+        );
+      case 'deliver':
+        return (
+          <MenuItem
+            icon={<Check aria-hidden="true" />}
+            onSelect={() => {
+              close();
+              void deliverParcel(nextStep.parcel, nextStep.index);
+            }}
+          >
+            Next step: Mark Parcel {nextStep.index} delivered
+          </MenuItem>
+        );
+    }
+  }
 
   return (
     <div className="page">
@@ -149,6 +284,8 @@ export default function OrderDetail() {
         }
         menu={(close) => (
           <>
+            {nextStepItem(close)}
+            {canRefund || canCancel ? <MenuSeparator /> : null}
             {canRefund ? (
               <MenuItem
                 icon={<Undo2 aria-hidden="true" />}
@@ -172,9 +309,6 @@ export default function OrderDetail() {
               >
                 Cancel order…
               </MenuItem>
-            ) : null}
-            {!canRefund && !canCancel ? (
-              <MenuItem onSelect={close}>Nothing to do — this order is settled</MenuItem>
             ) : null}
           </>
         )}
@@ -268,10 +402,11 @@ export default function OrderDetail() {
                     index={i + 1}
                     fulfillment={f}
                     lines={lines}
-                    onChanged={(settled) => {
-                      if (settled) toast.show('Every parcel delivered — order fulfilled');
-                      reload();
-                    }}
+                    onShip={() => setShipDialog({ parcel: f, index: i + 1, mode: 'ship' })}
+                    onEditTracking={() =>
+                      setShipDialog({ parcel: f, index: i + 1, mode: 'details' })
+                    }
+                    onChanged={parcelChanged}
                   />
                 ))}
               </div>
@@ -403,6 +538,18 @@ export default function OrderDetail() {
           onDone={done}
         />
       ) : null}
+      {shipDialog ? (
+        <ShipDialog
+          parcel={shipDialog.parcel}
+          index={shipDialog.index}
+          mode={shipDialog.mode}
+          onClose={() => setShipDialog(null)}
+          onDone={(settled) => {
+            setShipDialog(null);
+            parcelChanged(settled);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -431,11 +578,18 @@ function FulfilmentRow({
   index,
   fulfillment,
   lines,
+  onShip,
+  onEditTracking,
   onChanged,
 }: {
   index: number;
   fulfillment: ShopFulfillment;
   lines: ShopOrderLine[];
+  /** Open the ship dialog for this parcel — the transition itself, and its
+   *  busy state, live there now (the email renders what the dialog confirms). */
+  onShip: () => void;
+  /** The same dialog in details-only mode: no transition, pending parcels only. */
+  onEditTracking: () => void;
   onChanged: (orderSettled: boolean) => void;
 }) {
   const toast = useToast();
@@ -457,7 +611,9 @@ function FulfilmentRow({
     })
     .join(', ');
 
-  async function move(status: 'shipped' | 'delivered' | 'cancelled') {
+  /* Shipping is no longer fired from here — the ship dialog owns it, so the
+     carrier/tracking the email renders are confirmed rather than assumed. */
+  async function move(status: 'delivered' | 'cancelled') {
     setBusy(status);
     try {
       const res = await shopApi.setFulfillmentStatus(fulfillment.id, status);
@@ -499,8 +655,9 @@ function FulfilmentRow({
       <div className="row" style={{ gap: 'var(--s2)' }}>
         {fulfillment.status === 'pending' ? (
           <>
-            <Button busy={busy === 'shipped'} onClick={() => void move('shipped')}>
-              Mark shipped
+            <Button onClick={onShip}>Mark shipped</Button>
+            <Button tone="plain" onClick={onEditTracking}>
+              Edit tracking
             </Button>
             <Button tone="plain" busy={busy === 'cancelled'} onClick={() => void move('cancelled')}>
               Cancel parcel
@@ -513,6 +670,127 @@ function FulfilmentRow({
         ) : null}
       </div>
     </div>
+  );
+}
+
+/**
+ * THE SHIP DIALOG — the moment the shipping email's contents are decided.
+ *
+ * "Mark shipped" used to fire immediately, which meant the email rendered
+ * whatever carrier/tracking happened to be on the row from parcel creation —
+ * usually nothing. The dialog puts the two fields in front of the operator AT
+ * SHIP TIME, prefilled from the row, and the server writes them in the same
+ * statement as the transition, so what is on screen at confirm is exactly what
+ * the customer is told.
+ *
+ * `details` MODE IS THE SAME DIALOG WITHOUT THE TRANSITION: it saves
+ * carrier/tracking on a still-pending parcel (the server 409s once it has
+ * shipped — the email is already out, the record is frozen).
+ *
+ * Empty fields submit as `null` — a cleared box is "no tracking", and the
+ * email omits the panel rather than printing blanks.
+ */
+function ShipDialog({
+  parcel,
+  index,
+  mode,
+  onClose,
+  onDone,
+}: {
+  parcel: ShopFulfillment;
+  index: number;
+  mode: 'ship' | 'details';
+  onClose: () => void;
+  onDone: (orderSettled: boolean) => void;
+}) {
+  const toast = useToast();
+  const [carrier, setCarrier] = useState(parcel.carrier ?? '');
+  const [tracking, setTracking] = useState(parcel.trackingNumber ?? '');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function commit() {
+    setBusy(true);
+    try {
+      const res = await shopApi.setFulfillmentStatus(parcel.id, {
+        ...(mode === 'ship' ? { status: 'shipped' as const } : {}),
+        carrier: carrier.trim() || null,
+        trackingNumber: tracking.trim() || null,
+      });
+      toast.show(
+        mode === 'ship'
+          ? `Parcel ${index} ${humanise(res.fulfillment.status).toLowerCase()}`
+          : `Parcel ${index} tracking saved`,
+      );
+      /* Same three-state contract as every parcel change: only a real order in
+         the response may claim the shipment settled it. Details-only never
+         carries one. */
+      onDone(mode === 'ship' && Boolean(res.order));
+    } catch (cause) {
+      setError(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={mode === 'ship' ? `Mark Parcel ${index} shipped` : `Parcel ${index} tracking`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button tone="primary" busy={busy} onClick={() => void commit()}>
+            {mode === 'ship' ? (
+              <>
+                <Truck aria-hidden="true" />
+                Mark shipped
+              </>
+            ) : (
+              'Save tracking'
+            )}
+          </Button>
+        </>
+      }
+    >
+      <div className="stack">
+        <div className="row" style={{ gap: 'var(--s3)', alignItems: 'flex-start' }}>
+          <div style={{ flex: 1 }}>
+            <TextField
+              label="Carrier"
+              value={carrier}
+              placeholder="Optional"
+              autoFocus
+              onChange={(e) => {
+                setCarrier(e.target.value);
+                setError(null);
+              }}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <TextField
+              label="Tracking number"
+              value={tracking}
+              placeholder="Optional"
+              className="input mono"
+              onChange={(e) => {
+                setTracking(e.target.value);
+                setError(null);
+              }}
+            />
+          </div>
+        </div>
+        <p className="muted" style={{ fontSize: 'var(--t-sm)', lineHeight: 1.5, margin: 0 }}>
+          {mode === 'ship'
+            ? 'This goes into the shipping email the customer gets the moment you confirm.'
+            : 'Saved to the parcel now — the shipping email will carry whatever is here when it ships.'}
+        </p>
+        {error ? (
+          <span className="field__error" role="alert">
+            {error}
+          </span>
+        ) : null}
+      </div>
+    </Modal>
   );
 }
 

@@ -7,6 +7,7 @@ import {
   type SubscriberSource,
 } from '../../data/api-email';
 import { getSession } from '../../data/session';
+import { hasDomain } from '../../../shared/roles';
 import { useAsync } from '../lib/useAsync';
 import { shortDate } from '../lib/format';
 import { PageHeader } from '../ui/Page';
@@ -40,15 +41,15 @@ const TABS: { value: SubscriberFilter; label: string }[] = [
 /** Good enough to keep typos out of a send list; the server re-validates. */
 const EMAILISH = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function OwnerOnly() {
+function MarketingOnly() {
   return (
     <div className="page">
       <PageHeader icon={<Users />} title="Subscribers" />
       <div className="card">
         <EmptyState
           icon={<Lock />}
-          title="Owner-only surface"
-          body="Everything on the email side — templates, subscribers, broadcasts — belongs to the owner account."
+          title="A marketing surface"
+          body="Everything on the email side — templates, subscribers, broadcasts — belongs to the marketing role and the admins."
         />
       </div>
     </div>
@@ -58,7 +59,9 @@ function OwnerOnly() {
 export default function EmailSubscribers() {
   const toast = useToast();
   const session = getSession();
-  const isOwner = 'user' in session && session.user?.role === 'owner';
+  /* The GATE IS THE DOMAIN, NOT A ROLE NAME — see `EmailBroadcasts.tsx`. */
+  const role = 'user' in session ? session.user?.role : undefined;
+  const allowed = role !== undefined && hasDomain(role, 'marketing');
 
   const [tab, setTab] = useState<SubscriberFilter>('subscribed');
   const [search, setSearch] = useState('');
@@ -70,18 +73,18 @@ export default function EmailSubscribers() {
 
   const { data, error, loading } = useAsync(
     (signal) =>
-      isOwner
+      allowed
         ? emailApi.listSubscribers(
             { filter: tab, ...(cursor ? { cursor } : {}), limit: 25 },
             signal,
           )
         : Promise.resolve({ items: [] as EmailSubscriber[], nextCursor: null }),
-    [tab, cursor, nonce, isOwner],
+    [tab, cursor, nonce, allowed],
   );
 
   const audience = useAsync(
-    (signal) => (isOwner ? emailApi.audience(signal) : Promise.resolve(null)),
-    [nonce, isOwner],
+    (signal) => (allowed ? emailApi.audience(signal) : Promise.resolve(null)),
+    [nonce, allowed],
   );
 
   const all = data?.items ?? [];
@@ -91,7 +94,7 @@ export default function EmailSubscribers() {
     return all.filter((s) => s.email.toLowerCase().includes(q));
   }, [all, search]);
 
-  if (!isOwner) return <OwnerOnly />;
+  if (!allowed) return <MarketingOnly />;
 
   const reload = () => setNonce((n) => n + 1);
 

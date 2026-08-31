@@ -9,6 +9,7 @@ import { listShopTags } from './tags';
 import { listBuyers } from './customers';
 import { listInventory } from './inventory';
 import { shopStats } from './stats';
+import { ANALYTICS_RANGES, shopAnalytics } from './analytics';
 
 /**
  * The shop dashboard's read surface (HANDOFF §2 A4).
@@ -101,6 +102,21 @@ const InventoryQueryParams = PageQueryParams.extend({
  * bounded by how many distinct values a shop has typed, which is tens.
  */
 const NoQueryParams = z.object({}).strict();
+
+/**
+ * `days` is an enum of the ranges the picker offers, not a free integer —
+ * every value is a scan bound (`server/shop/admin/analytics.ts`).
+ */
+const AnalyticsQueryParams = z
+  .object({ days: z.enum(ANALYTICS_RANGES).optional() })
+  .strict();
+
+shopAdminRoutes.get('/admin/analytics', auth, async (c) => {
+  const q = readQuery(c, AnalyticsQueryParams);
+  return c.json(
+    await shopAnalytics(currentDb(c), { now: Date.now(), days: Number(q.days ?? '30') }),
+  );
+});
 
 shopAdminRoutes.get('/admin/stats', auth, async (c) => {
   const q = readQuery(c, StatsQueryParams);
