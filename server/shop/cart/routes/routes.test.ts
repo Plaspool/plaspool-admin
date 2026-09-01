@@ -454,6 +454,33 @@ describe('the checkout flow, end to end', () => {
     ]);
   });
 
+  it('409s an empty cart with a READABLE reason, not just the operation name', async () => {
+    /*
+     * ═══ THE FIELD THAT WAS DOING TWO JOBS ═══
+     * `operation` names the OPERATION everywhere in this server — `update_cart`,
+     * `remove_line`, `capture`, `parseWebhook` — except in the freeze route,
+     * which passes its REASON through the same key. The storefront was written
+     * against that second sense, so it read `operation: 'empty_cart'` and had
+     * no idea what `operation: 'checkout_start'` meant. An empty cart at step 1
+     * of 4 therefore rendered as "That didn't go through. Try again — if it
+     * keeps happening, come back later."
+     *
+     * `reason` is additive and unambiguous: `operation` keeps naming the
+     * operation, for every consumer already reading it, and the refusal now
+     * also says WHY in a field that only ever means why.
+     */
+    await newCart();
+
+    const res = await client.post('/api/shop/checkout/start');
+
+    expect(res.status).toBe(409);
+    const body = await json<{ error: string; operation: string; reason: string }>(res);
+    expect(body.error).toBe('precondition_failed');
+    expect(body.reason).toBe('empty_cart');
+    // Unchanged, deliberately: this is an addition, not a rename.
+    expect(body.operation).toBe('checkout_start');
+  });
+
   it('409s a freeze whose line has become unavailable, naming the variant', async () => {
     await newCart();
     await client.post('/api/shop/cart/lines', { variantId: tee.id, qty: 1 });
