@@ -12,7 +12,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { SEED_PASSWORD, freshDb } from '../test/harness';
+import { freshDb } from '../test/harness';
 import type { TestCtx } from '../test/harness';
 import { httpClient, json } from '../test/http';
 import type { HttpClient } from '../test/http';
@@ -45,8 +45,7 @@ beforeEach(async () => {
 
 async function login(user: AuthUser): Promise<HttpClient> {
   const c = httpClient(ctx.db);
-  const res = await c.post('/api/auth/login', { email: user.email, password: SEED_PASSWORD });
-  expect(res.status).toBe(200);
+  await c.signIn(user);
   return c;
 }
 
@@ -174,54 +173,5 @@ describe('invites', () => {
     expect(
       (await dev.post('/api/invites', { email: 'analyst@test.local', role: 'support' })).status,
     ).toBe(201);
-  });
-
-  it('a historical owner-role invite row is refused at ACCEPTANCE', async () => {
-    /* The column still admits `owner` (0680 keeps history legal) and the
-     * pre-0680 route could mint one; acceptance is the second wall. The seed
-     * goes in raw, the way only history can put it there. */
-    const { mintToken, tokenId } = await import('../repo/users');
-    const token = mintToken();
-    await ctx.db.execute(sql`
-      INSERT INTO invites (email, token_hash, role, invited_by, created_at, expires_at)
-      VALUES ('usurper@test.local', ${tokenId(token)}, 'owner', ${ctx.users.owner.id}::uuid,
-              ${Date.now()}, ${Date.now() + 86_400_000})`);
-
-    const fresh = httpClient(ctx.db);
-    const res = await fresh.post('/api/auth/accept-invite', {
-      token,
-      password: 'a-long-enough-password',
-      displayName: 'Usurper',
-    });
-    expect(res.status).toBe(400);
-    const owners = await ctx.db.execute(
-      sql`SELECT count(*)::int AS n FROM users WHERE role = 'owner'`,
-    );
-    expect(Number(owners.rows[0].n)).toBe(1);
-  });
-
-  it('an accepted invite carries its role into the account, protected by default', async () => {
-    const owner = await login(ctx.users.owner);
-    const res = await owner.post('/api/invites', {
-      email: 'chain@test.local',
-      role: 'supply_chain',
-    });
-    const { invite } = await json<{ invite: { url: string } }>(res);
-    const token = new URL(invite.url).hash.split('token=')[1];
-
-    const fresh = httpClient(ctx.db);
-    const accepted = await fresh.post('/api/auth/accept-invite', {
-      token: decodeURIComponent(token),
-      password: 'a-long-enough-password',
-      displayName: 'Chain Person',
-    });
-    expect(accepted.status).toBe(201);
-    const body = await json<{ user: { role: string } }>(accepted);
-    expect(body.user.role).toBe('supply_chain');
-
-    const row = await ctx.db.execute(
-      sql`SELECT two_factor_email FROM users WHERE email = 'chain@test.local'`,
-    );
-    expect(Boolean(row.rows[0].two_factor_email)).toBe(true);
   });
 });

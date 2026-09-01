@@ -23,7 +23,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { SEED_PASSWORD, freshDb } from '../../test/harness';
+import { freshDb } from '../../test/harness';
 import { httpClient, json } from '../../test/http';
 import { MailNotConfiguredError } from '../../mail/port';
 import { collect, createRequest, inspect, receive, schedule } from '../returns/repo';
@@ -135,11 +135,7 @@ async function makeArea(): Promise<string> {
 
 async function login(user: AuthUser, deps: { mailer?: Mailer } = {}): Promise<HttpClient> {
   const client = httpClient(ctx.db, deps);
-  const res = await client.post('/api/auth/login', {
-    email: user.email,
-    password: SEED_PASSWORD,
-  });
-  expect(res.status).toBe(200);
+  await client.signIn(user);
   return client;
 }
 

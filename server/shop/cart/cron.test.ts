@@ -19,7 +19,7 @@
 import { readFileSync } from 'node:fs';
 import { sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { freshDb, resetShopTables, SEED_PASSWORD } from './test/harness';
+import { freshDb, resetShopTables } from './test/harness';
 import { resetOrderTables } from '../orders/test/harness';
 import { httpClient, json } from '../../test/http';
 import { createApp } from '../../index';
@@ -131,18 +131,12 @@ describe('the cron endpoint', () => {
     // A signed-in writer is not a cron. Keeping the two credentials separate is
     // what stops a leaked session becoming a way to drive maintenance, and what
     // stops the cron token becoming a general-purpose admin credential.
-    await client.post('/api/auth/login', {
-      email: 'owner@test.local',
-      password: SEED_PASSWORD,
-    });
+    await client.signIn({ email: 'owner@test.local' });
     expect((await client.get(CRON_PATH)).status).toBe(401);
   });
 
   it('still lets an operator run it by hand with a session, over POST', async () => {
-    await client.post('/api/auth/login', {
-      email: 'owner@test.local',
-      password: SEED_PASSWORD,
-    });
+    await client.signIn({ email: 'owner@test.local' });
     expect((await client.post(CRON_PATH)).status).toBe(200);
   });
 

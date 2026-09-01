@@ -9,7 +9,6 @@ import {
   enableUser,
   findUserById,
   listUsers,
-  setTwoFactorEmail,
   setUserRole,
 } from '../repo/users';
 import { NotFoundError } from '../repo/errors';
@@ -81,8 +80,6 @@ const RoleBody = z
   })
   .strict();
 
-const TwoFactorBody = z.object({ enabled: z.boolean() }).strict();
-
 // -------------------------------------------------------------------- list
 
 routes.get('/users', requireAdmin(), async (c) =>
@@ -123,7 +120,7 @@ routes.post('/users/:id/disable', requireAdmin(), async (c) => {
    *
    * Team management is owner/developer work, so disabling the last active
    * owner locks the singular account out from the inside; recovery means
-   * running `scripts/set-owner-password.ts --apply` against the production
+   * running `scripts/bootstrap-owner.ts --apply` against the production
    * database.
    *
    * Phrased as the INVARIANT (an instance never reaches zero active owners)
@@ -210,29 +207,4 @@ routes.patch('/users/:id/role', requireAdmin(), async (c) => {
   // ruled out above, so a null here is the row vanishing mid-flight.
   if (!updated) throw new NotFoundError(id);
   return c.json({ ok: true, user: updated });
-});
-
-// -------------------------------------------------------------- two-factor
-
-/**
- * Turn the emailed login code on or off for one account.
- *
- * SELF-SERVICE IS ALLOWED — hardening your own account needs nobody's
- * signature — and for OTHER people the seniority rule applies: weakening the
- * owner's login is not a developer's call.
- */
-routes.patch('/users/:id/two-factor', requireAdmin(), async (c) => {
-  const db = currentDb(c);
-  const actor = currentUser(c);
-  const id = uuidParam(c, 'id');
-  const { enabled } = await readJson(c, TwoFactorBody);
-
-  const target = await findUserById(db, id);
-  if (!target) throw new NotFoundError(id);
-  if (target.user.id !== actor.id && !canManage(actor.role, target.user.role)) {
-    throw new ForbiddenError();
-  }
-
-  if (!(await setTwoFactorEmail(db, id, enabled))) throw new NotFoundError(id);
-  return c.json({ ok: true, enabled });
 });

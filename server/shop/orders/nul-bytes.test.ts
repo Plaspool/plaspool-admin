@@ -16,7 +16,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { SEED_PASSWORD, freshDb } from '../../test/harness';
+import { freshDb } from '../../test/harness';
 import type { TestCtx } from '../../test/harness';
 import { resetOrderTables } from './test/harness';
 import { ordersClient, resetOrdersDeps, type OrdersClient } from './test/app';
@@ -54,11 +54,7 @@ beforeEach(async () => {
   owner = ordersClient(ctx.db, { now: () => T0 });
   // The OWNER, so an owner-only route is reached rather than answered 403 before the
   // boundary check this suite exists to exercise.
-  const res = await owner.post('/api/auth/login', {
-    email: ctx.users.owner.email,
-    password: SEED_PASSWORD,
-  });
-  expect(res.status).toBe(200);
+  await owner.signIn(ctx.users.owner);
 });
 
 const METHODS = new Set(['GET', 'POST', 'PATCH', 'DELETE']);

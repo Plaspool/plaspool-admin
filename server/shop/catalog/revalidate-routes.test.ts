@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { freshDb, SEED_PASSWORD } from '../../test/harness';
+import { freshDb } from '../../test/harness';
 import type { TestCtx } from '../../test/harness';
 import { httpClient, json } from '../../test/http';
 import type { HttpClient } from '../../test/http';
@@ -31,11 +31,7 @@ let sent: unknown[];
 beforeAll(async () => {
   ctx = await freshDb();
   http = httpClient(ctx.db);
-  const res = await http.post('/api/auth/login', {
-    email: 'owner@test.local',
-    password: SEED_PASSWORD,
-  });
-  expect(res.status).toBe(200);
+  await http.signIn({ email: 'owner@test.local' });
 });
 
 afterAll(async () => {
@@ -341,14 +337,7 @@ describe('what does NOT purge', () => {
     expect(await purges()).toEqual([]);
 
     // Put the session back for whatever runs next.
-    expect(
-      (
-        await http.post('/api/auth/login', {
-          email: 'owner@test.local',
-          password: SEED_PASSWORD,
-        })
-      ).status,
-    ).toBe(200);
+    await http.signIn({ email: 'owner@test.local' });
   });
 });
 

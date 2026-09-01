@@ -17,7 +17,7 @@
  * answer identically on every real response, success or refusal.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { SEED_PASSWORD, freshDb } from '../../test/harness';
+import { freshDb } from '../../test/harness';
 import type { TestCtx } from '../../test/harness';
 import { httpClient, TEST_ORIGIN } from '../../test/http';
 
@@ -70,11 +70,7 @@ describe('the credentialed response headers (admin#26)', () => {
 
   it('does not carry these headers on the owner-only /shop/admin/payments/* surface', async () => {
     const client = httpClient(ctx.db);
-    const owner = await client.post('/api/auth/login', {
-      email: ctx.users.owner.email,
-      password: SEED_PASSWORD,
-    });
-    expect(owner.status).toBe(200);
+    await client.signIn(ctx.users.owner);
     const res = await client.get('/api/shop/admin/payments/intents/nonexistent', {
       headers: { Origin: TEST_ORIGIN },
     });

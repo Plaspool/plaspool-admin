@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { SEED_PASSWORD, freshDb } from '../../test/harness';
+import { freshDb } from '../../test/harness';
 import type { TestCtx } from '../../test/harness';
 import { httpClient, json } from '../../test/http';
 import type { HttpClient } from '../../test/http';
@@ -62,11 +62,7 @@ beforeAll(async () => {
    * with a status that has nothing to do with what it was asserting.
    */
   owner = httpClient(ctx.db);
-  const login = await owner.post('/api/auth/login', {
-    email: ctx.users.owner.email,
-    password: SEED_PASSWORD,
-  });
-  expect(login.status).toBe(200);
+  await owner.signIn(ctx.users.owner);
 });
 
 afterAll(async () => {

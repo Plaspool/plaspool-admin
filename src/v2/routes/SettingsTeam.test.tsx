@@ -14,8 +14,9 @@ vi.setConfig({ testTimeout: 20_000 });
  *
  *  - no ⋯ at all on the owner's row or a fellow developer's, while the
  *    writer's row keeps a full menu in the same render;
- *  - your own row keeps exactly ONE item (the sign-in code — self-service on
- *    the server) and neither re-role nor disable;
+ *  - your own row has no ⋯ AT ALL: its one item was the emailed sign-in
+ *    code, which went with Clerk becoming the only auth, and neither re-role
+ *    nor disable was ever offered on yourself;
  *  - the re-role picker lists what the viewer may HAND OUT, so a developer
  *    sees no "Developer" card while the owner does;
  *  - the refusals the table cannot predict (two admins racing) arrive as 409
@@ -156,7 +157,6 @@ const member = (over: Partial<TeamUser> & Pick<TeamUser, 'id' | 'email' | 'role'
   createdAt: NOW - 90 * DAY,
   disabledAt: null,
   postCount: 0,
-  twoFactorEmail: false,
   ...over,
 });
 
@@ -168,7 +168,6 @@ const owner = member({
   email: 'amara@plaspool.com',
   displayName: 'Amara Owner',
   role: 'owner',
-  twoFactorEmail: true,
   createdAt: NOW - 400 * DAY,
 });
 const devViewer = member({
@@ -268,7 +267,7 @@ describe('the team screen', () => {
     expect(calls.some((c) => c.path.split('?')[0] === INVITES)).toBe(false);
   });
 
-  it('renders members with role labels, statuses, sign-in codes — and the roles card', async () => {
+  it('renders members with role labels and statuses — and the roles card', async () => {
     withTeam([owner, devViewer, writer, suspended], [openInvite]);
     mount();
 
@@ -283,11 +282,9 @@ describe('the team screen', () => {
     const ownerRow = await rowOf('Amara Owner');
     expect(within(ownerRow).getByText('Owner')).toBeTruthy();
     expect(within(ownerRow).getByText('Active')).toBeTruthy();
-    expect(within(ownerRow).getByText('On')).toBeTruthy(); // the emailed sign-in code
 
     const writerRow = await rowOf('Wole Writer');
     expect(within(writerRow).getByText('Content writer')).toBeTruthy();
-    expect(within(writerRow).getByText('Off')).toBeTruthy();
 
     // A disabled row says so, and says WHEN.
     const suspendedRow = await rowOf('Sade Support');
@@ -327,14 +324,15 @@ describe('the team screen', () => {
     expect(screen.queryByRole('button', { name: 'Actions for Amara Owner' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Actions for Tunde Dev' })).toBeNull();
 
-    /* Your own row: the sign-in code is self-service on the server, so it is
-       the ONE item — no re-roling yourself, no disabling yourself. */
-    const selfMenu = await openMenu(user, 'Dele Dev');
-    expect(within(selfMenu).getByRole('menuitem', { name: 'Require sign-in code' })).toBeTruthy();
-    expect(within(selfMenu).queryByRole('menuitem', { name: /Change role/ })).toBeNull();
-    expect(within(selfMenu).queryByRole('menuitem', { name: /Disable account/ })).toBeNull();
-    await user.keyboard('{Escape}');
-    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    /*
+     * YOUR OWN ROW HAS NO ⋯ EITHER, and this assertion changed shape rather
+     * than being deleted. Self-service used to mean one item — the emailed
+     * sign-in code — and Clerk owns factors now, so nothing is left: you may
+     * not re-role yourself and you may not disable yourself. A ⋯ that opens
+     * an empty popover is the same broken promise as one over a guaranteed
+     * refusal, so the button must be absent, not merely empty.
+     */
+    expect(screen.queryByRole('button', { name: 'Actions for Dele Dev' })).toBeNull();
 
     // The writer is within reach — full menu, and the re-role picker opens…
     const writerMenu = await openMenu(user, 'Wole Writer');
@@ -380,24 +378,6 @@ describe('the team screen', () => {
     // KEY BY KEY — the body is the role and nothing else.
     expect(bodiesOf(`${USERS}/${writer.id}/role`, 'PATCH')[0]).toEqual({ role: 'support' });
     expect(await screen.findByText('Wole Writer is now a Support')).toBeTruthy();
-  });
-
-  it('toggles the sign-in code over the wire: PATCH /api/users/:id/two-factor', async () => {
-    const user = userEvent.setup();
-    withTeam([owner, devViewer, writer]);
-    when(`${USERS}/${writer.id}/two-factor`, { ok: true, enabled: true });
-    mount();
-
-    const menu = await openMenu(user, 'Wole Writer');
-    await user.click(within(menu).getByRole('menuitem', { name: 'Require sign-in code' }));
-
-    await waitFor(() =>
-      expect(bodiesOf(`${USERS}/${writer.id}/two-factor`, 'PATCH')).toHaveLength(1),
-    );
-    expect(bodiesOf(`${USERS}/${writer.id}/two-factor`, 'PATCH')[0]).toEqual({ enabled: true });
-    expect(
-      await screen.findByText('Wole Writer now needs an emailed code to sign in'),
-    ).toBeTruthy();
   });
 
   it('mints an invite: POST {email, role}, then keeps the modal open on the one-shot URL', async () => {

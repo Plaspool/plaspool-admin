@@ -17,20 +17,6 @@ import { apiFetch } from './api';
 import type { AuthUser } from './types';
 
 /**
- * `MIN_PASSWORD_LENGTH` in `server/repo/users.ts`, restated rather than
- * imported: nothing in `src/` may import from `server/`, which pulls in
- * `node:crypto` and the environment loader. `src/routes/AcceptInvite.tsx`
- * restates the same constant for the same reason.
- *
- * THE SERVER IS STILL THE AUTHORITY — `changePassword` runs `assertCredentials`
- * on the new value, so this only decides whether to spend a round trip. If the
- * two ever drift, the cost is one wasted request answered by the 400 the form
- * already handles, not a password accepted under a rule the server does not
- * enforce.
- */
-export const MIN_PASSWORD_LENGTH = 10;
-
-/**
  * One row of `GET /api/auth/sessions`.
  *
  * `userAgent` IS THE RAW HEADER AND IS NEVER PARSED, on either side. The
@@ -49,11 +35,6 @@ export interface SessionSummary {
   userAgent: string | null;
   /** The session making this very request. Exactly one row carries it. */
   current: boolean;
-}
-
-/** What a successful change answers. The count is what the toast says. */
-export interface PasswordChangeResult {
-  otherSessionsEnded: number;
 }
 
 const seg = (value: string): string => encodeURIComponent(value);
@@ -76,39 +57,6 @@ export const accountApi = {
       body: { displayName },
     });
     return res.user;
-  },
-
-  /**
-   * The signed-in password change — the path the reset flow deliberately is not.
-   *
-   * A WRONG `currentPassword` IS A 400 NAMING THE FIELD AND NOT A 401, and the
-   * distinction is the reason this method exists rather than a bare `apiFetch`
-   * at the call site. `api.ts` turns EVERY 401 into an `AuthExpiredError` and
-   * fires `auth-expired`, which raises the re-authentication overlay over
-   * whatever the writer was doing — so a 401 here would make one typo in one
-   * field look exactly like a dead session, in the middle of the screen where
-   * the writer is proving they know their password. The server chose 400
-   * `detail: 'currentPassword'` for precisely that reason; callers branch on
-   * `detail`.
-   *
-   * The other 400 is `detail: 'password'` — the new value failed the
-   * ten-character floor, raised by the same `assertCredentials` that binds
-   * `acceptInvite` and the reset flow.
-   *
-   * 429 is bucketed `chpw:<userId>`, five per fifteen minutes, and a successful
-   * change forgets the bucket. It is keyed by ACCOUNT and not by IP: the threat
-   * is somebody sitting at an unlocked laptop guessing, and moving between
-   * networks must not reset the count.
-   */
-  async changePassword(a: {
-    currentPassword: string;
-    newPassword: string;
-  }): Promise<PasswordChangeResult> {
-    const res = await apiFetch<{ ok: true; otherSessionsEnded: number }>(
-      '/auth/change-password',
-      { method: 'POST', body: a },
-    );
-    return { otherSessionsEnded: res.otherSessionsEnded };
   },
 
   /**

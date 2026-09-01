@@ -24,7 +24,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { SEED_PASSWORD, freshDb, type TestCtx } from './test/harness';
+import { freshDb, type TestCtx } from './test/harness';
 import { httpClient, json, type HttpClient } from './test/http';
 import type { AuthUser } from '../shared/types';
 
@@ -35,11 +35,7 @@ let owner: HttpClient;
 
 async function login(user: AuthUser): Promise<HttpClient> {
   const c = httpClient(ctx.db);
-  const res = await c.post('/api/auth/login', {
-    email: user.email,
-    password: SEED_PASSWORD,
-  });
-  expect(res.status).toBe(200);
+  await c.signIn(user);
   return c;
 }
 
@@ -68,12 +64,7 @@ beforeEach(async () => {
  * have no required key take it too.
  */
 const BODIES: Record<string, Record<string, unknown>> = {
-  'POST /api/auth/login': { email: 'someone@example.com', password: 'whatever123' },
-  'POST /api/auth/accept-invite': {
-    token: 'a-token',
-    password: 'whatever123',
-    displayName: 'Someone',
-  },
+  'POST /api/auth/clerk/exchange': { token: 'a-token' },
   'POST /api/invites': { email: 'someone@example.com', role: 'writer' },
   'PATCH /api/posts/:id': { patch: { title: 'Title', subtitle: 'Sub', category: 'c' } },
   'POST /api/posts': { title: 'Title', subtitle: 'Sub', category: 'c', tags: ['t'] },
@@ -192,14 +183,19 @@ describe('a NUL byte in a string body field', () => {
 
   it('is a 400 with no session at all — the unauthenticated one', async () => {
     /*
-     * The sharpest of the fourteen: `POST /api/auth/login` parsed and bound the
-     * email before anything authenticated the caller, so any stranger could
-     * make the process 500 on demand.
+     * The sharpest of the original fourteen was `POST /api/auth/login`: it
+     * parsed and bound the email before anything authenticated the caller, so
+     * any stranger could make the process 500 on demand.
+     *
+     * That route is gone — Clerk is the only door now — and the property is
+     * NOT gone with it, which is the whole reason this test still exists.
+     * `POST /api/auth/clerk/exchange` is its replacement in the one way that
+     * matters here: it is reachable with no session and it binds a
+     * caller-supplied string before anyone has proved anything.
      */
     const anon = httpClient(ctx.db);
-    const res = await anon.post('/api/auth/login', {
-      email: `a${NUL}b@example.com`,
-      password: 'whatever123',
+    const res = await anon.post('/api/auth/clerk/exchange', {
+      token: `a${NUL}b`,
     });
     expect(res.status).toBe(400);
     expect(await json(res)).toMatchObject({ error: 'bad_request' });

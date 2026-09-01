@@ -13,11 +13,11 @@
  * cart suite does not have to know how a customer row is shaped.
  */
 import { sql } from 'drizzle-orm';
-import { freshDb, migratedDb, SEED_PASSWORD } from '../../../test/harness';
+import { freshDb, migratedDb } from '../../../test/harness';
 import type { Db } from '../../../db/client';
 import type { TestCtx, RawCtx } from '../../../test/harness';
 
-export { freshDb, migratedDb, SEED_PASSWORD };
+export { freshDb, migratedDb };
 export type { TestCtx, RawCtx };
 
 /**

@@ -3,7 +3,7 @@ import { readJson, str } from '../middleware/errors';
 import { UnauthenticatedError } from '../middleware/errors';
 import { clientIp, limit } from '../middleware/ratelimit';
 import { LOGIN_IP_LIMIT, LOGIN_WINDOW_MS } from '../repo/ratelimit';
-import { createSession, findUserByEmail } from '../repo/users';
+import { claimInviteForEmail, createSession, findUserByEmail } from '../repo/users';
 import { setSessionCookie } from '../middleware/session';
 import { getEnv } from '../env';
 import { currentDb } from '../app-env';
@@ -23,16 +23,24 @@ import type { AppEnv } from '../app-env';
  * sign-in screen keeps exactly one session system, one middleware, one cookie.
  *
  * INVITE-ONLY SURVIVES, and that is the design's spine: the exchange resolves
- * the Clerk user's PRIMARY EMAIL and requires an EXISTING, enabled row in
- * `users`. Holding a Google account named on the team list gets you in;
- * holding any other Google account gets `not_invited`. Nothing is created,
- * so Clerk sign-ups are inert until an admin invites the address — the same
- * property the password flow has always had.
+ * the Clerk user's PRIMARY EMAIL and admits it only if this instance already
+ * named that address — an enabled row in `users`, or an OPEN INVITE that the
+ * exchange then spends. Any other Google account gets `not_invited`. Clerk
+ * sign-ups stay inert until an admin invites the address, the same property
+ * the password flow had.
  *
- * OUR EMAIL 2FA IS DELIBERATELY NOT STACKED ON TOP. A Clerk login already
- * carried whatever factors the Clerk dashboard demands (that is where the
- * owner turns on Clerk 2FA); demanding our emailed code AFTER Clerk's own
- * would be two second factors for one login. The password path keeps ours.
+ * PROVISIONING FROM THE INVITE IS WHY THIS ROUTE CAN BE THE ONLY DOOR
+ * (2026-09-01). `createUser` used to run in exactly one place — accept-invite,
+ * behind a password form — so deleting the password routes without this
+ * branch would have left every future teammate verifying with Google
+ * perfectly and then bouncing off `not_invited` forever, with no screen able
+ * to let them in. `claimInviteForEmail` is that branch: it claims the invite
+ * by the address Clerk just verified. See its header for why the token is no
+ * longer the thing being checked.
+ *
+ * THERE IS NO SECOND FACTOR HERE BECAUSE THERE IS NO SECOND SYSTEM. Clerk's
+ * dashboard owns passwords, Google and every factor; `auth_login_challenges`
+ * and the emailed six-digit code went with the password routes.
  *
  * THE VERIFIER IS A SEAM, NOT AN IMPORT. The real one calls Clerk's SDK with
  * `CLERK_SECRET_KEY`; the suite injects a fake and drives the real route —
@@ -41,8 +49,15 @@ import type { AppEnv } from '../app-env';
  */
 
 export interface ClerkVerifier {
-  /** Resolve a Clerk session token to the account's primary email, or null. */
-  verify(token: string): Promise<{ email: string } | null>;
+  /**
+   * Resolve a Clerk session token to the account's identity, or null.
+   *
+   * `name` is BEST-EFFORT and may be absent: it is only ever used to seed the
+   * display name of an account being provisioned for the first time, and
+   * `claimInviteForEmail` falls back to the address's local part. A Google
+   * account with no profile name is ordinary, so this must not be required.
+   */
+  verify(token: string): Promise<{ email: string; name?: string } | null>;
 }
 
 /**
@@ -68,7 +83,17 @@ function realVerifier(): ClerkVerifier {
           user.primaryEmailAddress?.emailAddress ??
           user.emailAddresses[0]?.emailAddress ??
           '';
-        return email ? { email } : null;
+        if (!email) return null;
+        /*
+         * Whatever Clerk actually has, in descending order of how much a
+         * person would recognise it. All three are nullable on a Clerk user,
+         * which is why the caller still owns a fallback.
+         */
+        const name =
+          [user.firstName, user.lastName].filter(Boolean).join(' ').trim() ||
+          user.username ||
+          '';
+        return name ? { email, name } : { email };
       } catch {
         return null;
       }
@@ -139,9 +164,32 @@ export function createClerkRoutes(deps: ClerkRouteDeps = {}): Hono<AppEnv> {
      * 401 — the screen has to tell a teammate-to-be "ask for an invite"
      * apart from "your Clerk session died", and neither leaks anything: the
      * caller already proved they hold the account in question.
+     *
+     * A DISABLED ACCOUNT IS REFUSED BEFORE THE INVITE IS CONSULTED, and the
+     * order is the point: a revoked teammate whose old invite row somehow
+     * survived must not be able to walk back in through provisioning. Only a
+     * MISS falls through to the claim.
      */
     const found = await findUserByEmail(db, identity.email);
-    if (!found || found.disabledAt != null) {
+    if (found && found.disabledAt != null) {
+      return c.json(
+        { error: 'not_invited', requestId: c.get('requestId') ?? '' },
+        403,
+      );
+    }
+
+    /*
+     * First sign-in for an invited address: spend the invite and create the
+     * account. `claimInviteForEmail` answers null for "no open invite", which
+     * is the same refusal an uninvited stranger gets — the caller cannot tell
+     * an unspent invite from a spent one, and does not need to.
+     */
+    const user = found?.user ?? (await claimInviteForEmail(db, {
+      email: identity.email,
+      displayName: identity.name ?? '',
+    }));
+
+    if (!user) {
       return c.json(
         { error: 'not_invited', requestId: c.get('requestId') ?? '' },
         403,
@@ -150,11 +198,11 @@ export function createClerkRoutes(deps: ClerkRouteDeps = {}): Hono<AppEnv> {
 
     const { token: session, expiresAt } = await createSession(
       db,
-      found.user.id,
+      user.id,
       c.req.header('user-agent') ?? undefined,
     );
     setSessionCookie(c, session, expiresAt);
-    return c.json({ user: found.user });
+    return c.json({ user });
   });
 
   return app;

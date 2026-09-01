@@ -122,8 +122,19 @@ function decodeBase64(value: string): Buffer | null {
 }
 
 /**
- * Never throws. A malformed stored value is a `false`, not a 500 — the caller
- * is a login route and an exception there is an availability bug.
+ * Never throws. A malformed stored value is a `false`, not a 500.
+ *
+ * NO PRODUCTION CALLER SINCE CLERK BECAME THE ONLY AUTH (2026-09-01), and it
+ * is kept deliberately rather than left behind. `password.test.ts` is the only
+ * thing that calls it, and that is the point: it is the ONLY way to prove that
+ * `hashPassword` — which IS live, writing the unusable hash `createUser` mints
+ * — round-trips at the parameters it claims. Delete this and the surviving
+ * half can only be asserted on the SHAPE of its output, which would pass for a
+ * hash that decodes to nothing.
+ *
+ * Do not wire it to a route. Reintroducing password sign-in means rebuilding
+ * the enumeration and rate-limiting properties `server/routes/auth.ts`
+ * documents having lost, not just calling this again.
  */
 export async function verifyPassword(plain: string, stored: string): Promise<boolean> {
   const parts = stored.split('$');

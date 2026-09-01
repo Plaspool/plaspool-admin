@@ -10,12 +10,7 @@ import {
   PreconditionFailedError,
   StaleWriteError,
 } from '../repo/errors';
-import {
-  DuplicateEmailError,
-  InviteError,
-  UserInputError,
-} from '../repo/users';
-import { PasswordResetError } from '../repo/password-reset';
+import { DuplicateEmailError, UserInputError } from '../repo/users';
 import { MailNotConfiguredError } from '../mail/port';
 
 /**
@@ -226,20 +221,17 @@ function map(err: unknown): Mapped | null {
   if (err instanceof UserInputError) {
     return { status: 400, body: { error: 'bad_request', detail: err.field } };
   }
-  if (err instanceof InviteError) {
-    return { status: 400, body: { error: 'bad_request', detail: 'invite' } };
-  }
+  /*
+   * `InviteError` and `PasswordResetError` had rows here until Clerk became
+   * the only auth (2026-09-01). Both were thrown by routes that no longer
+   * exist — accept-invite and password reset — and nothing throws either
+   * class now, so the classes went with the rows. A refused invite is not
+   * silently unmapped: `claimInviteForEmail` answers `null` and the Clerk
+   * exchange turns that into its own named 403 `not_invited`, which is a
+   * better refusal than the 400 this used to produce.
+   */
   if (err instanceof DuplicateEmailError) {
     return { status: 400, body: { error: 'bad_request', detail: 'email' } };
-  }
-  /*
-   * A reset token that is unknown, expired, spent, or whose account has been
-   * disabled — all four, indistinguishable, for the reason `PasswordResetError`
-   * documents. 400 and not 500 for the rule at the top of this file: none of
-   * them can ever become valid, so a 500 would be retried five times.
-   */
-  if (err instanceof PasswordResetError) {
-    return { status: 400, body: { error: 'bad_request', detail: 'token' } };
   }
   /*
    * 501, matching the shop's `NotImplementedError` row: the deployment has no

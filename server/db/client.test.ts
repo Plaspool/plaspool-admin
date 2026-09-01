@@ -22,7 +22,7 @@ import type { Db } from './client';
 import { posts, users } from './schema';
 import {
   DuplicateEmailError,
-  acceptInvite,
+  claimInviteForEmail,
   createInvite,
   createUser,
 } from '../repo/users';
@@ -67,7 +67,6 @@ describe('driver errors carry no values', () => {
     const email = 'alice@example.com';
     await createUser(db, {
       email,
-      password: PASSWORD,
       displayName: 'Alice',
       role: 'owner',
     });
@@ -76,7 +75,6 @@ describe('driver errors carry no values', () => {
       // Different case on purpose: the collision is on the lowercased value, so
       // the leaked parameter is the STORED address, not the one supplied.
       email: 'Alice@Example.com',
-      password: SECOND_PASSWORD,
       displayName: 'Mallory',
       role: 'writer',
     }).then(
@@ -94,34 +92,30 @@ describe('driver errors carry no values', () => {
     expect(text).not.toContain('INSERT INTO users');
   });
 
-  it('the same holds through acceptInvite, which rethrows what createUser threw', async () => {
+  it('the same holds through claimInviteForEmail, which rethrows what createUser threw', async () => {
+    /*
+     * Was `acceptInvite` until Clerk became the only auth. The claim moved to
+     * the Clerk exchange and keys on the address instead of a token, but the
+     * property is unchanged and is the reason this case exists: the rethrow
+     * used to be the shortest route from a unique violation to a password hash
+     * in a log.
+     */
     const inviter = await createUser(db, {
       email: 'owner-inv@example.com',
-      password: PASSWORD,
       displayName: 'Owner',
       role: 'owner',
     });
     const taken = 'bob@example.com';
-    await createUser(db, {
-      email: taken,
-      password: PASSWORD,
-      displayName: 'Bob',
-      role: 'writer',
-    });
+    await createUser(db, { email: taken, displayName: 'Bob', role: 'writer' });
 
-    const { token } = await createInvite(db, {
-      email: taken,
-      role: 'writer',
-      invitedBy: inviter.id,
-    });
+    await createInvite(db, { email: taken, role: 'writer', invitedBy: inviter.id });
 
-    const err = await acceptInvite(db, {
-      token,
-      password: SECOND_PASSWORD,
+    const err = await claimInviteForEmail(db, {
+      email: taken,
       displayName: 'Impostor',
     }).then(
       () => {
-        throw new Error('expected accepting an invite for a taken email to fail');
+        throw new Error('expected claiming an invite for a taken email to fail');
       },
       (e: unknown) => e,
     );
@@ -137,7 +131,6 @@ describe('driver errors carry no values', () => {
     // SQL inherits the scrub without doing anything.
     const author = await createUser(db, {
       email: 'author-raw@example.com',
-      password: PASSWORD,
       displayName: 'Author',
       role: 'writer',
     });

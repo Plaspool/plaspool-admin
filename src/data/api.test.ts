@@ -125,14 +125,12 @@ afterEach(() => {
  */
 const ROUTES: [string, () => Promise<unknown>, string, string][] = [
   ['me', () => api.me(), 'GET', '/api/auth/me'],
-  ['login', () => api.login('a@b.c', 'pw'), 'POST', '/api/auth/login'],
   ['logout', () => api.logout(), 'POST', '/api/auth/logout'],
-  [
-    'acceptInvite',
-    () => api.acceptInvite({ token: 't', password: 'pw', displayName: 'Ada' }),
-    'POST',
-    '/api/auth/accept-invite',
-  ],
+  /* `login` and `acceptInvite` were here until Clerk became the only door.
+     The one route that mints a session is now `/api/auth/clerk/exchange`,
+     which `ClerkGate` calls through `apiFetch` directly rather than through
+     `api`, and which is covered against the real server in
+     `server/routes/clerk.test.ts`. */
   ['createInvite', () => api.createInvite('a@b.c'), 'POST', '/api/invites'],
   ['listInvites', () => api.listInvites(), 'GET', '/api/invites'],
   ['revokeInvite', () => api.revokeInvite('i_1'), 'DELETE', '/api/invites/i_1'],

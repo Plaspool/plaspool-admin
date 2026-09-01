@@ -21,11 +21,9 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { SEED_PASSWORD, freshDb, type TestCtx } from '../test/harness';
+import { freshDb, type TestCtx } from '../test/harness';
 import { httpClient, json, type HttpClient } from '../test/http';
 import { SESSION_COOKIE } from '../middleware/session';
-import { CHANGE_PASSWORD_LIMIT } from './auth';
-import { MIN_PASSWORD_LENGTH } from '../repo/users';
 import type { AuthUser } from '../../shared/types';
 
 let ctx: TestCtx;
@@ -92,15 +90,20 @@ function client(ip: string): HttpClient {
   };
 }
 
+/**
+ * A client holding a real session for `user`.
+ *
+ * `userAgent` is a parameter because `sessions.user_agent` is a column this
+ * suite asserts on; it used to arrive as a request header on the login POST,
+ * and since Clerk became the only door there is no login POST to hang it on.
+ */
 async function loggedIn(
   user: AuthUser,
   ip: string,
-  password = SEED_PASSWORD,
-  init: RequestInit = {},
+  userAgent?: string,
 ): Promise<HttpClient> {
   const c = client(ip);
-  const res = await c.post('/api/auth/login', { email: user.email, password }, init);
-  expect(res.status).toBe(200);
+  await c.signIn(user, userAgent);
   return c;
 }
 
@@ -215,233 +218,6 @@ describe('PATCH /api/auth/me', () => {
   });
 });
 
-// ------------------------------------------------- POST /auth/change-password
-
-const NEW_PASSWORD = 'a-brand-new-password';
-
-describe('POST /api/auth/change-password', () => {
-  it('is 401 without a session', async () => {
-    const res = await client('203.0.113.70').post('/api/auth/change-password', {
-      currentPassword: SEED_PASSWORD,
-      newPassword: NEW_PASSWORD,
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it('changes the password: the new one logs in and the old one does not', async () => {
-    const c = await loggedIn(ctx.users.writer, '203.0.113.71');
-    const res = await c.post('/api/auth/change-password', {
-      currentPassword: SEED_PASSWORD,
-      newPassword: NEW_PASSWORD,
-    });
-    expect(res.status).toBe(200);
-    expect(await json(res)).toMatchObject({ ok: true });
-
-    const fresh = client('203.0.113.72');
-    const withNew = await fresh.post('/api/auth/login', {
-      email: ctx.users.writer.email,
-      password: NEW_PASSWORD,
-    });
-    expect(withNew.status).toBe(200);
-
-    const withOld = await client('203.0.113.73').post('/api/auth/login', {
-      email: ctx.users.writer.email,
-      password: SEED_PASSWORD,
-    });
-    expect(withOld.status).toBe(401);
-  });
-
-  it("the caller's cookie survives and every other one does not", async () => {
-    /*
-     * THE WHOLE ROUTE, IN ONE CASE.
-     *
-     * `POST /api/auth/reset` ends every session because a reset is what someone
-     * does when they believe an intruder holds one. This is the signed-in path,
-     * and it has to do the opposite for the tab doing the typing while doing the
-     * same thing to every other tab — otherwise it is either unusable or
-     * useless. Neither half can be seen without two live cookies for one
-     * account.
-     */
-    const laptop = await loggedIn(ctx.users.owner, '203.0.113.74');
-    const phone = await loggedIn(ctx.users.owner, '203.0.113.75');
-    expect((await phone.get('/api/auth/me')).status).toBe(200);
-
-    const res = await laptop.post('/api/auth/change-password', {
-      currentPassword: SEED_PASSWORD,
-      newPassword: NEW_PASSWORD,
-    });
-    expect(res.status).toBe(200);
-    expect(await json(res)).toMatchObject({ ok: true, otherSessionsEnded: 1 });
-
-    // The caller keeps working — same cookie, no re-login, no new Set-Cookie.
-    expect(res.headers.getSetCookie()).toHaveLength(0);
-    expect(laptop.cookies().has(SESSION_COOKIE)).toBe(true);
-    expect((await laptop.get('/api/auth/me')).status).toBe(200);
-
-    // The other one is gone, and gone from the table rather than merely
-    // shadowed — `resolveSession` would still accept a surviving row.
-    expect((await phone.get('/api/auth/me')).status).toBe(401);
-    const rows = await ctx.db.execute(sql`
-      SELECT count(*)::int AS n FROM sessions WHERE user_id = ${ctx.users.owner.id}::uuid`);
-    expect(Number(rows.rows[0].n)).toBe(1);
-  });
-
-  it('leaves other accounts alone', async () => {
-    const owner = await loggedIn(ctx.users.owner, '203.0.113.76');
-    const writer = await loggedIn(ctx.users.writer, '203.0.113.77');
-
-    expect(
-      (
-        await owner.post('/api/auth/change-password', {
-          currentPassword: SEED_PASSWORD,
-          newPassword: NEW_PASSWORD,
-        })
-      ).status,
-    ).toBe(200);
-
-    // The writer's session and password are untouched: the sweep is scoped by
-    // `user_id`, not by "every session issued before now".
-    expect((await writer.get('/api/auth/me')).status).toBe(200);
-    expect(
-      (
-        await client('203.0.113.78').post('/api/auth/login', {
-          email: ctx.users.writer.email,
-          password: SEED_PASSWORD,
-        })
-      ).status,
-    ).toBe(200);
-  });
-
-  it('a wrong current password is a 400 naming the field, never a 401', async () => {
-    /*
-     * 401 WOULD BE THE WRONG ANSWER AND AN EXPENSIVE ONE. The session is valid
-     * — `requireAuth` just said so — so 401 lies about which credential failed,
-     * and `src/data/api.ts` maps every 401 onto `AuthExpiredError` and fires
-     * `auth-expired`, which raises the re-authentication overlay. A typo in one
-     * field would look exactly like a session that had died mid-edit.
-     */
-    const c = await loggedIn(ctx.users.writer, '203.0.113.79');
-    const res = await c.post('/api/auth/change-password', {
-      currentPassword: 'not-the-seed-password',
-      newPassword: NEW_PASSWORD,
-    });
-    expect(res.status).toBe(400);
-    expect(await json(res)).toMatchObject({
-      error: 'bad_request',
-      detail: 'currentPassword',
-    });
-
-    // Nothing moved: the old password still logs in, the session still works.
-    expect((await c.get('/api/auth/me')).status).toBe(200);
-    expect(
-      (
-        await client('203.0.113.80').post('/api/auth/login', {
-          email: ctx.users.writer.email,
-          password: SEED_PASSWORD,
-        })
-      ).status,
-    ).toBe(200);
-  });
-
-  it('a short new password is a 400 and the old one still works', async () => {
-    const c = await loggedIn(ctx.users.writer, '203.0.113.81');
-    const res = await c.post('/api/auth/change-password', {
-      currentPassword: SEED_PASSWORD,
-      newPassword: 'x'.repeat(MIN_PASSWORD_LENGTH - 1),
-    });
-    expect(res.status).toBe(400);
-    // `detail` is the field name `UserInputError` carries, and it is
-    // `password` rather than `newPassword` because `assertCredentials` is the
-    // one authority for the rule and names the field it judges.
-    expect((await json(res)).detail).toBe('password');
-
-    expect(
-      (
-        await client('203.0.113.82').post('/api/auth/login', {
-          email: ctx.users.writer.email,
-          password: SEED_PASSWORD,
-        })
-      ).status,
-    ).toBe(200);
-  });
-
-  it('a 400 never echoes either password', async () => {
-    const c = await loggedIn(ctx.users.writer, '203.0.113.83');
-    const res = await c.post('/api/auth/change-password', {
-      currentPassword: 'wrong-but-memorable',
-      newPassword: 'also-quite-memorable',
-    });
-    const text = await res.text();
-    expect(res.status).toBe(400);
-    expect(text).not.toContain('wrong-but-memorable');
-    expect(text).not.toContain('also-quite-memorable');
-  });
-
-  it('refuses an unknown body key', async () => {
-    const c = await loggedIn(ctx.users.writer, '203.0.113.84');
-    const res = await c.post('/api/auth/change-password', {
-      currentPassword: SEED_PASSWORD,
-      newPassword: NEW_PASSWORD,
-      userId: ctx.users.owner.id,
-    });
-    expect(res.status).toBe(400);
-    expect((await json(res)).detail).toBe('userId');
-  });
-
-  it('is limited to five wrong guesses per account, whatever the IP', async () => {
-    /*
-     * The bucket is `chpw:<userId>`, NOT `chpw:<ip>`. Somebody sitting at an
-     * unlocked laptop guessing the existing password is the threat, and moving
-     * between networks must not reset the count — so every attempt below comes
-     * from a different address and they still share one counter.
-     */
-    const statuses: number[] = [];
-    for (let i = 0; i < CHANGE_PASSWORD_LIMIT + 1; i += 1) {
-      const c = await loggedIn(ctx.users.writer, `198.51.100.${100 + i}`);
-      const res = await c.post('/api/auth/change-password', {
-        currentPassword: `guess-number-${i}`,
-        newPassword: NEW_PASSWORD,
-      });
-      statuses.push(res.status);
-      if (i === CHANGE_PASSWORD_LIMIT) {
-        const body = await json(res);
-        expect(body.error).toBe('rate_limited');
-        expect(body.retryAfter).toBeGreaterThan(0);
-        expect(res.headers.get('retry-after')).toBe(String(body.retryAfter));
-      }
-    }
-    expect(statuses).toEqual([400, 400, 400, 400, 400, 429]);
-
-    const keys = await ctx.db.execute(sql`SELECT key FROM auth_attempts`);
-    expect(keys.rows.map((r) => String(r.key))).toContain(`chpw:${ctx.users.writer.id}`);
-  });
-
-  it('a successful change forgets the bucket', async () => {
-    // Four typos then the real password: being locked out of changing your own
-    // password for a quarter of an hour, immediately after proving you know it,
-    // is the login route's `forget` case one endpoint over.
-    const c = await loggedIn(ctx.users.owner, '198.51.100.120');
-    for (let i = 0; i < 4; i += 1) {
-      await c.post('/api/auth/change-password', {
-        currentPassword: 'wrong',
-        newPassword: NEW_PASSWORD,
-      });
-    }
-    expect(
-      (
-        await c.post('/api/auth/change-password', {
-          currentPassword: SEED_PASSWORD,
-          newPassword: NEW_PASSWORD,
-        })
-      ).status,
-    ).toBe(200);
-
-    const rows = await ctx.db.execute(sql`
-      SELECT count(*)::int AS n FROM auth_attempts WHERE key = ${`chpw:${ctx.users.owner.id}`}`);
-    expect(Number(rows.rows[0].n)).toBe(0);
-  });
-});
-
 // -------------------------------------------------------- sessions routes
 
 interface SessionItem {
@@ -465,12 +241,8 @@ describe('GET /api/auth/sessions', () => {
   });
 
   it('lists the caller\'s own sessions, marks the current one, and carries the user agent', async () => {
-    const laptop = await loggedIn(ctx.users.writer, '203.0.113.91', SEED_PASSWORD, {
-      headers: { 'user-agent': 'Studio/1.0 (laptop)' },
-    });
-    await loggedIn(ctx.users.writer, '203.0.113.92', SEED_PASSWORD, {
-      headers: { 'user-agent': 'Studio/1.0 (phone)' },
-    });
+    const laptop = await loggedIn(ctx.users.writer, '203.0.113.91', 'Studio/1.0 (laptop)');
+    await loggedIn(ctx.users.writer, '203.0.113.92', 'Studio/1.0 (phone)');
 
     const items = await listSessionsOf(laptop);
     expect(items).toHaveLength(2);

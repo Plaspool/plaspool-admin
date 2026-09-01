@@ -10,7 +10,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { SEED_PASSWORD, freshDb, type TestCtx } from '../test/harness';
+import { freshDb, type TestCtx } from '../test/harness';
 import { httpClient, json, type HttpClient } from '../test/http';
 import type { AuthUser, DocNode, Post } from '../../shared/types';
 
@@ -26,11 +26,7 @@ const doc = (text: string): DocNode => ({
 
 async function login(user: AuthUser): Promise<HttpClient> {
   const c = httpClient(ctx.db);
-  const res = await c.post('/api/auth/login', {
-    email: user.email,
-    password: SEED_PASSWORD,
-  });
-  expect(res.status).toBe(200);
+  await c.signIn(user);
   return c;
 }
 
@@ -273,10 +269,7 @@ describe('a lifecycle op whose precondition no longer holds', () => {
     const post = await create(owner, { title: 'Contended' });
     const raced = racingLifecycle(ctx.db, post.id);
     const client = httpClient(raced);
-    await client.post('/api/auth/login', {
-      email: ctx.users.owner.email,
-      password: SEED_PASSWORD,
-    });
+    await client.signIn(ctx.users.owner);
 
     const res = await client.post(`/api/posts/${post.id}/archive`);
     expect(res.status).toBe(409);

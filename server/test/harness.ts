@@ -7,7 +7,6 @@ import { guardDb } from '../db/client';
 import { migrateWithReplayCheck } from '../db/replay';
 import type { Db } from '../db/client';
 import type { AuthUser } from '../../shared/types';
-import { hashPassword } from '../repo/password';
 
 /**
  * A real Postgres per suite, in-process. PGlite is Postgres compiled to WASM,
@@ -76,37 +75,34 @@ export async function freshDb(): Promise<TestCtx> {
 }
 
 /**
- * The password every seeded user has, so an auth-route suite can log in as
- * `ctx.users.owner` without knowing anything else about the seed.
- */
-export const SEED_PASSWORD = 'seed-password';
-
-/**
- * Seeded with a REAL hash at deliberately cheap parameters, not a dummy
- * string. Two hashes at the production cost would add ~450 ms to every server
- * suite, and the production parameters are already pinned by
- * `password.test.ts` — but a hash that cannot be verified would make every
- * later login test build its own users instead.
+ * The seeded value of `users.password_hash`: a LITERAL, and not a hash of
+ * anything.
  *
- * `verifyPassword` reads N, r and p out of the stored value, so a cheap hash
- * verifies cheaply through exactly the production code path.
+ * This used to be a real scrypt derivation of a `SEED_PASSWORD` constant at
+ * deliberately cheap parameters, because auth-route suites signed in by
+ * POSTing that password to `/api/auth/login`. Clerk is the only door now —
+ * suites call `http.signIn()`, which mints the session directly — so NOTHING
+ * verifies a password anywhere in this repository, and six scrypt derivations
+ * per `freshDb()` bought exactly nothing.
+ *
+ * It is deliberately not scrypt-shaped. A value that LOOKED like a hash would
+ * invite the assumption that it verifies against something; this one cannot be
+ * mistaken for a credential by anybody, including a future test author.
  */
-const SEED_COST_LOG2 = 4;
+const SEED_PASSWORD_HASH = 'not-a-hash-nothing-verifies-passwords-any-more';
 
 async function seedUsers(db: Db): Promise<TestCtx['users']> {
-  /* The column list deliberately omits `two_factor_email`, so every seed gets
-   * the DDL default (false) and login stays single-step in every suite —
-   * migration 0700's header carries the argument. The 2FA suite flips the
-   * column on the rows it needs. */
+  /* The column list omits `two_factor_email`, which takes the DDL default
+   * (false). The column is vestigial — the emailed second factor went with the
+   * password routes — and naming it here would suggest otherwise. */
   const mk = async (
     email: string,
     displayName: string,
     role: import('../../shared/roles').Role,
   ) => {
-    const passwordHash = await hashPassword(SEED_PASSWORD, SEED_COST_LOG2);
     const res = await db.execute(sql`
       INSERT INTO users (email, password_hash, display_name, role, created_at)
-      VALUES (${email}, ${passwordHash}, ${displayName}, ${role}, ${Date.now()})
+      VALUES (${email}, ${SEED_PASSWORD_HASH}, ${displayName}, ${role}, ${Date.now()})
       RETURNING id, email, display_name, role`);
     const row = res.rows[0];
     return {

@@ -1,38 +1,43 @@
 /**
- * ONE ORDERING, AND IT IS A SECURITY PROPERTY.
+ * ONE ORDERING, AND IT IS STILL WORTH PINNING.
  *
- * `createUser` calls `assertCredentials(a)` and only then `await
- * hashPassword(a.password)`. Swapping those two lines leaves every other test
+ * `createUser` calls `assertDisplayName(a.displayName)` and only then
+ * `await hashPassword(...)`. Swapping those two lines leaves every other test
  * in the suite green — the same error is thrown, with the same message, and
- * nothing observable changes except how much CPU a rejected request costs.
+ * nothing observable changes except how much CPU a rejected call costs.
  *
  * What it costs is the point. scrypt at the production parameters (N=2^15,
- * r=8) is ~32 MiB and ~200 ms of blocked derivation per call, deliberately, and
- * `password.ts` admits at most two concurrently. Accept-invite is
- * UNAUTHENTICATED: anyone holding a link, or guessing at one, can post to it.
- * Hash first and a one-character password — rejected in microseconds by the
- * length check — instead buys 200 ms of the semaphore, and a few hundred
- * requests per second of garbage saturate it. Validate first and the same
- * traffic costs a string comparison.
+ * r=8) is ~32 MiB and ~200 ms of blocked derivation per call, deliberately,
+ * and `password.ts` admits at most two concurrently. Hash first and a rejected
+ * call still buys 200 ms of the semaphore; validate first and it costs a
+ * string comparison.
  *
- * This is why the assertion is on the call and not on a timing measurement: a
- * duration assertion would be flaky under load, and it is the ordering, not the
+ * THIS FILE SHRANK WHEN CLERK BECAME THE ONLY AUTH (2026-09-01), and the
+ * missing half is worth naming so nobody re-adds it. It used to cover
+ * `acceptInvite` too, and that was the case the property really existed for:
+ * accept-invite was UNAUTHENTICATED, so anyone holding a link — or guessing at
+ * one — could aim garbage at scrypt. That route is gone. `createUser` is now
+ * reached from exactly one place, `claimInviteForEmail`, behind a verified
+ * Clerk identity, so the flooding scenario needs a real account first.
+ *
+ * It also used to assert a password floor. `createUser` no longer takes a
+ * password at all — it mints one nobody holds — so there is nothing left to
+ * judge but the name.
+ *
+ * The assertion is on the CALL and not on a timing measurement: a duration
+ * assertion would be flaky under load, and it is the ordering, not the
  * duration, that has to hold.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { sql } from 'drizzle-orm';
 import { migratedDb } from '../test/harness';
 import type { Db } from '../db/client';
 import { hashPassword } from './password';
-import {
-  UserInputError,
-  acceptInvite,
-  createInvite,
-  createUser,
-} from './users';
+import { UserInputError, createUser } from './users';
 
 // Hoisted above the imports by Vitest. The real implementation is kept — this
-// counts calls, it does not replace behaviour, so the success paths below still
-// derive a genuine hash.
+// counts calls, it does not replace behaviour, so the success path below still
+// derives a genuine hash.
 vi.mock('./password', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./password')>();
   return { ...actual, hashPassword: vi.fn(actual.hashPassword) };
@@ -57,65 +62,43 @@ beforeEach(() => {
 let seq = 0;
 const email = () => `ord${++seq}.${Date.now().toString(36)}@test.local`;
 
-describe('credentials are judged before scrypt is spent on them', () => {
-  it('createUser rejects a too-short password without hashing it', async () => {
+describe('the display name is judged before scrypt is spent', () => {
+  it('createUser rejects a blank display name without hashing anything', async () => {
+    /* `'   '` and not `''`: Zod's `.min(1)` accepts the former, so this is the
+       value `assertDisplayName` exists to refuse. */
     await expect(
-      createUser(db, {
-        email: email(),
-        password: 'nine-char',
-        displayName: 'Rejected',
-        role: 'writer',
-      }),
+      createUser(db, { email: email(), displayName: '   ', role: 'writer' }),
     ).rejects.toBeInstanceOf(UserInputError);
     expect(hashPassword).not.toHaveBeenCalled();
   });
 
-  it('createUser rejects a blank display name without hashing either', async () => {
-    // The display-name branch is on the far side of the length check, so it is
-    // the one that catches a swap moved only partway.
-    await expect(
-      createUser(db, {
-        email: email(),
-        password: 'a-long-enough-one',
-        displayName: '   ',
-        role: 'writer',
-      }),
-    ).rejects.toBeInstanceOf(UserInputError);
-    expect(hashPassword).not.toHaveBeenCalled();
-  });
-
-  it('acceptInvite refuses before it claims the invite or hashes anything', async () => {
-    // The unauthenticated path, and the one the property exists for.
-    const inviter = await createUser(db, {
-      email: email(),
-      password: 'pw-owner-strong',
-      displayName: 'Owner',
-      role: 'owner',
-    });
-    vi.mocked(hashPassword).mockClear();
-
-    const { token } = await createInvite(db, {
-      email: email(),
-      role: 'writer',
-      invitedBy: inviter.id,
-    });
-
-    await expect(
-      acceptInvite(db, { token, password: '', displayName: 'Flood' }),
-    ).rejects.toBeInstanceOf(UserInputError);
-    expect(hashPassword).not.toHaveBeenCalled();
-  });
-
-  it('but a valid password IS hashed, so the spy is wired to something real', async () => {
-    // Without this the three assertions above would also pass against a mock
-    // that never fires.
+  it('but a valid one IS hashed, so the spy is wired to something real', async () => {
+    // Without this the assertion above would also pass against a mock that
+    // never fires.
     const user = await createUser(db, {
       email: email(),
-      password: 'a-long-enough-one',
       displayName: 'Accepted',
       role: 'writer',
     });
     expect(user.displayName).toBe('Accepted');
     expect(hashPassword).toHaveBeenCalledTimes(1);
+  });
+
+  it('and the password it mints is not one anybody supplied', async () => {
+    /*
+     * The invariant `createUser` losing its `password` parameter bought: no
+     * call site can hand it a knowable value, so two accounts created the same
+     * way do not share a hash. Cheap to assert and the only place that says so.
+     */
+    const a = await createUser(db, { email: email(), displayName: 'A', role: 'writer' });
+    const b = await createUser(db, { email: email(), displayName: 'B', role: 'writer' });
+    /* Read straight off the column: `findUserByEmail` deliberately no longer
+       returns it, which is the other half of the same cleanup. */
+    const rows = await db.execute(sql`
+      SELECT password_hash FROM users WHERE id IN (${a.id}::uuid, ${b.id}::uuid)`);
+    const hashes = rows.rows.map((r) => String(r.password_hash));
+    expect(hashes).toHaveLength(2);
+    expect(hashes[0]).not.toBe(hashes[1]);
+    expect(hashes[0]).toMatch(/^scrypt\$/);
   });
 });

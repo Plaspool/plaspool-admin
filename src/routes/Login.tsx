@@ -1,253 +1,159 @@
-import { useId, useState, useSyncExternalStore, type FormEvent } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
-import { api } from '../data/api';
-import { ApiError, OfflineError } from '../data/errors';
+import { ClerkProvider, SignIn, useAuth, useClerk } from '@clerk/clerk-react';
+import { apiFetch } from '../data/api';
+import { ApiError } from '../data/errors';
 import { adoptUser, getSession, subscribe } from '../data/session';
 import { BrandLogo } from '../components/BrandLogo';
+import type { AuthUser } from '../data/types';
 import './auth.css';
 
 /**
- * Sign in.
+ * Sign in — CLERK AND NOTHING ELSE since 2026-09-01.
  *
- * The form is a separate export from the page because the same form is the
- * mid-session re-auth prompt (`RequireAuth`), where it renders over a live
- * editor rather than on a page of its own. One implementation, so the two can
- * never disagree about what a 429 means or which errors are worth showing.
+ * WHAT THIS FILE USED TO BE: an email and password form, plus a six-digit code
+ * form for the emailed second factor, plus a link to `/forgot`. All three are
+ * gone because the ROUTES they posted to are gone — the owner made Clerk the
+ * only door, so `POST /api/auth/login`, `/auth/login/code`, `/auth/forgot`,
+ * `/auth/reset` and `/auth/accept-invite` no longer exist on the server.
+ *
+ * THIS IS THE v1 BUILD, AND IT IS DELIBERATELY A COPY, NOT AN IMPORT. v2 has
+ * its own `src/v2/shell/ClerkGate.tsx` doing the same job against v2's classes
+ * and tokens. Importing across the boundary is what PR #75 established you do
+ * NOT do: v1 owns `auth.css` and v2 owns `shell.css`, and a shared component
+ * would drag one build's stylesheet into the other. The two are ~60 lines of
+ * the same flow rendered in two different design systems; if you change the
+ * exchange contract, change both.
+ *
+ * `SignInForm` STAYS AN EXPORT because `RequireAuth` renders it as the
+ * mid-session re-auth prompt over a live editor. It no longer takes props —
+ * there is no email to prefill or lock when Clerk owns the form.
  */
+
+const CLERK_KEY = (import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined) ?? '';
 
 /**
- * WHAT A FAILED SIGN-IN IS ALLOWED TO SAY.
+ * The exchange: a Clerk session becomes the ordinary `__Host-studio_session`
+ * cookie, and every screen past this one sees one session system.
  *
- * `server/routes/auth.ts` answers identically for an unknown email and a wrong
- * password — same status, same body, and deliberately the same scrypt cost —
- * because this is an invite-only instance where knowing WHICH addresses have
- * accounts is most of what an attacker wants. A client that helpfully split
- * that back into "no such account" and "wrong password" would hand the
- * enumeration oracle straight back, from the one place nobody thinks to audit.
+ * Clerk says WHO you are and deliberately not WHAT you may do — the role, the
+ * revoked flag and the invite list live in our database, and the exchange is
+ * where the verified identity meets them. A 403 is `not_invited`: the account
+ * is real and this store has never heard of it, or its invitation is spent or
+ * expired.
  */
-function messageFor(err: unknown): string {
-  if (err instanceof OfflineError) {
-    return 'Could not reach the server. Check your connection and try again.';
-  }
-  if (err instanceof ApiError) {
-    if (err.status === 401) return 'That email and password do not match an account.';
-    if (err.status === 429) {
-      const seconds = err.retryAfter;
-      return seconds
-        ? `Too many attempts. Try again in ${Math.ceil(seconds)} seconds.`
-        : 'Too many attempts. Try again shortly.';
-    }
-    if (err.status === 400) return 'That does not look like an email address.';
-    /*
-     * A 500's body carries nothing but the request id — the server logs the
-     * detail beside the same id rather than returning it — so quoting it is
-     * the whole of what makes the failure diagnosable from a bug report.
-     */
-    return err.requestId
-      ? `Something went wrong at our end. Reference ${err.requestId}.`
-      : 'Something went wrong at our end. Please try again.';
-  }
-  return 'Something went wrong. Please try again.';
-}
+function Exchange() {
+  const { isSignedIn, getToken } = useAuth();
+  const { signOut } = useClerk();
+  const [state, setState] = useState<'idle' | 'exchanging' | 'not_invited' | 'failed'>('idle');
+  const started = useRef(false);
 
-export function SignInForm({
-  initialEmail = '',
-  lockEmail = false,
-  submitLabel = 'Sign in',
-}: {
-  initialEmail?: string;
-  /** Re-auth knows who you are; retyping your own address proves nothing. */
-  lockEmail?: boolean;
-  submitLabel?: string;
-}) {
-  const [email, setEmail] = useState(initialEmail);
-  const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  /* Non-null between the password verifying and the emailed code arriving
-     (migration 0700). The ticket is the server's proof the first factor
-     happened, so this form never holds the password past that point. */
-  const [challenge, setChallenge] = useState<{ ticket: string } | null>(null);
-  const [code, setCode] = useState('');
-  const [resent, setResent] = useState(false);
-  const errorId = useId();
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await api.login(email.trim(), password);
-      // The password never goes back into a controlled input's state after
-      // this point, successful or not.
-      setPassword('');
-      if (result.kind === 'code') {
-        setChallenge({ ticket: result.ticket });
-        setBusy(false);
-        return;
+  useEffect(() => {
+    if (!isSignedIn || started.current) return;
+    started.current = true;
+    setState('exchanging');
+    void (async () => {
+      try {
+        const token = await getToken();
+        if (!token) throw new Error('no clerk token');
+        const res = await apiFetch<{ user: AuthUser }>('/auth/clerk/exchange', {
+          method: 'POST',
+          body: { token },
+        });
+        await adoptUser(res.user);
+      } catch (cause) {
+        if (cause instanceof ApiError && cause.status === 403) setState('not_invited');
+        else setState('failed');
       }
-      /*
-       * `adoptUser` and not a local setState: it is what decides whether this
-       * is the same person coming back (keep everything) or a different one
-       * (clear the cache), sets the ambient user id `src/data/posts.ts` reads,
-       * and starts the replay of whatever went unsent.
-       */
-      await adoptUser(result.user);
-    } catch (err) {
-      setError(messageFor(err));
-      setBusy(false);
-    }
-  }
+    })();
+  }, [isSignedIn, getToken]);
 
-  async function submitCode(event: FormEvent) {
-    event.preventDefault();
-    if (busy || !challenge) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const user = await api.loginCode(challenge.ticket, code.trim());
-      setCode('');
-      await adoptUser(user);
-    } catch {
-      setError('That code didn’t work. It may have expired — codes last ten minutes.');
-      setBusy(false);
-    }
-  }
+  if (!isSignedIn) return <SignIn routing="virtual" />;
 
-  if (challenge) {
+  if (state === 'not_invited') {
     return (
-      <form className="authform" onSubmit={submitCode} noValidate>
+      <div className="authform">
         <p className="authform__lede">
-          A six-digit code is on its way to <strong>{email.trim()}</strong>.
+          That account signed in fine, but it is not on this store&rsquo;s team. Accounts here
+          are by invitation only, so ask an owner or developer to invite this address and then
+          sign in again. If you were invited a while ago, the invitation may have run out.
         </p>
-        <label className="label" htmlFor={`${errorId}-code`}>
-          Sign-in code
-        </label>
-        <input
-          id={`${errorId}-code`}
-          className="input"
-          name="code"
-          inputMode="numeric"
-          autoComplete="one-time-code"
-          value={code}
-          required
-          autoFocus
-          aria-describedby={error ? errorId : undefined}
-          onChange={(e) => setCode(e.target.value)}
-        />
-        {error && (
-          <p className="authform__error" id={errorId} role="alert">
-            {error}
-          </p>
-        )}
         <button
+          type="button"
           className="btn btn--primary authform__submit"
-          type="submit"
-          disabled={busy || code.trim().length < 6}
+          onClick={() => {
+            started.current = false;
+            setState('idle');
+            void signOut();
+          }}
         >
-          {busy ? 'Verifying…' : 'Verify code'}
+          Use a different account
         </button>
-        <div className="authform__row" style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <button
-            className="btn"
-            type="button"
-            onClick={() => {
-              setChallenge(null);
-              setCode('');
-              setError(null);
-              setResent(false);
-            }}
-          >
-            Start over
-          </button>
-          <button
-            className="btn"
-            type="button"
-            disabled={resent}
-            onClick={() => {
-              setResent(true);
-              void api.resendLoginCode(challenge.ticket).catch(() => undefined);
-            }}
-          >
-            {resent ? 'Code re-sent' : 'Send a new code'}
-          </button>
-        </div>
-      </form>
+      </div>
+    );
+  }
+
+  if (state === 'failed') {
+    return (
+      <div className="authform">
+        <p className="authform__error" role="alert">
+          You signed in, but this admin could not finish setting up your session.
+        </p>
+        <button
+          type="button"
+          className="btn btn--primary authform__submit"
+          onClick={() => {
+            started.current = false;
+            setState('idle');
+          }}
+        >
+          Try again
+        </button>
+      </div>
     );
   }
 
   return (
-    <form className="authform" onSubmit={submit} noValidate>
-      <label className="label" htmlFor={`${errorId}-email`}>
-        Email
-      </label>
-      <input
-        id={`${errorId}-email`}
-        className="input"
-        type="email"
-        name="email"
-        autoComplete="username"
-        value={email}
-        readOnly={lockEmail}
-        required
-        autoFocus={!lockEmail}
-        onChange={(e) => setEmail(e.target.value)}
-      />
+    <div className="authform" role="status">
+      <p className="authform__lede">Signing you in&hellip;</p>
+    </div>
+  );
+}
 
-      <label className="label authform__label" htmlFor={`${errorId}-password`}>
-        Password
-      </label>
-      <input
-        id={`${errorId}-password`}
-        className="input"
-        type="password"
-        name="password"
-        autoComplete="current-password"
-        value={password}
-        required
-        autoFocus={lockEmail}
-        aria-describedby={error ? errorId : undefined}
-        onChange={(e) => setPassword(e.target.value)}
-      />
-
-      {error && (
-        <p className="authform__error" id={errorId} role="alert">
-          {error}
+/**
+ * The form, wherever it is needed: its own page below, or the re-auth prompt
+ * inside `RequireAuth`.
+ *
+ * A MISSING KEY GETS A STATED REFUSAL, not a blank panel. `VITE_*` values bake
+ * at BUILD time (CLAUDE.md §5), so setting one in the dashboard changes
+ * nothing until the next deploy — which is the one thing whoever meets this
+ * needs to be told.
+ */
+export function SignInForm() {
+  if (!CLERK_KEY) {
+    return (
+      <div className="authform">
+        <p className="authform__error" role="alert">
+          This copy of the admin was built without its sign-in key, so there is no way to sign
+          in. A developer needs to set VITE_CLERK_PUBLISHABLE_KEY and deploy again.
         </p>
-      )}
-
-      <button
-        className="btn btn--primary authform__submit"
-        type="submit"
-        disabled={busy || email.trim() === '' || password === ''}
-      >
-        {busy ? 'Signing in…' : submitLabel}
-      </button>
-    </form>
+      </div>
+    );
+  }
+  return (
+    <ClerkProvider publishableKey={CLERK_KEY}>
+      <Exchange />
+    </ClerkProvider>
   );
 }
 
 export default function Login() {
-  /*
-   * `useSyncExternalStore` directly rather than `RequireAuth`'s `useSession`.
-   * `RequireAuth` already imports `SignInForm` from this file, so reaching back
-   * for its hook would make the two modules mutually dependent — which happens
-   * to work for hoisted function declarations and is a trap for whoever next
-   * adds a const to either file.
-   */
   const session = useSyncExternalStore(subscribe, getSession, getSession);
   const location = useLocation();
 
   /*
-   * SIGNING IN IS WHAT NAVIGATES, and it lives here rather than in
-   * `SignInForm` because the form is also the mid-session re-auth prompt —
-   * where the writer is already exactly where they want to be, with an editor
-   * buffer under the panel, and a navigation would be the bug.
-   *
-   * `from` is the route the guard bounced them off. It restores the property
-   * that rendering sign-in in place used to give for free: open `/settings`
-   * signed out, sign in, land on `/settings`.
+   * Already signed in: go where they were headed. Unchanged from the password
+   * era — signed out, sign in, land back on the screen that sent you here.
    */
   if (session.status !== 'unknown' && session.status !== 'anonymous') {
     const from = (location.state as { from?: string } | null)?.from;
@@ -270,25 +176,6 @@ export default function Login() {
           arrives as a link.
         </p>
         <SignInForm />
-        {/*
-          A plain `<a href="#/forgot">` rather than a router `<Link>`.
-
-          This used to be load-bearing: `RequireAuth` rendered this component
-          in place as the signed-out screen, so it could appear outside a
-          router context and a `<Link>` would have thrown — turning "you are
-          signed out" into a blank error page at the worst possible moment.
-          That is no longer true. Sign-in is its own route now, and the
-          `useLocation` above means this component CANNOT render outside a
-          router any more.
-
-          Left as an `<a>` because under `createHashRouter` the hash href
-          navigates identically and there is nothing to gain from churning it.
-          The old reason is written down because it is the kind of constraint
-          someone re-derives painfully after deleting it.
-        */}
-        <a className="btn btn--ghost btn--sm" href="#/forgot">
-          Forgot your password?
-        </a>
       </div>
     </div>
   );

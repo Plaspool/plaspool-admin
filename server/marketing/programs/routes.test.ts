@@ -22,7 +22,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { SEED_PASSWORD, freshDb } from '../../test/harness';
+import { freshDb } from '../../test/harness';
 import { httpClient, json } from '../../test/http';
 import type { TestCtx } from '../../test/harness';
 import type { HttpClient } from '../../test/http';
@@ -38,11 +38,7 @@ let anon: HttpClient;
 
 async function login(user: AuthUser): Promise<HttpClient> {
   const client = httpClient(ctx.db);
-  const res = await client.post('/api/auth/login', {
-    email: user.email,
-    password: SEED_PASSWORD,
-  });
-  expect(res.status).toBe(200);
+  await client.signIn(user);
   return client;
 }
 

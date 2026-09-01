@@ -4,7 +4,6 @@ import { freshDb } from '../../test/harness';
 import type { TestCtx } from '../../test/harness';
 import { httpClient, json, TEST_ORIGIN } from '../../test/http';
 import type { HttpClient } from '../../test/http';
-import { SEED_PASSWORD } from '../../test/harness';
 
 /**
  * The HTTP surface (brief §6), driven through the REAL app.
@@ -29,11 +28,7 @@ afterAll(async () => {
 });
 
 async function login(): Promise<void> {
-  const res = await http.post('/api/auth/login', {
-    email: 'owner@test.local',
-    password: SEED_PASSWORD,
-  });
-  expect(res.status).toBe(200);
+  await http.signIn({ email: 'owner@test.local' });
 }
 
 async function createProduct(title: string): Promise<{ id: string; slug: string }> {

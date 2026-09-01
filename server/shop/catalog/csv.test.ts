@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { freshDb, SEED_PASSWORD } from '../../test/harness';
+import { freshDb } from '../../test/harness';
 import type { TestCtx } from '../../test/harness';
 import { httpClient, json } from '../../test/http';
 import type { HttpClient } from '../../test/http';
@@ -63,11 +63,7 @@ beforeEach(() => {
 });
 
 async function login(): Promise<void> {
-  const res = await http.post('/api/auth/login', {
-    email: ctx.users.writer.email,
-    password: SEED_PASSWORD,
-  });
-  expect(res.status).toBe(200);
+  await http.signIn(ctx.users.writer);
 }
 
 function doc(text: string): unknown {

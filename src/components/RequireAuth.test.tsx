@@ -207,7 +207,14 @@ describe('a session that expires mid-edit', () => {
     // a different route.
     expect(screen.getByText('THE EDITOR')).toBeTruthy();
     expect(screen.getByRole('region', { name: /session expired/i })).toBeTruthy();
-    expect(screen.getByLabelText(/password/i)).toBeTruthy();
+    /*
+     * The prompt used to hold a password field. It holds `SignInForm`, which
+     * is Clerk's since Clerk became the only door — and in jsdom, with no
+     * `VITE_CLERK_PUBLISHABLE_KEY` baked in, that renders its stated refusal
+     * rather than Clerk's widget. Either way what this case is about is that
+     * the prompt appears OVER the document instead of replacing it, which the
+     * two assertions above are the whole of.
+     */
   });
 
   it('names the account whose session ended', async () => {
