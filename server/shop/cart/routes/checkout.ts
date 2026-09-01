@@ -78,7 +78,28 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     const result = await startCheckout(db, deps.catalog, { cartId: cart.id });
     if (!result.ok) {
       if (result.reason === 'empty_cart') {
-        return c.json({ error: 'precondition_failed', operation: 'checkout_start' }, 409);
+        /*
+         * ═══ `reason` IS ADDITIVE, AND `operation` STAYS THE OPERATION ═══
+         * Everywhere else in this server `operation` names the operation —
+         * `update_cart`, `remove_line`, `capture`, `parseWebhook`. The freeze
+         * route below is the exception: it passes its REASON through the same
+         * key, which is where `empty_cart` and `no_shipping_address` come
+         * from, and the storefront was written against that second sense.
+         *
+         * So this refusal — an empty cart, reported honestly as
+         * `operation: 'checkout_start'` — matched neither of the storefront's
+         * two branches and fell through to its unnamed-error copy. A shopper
+         * at step 1 of 4 was told "That didn't go through. Try again" about a
+         * cart the store could simply have said was empty.
+         *
+         * Renaming `operation` would fix that by spreading the overload, and
+         * would break every consumer already reading it. A separate `reason`
+         * costs one key, breaks nothing, and means only one thing.
+         */
+        return c.json(
+          { error: 'precondition_failed', operation: 'checkout_start', reason: 'empty_cart' },
+          409,
+        );
       }
       // THE NUMBER, in the body. "Out of stock" is not actionable; "only 3 left"
       // lets the shopper reduce the quantity without leaving the page.
@@ -169,7 +190,13 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
       if (result.reason === 'outside_delivery_area') {
         return c.json({ error: 'outside_delivery_area' }, 409);
       }
-      return c.json({ error: 'precondition_failed', operation: result.reason }, 409);
+      /* `operation` keeps carrying the reason here for the consumers that
+         already read it that way; `reason` says the same thing in the field
+         that only ever means why. Same value, two keys, nothing broken. */
+      return c.json(
+        { error: 'precondition_failed', operation: result.reason, reason: result.reason },
+        409,
+      );
     }
 
     await extendReservations(db, cart.id);
