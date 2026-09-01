@@ -69,8 +69,10 @@ export const SYSTEM_TEMPLATE_STAGES: Record<string, string> = {
   'order.refund': 'Ends the order — refunded',
   'order.refund_failed': 'Refund failed — needs a manual refund',
   'account.welcome': 'Account — new subscriber',
-  'account.invite': 'Account — writer invited',
-  'account.password_reset': 'Account — password reset',
+  'account.invite': 'Account — invited to the admin',
+  /* `account.password_reset` had a label here until Clerk became the only
+     auth: the template it described is gone, and `api-email.test.ts` fails on
+     a stale label precisely so this map cannot outlive the message. */
   'return.awarded': 'Return inspected — points awarded',
   'return.rejected': 'Return inspected — nothing accepted',
 };

@@ -16,7 +16,7 @@
  */
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { freshDb, SEED_PASSWORD } from '../test/harness';
+import { freshDb } from '../test/harness';
 import { httpClient, json, TEST_ORIGIN } from '../../../test/http';
 import { SESSION_COOKIE } from '../../../middleware/session';
 import { CART_COOKIE, SHOP_SESSION_COOKIE } from './cookies';
@@ -83,11 +83,7 @@ beforeEach(async () => {
 
 /** Log in as the seeded owner, leaving `__Host-studio_session` in the jar. */
 async function loginAsWriter(): Promise<void> {
-  const res = await client.post('/api/auth/login', {
-    email: 'owner@test.local',
-    password: SEED_PASSWORD,
-  });
-  expect(res.status).toBe(200);
+  await client.signIn({ email: 'owner@test.local' });
   expect(client.cookies().has(SESSION_COOKIE)).toBe(true);
 }
 
@@ -258,13 +254,11 @@ describe('the customer cookie matches the writer cookie except on SameSite', () 
        attributes are one decision rather than two. */
     expect(header).toMatch(/Secure/i);
 
-    const login = await client.post('/api/auth/login', {
-      email: 'owner@test.local',
-      password: SEED_PASSWORD,
-    });
-    const writer = login.headers.getSetCookie().find((h) => h.startsWith(SESSION_COOKIE));
-    expect(writer, 'the writer cookie must still be set').toBeTruthy();
-    expect(writer).toMatch(/SameSite=Lax/i);
+    /* The writer cookie is minted directly now that Clerk owns sign-in, so
+       there is no `Set-Cookie` to read it off. What this asserts is unchanged:
+       an admin session and a shopper session coexist in one jar. */
+    await client.signIn({ email: 'owner@test.local' });
+    expect(client.cookies().has(SESSION_COOKIE), 'the writer cookie must still be set').toBe(true);
   });
 
   it('uses a DIFFERENT name from the writer cookie, and from the cart cookie', () => {

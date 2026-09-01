@@ -220,11 +220,9 @@ function ReauthPrompt({
           Nothing has been lost — everything you type is kept on this device
           until it can be sent.
         </p>
-        <SignInForm
-          initialEmail={session.user?.email ?? ''}
-          lockEmail={Boolean(session.user)}
-          submitLabel="Sign in"
-        />
+        {/* No props since Clerk became the only door: there is no address to
+            prefill or lock when Clerk owns the form. */}
+        <SignInForm />
         <div className="reauth__alt">
           <SignOutButton
             className="btn btn--ghost btn--sm"

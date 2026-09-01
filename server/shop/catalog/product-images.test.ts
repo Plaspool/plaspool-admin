@@ -20,7 +20,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { freshDb, SEED_PASSWORD, type TestCtx } from '../../test/harness';
+import { freshDb, type TestCtx } from '../../test/harness';
 import { httpClient, json, type HttpClient } from '../../test/http';
 import { BadRequestError } from '../../repo/errors';
 import { createProduct, getProduct, publishProduct, saveProduct } from './products';
@@ -440,11 +440,7 @@ describe('toStorefrontVariant', () => {
 
 describe('the routes', () => {
   async function login(): Promise<void> {
-    const res = await http.post('/api/auth/login', {
-      email: 'owner@test.local',
-      password: SEED_PASSWORD,
-    });
-    expect(res.status).toBe(200);
+    await http.signIn({ email: 'owner@test.local' });
   }
 
   beforeEach(login);

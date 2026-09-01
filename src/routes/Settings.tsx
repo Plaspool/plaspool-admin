@@ -17,7 +17,7 @@ import { ConfirmDialog, Dialog } from '../components/Dialog';
 import { useToast } from '../components/Toast';
 import { useSession } from '../components/RequireAuth';
 import { relative } from '../components/PostCard';
-import { accountApi, MIN_PASSWORD_LENGTH, type SessionSummary } from '../data/api-account';
+import { accountApi, type SessionSummary } from '../data/api-account';
 import {
   refusalOf,
   teamApi,
@@ -342,182 +342,6 @@ function DisplayNameRow({ user }: { user: AuthUser }) {
 }
 
 /**
- * Change the password from inside the session, which is the path the reset flow
- * deliberately is not.
- *
- * THE WRONG-CURRENT-PASSWORD CASE IS A 400 AND NOT A 401, and this form is the
- * reason the server chose that. `api.ts` announces `auth-expired` for every
- * 401, which raises the re-authentication overlay over whatever is on screen —
- * so a 401 here would make one typo look exactly like a dead session, on the
- * one screen where the writer is in the middle of proving they know their
- * password. `detail` names the field and the message goes under that field.
- *
- * The ten-character floor is mirrored client-side for the same reason
- * `AcceptInvite` mirrors it: to save a round trip, never to be the authority.
- * `assertCredentials` inside `changePassword` is the authority, and its 400
- * `detail: 'password'` is handled below regardless.
- */
-function PasswordForm({ onChanged }: { onChanged: () => void }) {
-  const { notify } = useToast();
-  const [current, setCurrent] = useState('');
-  const [next, setNext] = useState('');
-  const [confirm, setConfirm] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [errors, setErrors] = useState<{
-    current?: string;
-    next?: string;
-    confirm?: string;
-    form?: string;
-  }>({});
-  const id = useId();
-
-  const ready = current !== '' && next !== '' && confirm !== '';
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    if (busy || !ready) return;
-
-    if (next.length < MIN_PASSWORD_LENGTH) {
-      setErrors({ next: `Choose a password of at least ${MIN_PASSWORD_LENGTH} characters.` });
-      return;
-    }
-    if (next !== confirm) {
-      setErrors({ confirm: 'These two do not match.' });
-      return;
-    }
-
-    setBusy(true);
-    setErrors({});
-    try {
-      const { otherSessionsEnded } = await accountApi.changePassword({
-        currentPassword: current,
-        newPassword: next,
-      });
-      /*
-       * Cleared before anything else, including before the toast. Three
-       * password values sitting in component state after a successful change
-       * are three values a later render, a devtools inspection or an
-       * error-reporting hook could pick up, and none of them are needed again.
-       */
-      setCurrent('');
-      setNext('');
-      setConfirm('');
-      notify(
-        otherSessionsEnded === 0
-          ? 'Password changed. No other devices were signed in.'
-          : otherSessionsEnded === 1
-            ? 'Password changed. 1 other device was signed out.'
-            : `Password changed. ${otherSessionsEnded} other devices were signed out.`,
-      );
-      onChanged();
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 400 && err.detail === 'currentPassword') {
-        setErrors({ current: 'That is not your current password.' });
-      } else if (err instanceof ApiError && err.status === 400 && err.detail === 'password') {
-        setErrors({ next: `Choose a password of at least ${MIN_PASSWORD_LENGTH} characters.` });
-      } else {
-        setErrors({ form: messageFor(err) });
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Block
-      title="Password"
-      hint={
-        <>
-          Changing it signs out every other device and leaves this one signed
-          in. A phrase you can remember beats a short scramble you cannot.
-        </>
-      }
-    >
-      <form className="setform" onSubmit={submit} noValidate>
-        <div className="setfield">
-          <label className="label" htmlFor={`${id}-current`}>
-            Current password
-          </label>
-          <input
-            id={`${id}-current`}
-            className="input"
-            type="password"
-            autoComplete="current-password"
-            value={current}
-            aria-invalid={errors.current ? true : undefined}
-            aria-describedby={errors.current ? `${id}-current-err` : undefined}
-            onChange={(e) => setCurrent(e.target.value)}
-          />
-          {errors.current && (
-            <p className="seterr" id={`${id}-current-err`} role="alert">
-              {errors.current}
-            </p>
-          )}
-        </div>
-
-        <div className="setfield">
-          <label className="label" htmlFor={`${id}-new`}>
-            New password
-          </label>
-          <input
-            id={`${id}-new`}
-            className="input"
-            type="password"
-            autoComplete="new-password"
-            value={next}
-            aria-invalid={errors.next ? true : undefined}
-            aria-describedby={errors.next ? `${id}-new-err` : `${id}-new-hint`}
-            onChange={(e) => setNext(e.target.value)}
-          />
-          {errors.next ? (
-            <p className="seterr" id={`${id}-new-err`} role="alert">
-              {errors.next}
-            </p>
-          ) : (
-            <p className="sethint" id={`${id}-new-hint`}>
-              At least {MIN_PASSWORD_LENGTH} characters.
-            </p>
-          )}
-        </div>
-
-        <div className="setfield">
-          <label className="label" htmlFor={`${id}-confirm`}>
-            Confirm new password
-          </label>
-          <input
-            id={`${id}-confirm`}
-            className="input"
-            type="password"
-            autoComplete="new-password"
-            value={confirm}
-            aria-invalid={errors.confirm ? true : undefined}
-            aria-describedby={errors.confirm ? `${id}-confirm-err` : undefined}
-            onChange={(e) => setConfirm(e.target.value)}
-          />
-          {errors.confirm && (
-            <p className="seterr" id={`${id}-confirm-err`} role="alert">
-              {errors.confirm}
-            </p>
-          )}
-        </div>
-
-        {errors.form && (
-          <p className="seterr" role="alert">
-            {errors.form}
-          </p>
-        )}
-
-        <div className="setform__actions">
-          <button className="btn btn--primary" type="submit" disabled={!ready || busy}>
-            {busy ? 'Changing…' : 'Change password'}
-          </button>
-        </div>
-      </form>
-    </Block>
-  );
-}
-
-/**
  * Where this account is signed in.
  *
  * THE CURRENT ROW HAS NO REVOKE BUTTON, AND THAT IS NOT SQUEAMISHNESS.
@@ -610,9 +434,10 @@ function AccountSection({ user }: { user: AuthUser }) {
         <div className="settings__rows">
           <DisplayNameRow user={user} />
         </div>
-        {/* A password change ends every other session, so the list below it is
-            stale the instant this succeeds. */}
-        <PasswordForm onChanged={sessions.reload} />
+        {/* The password form that used to sit here went with Clerk becoming
+            the only auth: `POST /api/auth/change-password` no longer exists,
+            and a password nobody can sign in with is not worth changing.
+            Passwords, if this instance still wants them, are Clerk's. */}
         <SessionsList remote={sessions} />
       </div>
     </section>

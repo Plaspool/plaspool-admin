@@ -24,13 +24,6 @@ export const SESSION_ABSOLUTE_MAX_MS = 90 * 24 * 60 * 60 * 1000;
 /** Spec §3.3. */
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-export class InviteError extends Error {
-  constructor(message = 'invite is invalid, expired or already used') {
-    super(message);
-    this.name = 'InviteError';
-  }
-}
-
 /**
  * A duplicate email surfaced as a domain error rather than a driver error.
  *
@@ -50,17 +43,6 @@ export class DuplicateEmailError extends Error {
   }
 }
 
-/**
- * Ghost's bar is ten characters plus a common-password blocklist. The length
- * floor is here; the blocklist is not, and its absence is deliberate rather
- * than forgotten — it belongs with the auth routes that can report it usefully.
- *
- * Before this existed, `acceptInvite({ password: '' })` succeeded and the empty
- * password then verified `true`, because scrypt hashes an empty string quite
- * happily.
- */
-export const MIN_PASSWORD_LENGTH = 10;
-
 /** A rejected `password` or `displayName`, carrying which one. */
 export class UserInputError extends Error {
   readonly field: 'password' | 'displayName';
@@ -74,9 +56,11 @@ export class UserInputError extends Error {
 /**
  * 256 bits, URL-safe. Returned to the client once and never stored raw.
  *
- * EXPORTED for `repo/password-reset.ts`, which mints a token of exactly this
- * shape. Re-deriving it there would be two definitions of "how long is a
- * credential in this app", and the weaker one would never announce itself.
+ * EXPORTED so that anything minting a credential in this application uses one
+ * definition of "how long is a credential here" — a second, weaker one would
+ * never announce itself. Sessions are the live consumer; `createInvite` still
+ * mints one for a column nothing reads (see INVITE_PATH in
+ * `server/routes/auth.ts` for why the invite link stopped carrying it).
  */
 export function mintToken(): string {
   return randomBytes(32).toString('base64url');
@@ -100,8 +84,8 @@ export function tokenId(token: string): string {
   return createHmac('sha256', getEnv().SESSION_SECRET).update(token).digest('hex');
 }
 
-/** EXPORTED for `repo/login-challenges.ts`, which joins users through a
- * challenge and must map the row identically. */
+/** EXPORTED so anything joining `users` maps the row identically rather than
+ * growing a second, drifting copy of this mapping. */
 export function rowToAuthUser(row: Record<string, unknown>): AuthUser {
   return {
     id: String(row.id),
@@ -116,13 +100,12 @@ export function rowToAuthUser(row: Record<string, unknown>): AuthUser {
 /**
  * The one place a display name is judged.
  *
- * LIFTED OUT OF `assertCredentials` RATHER THAN COPIED. `PATCH /api/auth/me`
- * changes a display name and no password, so it cannot call
- * `assertCredentials` without inventing a password to hand it — and an
- * `if (name.trim() === '')` written at that route would be a second definition
- * of "blank" that nothing keeps in step with this one. Zod's `.min(1)` is not
- * that definition either: it accepts `'   '`, which is exactly the value this
- * refuses.
+ * It was lifted out of a wider `assertCredentials` that judged a password too;
+ * that half died with the password routes, and this is what was worth keeping.
+ * An `if (name.trim() === '')` written at each call site would be a second
+ * definition of "blank" that nothing keeps in step with this one. Zod's
+ * `.min(1)` is not that definition either: it accepts `'   '`, which is
+ * exactly the value this refuses.
  */
 export function assertDisplayName(displayName: string): void {
   if (displayName.trim() === '') {
@@ -131,45 +114,37 @@ export function assertDisplayName(displayName: string): void {
 }
 
 /**
- * The one place a password or a display name is judged, so every route that
- * creates an account — accept-invite today, anything else later — is bound by
- * it without having to remember.
+ * Create an account. THERE IS NO PASSWORD PARAMETER, and its absence is the
+ * point rather than an omission.
+ *
+ * This used to take one, because accept-invite made the invitee choose it.
+ * Since Clerk became the only door (2026-09-01) nothing in this application
+ * verifies a password, so a caller-supplied one would be a credential invented
+ * for no reader — and one that a future password route could then honour.
+ * `users.password_hash` is NOT NULL, so the row gets 32 bytes of noise that
+ * NOBODY holds, generated here rather than by the caller so that no call site
+ * can quietly reintroduce a knowable value.
+ *
+ * `two_factor_email` is not written either: the emailed second factor went
+ * with the password routes, and the DDL default (false) is the honest value
+ * for a column nothing reads.
  */
-export function assertCredentials(a: { password: string; displayName: string }): void {
-  if (a.password.length < MIN_PASSWORD_LENGTH) {
-    throw new UserInputError(
-      'password',
-      `password must be at least ${MIN_PASSWORD_LENGTH} characters`,
-    );
-  }
-  assertDisplayName(a.displayName);
-}
-
 export async function createUser(
   db: Db,
   a: {
     email: string;
-    password: string;
     displayName: string;
     role: Role;
-    /**
-     * DEFAULT true — every REAL account starts protected, which is what the
-     * owner asked for. The DDL default is false so the column-less inserts in
-     * the test harness stay single-factor (migration 0700's header carries the
-     * ordering argument).
-     */
-    twoFactorEmail?: boolean;
   },
 ): Promise<AuthUser> {
-  // Before hashing: a rejected password should not cost 200 ms of scrypt.
-  assertCredentials(a);
-  const passwordHash = await hashPassword(a.password);
+  // Before hashing: a rejected name should not cost 200 ms of scrypt.
+  assertDisplayName(a.displayName);
+  const passwordHash = await hashPassword(randomBytes(32).toString('base64url'));
   try {
     const res = await db.execute(sql`
-      INSERT INTO users (email, password_hash, display_name, role, created_at,
-                         two_factor_email)
+      INSERT INTO users (email, password_hash, display_name, role, created_at)
       VALUES (${a.email.trim().toLowerCase()}, ${passwordHash}, ${a.displayName.trim()},
-              ${a.role}, ${Date.now()}, ${a.twoFactorEmail ?? true})
+              ${a.role}, ${Date.now()})
       RETURNING id, email, display_name, role`);
     return rowToAuthUser(res.rows[0]);
   } catch (err) {
@@ -179,46 +154,44 @@ export async function createUser(
 }
 
 /**
- * The hash comes back beside the user rather than on it, so `AuthUser` — the
- * only user shape that crosses the boundary — can never carry a password hash
- * into a response.
+ * `disabledAt` comes back beside the user, and the Clerk exchange has to
+ * consult it. `resolveSession` already refuses a disabled user's SESSION, but
+ * nothing stops a disabled user from obtaining a NEW one: the exchange would
+ * succeed, set a cookie, and every subsequent request would 401 — a revoked
+ * writer who appears to sign in and then cannot do anything, which reads as a
+ * broken app rather than as a revocation.
  *
- * `disabledAt` comes back too, and the login route has to consult it.
- * `resolveSession` already refuses a disabled user's SESSION, but nothing
- * stopped a disabled user from creating a new one: login would succeed, set a
- * cookie, and every subsequent request would 401 — a revoked writer who appears
- * to log in and then cannot do anything, which reads as a broken app rather
- * than as a revocation.
+ * IT NO LONGER RETURNS `passwordHash` OR `twoFactorEmail`. Both existed for
+ * the login route, which is gone; a lookup that hands a password hash to every
+ * caller that only wanted an id is a leak waiting for somewhere to happen, and
+ * `SELECT`ing a column nothing reads is how it stays alive. `AuthUser` was
+ * always the shape that crosses the HTTP boundary and still is.
  */
 export async function findUserByEmail(
   db: Db,
   email: string,
 ): Promise<{
   user: AuthUser;
-  passwordHash: string;
   disabledAt: number | null;
-  twoFactorEmail: boolean;
 } | null> {
   const res = await db.execute(sql`
-    SELECT id, email, display_name, role, password_hash, disabled_at, two_factor_email
+    SELECT id, email, display_name, role, disabled_at
       FROM users WHERE email = ${email.trim().toLowerCase()}`);
   const row = res.rows[0];
   if (!row) return null;
   return {
     user: rowToAuthUser(row),
-    passwordHash: String(row.password_hash),
     disabledAt: toEpochMsOrNull(row.disabled_at),
-    twoFactorEmail: Boolean(row.two_factor_email),
   };
 }
 
 /**
  * The same three-part shape `findUserByEmail` returns, keyed by id instead.
  *
- * `POST /api/auth/change-password` needs the stored hash for a caller it has
- * ALREADY authenticated, and going back through `findUserByEmail` would mean
- * re-normalising an address the session already resolved — one more place for
- * the lowercase/trim rule to be applied differently.
+ * Like `findUserByEmail`, it stopped returning `passwordHash` when Clerk
+ * became the only auth: the one caller that wanted it was the signed-in
+ * password change, and that route is gone. What remains — the user and
+ * `disabledAt` — is what the role, disable and enable routes read.
  *
  * `id` reaches a `uuid` column, so a value that is not one is SQLSTATE 22P02:
  * a scrubbed `DbError`, a 500, and five client retries for a request that can
@@ -229,15 +202,14 @@ export async function findUserByEmail(
 export async function findUserById(
   db: Db,
   id: string,
-): Promise<{ user: AuthUser; passwordHash: string; disabledAt: number | null } | null> {
+): Promise<{ user: AuthUser; disabledAt: number | null } | null> {
   const res = await db.execute(sql`
-    SELECT id, email, display_name, role, password_hash, disabled_at
+    SELECT id, email, display_name, role, disabled_at
       FROM users WHERE id = ${id}::uuid`);
   const row = res.rows[0];
   if (!row) return null;
   return {
     user: rowToAuthUser(row),
-    passwordHash: String(row.password_hash),
     disabledAt: toEpochMsOrNull(row.disabled_at),
   };
 }
@@ -277,68 +249,6 @@ export async function updateDisplayName(
   return row ? rowToAuthUser(row) : null;
 }
 
-/**
- * Set a new password and end every session EXCEPT the one that asked.
- *
- * The asymmetry is the whole route. `consumePasswordReset` ends every session
- * without exception, because a reset is what someone does when they believe an
- * intruder holds one — there is nobody to keep. A signed-in change is the
- * opposite: the person at the keyboard has just proved they hold the old
- * password, so logging them out of the tab they are typing in is a bug, while
- * leaving the OTHER thirty-day cookies alive would make the change cosmetic
- * against exactly the attacker it is aimed at.
- *
- * ONE STATEMENT, for the reason `consumePasswordReset` gives at length: two
- * would leave a window in which the password had moved and the sessions had
- * not. Not `db.transaction` either — the Neon HTTP driver throws
- * unconditionally on `transaction()`, so a transaction here would pass every
- * PGlite test and 500 in production.
- *
- * `keepSessionToken` is the RAW cookie value; the id it must not delete is
- * derived here so no caller has to know that a session id is an HMAC. Absent,
- * the sentinel `''` matches no row — every session goes, which is the honest
- * behaviour for a caller that cannot name one to keep.
- *
- * @returns how many OTHER sessions were destroyed.
- */
-export async function changePassword(
-  db: Db,
-  a: { userId: string; newPassword: string; keepSessionToken?: string },
-): Promise<number> {
-  // Before the derivation, exactly as `createUser` orders it: a rejected
-  // password should not cost 200 ms of scrypt.
-  assertCredentials({ password: a.newPassword, displayName: 'unused' });
-  const passwordHash = await hashPassword(a.newPassword);
-  const keepId = a.keepSessionToken ? tokenId(a.keepSessionToken) : '';
-
-  const res = await db.execute(sql`
-    WITH changed AS (
-      UPDATE users SET password_hash = ${passwordHash}
-       WHERE id = ${a.userId}::uuid
-      RETURNING id
-    )
-    DELETE FROM sessions
-     WHERE user_id IN (SELECT id FROM changed) AND id <> ${keepId}
-    RETURNING id`);
-
-  /*
-   * Any outstanding reset link dies with the change, best-effort. Somebody who
-   * asked for a reset, gave up, and then changed the password from inside the
-   * app has left a live credential sitting in a mailbox for the rest of its
-   * hour — and it would still work, because `consumePasswordReset` only cares
-   * that the token is unspent. Best-effort because the password has already
-   * committed: failing the request now would tell the caller to retry a change
-   * that already happened.
-   */
-  await db
-    .execute(
-      sql`DELETE FROM password_resets
-           WHERE user_id = ${a.userId}::uuid AND used_at IS NULL`,
-    )
-    .catch(() => undefined);
-
-  return res.rows.length;
-}
 
 // ---------------------------------------------------------------- sessions
 
@@ -620,28 +530,13 @@ export async function setUserRole(db: Db, userId: string, role: Role): Promise<A
 }
 
 /**
- * Turn the emailed second factor on or off for one account.
- *
- * NO SESSION SWEEP RIDES ALONG: flipping the factor changes what the NEXT
- * login demands, and ending live sessions is `disableUser`'s job — an admin
- * hardening an account should not sign its holder out mid-shift.
- *
- * @returns `false` when the id matched nothing, so the route can 404.
- */
-export async function setTwoFactorEmail(db: Db, userId: string, on: boolean): Promise<boolean> {
-  const res = await db.execute(sql`
-    UPDATE users SET two_factor_email = ${on} WHERE id = ${userId}::uuid RETURNING id`);
-  return res.rows.length > 0;
-}
-
-/**
  * Reinstate a revoked user: clear `disabled_at` and nothing else.
  *
  * DELIBERATELY NOT THE MIRROR OF `disableUser`. That one destroys every session
  * as it revokes, and the whole point of destroying them (see its comment) is
  * that reinstating must not resurrect the cookie on the laptop that prompted
- * the revocation. So enabling restores the ability to log in and no more: the
- * user types their password again.
+ * the revocation. So enabling restores the ability to SIGN IN and no more:
+ * the user goes through Clerk again and the exchange mints a fresh session.
  *
  * @returns `false` when the id matched nothing, so the route can 404.
  */
@@ -657,7 +552,7 @@ export async function enableUser(db: Db, userId: string): Promise<boolean> {
  * The one number standing between an owner and an instance nobody can
  * administer: invites, exports, destroys and this very route are all
  * `requireOwner()`, so disabling the last active owner locks the door from the
- * inside. Recovery would mean `scripts/set-owner-password.ts --apply` against
+ * inside. Recovery would mean `scripts/bootstrap-owner.ts --apply` against
  * the production database, which is a serious enough operation that refusing
  * the click is worth a 409.
  *
@@ -811,67 +706,92 @@ export async function revokeInvite(db: Db, id: string): Promise<boolean> {
 }
 
 /**
- * The invite — not the request body — is the authority for `email` and `role`.
- * The signature has no room for either, and the caller could not be trusted
- * with them if it did: accepting a caller-supplied role is privilege
- * escalation by HTTP request.
+ * Provision an invited account from a VERIFIED IDENTITY rather than from a
+ * token — the Clerk exchange's half of accept-invite, added 2026-09-01 when
+ * Clerk became the only way in.
  *
- * "Exactly once" is enforced by a single conditional UPDATE, not by a
- * read-then-write, and not by `db.transaction` — the Neon HTTP driver throws
- * unconditionally on `transaction()`, so a transaction would pass every PGlite
- * test and 500 in production.
+ * WHY THE ADDRESS AND NOT THE TOKEN. `acceptInvite` proved two things at once:
+ * that the caller held the invite link, and — by making them choose a password
+ * — that they were the person who would go on to use the account. With Clerk
+ * owning identity the second proof is stronger and it arrives FIRST: by the
+ * time this runs, the caller has already proved control of the address to
+ * Google or to a Clerk factor. The link adds nothing the verified address does
+ * not already say, so the invite is claimed BY ADDRESS — which also makes a
+ * forwarded invite link inert, something the token flow could never manage.
+ *
+ * ONE INVITE PER CALL, PICKED IN A CTE. A bare UPDATE keyed on the address
+ * would claim EVERY open invite that address holds: two invites at different
+ * roles, both spent to create one account. The CTE picks the newest, and the
+ * UPDATE re-checks accepted_at so two concurrent exchanges cannot both claim
+ * the same row. Not `db.transaction` — the Neon HTTP driver throws on it
+ * unconditionally, so the guard has to fit inside one statement.
+ *
+ * THE PASSWORD IS `createUser`'s PROBLEM, NOT THIS FUNCTION'S. It mints 32
+ * bytes of noise nobody holds, and it does so for every caller rather than
+ * taking one — which is what stops a future call site quietly supplying a
+ * knowable value. Nothing reads the column: the login and reset routes went
+ * with this change.
  */
-export async function acceptInvite(
+export async function claimInviteForEmail(
   db: Db,
-  a: { token: string; password: string; displayName: string },
-): Promise<AuthUser> {
-  // Judged before the invite is claimed, so a too-short password costs a
-  // round trip rather than a claim-and-restore cycle.
-  assertCredentials(a);
-
+  a: { email: string; displayName: string },
+): Promise<AuthUser | null> {
+  const address = a.email.trim().toLowerCase();
   const now = Date.now();
-  const claimed = await db.execute(sql`
-    UPDATE invites SET accepted_at = ${now}
-     WHERE token_hash = ${tokenId(a.token)}
-       AND accepted_at IS NULL
-       AND expires_at > ${now}
-    RETURNING id, email, role`);
-
-  const invite = claimed.rows[0];
-  if (!invite) throw new InviteError();
 
   /*
-   * AN OWNER-ROLE INVITE IS POISON AND IS REFUSED AT ACCEPTANCE, not only at
-   * creation. The new invite routes cannot mint one (the enum and `canAssign`
-   * both refuse), but the COLUMN still admits the value — migration 0680
-   * keeps it legal because history may carry it — and an unspent owner invite
-   * minted by the pre-0680 route would otherwise create a SECOND owner, who
-   * could then disable the first. The invite stays claimed: a token that can
-   * never be honoured should not be retryable either.
+   * The local part is the fallback name, resolved HERE rather than at the
+   * caller: `createUser` refuses a blank display name, and Clerk accounts
+   * genuinely arrive without one (a Google account with no profile name is
+   * ordinary). A caller that forgot would turn a valid invitee into a 500.
    */
-  if (String(invite.role) === 'owner') throw new InviteError();
+  const displayName = a.displayName.trim() || address.split('@')[0] || address;
+
+  const claimed = await db.execute(sql`
+    WITH pick AS (
+      SELECT id FROM invites
+       WHERE email = ${address}
+         AND accepted_at IS NULL
+         AND expires_at > ${now}
+       ORDER BY created_at DESC
+       LIMIT 1
+    )
+    UPDATE invites SET accepted_at = ${now}
+      FROM pick
+     WHERE invites.id = pick.id
+       AND invites.accepted_at IS NULL
+    RETURNING invites.id, invites.email, invites.role`);
+
+  const invite = claimed.rows[0];
+  if (!invite) return null;
+
+  /*
+   * The refusal `acceptInvite` makes, for the same reason: the column still
+   * admits 'owner' because migration 0680 kept it legal for history, so an
+   * unspent pre-0680 invite would otherwise mint a SECOND owner who could
+   * then disable the first. The invite stays claimed — a row that can never
+   * be honoured should not be retryable either.
+   */
+  if (String(invite.role) === 'owner') return null;
 
   try {
     return await createUser(db, {
       email: String(invite.email),
-      password: a.password,
-      displayName: a.displayName,
+      displayName,
       role: invite.role as Role,
     });
   } catch (err) {
-    // Creating the user failed — a duplicate email, most likely. Hand the
-    // invite back rather than burning it, but only if nothing else has
-    // claimed it in the meantime.
+    /*
+     * Hand the invite back rather than burning it, and only if nothing else
+     * has claimed it in the meantime. A duplicate email is the likely cause:
+     * two exchanges for one address, racing.
+     */
     await db
       .execute(
         sql`UPDATE invites SET accepted_at = NULL
              WHERE id = ${String(invite.id)} AND accepted_at = ${now}`,
       )
       .catch(() => undefined);
-    // Safe to rethrow unchanged: `createUser` has already turned the duplicate
-    // email into a `DuplicateEmailError`, and anything that still is a driver
-    // error was scrubbed by `guardDb` before it got here. This line used to be
-    // the shortest route from a unique violation to a password hash in a log.
     throw err;
   }
 }

@@ -17,7 +17,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { SEED_PASSWORD, freshDb } from '../test/harness';
+import { freshDb } from '../test/harness';
 import { httpClient, json } from '../test/http';
 import { MailNotConfiguredError } from '../mail/port';
 import type { TestCtx } from '../test/harness';
@@ -68,11 +68,7 @@ const TEMPLATE = {
 
 async function login(user: AuthUser): Promise<HttpClient> {
   const client = httpClient(ctx.db, { mailer });
-  const res = await client.post('/api/auth/login', {
-    email: user.email,
-    password: SEED_PASSWORD,
-  });
-  expect(res.status).toBe(200);
+  await client.signIn(user);
   return client;
 }
 

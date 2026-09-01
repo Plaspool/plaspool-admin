@@ -8,12 +8,12 @@
  * exist to hold: **an instance can never be left with no owner who can sign
  * in.** Everything under `/api/users` is owner-only, so the moment the last
  * active owner is revoked there is nobody who can undo it through the API at
- * all; the recovery is `scripts/set-owner-password.ts` against the production
+ * all; the recovery is `scripts/bootstrap-owner.ts` against the production
  * database.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { SEED_PASSWORD, freshDb, type TestCtx } from '../test/harness';
+import { freshDb, type TestCtx } from '../test/harness';
 import { httpClient, json, type HttpClient } from '../test/http';
 import type { AuthUser } from '../../shared/types';
 
@@ -72,11 +72,7 @@ function client(ip: string): HttpClient {
 
 async function loggedIn(user: { email: string }, ip: string): Promise<HttpClient> {
   const c = client(ip);
-  const res = await c.post('/api/auth/login', {
-    email: user.email,
-    password: SEED_PASSWORD,
-  });
-  expect(res.status).toBe(200);
+  await c.signIn(user);
   return c;
 }
 
@@ -209,7 +205,7 @@ describe('POST /api/users/:id/disable', () => {
     expect((await writer.post(`/api/users/${id}/disable`)).status).toBe(403);
   });
 
-  it('revokes the account: sessions die and login stops working', async () => {
+  it('revokes the account: sessions die and a fresh one is refused too', async () => {
     const target = await makeUser('goodbye@test.local', 'writer', 'Goodbye');
     const theirs = await loggedIn(target, '203.0.113.132');
     expect((await theirs.get('/api/auth/me')).status).toBe(200);
@@ -226,14 +222,20 @@ describe('POST /api/users/:id/disable', () => {
       SELECT count(*)::int AS n FROM sessions WHERE user_id = ${target.id}::uuid`);
     expect(Number(rows.rows[0].n)).toBe(0);
 
-    expect(
-      (
-        await client('203.0.113.134').post('/api/auth/login', {
-          email: target.email,
-          password: SEED_PASSWORD,
-        })
-      ).status,
-    ).toBe(401);
+    /*
+     * AND A SESSION MINTED AFTERWARDS IS REFUSED TOO — the belt to the
+     * sweep's braces, and the reason `resolveSession` consults `disabled_at`
+     * rather than trusting that every session was deleted.
+     *
+     * This used to be "and login stops working", driven through
+     * `POST /api/auth/login`. That route is gone; refusing a revoked account
+     * AT SIGN-IN is now the Clerk exchange's job and is tested there
+     * (`clerk.test.ts`: a disabled user gets `not_invited`). What is left to
+     * prove here is the second line of defence, which is this one.
+     */
+    const revived = client('203.0.113.134');
+    await revived.signIn({ email: target.email });
+    expect((await revived.get('/api/auth/me')).status).toBe(401);
   });
 
   it('is idempotent and keeps the original disable time', async () => {

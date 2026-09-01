@@ -74,8 +74,19 @@ export const SYSTEM_KEYS = [
   'order.refund_failed',
   'account.welcome',
   'account.invite',
-  'account.password_reset',
-  'account.login_code',
+  /*
+   * `account.password_reset` and `account.login_code` were here until Clerk
+   * became the only auth (2026-09-01). Nothing can send either one: the reset
+   * flow and the emailed second factor went with the password routes, and
+   * Clerk sends its own equivalents from its own dashboard.
+   *
+   * REMOVING A KEY DOES NOT REMOVE THE ROW. `ensureSystemTemplates` stops
+   * seeding them and `resolve()` never looks them up, but any
+   * `email_templates` row already seeded in production stays — visible on the
+   * templates screen, editable, and unable to send. Deleting those rows is a
+   * migration and destroys whatever wording an owner had put in them, so it
+   * is the owner's call rather than a tidy-up.
+   */
   'return.awarded',
   'return.rejected',
   /* The namespace the SYSTEM_KEYS comment predicted. Both are about a review,
@@ -89,10 +100,6 @@ export const SYSTEM_KEYS = [
 ] as const;
 
 export type SystemKey = (typeof SYSTEM_KEYS)[number];
-
-export function isSystemKey(value: string): value is SystemKey {
-  return (SYSTEM_KEYS as readonly string[]).includes(value);
-}
 
 export interface SystemTemplate extends TemplateBody {
   key: SystemKey;
@@ -546,91 +553,33 @@ const ACCOUNT_WELCOME: SystemTemplate = {
 
 const ACCOUNT_INVITE: SystemTemplate = {
   key: 'account.invite',
-  name: 'Writer invitation',
-  description: 'Sent when an owner invites somebody to write on the blog.',
+  name: 'Invitation',
+  description: 'Sent when somebody is invited to the admin.',
   variables: ['{{inviter_name}}', '{{invite_url}}', '{{expiry_days}}', '{{support_email}}'],
-  subject: 'You have been invited to write',
+  subject: 'You have been invited to the PlaSpool admin',
   html: shell({
-    title: 'You have been invited to write',
-    preheader: '{{inviter_name}} invited you to write on their blog.',
+    title: 'You have been invited',
+    preheader: '{{inviter_name}} invited you to the PlaSpool admin.',
     body:
       badge('Invitation') +
-      h1('You have been invited to write') +
-      p('<strong>{{inviter_name}}</strong> invited you to write on their blog.') +
-      button('Set up your account', '{{invite_url}}') +
+      h1('You have been invited') +
+      p('<strong>{{inviter_name}}</strong> invited you to the PlaSpool admin.') +
+      button('Open the admin', '{{invite_url}}') +
       small(
-        'The link works once and expires in {{expiry_days}} days. If you were not ' +
-        'expecting this, you can ignore this message — nothing happens until you ' +
-        'open it.',
+        'Sign in with Google, using this same email address. Your account is ' +
+        'set up as you go, so there is no password to choose. The invitation ' +
+        'is good for one account and runs out in {{expiry_days}} days. If you ' +
+        'were not expecting this, you can ignore this message.',
       ),
     footer: `Sent by PlaSpool. Not expecting this? Ignore it, or write to ${SUPPORT}.`,
   }),
   text:
-    `{{inviter_name}} invited you to write on their blog.\n\n` +
+    `{{inviter_name}} invited you to the PlaSpool admin.\n\n` +
     `{{invite_url}}\n\n` +
-    `The link works once and expires in {{expiry_days}} days. If you were not\n` +
-    `expecting this, you can ignore this message — nothing happens until you open it.\n`,
-};
-
-const ACCOUNT_PASSWORD_RESET: SystemTemplate = {
-  key: 'account.password_reset',
-  name: 'Password reset',
-  description: 'Sent when somebody asks to reset their password.',
-  variables: ['{{reset_url}}', '{{support_email}}'],
-  subject: 'Reset your password',
-  html: shell({
-    title: 'Reset your password',
-    preheader: 'Someone asked to reset the password for this account.',
-    body:
-      badge('Security', 'neutral') +
-      h1('Reset your password') +
-      p('Someone asked to reset the password for this account.') +
-      button('Choose a new password', '{{reset_url}}') +
-      small(
-        'The link works once and expires in an hour. If this was not you, nothing ' +
-        'has changed and you can ignore this message — your current password still ' +
-        'works.',
-      ),
-    footer: `Sent by PlaSpool. Did not ask for this? Write to ${SUPPORT}.`,
-  }),
-  text:
-    `Someone asked to reset the password for this account.\n\n` +
-    `{{reset_url}}\n\n` +
-    `The link works once and expires in an hour. If this was not you, nothing has\n` +
-    `changed and you can ignore this message — your current password still works.\n`,
-};
-
-/**
- * The second factor (migration 0700). SIX DIGITS IN THE SUBJECT LINE,
- * deliberately: the person is mid-login on another screen, and a code they can
- * read off the notification without opening the message is the whole UX. The
- * body repeats it large for the notification-less inbox.
- */
-const ACCOUNT_LOGIN_CODE: SystemTemplate = {
-  key: 'account.login_code',
-  name: 'Sign-in code',
-  description: 'Sent when a protected account signs in — the emailed second factor.',
-  variables: ['{{code}}', '{{expiry_minutes}}', '{{support_email}}'],
-  subject: '{{code}} is your PlaSpool sign-in code',
-  html: shell({
-    title: 'Your sign-in code',
-    preheader: 'Use this code to finish signing in.',
-    body:
-      badge('Security', 'neutral') +
-      h1('Your sign-in code') +
-      p('Enter this code to finish signing in to the PlaSpool admin:') +
-      h1('{{code}}') +
-      small(
-        'It works once and expires in {{expiry_minutes}} minutes. If you were not ' +
-        'signing in, someone has your password — change it now.',
-      ),
-    footer: `Sent by PlaSpool. Did not ask for this? Write to ${SUPPORT}.`,
-  }),
-  text:
-    `Enter this code to finish signing in to the PlaSpool admin:\n\n` +
-    `{{code}}\n\n` +
-    `It works once and expires in {{expiry_minutes}} minutes. If you were not\n` +
-    `signing in, someone has your password — change it now.\n`,
+    `Sign in with Google, using this same email address. Your account is set up as\n` +
+    `you go, so there is no password to choose. The invitation is good for one\n` +
+    `account and runs out in {{expiry_days}} days. If you were not expecting this,\n` +
+    `you can ignore this message.\n`,
 };
 
 /* ------------------------------------------------------------------- returns */
@@ -886,8 +835,8 @@ Changed your mind about what you wrote? Reply to this message and we will
  *
  * TO AN ADMIN, NOT A CUSTOMER — the one message in this file whose reader is
  * staff. It rides the same shell anyway, so the templates screen previews and
- * edits it like any other, and the structure mirrors ACCOUNT_PASSWORD_RESET:
- * one badge, one sentence, one button, one small print.
+ * edits it like any other, and the structure mirrors ACCOUNT_INVITE: one
+ * badge, one sentence, one button, one small print.
  *
  * THE LINK IS THE CREDENTIAL. The download route asks for no session — the
  * mail lands in inboxes and gets opened from phones — so the URL's token is
@@ -943,8 +892,6 @@ export const DEFAULT_TEMPLATES: Record<SystemKey, SystemTemplate> = {
   'order.refund_failed': ORDER_REFUND_FAILED,
   'account.welcome': ACCOUNT_WELCOME,
   'account.invite': ACCOUNT_INVITE,
-  'account.password_reset': ACCOUNT_PASSWORD_RESET,
-  'account.login_code': ACCOUNT_LOGIN_CODE,
   'return.awarded': RETURN_AWARDED,
   'return.rejected': RETURN_REJECTED,
   'review.invite': REVIEW_INVITE,

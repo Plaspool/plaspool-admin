@@ -22,9 +22,6 @@ import Featured from './routes/Featured';
 import EditorRoute from './routes/Editor';
 import Reader from './routes/Reader';
 import SettingsRoute from './routes/Settings';
-import AcceptInvite from './routes/AcceptInvite';
-import Forgot from './routes/Forgot';
-import Reset from './routes/Reset';
 import Recover from './routes/Recover';
 import MigrateRoute from './routes/Migrate';
 import Shop from './routes/Shop';
@@ -54,31 +51,6 @@ initTheme();
 // before anything paints, or the first frame renders in the design system's
 // default green and then snaps to the publication's colour.
 syncDocumentBrand();
-
-/**
- * EVERY INVITE LINK MINTED BEFORE THE `INVITE_PATH` FIX IS DEAD, AND THIS IS
- * WHAT REVIVES THEM (plan §0 F3).
- *
- * The server used to build `https://host/accept-invite?token=…`. Under
- * `createHashRouter` the router only ever looks at `location.hash`, so that
- * token landed in `location.search` where nothing reads it — the invitee got
- * the dashboard's catch-all route and no way to claim their account. The
- * server now mints `/#/accept-invite?token=…`; this rewrites the old shape for
- * every link already sitting in someone's inbox.
- *
- * It runs BEFORE `createHashRouter`, because the router reads `location.hash`
- * as it is constructed and a rewrite afterwards would need a reload to be
- * noticed. `replaceState` rather than assigning `location.href`, so the dead
- * URL does not stay in the back stack.
- */
-function rescueLegacyInviteLink(): void {
-  if (typeof window === 'undefined') return;
-  const { pathname, search, hash } = window.location;
-  if (!pathname.endsWith('/accept-invite') || hash !== '' || search === '') return;
-  const base = pathname.slice(0, -'/accept-invite'.length);
-  window.history.replaceState(null, '', `${base}/#/accept-invite${search}`);
-}
-rescueLegacyInviteLink();
 
 /*
  * Ask who this is, immediately, and never block the first paint on the answer.
@@ -135,25 +107,6 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
 // boundary catches render errors first and shows its own stack-trace page —
 // which reads like the app ate your writing.
 const router = createHashRouter([
-  /*
-   * OUTSIDE THE GUARD, and it has to be: the whole point of this screen is that
-   * whoever opened it has no account yet. `RequireAuth` would show them a login
-   * form they cannot satisfy and swallow the token in the process.
-   */
-  { path: '/accept-invite', element: <AcceptInvite />, errorElement: <RouteError /> },
-  /*
-   * OUTSIDE THE GUARD FOR THE SAME REASON, and here it is even starker: a
-   * writer who has forgotten their password is by definition someone the guard
-   * cannot let through. Behind it, both screens would render the sign-in form —
-   * the one thing the person opening them cannot get past — and `/reset` would
-   * lose its token on the way.
-   *
-   * `/reset` matches `RESET_PATH` in `server/routes/auth.ts` (`/#/reset`), so
-   * the token the mail carries lands in the in-hash query where
-   * `useSearchParams` reads it.
-   */
-  { path: '/forgot', element: <Forgot />, errorElement: <RouteError /> },
-  { path: '/reset', element: <Reset />, errorElement: <RouteError /> },
   /*
    * THE INDEX IS A GATEWAY, NOT THE DASHBOARD. It renders nothing, the opening
    * sequence plays over it, and it then sends the visitor to `/dashboard` or

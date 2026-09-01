@@ -145,21 +145,6 @@ export default function SettingsTeam() {
     toast.show(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.', 'critical');
   }
 
-  async function toggleTwoFactor(u: TeamUser) {
-    const next = !u.twoFactorEmail;
-    try {
-      await teamApi.setTwoFactor(u.id, next);
-      toast.show(
-        next
-          ? `${who(u)} now needs an emailed code to sign in`
-          : `${who(u)} signs in with their password alone`,
-      );
-      void load();
-    } catch (cause) {
-      plainToast(cause);
-    }
-  }
-
   async function disable(u: TeamUser) {
     setConfirmDisable(null);
     try {
@@ -243,13 +228,6 @@ export default function SettingsTeam() {
         ),
     },
     {
-      key: 'code',
-      header: 'Sign-in code',
-      label: 'Sign-in code',
-      tight: true,
-      render: (u) => (u.twoFactorEmail ? <Badge tone="ok">On</Badge> : <Badge>Off</Badge>),
-    },
-    {
       key: 'act', pin: true,
       header: <span className="sr">Actions</span>,
       label: 'Actions',
@@ -257,10 +235,19 @@ export default function SettingsTeam() {
       render: (u) => {
         const self = u.id === viewer.id;
         const manage = canManage(viewerRole, u.role);
-        /* No reach, no menu — the codebase rule (the fallback zone's missing
-           Delete): a control in front of a guaranteed refusal is a promise
-           nobody keeps. Your own row keeps the sign-in code item alone. */
-        if (!manage && !self) return null;
+        /*
+         * No reach, no menu — the codebase rule (the fallback zone's missing
+         * Delete): a control in front of a guaranteed refusal is a promise
+         * nobody keeps.
+         *
+         * YOUR OWN ROW LOST ITS ⋯ WITH THE SIGN-IN CODE. The self-service
+         * item was the emailed second factor, and Clerk owns factors now, so
+         * a `self` row has nothing left to offer: every remaining item is
+         * gated on `manage && !self`. The guard has to say `|| self` rather
+         * than `&& !self`, or the button opens an empty popover — which is
+         * the same broken promise one layer in.
+         */
+        if (!manage || self) return null;
         return (
           <Menu
             chrome="bare"
@@ -297,14 +284,6 @@ export default function SettingsTeam() {
                       Change role…
                     </MenuItem>
                   ) : null}
-                  <MenuItem
-                    onSelect={() => {
-                      close();
-                      void toggleTwoFactor(u);
-                    }}
-                  >
-                    {u.twoFactorEmail ? 'Stop requiring sign-in code' : 'Require sign-in code'}
-                  </MenuItem>
                   {manage && !self ? (
                     <>
                       <MenuSeparator />

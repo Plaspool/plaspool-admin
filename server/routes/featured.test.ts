@@ -9,7 +9,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { SEED_PASSWORD, freshDb, type TestCtx } from '../test/harness';
+import { freshDb, type TestCtx } from '../test/harness';
 import { httpClient, json, type HttpClient } from '../test/http';
 import { CACHE } from './public';
 import { createPost, publishPost, unpublishPost } from '../repo/posts';
@@ -29,8 +29,7 @@ const doc = (text: string): DocNode =>
 
 async function login(user: AuthUser): Promise<HttpClient> {
   const c = httpClient(ctx.db);
-  const res = await c.post('/api/auth/login', { email: user.email, password: SEED_PASSWORD });
-  expect(res.status).toBe(200);
+  await c.signIn(user);
   return c;
 }
 

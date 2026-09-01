@@ -333,49 +333,6 @@ export const api = {
     return (await apiFetch<{ user: AuthUser }>('/auth/me')).user;
   },
 
-  /**
-   * The password step. Since migration 0700 a protected account answers with a
-   * CHALLENGE instead of a session: the ticket proves the password verified,
-   * and the six-digit code in the account's inbox is the second half —
-   * `loginCode` below trades the pair for the session.
-   */
-  async login(
-    email: string,
-    password: string,
-  ): Promise<
-    | { kind: 'session'; user: AuthUser }
-    | { kind: 'code'; ticket: string; expiresAt: number }
-  > {
-    const res = await apiFetch<
-      { user: AuthUser } | { twoFactor: { ticket: string; expiresAt: number } }
-    >('/auth/login', {
-      method: 'POST',
-      body: { email, password },
-    });
-    if ('twoFactor' in res) {
-      return { kind: 'code', ticket: res.twoFactor.ticket, expiresAt: res.twoFactor.expiresAt };
-    }
-    return { kind: 'session', user: res.user };
-  },
-
-  /** The code step. 401 covers a wrong code, an expired challenge and a spent
-   * one alike — the server refuses to split them (enumeration). */
-  async loginCode(ticket: string, code: string): Promise<AuthUser> {
-    const res = await apiFetch<{ user: AuthUser }>('/auth/login/code', {
-      method: 'POST',
-      body: { ticket, code },
-    });
-    return res.user;
-  },
-
-  /** Always 202 — the server never says whether the ticket was live. */
-  async resendLoginCode(ticket: string): Promise<void> {
-    await apiFetch<{ sent: true }>('/auth/login/resend', {
-      method: 'POST',
-      body: { ticket },
-    });
-  },
-
   /*
    * Deliberately NOT behind a session check, on either side. A logout that
    * fails for an expired session leaves the cookie in the browser, which is the
@@ -383,49 +340,6 @@ export const api = {
    */
   async logout(): Promise<void> {
     await apiFetch<{ ok: true }>('/auth/logout', { method: 'POST' });
-  },
-
-  /** 201. The response also sets the session cookie, so this logs you in. */
-  async acceptInvite(a: {
-    token: string;
-    password: string;
-    displayName: string;
-  }): Promise<AuthUser> {
-    return (await apiFetch<{ user: AuthUser }>('/auth/accept-invite', { method: 'POST', body: a }))
-      .user;
-  },
-
-  /**
-   * 202 `{ sent: true }` FOR EVERY ADDRESS, known or not.
-   *
-   * The route answers identically either way on purpose (`server/routes/auth.ts`),
-   * for the same reason `login` refuses to say which half was wrong: this is an
-   * invite-only instance and knowing which addresses have accounts is most of
-   * what an attacker wants. There is deliberately nothing in the return value
-   * for a caller to branch on — a boolean here would be an enumeration oracle
-   * rebuilt one layer up.
-   *
-   * 501 `not_implemented` is the exception and is not about this address: the
-   * deployment has no mailer configured, which the route checks BEFORE the
-   * lookup so that it fails the same way for everybody.
-   */
-  async forgotPassword(email: string): Promise<void> {
-    await apiFetch<{ sent: true }>('/auth/forgot', { method: 'POST', body: { email } });
-  },
-
-  /**
-   * 200 `{ ok: true }`, AND NO SESSION COOKIE — resetting does not sign you in.
-   *
-   * The route sweeps every session the account holds and deliberately hands
-   * back nothing, so that a token read out of a mailbox cannot become a live
-   * session without the new password being typed. Callers must send the writer
-   * to sign in rather than adopting a user here; there is none to adopt.
-   *
-   * 400 `detail: 'token'` is the expected failure (expired, already used, or
-   * simply wrong); 400 `detail: 'password'` mirrors the length rule.
-   */
-  async resetPassword(token: string, password: string): Promise<void> {
-    await apiFetch<{ ok: true }>('/auth/reset', { method: 'POST', body: { token, password } });
   },
 
   // --------------------------------------------------------------- invites

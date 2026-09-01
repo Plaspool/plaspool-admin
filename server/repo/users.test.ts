@@ -1,18 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHash, createHmac } from 'node:crypto';
 import { sql } from 'drizzle-orm';
-import { SEED_PASSWORD, freshDb, migratedDb } from '../test/harness';
-import { verifyPassword } from './password';
+import { freshDb, migratedDb } from '../test/harness';
 import { sessions } from '../db/schema';
 import type { Db } from '../db/client';
-import { createPasswordReset } from './password-reset';
 import {
   SESSION_ABSOLUTE_MAX_MS,
   SESSION_TTL_MS,
   DuplicateEmailError,
   UserInputError,
-  acceptInvite,
-  changePassword,
+  claimInviteForEmail,
   countActiveOwners,
   createInvite,
   createSession,
@@ -47,7 +44,6 @@ const email = () => `u${++seq}.${Date.now().toString(36)}@test.local`;
 async function owner() {
   return createUser(db, {
     email: email(),
-    password: 'pw-owner-strong',
     displayName: 'Owner',
     role: 'owner',
   });
@@ -235,33 +231,40 @@ describe('sessions', () => {
   });
 });
 
+/**
+ * CLAIMING AN INVITE, at the repo level.
+ *
+ * Every case here drove `acceptInvite` — a token plus a chosen password —
+ * until Clerk became the only auth (2026-09-01). `claimInviteForEmail`
+ * replaced it: the Clerk exchange has already proved control of the ADDRESS by
+ * the time this runs, so the invite is claimed by address and there is no
+ * password to choose. The properties are the ones that survived that move, and
+ * they are worth repeating below the route (`server/routes/clerk.test.ts`
+ * covers the same ground through HTTP) because the compensation path in
+ * particular is invisible from there.
+ *
+ * `null` REPLACED A THROW, and that is the shape change to watch for: a
+ * refusal is now a return value the exchange turns into its own 403, not an
+ * `InviteError` for the error mapper.
+ */
 describe('invites', () => {
-  it('an invite can be accepted exactly once', async () => {
+  it('an invite can be claimed exactly once', async () => {
     const inviter = await owner();
     const invitee = email();
-    const { token } = await createInvite(db, {
-      email: invitee,
-      role: 'writer',
-      invitedBy: inviter.id,
-    });
+    await createInvite(db, { email: invitee, role: 'writer', invitedBy: inviter.id });
 
-    const user = await acceptInvite(db, {
-      token,
-      password: 'first-and-only',
-      displayName: 'Invitee',
-    });
-    expect(user.email).toBe(invitee);
+    const user = await claimInviteForEmail(db, { email: invitee, displayName: 'Invitee' });
+    expect(user?.email).toBe(invitee);
     expect(await findUserByEmail(db, invitee)).not.toBeNull();
 
-    await expect(
-      acceptInvite(db, { token, password: 'second-attempt-x', displayName: 'Impostor' }),
-    ).rejects.toThrow(/invite/i);
+    // Spent. A second claim finds no open row and answers null.
+    expect(await claimInviteForEmail(db, { email: invitee, displayName: 'Impostor' })).toBeNull();
   });
 
   it('an expired invite is refused', async () => {
     const inviter = await owner();
     const invitee = email();
-    const { id, token } = await createInvite(db, {
+    const { id } = await createInvite(db, {
       email: invitee,
       role: 'writer',
       invitedBy: inviter.id,
@@ -269,44 +272,55 @@ describe('invites', () => {
     await db.execute(sql`
       UPDATE invites SET expires_at = ${Date.now() - 1} WHERE id = ${id}`);
 
-    await expect(
-      acceptInvite(db, { token, password: 'too-late-here', displayName: 'Late' }),
-    ).rejects.toThrow(/invite/i);
-    // Nothing was created on the way to the rejection.
+    expect(await claimInviteForEmail(db, { email: invitee, displayName: 'Late' })).toBeNull();
+    // Nothing was created on the way to the refusal.
     expect(await findUserByEmail(db, invitee)).toBeNull();
   });
 
+  it('claims exactly ONE invite when the address holds two', async () => {
+    /*
+     * The reason the claim is a CTE and not a bare UPDATE keyed on the email.
+     * Two open invites for one address is ordinary — an owner re-invites
+     * somebody who never got round to it — and a statement without the
+     * `LIMIT 1` subquery would spend both to create one account, silently
+     * destroying the second role's invitation.
+     */
+    const inviter = await owner();
+    const invitee = email();
+    await createInvite(db, { email: invitee, role: 'writer', invitedBy: inviter.id });
+    await createInvite(db, { email: invitee, role: 'support', invitedBy: inviter.id });
+
+    const user = await claimInviteForEmail(db, { email: invitee, displayName: 'Two Invites' });
+    expect(user).not.toBeNull();
+
+    const open = await db.execute(sql`
+      SELECT count(*)::int AS n FROM invites
+       WHERE email = ${invitee} AND accepted_at IS NULL`);
+    expect(Number(open.rows[0].n)).toBe(1);
+  });
+
   /**
-   * The compensation path. `acceptInvite` claims the invite with a conditional
-   * UPDATE and only then creates the user, so a `createUser` failure leaves a
-   * claimed invite behind an account that does not exist. Deleting the
-   * `UPDATE invites SET accepted_at = NULL` that hands it back left the whole
-   * suite green, while any transient failure — a duplicate email, a dropped
-   * connection, a disk error — burned the invite permanently and the only
-   * remedy was for the owner to issue a new one.
+   * The compensation path. `claimInviteForEmail` claims the invite with a
+   * conditional UPDATE and only then creates the user, so a `createUser`
+   * failure leaves a claimed invite behind an account that does not exist.
+   * Deleting the `UPDATE invites SET accepted_at = NULL` that hands it back
+   * left the whole suite green, while any transient failure — a duplicate
+   * email, a dropped connection, a disk error — burned the invite permanently
+   * and the only remedy was for the owner to issue a new one.
    */
   it('hands the invite back when creating the user fails', async () => {
     const inviter = await owner();
     const taken = email();
-    await createUser(db, {
-      email: taken,
-      password: 'already-here-x',
-      displayName: 'Incumbent',
-      role: 'writer',
-    });
+    await createUser(db, { email: taken, displayName: 'Incumbent', role: 'writer' });
 
-    const { id, token } = await createInvite(db, {
+    const { id } = await createInvite(db, {
       email: taken,
       role: 'writer',
       invitedBy: inviter.id,
     });
 
     await expect(
-      acceptInvite(db, {
-        token,
-        password: 'a-long-enough-one',
-        displayName: 'Second',
-      }),
+      claimInviteForEmail(db, { email: taken, displayName: 'Second' }),
     ).rejects.toBeInstanceOf(DuplicateEmailError);
 
     // Claimed by the UPDATE on the way in, so it must have been released on the
@@ -316,160 +330,119 @@ describe('invites', () => {
 
     // Not merely NULL in the column — still spendable, which is the point.
     await db.execute(sql`DELETE FROM users WHERE email = ${taken}`);
-    const user = await acceptInvite(db, {
-      token,
-      password: 'a-long-enough-one',
-      displayName: 'Second',
-    });
-    expect(user.email).toBe(taken);
+    const user = await claimInviteForEmail(db, { email: taken, displayName: 'Second' });
+    expect(user?.email).toBe(taken);
   });
 
-  it('an invitee cannot choose their own email or role', async () => {
+  it('the invite decides the role, and the caller cannot smuggle one in', async () => {
     const inviter = await owner();
     const invitee = email();
-    const { token } = await createInvite(db, {
-      email: invitee,
-      role: 'writer',
-      invitedBy: inviter.id,
-    });
+    await createInvite(db, { email: invitee, role: 'support', invitedBy: inviter.id });
 
-    const user = await acceptInvite(db, {
-      token,
-      password: 'mallory-password',
+    const user = await claimInviteForEmail(db, {
+      email: invitee,
       displayName: 'Mallory',
       // Smuggled in. The invite is the authority for both of these.
-      email: 'mallory@evil.test',
       role: 'owner',
     } as never);
 
-    expect(user.email).toBe(invitee);
-    expect(user.role).toBe('writer');
-    expect(user.displayName).toBe('Mallory');
-    expect(await findUserByEmail(db, 'mallory@evil.test')).toBeNull();
+    expect(user?.email).toBe(invitee);
+    expect(user?.role).toBe('support');
+    expect(user?.displayName).toBe('Mallory');
   });
-});
 
-describe('credential policy', () => {
-  async function inviteFor(inviterId: string) {
+  it('an owner-role invite row is refused, and stays claimed', async () => {
+    /*
+     * The column still admits 'owner' (migration 0680 keeps history legal) and
+     * the pre-0680 route could mint one. The row is deliberately NOT handed
+     * back: an invitation that can never be honoured should not be retryable.
+     */
+    const inviter = await owner();
     const invitee = email();
-    const { token } = await createInvite(db, {
+    const { id } = await createInvite(db, {
       email: invitee,
-      role: 'writer',
-      invitedBy: inviterId,
+      role: 'owner' as never,
+      invitedBy: inviter.id,
     });
-    return { invitee, token };
-  }
 
-  it('refuses an empty or too-short password and leaves the invite spendable', async () => {
-    const inviter = await owner();
-    const { invitee, token } = await inviteFor(inviter.id);
-
-    // Before this policy, an empty password was ACCEPTED — scrypt hashes ''
-    // quite happily — and then `verifyPassword('', stored)` returned true, so
-    // the account was open to anyone who knew the address.
-    await expect(
-      acceptInvite(db, { token, password: '', displayName: 'Empty' }),
-    ).rejects.toBeInstanceOf(UserInputError);
-    await expect(
-      acceptInvite(db, { token, password: 'nine-char', displayName: 'Short' }),
-    ).rejects.toThrow(/at least 10/);
-
-    // Nothing was created, and the invite was not burned on the way out.
+    expect(await claimInviteForEmail(db, { email: invitee, displayName: 'Usurper' })).toBeNull();
     expect(await findUserByEmail(db, invitee)).toBeNull();
-    const user = await acceptInvite(db, {
-      token,
-      password: 'a-long-enough-one',
-      displayName: 'Real',
-    });
-    expect(user.email).toBe(invitee);
+
+    const row = await db.execute(sql`SELECT accepted_at FROM invites WHERE id = ${id}`);
+    expect(row.rows[0].accepted_at).not.toBeNull();
   });
 
-  it('refuses a display name that is blank or only whitespace', async () => {
+  it('falls back to the local part when no display name is offered', async () => {
+    /*
+     * `createUser` refuses a blank display name, and a Google account with no
+     * profile name is ordinary — so the fallback lives in the repo function
+     * rather than at the one call site that could forget it.
+     */
     const inviter = await owner();
-    const { invitee, token } = await inviteFor(inviter.id);
+    const invitee = `no-name.${Date.now().toString(36)}@test.local`;
+    await createInvite(db, { email: invitee, role: 'writer', invitedBy: inviter.id });
 
-    const err = await acceptInvite(db, {
-      token,
-      password: 'a-long-enough-one',
-      displayName: '   ',
-    }).then(
-      () => {
-        throw new Error('expected a blank display name to be refused');
-      },
-      (e: unknown) => e,
-    );
-    expect(err).toBeInstanceOf(UserInputError);
-    expect((err as UserInputError).field).toBe('displayName');
-    expect(await findUserByEmail(db, invitee)).toBeNull();
-  });
-
-  it('applies to createUser too, and trims the stored display name', async () => {
-    await expect(
-      createUser(db, {
-        email: email(),
-        password: 'short',
-        displayName: 'Anyone',
-        role: 'writer',
-      }),
-    ).rejects.toBeInstanceOf(UserInputError);
-
-    const user = await createUser(db, {
-      email: email(),
-      password: 'a-long-enough-one',
-      displayName: '  Padded Name  ',
-      role: 'writer',
-    });
-    expect(user.displayName).toBe('Padded Name');
+    const user = await claimInviteForEmail(db, { email: invitee, displayName: '  ' });
+    expect(user?.displayName).toBe(invitee.split('@')[0]);
   });
 });
 
 describe('users', () => {
-  it('findUserByEmail is case-insensitive and returns the hash separately', async () => {
+  it('findUserByEmail is case-insensitive, and hands back no hash', async () => {
     const address = email();
     const created = await createUser(db, {
       email: address.toUpperCase(),
-      password: 'pw-lookup-long',
       displayName: 'Mixed Case',
       role: 'writer',
     });
-    // Stored lowercased, so a login typed in any case still finds the row.
+    // Stored lowercased, so an address typed in any case still finds the row.
     expect(created.email).toBe(address.toLowerCase());
 
     const found = await findUserByEmail(db, address.toUpperCase());
     expect(found?.user.id).toBe(created.id);
-    expect(found?.passwordHash).toMatch(/^scrypt\$/);
-    // AuthUser is what crosses the boundary, and it carries no hash.
-    expect(JSON.stringify(found?.user)).not.toContain('scrypt');
+    expect(found?.disabledAt).toBeNull();
+    /*
+     * IT USED TO RETURN `passwordHash` and this case asserted the shape of it.
+     * The login route was the only reader; with Clerk the only auth, a lookup
+     * that hands a password hash to every caller that wanted an id is a leak
+     * looking for somewhere to happen. Asserted as ABSENT rather than simply
+     * unmentioned, because re-adding the column to the SELECT is a one-line
+     * change that nothing else would notice.
+     */
+    expect(found).not.toHaveProperty('passwordHash');
+    expect(JSON.stringify(found)).not.toContain('scrypt');
 
     expect(await findUserByEmail(db, `nobody.${address}`)).toBeNull();
   });
 
-  it('findUserById returns the same three parts findUserByEmail does', async () => {
+  it('findUserById returns the same two parts findUserByEmail does', async () => {
     const user = await owner();
     const found = await findUserById(db, user.id);
     expect(found?.user).toEqual(user);
-    expect(found?.passwordHash).toMatch(/^scrypt\$/);
     expect(found?.disabledAt).toBeNull();
-    // The hash is BESIDE the user, never on it — `AuthUser` is the only shape
-    // that crosses the HTTP boundary and it must not be able to carry one.
-    expect(JSON.stringify(found?.user)).not.toContain('scrypt');
+    expect(found).not.toHaveProperty('passwordHash');
+    expect(JSON.stringify(found)).not.toContain('scrypt');
 
     expect(await findUserById(db, '00000000-0000-4000-8000-000000000000')).toBeNull();
   });
 
-  it('freshDb seeds an owner and a writer whose seeded password verifies', async () => {
-    // Every task from 5 onward reads `ctx.users.owner.id`. If the seed regresses,
-    // this is where it shows up rather than three layers down in a repo suite.
+  it('freshDb seeds an owner and a writer', async () => {
+    // Every task from 5 onward reads `ctx.users.owner.id`. If the seed
+    // regresses, this is where it shows up rather than three layers down in a
+    // repo suite.
     const ctx = await freshDb();
     try {
       expect(ctx.users.owner.role).toBe('owner');
       expect(ctx.users.writer.role).toBe('writer');
       expect(ctx.users.owner.id).not.toBe(ctx.users.writer.id);
 
-      const found = await findUserByEmail(ctx.db, 'owner@test.local');
-      expect(found).not.toBeNull();
-      expect(await verifyPassword(SEED_PASSWORD, found!.passwordHash)).toBe(true);
-      expect(await verifyPassword('wrong', found!.passwordHash)).toBe(false);
+      /*
+       * The seed's password used to be asserted here by verifying it. Nothing
+       * verifies passwords any more — `http.signIn()` mints a session directly
+       * and the Clerk exchange is the only route that authenticates — so what
+       * is worth pinning is that the rows exist and are addressable.
+       */
+      expect(await findUserByEmail(ctx.db, 'owner@test.local')).not.toBeNull();
     } finally {
       await ctx.close();
     }
@@ -482,7 +455,6 @@ describe('display name', () => {
   it('updates, trims, and refuses a blank one', async () => {
     const user = await createUser(db, {
       email: email(),
-      password: 'a-long-enough-one',
       displayName: 'Original',
       role: 'writer',
     });
@@ -513,119 +485,10 @@ describe('display name', () => {
   });
 });
 
-describe('changePassword', () => {
-  async function withTwoSessions() {
-    const user = await createUser(db, {
-      email: email(),
-      password: 'the-old-password',
-      displayName: 'Two Sessions',
-      role: 'writer',
-    });
-    const keep = await createSession(db, user.id, 'keep');
-    const other = await createSession(db, user.id, 'other');
-    return { user, keep, other };
-  }
-
-  it('keeps the named session and destroys every other one', async () => {
-    /*
-     * THE ASYMMETRY THE ROUTE EXISTS FOR. `consumePasswordReset` ends every
-     * session, because a reset is what somebody does when they believe an
-     * intruder holds one. This is the signed-in path: the person at the
-     * keyboard has just proved they know the old password, so signing them out
-     * of the tab they typed it in is a bug — and leaving the OTHER thirty-day
-     * cookies alive would make the change cosmetic against exactly the attacker
-     * it is aimed at.
-     */
-    const { user, keep, other } = await withTwoSessions();
-
-    const ended = await changePassword(db, {
-      userId: user.id,
-      newPassword: 'a-brand-new-password',
-      keepSessionToken: keep.token,
-    });
-    expect(ended).toBe(1);
-
-    expect(await resolveSession(db, keep.token)).toMatchObject({ id: user.id });
-    expect(await resolveSession(db, other.token)).toBeNull();
-
-    const found = await findUserById(db, user.id);
-    expect(await verifyPassword('a-brand-new-password', found!.passwordHash)).toBe(true);
-    expect(await verifyPassword('the-old-password', found!.passwordHash)).toBe(false);
-  });
-
-  it('with no session named, every session goes', async () => {
-    // The honest behaviour for a caller that cannot name one to keep: the
-    // sentinel matches no row, so the DELETE is unrestricted.
-    const { user, keep, other } = await withTwoSessions();
-    expect(await changePassword(db, { userId: user.id, newPassword: 'another-new-one' })).toBe(2);
-    expect(await resolveSession(db, keep.token)).toBeNull();
-    expect(await resolveSession(db, other.token)).toBeNull();
-  });
-
-  it('leaves other accounts entirely alone', async () => {
-    const { user, keep } = await withTwoSessions();
-    const bystander = await createUser(db, {
-      email: email(),
-      password: 'not-my-problem',
-      displayName: 'Bystander',
-      role: 'writer',
-    });
-    const theirs = await createSession(db, bystander.id, 'bystander');
-
-    await changePassword(db, {
-      userId: user.id,
-      newPassword: 'yet-another-password',
-      keepSessionToken: keep.token,
-    });
-
-    expect(await resolveSession(db, theirs.token)).toMatchObject({ id: bystander.id });
-    const found = await findUserById(db, bystander.id);
-    expect(await verifyPassword('not-my-problem', found!.passwordHash)).toBe(true);
-  });
-
-  it('refuses a short password before it hashes or touches a session', async () => {
-    const { user, keep, other } = await withTwoSessions();
-    await expect(
-      changePassword(db, { userId: user.id, newPassword: 'nine-char', keepSessionToken: keep.token }),
-    ).rejects.toBeInstanceOf(UserInputError);
-
-    // Both sessions survive and the old password still verifies: a rejected
-    // password must not half-apply.
-    expect(await resolveSession(db, keep.token)).not.toBeNull();
-    expect(await resolveSession(db, other.token)).not.toBeNull();
-    const found = await findUserById(db, user.id);
-    expect(await verifyPassword('the-old-password', found!.passwordHash)).toBe(true);
-  });
-
-  it('kills an outstanding reset link', async () => {
-    /*
-     * Somebody who asked for a reset, gave up, and then changed the password
-     * from inside the app has left a live credential sitting in a mailbox for
-     * the rest of its hour — and it would still work, because
-     * `consumePasswordReset` only asks whether the token is unspent.
-     */
-    const user = await createUser(db, {
-      email: email(),
-      password: 'the-old-password',
-      displayName: 'Changed Mind',
-      role: 'writer',
-    });
-    expect(await createPasswordReset(db, user.email)).not.toBeNull();
-
-    await changePassword(db, { userId: user.id, newPassword: 'chosen-in-the-app' });
-
-    const rows = await db.execute(sql`
-      SELECT count(*)::int AS n FROM password_resets
-       WHERE user_id = ${user.id}::uuid AND used_at IS NULL`);
-    expect(rows.rows[0].n).toBe(0);
-  });
-});
-
 describe('the sessions list', () => {
   it('lists a user\'s own live sessions, newest use first, and marks the current one', async () => {
     const user = await createUser(db, {
       email: email(),
-      password: 'a-long-enough-one',
       displayName: 'Lister',
       role: 'writer',
     });
@@ -659,7 +522,6 @@ describe('the sessions list', () => {
     // to revoke something that is not there, and the revoke would 404.
     const user = await createUser(db, {
       email: email(),
-      password: 'a-long-enough-one',
       displayName: 'Expiring',
       role: 'writer',
     });
@@ -677,7 +539,6 @@ describe('the sessions list', () => {
   it('a session with no user agent is listed with null rather than skipped', async () => {
     const user = await createUser(db, {
       email: email(),
-      password: 'a-long-enough-one',
       displayName: 'Headless',
       role: 'writer',
     });
@@ -697,7 +558,6 @@ describe('the sessions list', () => {
      */
     const mine = await createUser(db, {
       email: email(),
-      password: 'a-long-enough-one',
       displayName: 'Mine',
       role: 'writer',
     });
@@ -766,7 +626,6 @@ describe('the team list', () => {
   it('reports disabledAt once an account is revoked', async () => {
     const user = await createUser(db, {
       email: email(),
-      password: 'a-long-enough-one',
       displayName: 'Revoked',
       role: 'writer',
     });
@@ -787,7 +646,6 @@ describe('enableUser and countActiveOwners', () => {
      */
     const user = await createUser(db, {
       email: email(),
-      password: 'a-long-enough-one',
       displayName: 'Reinstated',
       role: 'writer',
     });
@@ -815,7 +673,6 @@ describe('enableUser and countActiveOwners', () => {
 
       const second = await createUser(ctx.db, {
         email: 'second.owner@test.local',
-        password: 'a-long-enough-one',
         displayName: 'Second Owner',
         role: 'owner',
       });
@@ -840,7 +697,6 @@ describe('listInvites', () => {
   async function threeStates() {
     const inviter = await createUser(db, {
       email: email(),
-      password: 'a-long-enough-one',
       displayName: 'The Inviter',
       role: 'owner',
     });

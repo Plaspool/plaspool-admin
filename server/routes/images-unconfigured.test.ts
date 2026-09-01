@@ -31,7 +31,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { SEED_PASSWORD, freshDb, type TestCtx } from '../test/harness';
+import { freshDb, type TestCtx } from '../test/harness';
 import { httpClient, json, type HttpClient } from '../test/http';
 import { MAX_OPEN_SLOTS } from '../repo/images';
 
@@ -51,11 +51,7 @@ beforeEach(async () => {
   await ctx.db.execute(sql`DELETE FROM auth_attempts`);
   await ctx.db.execute(sql`DELETE FROM sessions`);
   owner = httpClient(ctx.db);
-  const res = await owner.post('/api/auth/login', {
-    email: ctx.users.owner.email,
-    password: SEED_PASSWORD,
-  });
-  expect(res.status).toBe(200);
+  await owner.signIn(ctx.users.owner);
 });
 
 async function count(): Promise<number> {

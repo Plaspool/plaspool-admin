@@ -36,8 +36,6 @@ export interface TeamUser {
   /** Non-null means revoked — every session they hold was destroyed with it. */
   disabledAt: number | null;
   postCount: number;
-  /** Login demands an emailed code after the password (migration 0700). */
-  twoFactorEmail: boolean;
 }
 
 /**
@@ -211,16 +209,6 @@ export const teamApi = {
       { method: 'PATCH', body: { role }, id, subject: 'User' },
     );
     return res.user;
-  },
-
-  /** Turn the emailed sign-in code on or off for one account. */
-  async setTwoFactor(id: string, enabled: boolean): Promise<void> {
-    await apiFetch<{ ok: true }>(`/users/${encodeURIComponent(id)}/two-factor`, {
-      method: 'PATCH',
-      body: { enabled },
-      id,
-      subject: 'User',
-    });
   },
 
   async revokeInvite(id: string): Promise<void> {

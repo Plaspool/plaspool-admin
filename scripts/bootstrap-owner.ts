@@ -1,14 +1,22 @@
 /**
- * Create an owner, or reset an existing account's password.
+ * Create the first owner, or re-enable an account that was locked out.
  *
  * WHY THIS EXISTS. Accounts are invite-only and invites require an owner, so
  * the first owner cannot be created through the API — there is nobody to issue
- * the invite. This is the supported bootstrap, and the same command is the
- * password reset until a real reset flow exists.
+ * the invite. This is the supported bootstrap, and since Clerk became the only
+ * way in (2026-09-01) it is also the ONLY break-glass: nothing else in this
+ * repository can create or re-enable an account without a live session.
  *
- * THE PASSWORD NEVER LEAVES THIS MACHINE. It is read from `OWNER_PASSWORD`, or
- * generated here, or prompted for with the echo turned off — never passed as an
- * argv, which would put it in shell history and in the process list.
+ * IT SETS NO PASSWORD, DESPITE WRITING `password_hash`. It used to — the file
+ * was called `set-owner-password.ts` — and that stopped meaning anything the
+ * day `POST /api/auth/login` was deleted. The column is NOT NULL, so the row
+ * gets 32 bytes of noise nobody holds, exactly as `claimInviteForEmail` does
+ * for an invited teammate. Sign-in is Clerk's; what this command decides is
+ * whether Clerk is allowed to let that address through.
+ *
+ * SO THE ADDRESS IS THE WHOLE CREDENTIAL, and it must be the one attached to
+ * the Google (or other Clerk) account that will sign in. A typo produces a row
+ * that looks right and admits nobody.
  *
  * TWO MODES:
  *
@@ -23,22 +31,17 @@
  * variable.
  *
  * Usage:
- *   npx tsx scripts/set-owner-password.ts --email you@example.com --name "You" --print-sql
- *   DATABASE_URL='postgres://…' npx tsx scripts/set-owner-password.ts --email you@example.com --name "You" --apply
+ *   npx tsx scripts/bootstrap-owner.ts --email you@example.com --name "You" --print-sql
+ *   DATABASE_URL='postgres://…' npx tsx scripts/bootstrap-owner.ts --email you@example.com --name "You" --apply
  */
 import { randomBytes } from 'node:crypto';
-import { createInterface } from 'node:readline';
 import { hashPassword } from '../server/repo/password';
-
-/** Mirrors `assertCredentials` in server/repo/users.ts. */
-const MIN_PASSWORD_LENGTH = 10;
 
 interface Args {
   email: string;
   name: string;
   role: 'owner' | 'writer';
   mode: 'print-sql' | 'apply';
-  generate: boolean;
   keepSessions: boolean;
 }
 
@@ -67,7 +70,6 @@ function parseArgs(argv: string[]): Args {
     name,
     role,
     mode: apply ? 'apply' : 'print-sql',
-    generate: argv.includes('--generate'),
     keepSessions: argv.includes('--keep-sessions'),
   };
 }
@@ -77,38 +79,18 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-/** base64url of 18 random bytes — 24 chars, no ambiguous punctuation. */
-function generatePassword(): string {
-  return randomBytes(18).toString('base64url');
-}
-
 /**
- * Prompt without echoing. `readline` still writes the prompt, so `output` is
- * muted only for the keystrokes.
+ * An unusable password hash: 32 random bytes nobody keeps, hashed at the
+ * production parameters.
+ *
+ * `users.password_hash` is NOT NULL and no route reads it any more, so the
+ * honest value is one that cannot be produced by anybody — including whoever
+ * runs this command. Deliberately not a fixed sentinel like 'x': if a password
+ * route is ever reintroduced, a shared sentinel across every bootstrapped row
+ * would be one guess away from being every account's password.
  */
-function promptHidden(question: string): Promise<string> {
-  return new Promise((resolve) => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-    const asMutable = rl as unknown as { _writeToOutput?: (s: string) => void };
-    process.stdout.write(question);
-    asMutable._writeToOutput = () => {};
-    rl.question('', (answer) => {
-      rl.close();
-      process.stdout.write('\n');
-      resolve(answer);
-    });
-  });
-}
-
-async function resolvePassword(generate: boolean): Promise<{ password: string; shown: boolean }> {
-  const fromEnv = process.env.OWNER_PASSWORD;
-  if (fromEnv) return { password: fromEnv, shown: false };
-  if (generate) return { password: generatePassword(), shown: true };
-
-  const typed = await promptHidden('  New password (input hidden): ');
-  const again = await promptHidden('  Repeat it: ');
-  if (typed !== again) fail('the two entries did not match');
-  return { password: typed, shown: false };
+async function unusablePasswordHash(): Promise<string> {
+  return hashPassword(randomBytes(32).toString('base64url'));
 }
 
 /** Postgres single-quote escaping. Values here are ours, but SQL is SQL. */
@@ -124,9 +106,9 @@ function buildSql(a: Args, passwordHash: string, now: number): string {
     `  SET password_hash = EXCLUDED.password_hash,`,
     `      display_name  = EXCLUDED.display_name,`,
     `      role          = EXCLUDED.role,`,
-    // An account someone disabled should not come back to life as a side effect
-    // of a password reset — but this command IS how you re-enable one, so it is
-    // cleared deliberately rather than by omission.
+    // Clearing `disabled_at` is the POINT of running this against an existing
+    // row: re-enabling a locked-out owner is the break-glass, and it is done
+    // deliberately rather than by omission.
     `      disabled_at   = NULL;`,
   ];
   if (!a.keepSessions) {
@@ -156,14 +138,7 @@ async function apply(sqlText: string): Promise<void> {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const { password, shown } = await resolvePassword(args.generate);
-
-  if (password.length < MIN_PASSWORD_LENGTH) {
-    fail(`password must be at least ${MIN_PASSWORD_LENGTH} characters (the API enforces this too)`);
-  }
-
-  const passwordHash = await hashPassword(password);
-  const sqlText = buildSql(args, passwordHash, Date.now());
+  const sqlText = buildSql(args, await unusablePasswordHash(), Date.now());
 
   /*
    * STDOUT CARRIES ONLY SQL; every human word goes to stderr.
@@ -177,24 +152,19 @@ async function main(): Promise<void> {
   if (args.mode === 'print-sql') {
     say();
     say(`  Paste the SQL below into the Neon SQL editor.`);
-    say(`  It creates ${args.email} as ${args.role}, or resets it if it exists.`);
+    say(`  It creates ${args.email} as ${args.role}, or re-enables it if it exists.`);
     say();
     process.stdout.write(`${sqlText}\n`);
   } else {
     await apply(sqlText);
     say();
-    say(`  ✓ ${args.email} is now ${args.role}, with a new password.`);
+    say(`  ✓ ${args.email} is now an enabled ${args.role}.`);
     if (!args.keepSessions) say(`  ✓ existing sessions revoked`);
   }
 
-  if (shown) {
-    say();
-    say(`  Password (generated — store it now, it is not recoverable):`);
-    say();
-    say(`      ${password}`);
-  }
   say();
-  say(`  Sign in with ${args.email}`);
+  say(`  Now sign in at the admin with the Google account for ${args.email}.`);
+  say(`  There is no password — this row only decides who Clerk may let in.`);
   say();
 }
 

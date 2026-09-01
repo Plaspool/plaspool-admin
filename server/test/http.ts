@@ -1,6 +1,8 @@
 import { createApp } from '../index';
 import type { AppDeps } from '../index';
 import type { Db } from '../db/client';
+import { createSession, findUserByEmail } from '../repo/users';
+import { SESSION_COOKIE } from '../middleware/session';
 
 /**
  * A client that drives the REAL app through `app.request()`.
@@ -36,6 +38,29 @@ export interface HttpClient {
   patch(path: string, body?: unknown, init?: RequestInit): Promise<Response>;
   put(path: string, body?: unknown, init?: RequestInit): Promise<Response>;
   del(path: string, init?: RequestInit): Promise<Response>;
+  /**
+   * Put a real session for `user` in the jar.
+   *
+   * WHY THIS EXISTS AT ALL (2026-09-01). Every suite used to sign in by
+   * POSTing to `/api/auth/login`; that route is gone, because Clerk is now the
+   * only way into this application. The only remaining door needs a verified
+   * Clerk token, and making four hundred tests that are about ORDERS and
+   * PRODUCTS each stand up a fake Clerk verifier would be ceremony that tests
+   * nothing they are for.
+   *
+   * SO WHAT IS NOT BEING TESTED HERE, AND WHERE IT IS. This mints the session
+   * the way the exchange does and stops — it proves nothing about
+   * authentication. `server/routes/clerk.test.ts` drives the REAL exchange
+   * through the REAL `createApp()` for that, which is the composition-root
+   * rule in CLAUDE.md §2: the one route that mints sessions must be tested
+   * through the app production actually builds. Do not add a second sign-in
+   * path here to make a test easier.
+   *
+   * The cookie goes in the jar rather than through `Set-Cookie` because there
+   * is no response to read it from; the NAME is imported from the middleware
+   * so a rename cannot leave every suite silently unauthenticated.
+   */
+  signIn(user: { id: string } | { email: string }, userAgent?: string): Promise<void>;
   /** Everything currently in the jar, as it would be sent. */
   cookies(): Map<string, string>;
   /** Forget every cookie — a fresh browser, not a logout. */
@@ -114,6 +139,22 @@ export function httpClient(db: Db, deps: Partial<AppDeps> = {}): HttpClient {
     patch: withBody('PATCH'),
     put: withBody('PUT'),
     del: (path, init = {}) => request(path, { ...init, method: 'DELETE' }),
+    signIn: async (user, userAgent = 'vitest') => {
+      /* An address rather than an id is accepted because plenty of suites name
+         the seeded owner by email and never hold the row. The lookup is the
+         production one, so a typo'd address fails loudly here rather than
+         producing an anonymous client that 401s ten assertions later. */
+      let id: string;
+      if ('id' in user) {
+        id = user.id;
+      } else {
+        const found = await findUserByEmail(db, user.email);
+        if (!found) throw new Error(`signIn: no seeded user ${user.email}`);
+        id = found.user.id;
+      }
+      const { token } = await createSession(db, id, userAgent);
+      jar.set(SESSION_COOKIE, token);
+    },
     cookies: () => new Map(jar),
     clearCookies: () => jar.clear(),
   };

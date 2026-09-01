@@ -21,6 +21,8 @@ import {
 import { configuredOrigins } from './origin';
 import { storefrontOrigin } from '../shop/storefront-url';
 import { clientIp } from './ratelimit';
+import { SESSION_COOKIE } from './session';
+import { createSession } from '../repo/users';
 import {
   BadRequestError,
   InvalidDocumentError,
@@ -28,7 +30,7 @@ import {
   PreconditionFailedError,
   StaleWriteError,
 } from '../repo/errors';
-import { DuplicateEmailError, InviteError, UserInputError } from '../repo/users';
+import { DuplicateEmailError, UserInputError } from '../repo/users';
 import { ATTEMPT_RETENTION_MS, forget, hit } from '../repo/ratelimit';
 import { DbError } from '../db/client';
 import type { Post } from '../../shared/types';
@@ -128,8 +130,9 @@ describe('the spec §8 error table', () => {
 
   it('answers the repo user errors 400, naming the field and never the value', async () => {
     const cases: [unknown, string][] = [
-      [new UserInputError('password', 'password must be at least 10 characters'), 'password'],
-      [new InviteError(), 'invite'],
+      /* `InviteError` had a row here until Clerk became the only auth: nothing
+         throws it now, so the class and its mapping went together. */
+      [new UserInputError('displayName', 'display name must not be empty'), 'displayName'],
       [new DuplicateEmailError(), 'email'],
     ];
     for (const [err, detail] of cases) {
@@ -351,14 +354,29 @@ describe('the assembled app', () => {
       },
       origins: [ORIGIN],
     });
-    // Two rate-limit buckets plus a user lookup on one request: memoised, or a
-    // serverless function opens a client per statement.
-    const res = await counting.request('/api/auth/login', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', Origin: ORIGIN },
-      body: JSON.stringify({ email: 'nobody@test.local', password: 'wrong-password' }),
+    /*
+     * A SESSION RESOLVE plus the `last_seen_at` write it always performs:
+     * two statements on one request, so a client opened per statement shows
+     * up as `resolved === 2`.
+     *
+     * This used to drive `POST /api/auth/login` — two rate-limit buckets and
+     * a user lookup — which is gone with the password routes (Clerk is the
+     * only door now). What replaces it has to be a route that touches the
+     * database MORE THAN ONCE, or the assertion passes whether or not the
+     * handle is memoised; that is why it is not simply the nearest surviving
+     * 401.
+     */
+    const seeded = await ctx.db.execute(sql`
+      INSERT INTO users (email, password_hash, display_name, role, created_at)
+      VALUES ('memo@test.local', 'x', 'Memo', 'owner', ${Date.now()})
+      RETURNING id`);
+    const { token } = await createSession(ctx.db, String(seeded.rows[0].id), 'vitest');
+    resolved = 0;
+
+    const res = await counting.request('/api/auth/me', {
+      headers: { cookie: `${SESSION_COOKIE}=${token}` },
     });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
     expect(resolved).toBe(1);
   });
 

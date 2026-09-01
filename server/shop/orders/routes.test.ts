@@ -13,7 +13,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { SEED_PASSWORD, freshDb } from '../../test/harness';
+import { freshDb } from '../../test/harness';
 import type { TestCtx } from '../../test/harness';
 import { json } from '../../test/http';
 import { TEST_ORIGIN } from '../../test/http';
@@ -78,8 +78,7 @@ function client(deps = {}): OrdersClient {
 
 async function login(user: AuthUser, deps = {}): Promise<OrdersClient> {
   const c = client(deps);
-  const res = await c.post('/api/auth/login', { email: user.email, password: SEED_PASSWORD });
-  expect(res.status).toBe(200);
+  await c.signIn(user);
   return c;
 }
 

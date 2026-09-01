@@ -231,14 +231,20 @@ describe('the edited row is what renders — and a broken one is not', () => {
 describe('renderSystem', () => {
   it('substitutes scalars and fills in the support address', async () => {
     await ensureSystemTemplates(db, NOW);
-    const message = await renderSystem(db, 'account.password_reset', 'a@test.local', {
-      reset_url: 'https://shop.test/reset?token=abc',
+    /* Was `account.password_reset` until that template went with the password
+       routes. Any single-URL template proves the same substitution. */
+    const message = await renderSystem(db, 'account.invite', 'a@test.local', {
+      inviter_name: 'Amara',
+      invite_url: 'https://shop.test/#/',
+      expiry_days: '7',
     });
 
     expect(message.to).toBe('a@test.local');
-    expect(message.subject).toBe('Reset your password');
-    expect(message.text).toContain('https://shop.test/reset?token=abc');
-    expect(message.html).toContain('href="https://shop.test/reset?token=abc"');
+    expect(message.subject).toBe('You have been invited to the PlaSpool admin');
+    expect(message.text).toContain('https://shop.test/#/');
+    expect(message.html).toContain('href="https://shop.test/#/"');
+    // The scalar substitution, not just the URL.
+    expect(message.text).toContain('Amara');
     // Nobody has to remember to pass it, so no footer can ship the raw placeholder.
     expect(message.html).not.toContain('{{support_email}}');
     expect(message.text).not.toContain('{{support_email}}');

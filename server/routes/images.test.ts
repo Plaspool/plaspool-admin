@@ -18,7 +18,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { SEED_PASSWORD, freshDb, type TestCtx } from '../test/harness';
+import { freshDb, type TestCtx } from '../test/harness';
 import { httpClient, json, type HttpClient } from '../test/http';
 import { QUARANTINE_MS, SLOT_TTL_MS, getImage } from '../repo/images';
 import type { AuthUser, DocNode } from '../../shared/types';
@@ -117,11 +117,7 @@ let anon: HttpClient;
 
 async function login(user: AuthUser): Promise<HttpClient> {
   const c = httpClient(ctx.db);
-  const res = await c.post('/api/auth/login', {
-    email: user.email,
-    password: SEED_PASSWORD,
-  });
-  expect(res.status).toBe(200);
+  await c.signIn(user);
   return c;
 }
 

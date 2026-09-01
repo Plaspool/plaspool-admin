@@ -9,7 +9,7 @@
  */
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { freshDb, resetShopTables, SEED_PASSWORD } from '../test/harness';
+import { freshDb, resetShopTables } from '../test/harness';
 import { standaloneShop } from '../test/standalone';
 import { httpClient, json } from '../../../test/http';
 import { CART_COOKIE } from '../identity/cookies';
@@ -526,10 +526,7 @@ describe('the maintenance cron route', () => {
   });
 
   it('runs for a signed-in writer and reports what it could NOT release', async () => {
-    await client.post('/api/auth/login', {
-      email: 'owner@test.local',
-      password: SEED_PASSWORD,
-    });
+    await client.signIn({ email: 'owner@test.local' });
 
     const res = await client.post('/api/shop/admin/cart/maintenance');
     expect(res.status).toBe(200);

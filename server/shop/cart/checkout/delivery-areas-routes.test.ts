@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { freshDb, SEED_PASSWORD } from '../../../test/harness';
+import { freshDb } from '../../../test/harness';
 import type { TestCtx } from '../../../test/harness';
 import { httpClient, json } from '../../../test/http';
 import type { HttpClient } from '../../../test/http';
@@ -30,11 +30,7 @@ afterAll(async () => {
 });
 
 async function login(who: 'owner' | 'writer' = 'owner'): Promise<void> {
-  const res = await http.post('/api/auth/login', {
-    email: `${who}@test.local`,
-    password: SEED_PASSWORD,
-  });
-  expect(res.status).toBe(200);
+  await http.signIn({ email: `${who}@test.local` });
 }
 
 interface Area {

@@ -38,7 +38,7 @@
 import { Hono } from 'hono';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { SEED_PASSWORD, freshDb } from '../test/harness';
+import { freshDb } from '../test/harness';
 import { httpClient, json } from '../test/http';
 import { deriveBannerStatus } from '../../shared/marketing/banners';
 import { MARKETING_CACHE, createMarketingPublicRoutes } from './public';
@@ -66,11 +66,7 @@ const HOUR = 3_600_000;
 
 async function login(user: AuthUser): Promise<HttpClient> {
   const client = httpClient(ctx.db);
-  const res = await client.post('/api/auth/login', {
-    email: user.email,
-    password: SEED_PASSWORD,
-  });
-  expect(res.status).toBe(200);
+  await client.signIn(user);
   return client;
 }
 

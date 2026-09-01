@@ -29,7 +29,6 @@ import { freshDb } from '../test/harness';
 import type { TestCtx } from '../test/harness';
 import { httpClient, json, TEST_ORIGIN } from '../test/http';
 import type { HttpClient } from '../test/http';
-import { SEED_PASSWORD } from '../test/harness';
 import { createCustomer, createCustomerSession } from './cart/identity/customers';
 import { SHOP_SESSION_COOKIE } from './cart/identity/cookies';
 import { resetOrdersDeps, resolveDeps } from './orders/ports';
@@ -135,10 +134,7 @@ describe('the customer resolver, as the deployment registers it', () => {
      * `resolveShopCustomer` reads `__Host-shop_session` and queries
      * `shop_customer_sessions`, so a studio cookie resolves to nothing.
      */
-    await client.post('/api/auth/login', {
-      email: 'owner@test.local',
-      password: SEED_PASSWORD,
-    });
+    await client.signIn({ email: 'owner@test.local' });
     expect(client.cookies().has('__Host-studio_session')).toBe(true);
 
     expect((await client.get('/api/shop/orders')).status).toBe(401);
@@ -166,10 +162,7 @@ describe('the payment port, as the deployment registers it', () => {
   }
 
   async function ownerClient(): Promise<HttpClient> {
-    await client.post('/api/auth/login', {
-      email: 'owner@test.local',
-      password: SEED_PASSWORD,
-    });
+    await client.signIn({ email: 'owner@test.local' });
     return client;
   }
 
@@ -1189,11 +1182,7 @@ describe('task-d3: cancelling a paid order refunds it first, through the real re
   });
 
   async function ownerOf(client: HttpClient): Promise<HttpClient> {
-    const res = await client.post('/api/auth/login', {
-      email: 'owner@test.local',
-      password: SEED_PASSWORD,
-    });
-    expect(res.status).toBe(200);
+    await client.signIn({ email: 'owner@test.local' });
     return client;
   }
 
@@ -1386,11 +1375,7 @@ describe('task-d4: a refund accepted by the provider later fails, after the orde
   });
 
   async function ownerOf(client: HttpClient): Promise<HttpClient> {
-    const res = await client.post('/api/auth/login', {
-      email: 'owner@test.local',
-      password: SEED_PASSWORD,
-    });
-    expect(res.status).toBe(200);
+    await client.signIn({ email: 'owner@test.local' });
     return client;
   }
 

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { freshDb, SEED_PASSWORD } from '../../../test/harness';
+import { freshDb } from '../../../test/harness';
 import type { TestCtx } from '../../../test/harness';
 import { httpClient, json } from '../../../test/http';
 import type { HttpClient } from '../../../test/http';
@@ -23,11 +23,7 @@ afterAll(async () => {
 });
 
 async function login(): Promise<void> {
-  const res = await http.post('/api/auth/login', {
-    email: 'owner@test.local',
-    password: SEED_PASSWORD,
-  });
-  expect(res.status).toBe(200);
+  await http.signIn({ email: 'owner@test.local' });
 }
 
 describe('GET /admin/shipping-zones', () => {

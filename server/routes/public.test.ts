@@ -20,7 +20,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { SaxesParser } from 'saxes';
-import { SEED_PASSWORD, freshDb, type TestCtx } from '../test/harness';
+import { freshDb, type TestCtx } from '../test/harness';
 import { TEST_ORIGIN, httpClient, json, type HttpClient } from '../test/http';
 import {
   CACHE,
@@ -731,11 +731,7 @@ describe('the public router cannot see a session', () => {
    */
   it('a VALID session cookie changes nothing, byte for byte, on every route', async () => {
     const authed = httpClient(ctx.db);
-    const login = await authed.post('/api/auth/login', {
-      email: owner().email,
-      password: SEED_PASSWORD,
-    });
-    expect(login.status).toBe(200);
+    await authed.signIn(owner());
     // The jar now holds the real cookie, and it is the production one.
     expect([...authed.cookies().keys()]).toContain('__Host-studio_session');
 
