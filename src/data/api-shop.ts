@@ -1060,10 +1060,25 @@ export const shopApi = {
       sort?: 'newest' | 'price_asc' | 'price_desc' | 'alphabetical';
       cursor?: string;
       limit?: number;
+      /**
+       * "And how many are there altogether?" — off by default because the
+       * server pays for a second scan to answer it (see `withTotal` in
+       * `server/shop/catalog/query.ts`). The products screen asks once, to
+       * put a number on the Export action.
+       */
+      withTotal?: boolean;
     } = {},
     signal?: AbortSignal,
-  ): Promise<Page<ShopProduct>> {
-    return shopFetch<Page<ShopProduct>>(`${BASE}/products`, { query: { ...query }, signal });
+  ): Promise<Page<ShopProduct> & { total?: number }> {
+    return shopFetch<Page<ShopProduct> & { total?: number }>(`${BASE}/products`, {
+      // `'1'`/`'0'`, never a boolean — the same reason spelled out on
+      // `listInventory` above: `?withTotal=false` is a truthy string.
+      query: {
+        ...query,
+        withTotal: query.withTotal === undefined ? undefined : query.withTotal ? '1' : '0',
+      },
+      signal,
+    });
   },
 
   async getProduct(id: string, signal?: AbortSignal): Promise<ShopProductDetail> {

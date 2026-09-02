@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { freshDb } from '../../test/harness';
@@ -109,6 +111,72 @@ async function adminProductBySlug(slug: string): Promise<AdminProduct> {
   expect(res.status).toBe(200);
   return (await json<{ product: AdminProduct }>(res)).product;
 }
+
+// ============================================================================
+
+/**
+ * THE ONE THING IN THIS FILE THAT VITEST CANNOT ANSWER FOR — how `papaparse`
+ * loads in production.
+ *
+ * `vite.server.config.ts` builds the function with `ssr`, which externalises
+ * everything in node_modules: the bundle keeps the papaparse import verbatim
+ * and NODE'S OWN ESM LOADER resolves it on the deployment. Vitest does not —
+ * vite-node interops a CommonJS dependency so that the default AND every named
+ * export resolve, whichever import form you write.
+ *
+ * That divergence took POST /api/shop/admin/products/export down in production
+ * — 500 {"error":"internal"} — while every test below passed. csv.ts said
+ * `import * as Papa from 'papaparse'`, and papaparse is a UMD CommonJS module
+ * whose exports cjs-module-lexer cannot see, so under Node the namespace is
+ * ['default', 'module.exports'] and nothing else. Papa.unparse was undefined
+ * on every deployment this feature ever had, and import was equally dead:
+ * Papa.parse is the same undefined.
+ *
+ * So this runs the import line csv.ts actually contains, in a real node, and
+ * dereferences the members csv.ts actually uses. Both are read out of the
+ * source rather than restated here, so the test cannot pass while the code
+ * says something else.
+ */
+describe('papaparse under the production module loader', () => {
+  it("resolves every member csv.ts uses, with csv.ts's own import line", () => {
+    const source = readFileSync('server/shop/catalog/csv.ts', 'utf8');
+
+    const importLine = source.match(/^import .*from 'papaparse';$/m)?.[0]?.trim();
+    expect(importLine, 'no papaparse import found in csv.ts').toBeTruthy();
+
+    const local = importLine!.match(/^import (?:\* as )?(\w+)/)![1];
+    // The call sites — Papa.unparse, Papa.parse — not the import.
+    const used = [
+      ...new Set(
+        [...source.matchAll(new RegExp(String.raw`\b${local}\.(\w+)`, 'g'))].map((m) => m[1]),
+      ),
+    ];
+    expect(used.length, `csv.ts dereferences nothing on ${local}`).toBeGreaterThan(0);
+
+    const probe = [
+      importLine!,
+      `const used = ${JSON.stringify(used)};`,
+      `const kinds = Object.fromEntries(used.map((k) => [k, typeof ${local}?.[k]]));`,
+      'console.log(JSON.stringify(kinds));',
+    ].join(' ');
+
+    /*
+     * `--input-type=module -e`, not a temp file: Node resolves a bare
+     * specifier from the IMPORTING FILE's own directory, so a probe written
+     * to the OS temp dir cannot see node_modules at all and dies with
+     * ERR_MODULE_NOT_FOUND — a red test that proves nothing. An --eval module
+     * resolves from cwd, which vitest runs at the repo root: the same
+     * node_modules the deployment ships.
+     */
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', probe], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+    });
+    expect(JSON.parse(out.trim())).toEqual(
+      Object.fromEntries(used.map((name) => [name, 'function'])),
+    );
+  }, 30_000);
+});
 
 // ============================================================================
 

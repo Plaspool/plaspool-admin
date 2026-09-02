@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import * as Papa from 'papaparse';
+import Papa from 'papaparse';
 import { sql } from 'drizzle-orm';
 import type { Context } from 'hono';
 import type { Db } from '../../db/client';
@@ -41,6 +41,26 @@ import {
 } from './products';
 import type { Product, ProductPatch, VariantPatch, VariantWithPrice } from './types';
 
+/*
+ * DEFAULT IMPORT, NOT `import * as Papa` — and the difference was a 500 in
+ * production for the whole life of this feature.
+ *
+ * papaparse is a UMD CommonJS module. `vite.server.config.ts` externalises
+ * node_modules, so the deployed function resolves this specifier with NODE'S
+ * OWN ESM LOADER, and cjs-module-lexer cannot see exports assigned the way
+ * papaparse assigns them: the namespace is ['default', 'module.exports'] and
+ * nothing more. `Papa.unparse` was therefore `undefined` on every deployment
+ * — POST /api/shop/admin/products/export answered 500 {error:'internal'} —
+ * and `Papa.parse` with it, so import was equally dead.
+ *
+ * Vitest hides this completely: vite-node interops a CommonJS dependency so
+ * both forms resolve. The guard that does not lie is the `papaparse under
+ * the production module loader` test in csv.test.ts, which runs this exact
+ * import line in a real `node`.
+ *
+ * A NAMED import (`import { unparse } from 'papaparse'`) is not the fix: the
+ * same lexer blindness makes it a link-time SyntaxError under Node.
+ */
 /**
  * CSV export and import for the product catalogue (migration 0720).
  *

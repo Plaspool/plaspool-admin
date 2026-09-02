@@ -43,6 +43,12 @@ export interface ProductListQuery {
    */
   includeUnpublished?: boolean;
   status?: 'draft' | 'active' | 'archived' | 'trash';
+  /**
+   * OPT-IN, and it stays opt-in — see the `size + 1` note in `listProducts`
+   * for why the page itself refuses to pay for a COUNT. The products screen
+   * asks for it exactly once, to say how many products an export would carry.
+   */
+  withTotal?: boolean;
 }
 
 interface SortPart {
@@ -239,12 +245,13 @@ function filters(q: ProductListQuery): SQL[] {
 export async function listProducts(
   db: Db,
   q: ProductListQuery,
-): Promise<{ items: Product[]; nextCursor: string | null }> {
+): Promise<{ items: Product[]; nextCursor: string | null; total?: number }> {
   const size = pageLimit(q.limit);
   const parts = SORTS[q.sort];
   if (!parts) throw new BadRequestError('sort');
 
-  const where = filters(q);
+  const matching = filters(q);
+  const where = [...matching];
   if (q.cursor !== undefined) {
     const cursor = requireCursor(q.cursor, q.sort);
     if (cursor.sortValues.length !== parts.length) throw new BadRequestError('cursor');
@@ -276,8 +283,25 @@ export async function listProducts(
   const last = rows[rows.length - 1];
   const more = res.rows.length > size;
 
+  /*
+   * The COUNT the paging deliberately avoids, run ONLY when asked and against
+   * `matching` — the filters WITHOUT the cursor predicate, so it answers "how
+   * many in total" rather than "how many are left after this page".
+   */
+  let total: number | undefined;
+  if (q.withTotal) {
+    const counted = await db.execute(sql`
+      SELECT count(*)::int AS n
+        FROM shop_products p
+       WHERE ${sql.join(matching, sql` AND `)}`);
+    // `::int` for the reason categories.ts gives: an unqualified count(*) is
+    // int8, which one driver hands back as a string and the other as a number.
+    total = Number(counted.rows[0]?.n ?? 0);
+  }
+
   return {
     items,
+    ...(total === undefined ? {} : { total }),
     nextCursor:
       more && last
         ? encodeCursor(

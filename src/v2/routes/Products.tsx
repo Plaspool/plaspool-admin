@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { Archive, Package, Plus, Tags, Trash2 } from 'lucide-react';
+import { Archive, Download, Package, Plus, Tags, Trash2, Upload } from 'lucide-react';
 import { shopApi, type ProductStatus, type ShopProduct, type ShopTag } from '../../data/api-shop';
 import {
   shopCsvApi,
@@ -71,6 +71,33 @@ export default function Products() {
   );
 
   /**
+   * HOW MANY PRODUCTS THERE ARE ALTOGETHER — for the Export action's count,
+   * and only for that.
+   *
+   * A SEPARATE REQUEST, AND NOT `all.length`. The list above is one page of 25
+   * filtered by the tab; export ships the WHOLE catalogue, every status, trash
+   * excluded. Labelling the action with what this page happens to hold would
+   * promise a number the file will not match the moment there is a second page
+   * or a tab other than All.
+   *
+   * `limit: 1` because the items are not wanted, the count is; `withTotal`
+   * makes the server pay for the COUNT its paging deliberately avoids, so this
+   * runs once on arrival and again only when the catalogue itself changed.
+   */
+  const { data: catalogue, reload: reloadCatalogue } = useAsync(
+    (signal) => shopApi.listProducts({ limit: 1, withTotal: true }, signal),
+    [],
+  );
+  const total = catalogue?.total ?? null;
+
+  /** The list AND the count — anything that can change how many products
+   *  exist has to move both, or the Export label goes stale on screen. */
+  function refresh() {
+    reload();
+    reloadCatalogue();
+  }
+
+  /**
    * Bulk lifecycle, run one product at a time — the API has no bulk route,
    * and pretending it does by hiding partial failure would be worse than the
    * sequential requests. The toast reports what actually happened.
@@ -96,7 +123,7 @@ export default function Products() {
         : `${ok} ${verb}, ${failed} refused — some products were not in a state that allows it`,
       failed === 0 ? 'default' : 'critical',
     );
-    reload();
+    refresh();
   }
 
   const all = data?.items ?? [];
@@ -179,21 +206,29 @@ export default function Products() {
         menu={(close) => (
           <>
             <AnalyticsMenuItem shown={shown} onToggle={toggle} close={close} />
+            {/* The count, not an ellipsis. "Export…" said only that a dialog
+                was coming; the number says how many PRODUCTS the file will
+                carry — the modal is where "one row per variant" belongs, since
+                rows are not what anyone counts their shop in. Absent rather
+                than 0 while the count is still in flight: "Export (0)" on a
+                shop that has products is a worse sentence than "Export". */}
             <MenuItem
+              icon={<Download aria-hidden="true" />}
               onSelect={() => {
                 close();
                 setExportOpen(true);
               }}
             >
-              Export…
+              {total === null ? 'Export' : `Export (${total})`}
             </MenuItem>
             <MenuItem
+              icon={<Upload aria-hidden="true" />}
               onSelect={() => {
                 close();
                 setImportOpen(true);
               }}
             >
-              Import…
+              Import
             </MenuItem>
           </>
         )}
@@ -308,7 +343,10 @@ export default function Products() {
                     <Plus aria-hidden="true" />
                     Add product
                   </ButtonLink>
-                  <Button onClick={() => setImportOpen(true)}>Import</Button>
+                  <Button onClick={() => setImportOpen(true)}>
+                    <Upload aria-hidden="true" />
+                    Import
+                  </Button>
                 </>
               }
               shelf={<SpoolTiles />}
@@ -341,7 +379,7 @@ export default function Products() {
                 : `${ok} updated, ${failed} refused — reload the page and try those again`,
               failed === 0 ? 'default' : 'critical',
             );
-            reload();
+            refresh();
           }}
         />
       ) : null}
@@ -352,7 +390,7 @@ export default function Products() {
           onClose={() => setImportOpen(false)}
           onDone={() => {
             setImportOpen(false);
-            reload();
+            refresh();
           }}
         />
       ) : null}
