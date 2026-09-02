@@ -17,6 +17,7 @@ import type { Mailer } from '../../mail/port';
 import { renderSystem } from '../../email/system-templates';
 import { money } from '../../../shared/commerce/money';
 import { slugify } from '../../../shared/doc';
+import { adminOrigin } from '../../admin-url';
 import type { AuthUser, DocNode } from '../../../shared/types';
 import { SHOP_CURRENCY } from '../currency';
 import { listProducts } from './query';
@@ -907,13 +908,21 @@ csvRoutes.post('/admin/products/export', auth, async (c) => {
             ${tokenId(token)}, ${now}, NULL)`);
 
   /*
-   * origins[0], NEVER the Host header — the invite route documents why at
-   * length: a host header is attacker-controlled on any deployment that does
-   * not pin it, and a tokened URL built from one is a credential delivered to
-   * a domain the attacker chose.
+   * `adminOrigin()`, never the Host header and no longer `origins[0]`.
+   *
+   * Not the header for the reason this comment always gave: it is
+   * attacker-controlled on any deployment that does not pin it, and a tokened
+   * URL built from one is a credential delivered to a domain the attacker
+   * chose.
+   *
+   * Not `origins[0]` because it is an allow-list, not an address — its order
+   * is nobody's decision and its entries include every deploy alias. This link
+   * still WORKED from one, since it hits the API rather than the Clerk-gated
+   * app, which is precisely why it could sit wrong indefinitely: the day an
+   * alias is retired, exports already emailed break. `server/admin-url.ts`
+   * carries the account of how the invite link learned this the hard way.
    */
-  const base = c.get('origins')[0] ?? '';
-  const url = `${base}/api/shop/admin/products/exports/${id}/download?token=${encodeURIComponent(token)}`;
+  const url = `${adminOrigin()}/api/shop/admin/products/exports/${id}/download?token=${encodeURIComponent(token)}`;
 
   const emailed = await deliverExport(c, db, user.email, url, rowCount);
 

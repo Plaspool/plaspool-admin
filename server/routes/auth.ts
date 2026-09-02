@@ -20,6 +20,7 @@ import {
   updateDisplayName,
 } from '../repo/users';
 import { ASSIGNABLE_ROLES, canAssign } from '../../shared/roles';
+import { adminOrigin } from '../admin-url';
 import { ForbiddenError } from '../middleware/errors';
 import { getEnv } from '../env';
 import { resendMailer } from '../mail/resend';
@@ -442,13 +443,21 @@ export function createAuthRoutes(deps: AuthRouteDeps = {}): Hono<AppEnv> {
     });
 
     /*
-     * The URL is built from the FIRST configured origin, not from the request's
-     * `Host` or `Origin` header. A host header is attacker-controlled on any
-     * deployment that does not pin it, and an invite URL built from one is a
-     * credential delivered to a domain the attacker chose.
+     * `adminOrigin()`, NOT `c.get('origins')[0]` and certainly not the request's
+     * `Host` header.
+     *
+     * Not the header, because it is attacker-controlled on any deployment that
+     * does not pin it, and an invite URL built from one points a teammate at a
+     * domain the attacker chose.
+     *
+     * Not `origins[0]` either, and that half is a bug this route shipped: the
+     * allow-list legitimately holds every alias of this deployment, its order
+     * is nobody's decision, and its first entry was a `*.vercel.app` host where
+     * Clerk's production key refuses to load — so the invitation rendered a
+     * blank page for the one person who could not diagnose it.
+     * `server/admin-url.ts` carries the full account.
      */
-    const base = c.get('origins')[0] ?? '';
-    const url = `${base}${INVITE_PATH}`;
+    const url = `${adminOrigin()}${INVITE_PATH}`;
 
     const emailed = await deliverInvite(c, address, url, inviter.displayName);
 
