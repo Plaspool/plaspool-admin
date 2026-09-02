@@ -146,6 +146,55 @@ export const invites = pgTable(
   ],
 );
 
+/**
+ * A proposal to hand the store to somebody else (migration 0800).
+ *
+ * `shared/roles.ts` still says the owner is singular by construction, and it
+ * still is: `PATCH /users/:id/role` refuses `owner` in both directions, and the
+ * ONE route that may move it does so as a swap inside a single statement — the
+ * recipient is promoted and the outgoing owner demoted to `developer` together,
+ * so there is never an instant with two owners or none.
+ *
+ * A ROW IS A LIFETIME, not a flag: both timestamps NULL is pending,
+ * `acceptedAt` is done, `cancelledAt` is withdrawn by the sender or declined by
+ * the recipient. Expiry is the clock, exactly as it is for `invites`.
+ */
+export const ownershipTransfers = pgTable(
+  'ownership_transfers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** The owner proposing it. Their role is what gets demoted on acceptance. */
+    fromUserId: uuid('from_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    toUserId: uuid('to_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
+    acceptedAt: bigint('accepted_at', { mode: 'number' }),
+    cancelledAt: bigint('cancelled_at', { mode: 'number' }),
+  },
+  (t) => [
+    check('ownership_transfers_distinct_ck', sql`${t.fromUserId} <> ${t.toUserId}`),
+    check(
+      'ownership_transfers_outcome_ck',
+      sql`${t.acceptedAt} IS NULL OR ${t.cancelledAt} IS NULL`,
+    ),
+    /*
+     * AT MOST ONE PENDING TRANSFER FOR THE WHOLE INSTANCE. Two live proposals
+     * are two people who each believe they are about to own the store, and
+     * whichever accepts first silently voids the other. Declared here for
+     * parity with the migration; the index in `0800` is what enforces it.
+     */
+    uniqueIndex('ownership_transfers_one_pending_uq')
+      .on(sql`(true)`)
+      .where(sql`${t.acceptedAt} IS NULL AND ${t.cancelledAt} IS NULL`),
+    index('ownership_transfers_to_idx').on(t.toUserId),
+    index('ownership_transfers_from_idx').on(t.fromUserId),
+  ],
+);
+
 export const posts = pgTable(
   'posts',
   {

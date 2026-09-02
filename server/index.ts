@@ -10,6 +10,7 @@ import { rolePermissions } from './middleware/permissions';
 import { createAuthRoutes } from './routes/auth';
 import { createClerkRoutes } from './routes/clerk';
 import { routes as users } from './routes/users';
+import { routes as ownership } from './routes/ownership';
 import { routes as posts } from './routes/posts';
 import { routes as featured } from './routes/featured';
 import { routes as revisions } from './routes/revisions';
@@ -511,6 +512,13 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * throughout, and needs no mailer, so it takes no part in the factory above.
    */
   app.route(API_PREFIX, users);
+  /*
+   * OWNERSHIP TRANSFER — its own router because two of its routes are NOT
+   * admin-only: the recipient accepts or declines while still holding whatever
+   * role they had, which is very often `writer`. `routes/users.ts` promises
+   * `requireAdmin()` on every route and this would have quietly broken that.
+   */
+  app.route(API_PREFIX, ownership);
   app.route(API_PREFIX, posts);
   /*
    * CURATION — the featured rail's admin side, mounted AFTER `posts` and it does

@@ -351,6 +351,13 @@
                         "when":  1786600004200,
                         "tag":  "0780_address_location",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  50,
+                        "version":  "7",
+                        "when":  1786600004300,
+                        "tag":  "0800_ownership_transfers",
+                        "breakpoints":  true
                     }
                 ]
 }

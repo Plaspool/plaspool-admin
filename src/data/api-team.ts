@@ -17,6 +17,7 @@
  * them, and the shapes below are the ones read out of `server/routes/auth.ts`.
  */
 import { apiFetch } from './api';
+import type { AuthUser } from './types';
 import { PreconditionFailedError } from './errors';
 import type { Role } from '../../shared/roles';
 
@@ -27,6 +28,21 @@ import type { Role } from '../../shared/roles';
  * the number exists to answer is "what does disabling this person leave
  * behind", and a trashed post is restorable until somebody empties the trash.
  */
+/**
+ * A live proposal to hand the store to somebody else.
+ *
+ * There is at most one instance-wide, which is why nothing here is keyed by a
+ * transfer id: the client never has to hold one, and so can never send the
+ * wrong one.
+ */
+export interface OwnershipTransfer {
+  id: string;
+  from: { id: string; displayName: string; email: string };
+  to: { id: string; displayName: string; email: string };
+  createdAt: number;
+  expiresAt: number;
+}
+
 export interface TeamUser {
   id: string;
   email: string;
@@ -217,6 +233,48 @@ export const teamApi = {
       id,
       subject: 'Invite',
     });
+  },
+
+  /**
+   * The live ownership transfer, or `null`.
+   *
+   * `null` IS ALSO WHAT SOMEBODY UNINVOLVED GETS, and the client cannot tell
+   * that apart from "there isn't one" — deliberately, on the server's side. So
+   * there is nothing to branch on here beyond presence.
+   */
+  async ownershipTransfer(signal?: AbortSignal): Promise<OwnershipTransfer | null> {
+    const res = await apiFetch<{ transfer: OwnershipTransfer | null }>(
+      '/ownership/transfer',
+      { signal },
+    );
+    return res.transfer;
+  },
+
+  /**
+   * Offer the store to somebody. Owner only, and NOTHING MOVES until they
+   * accept — `409 already_pending` / `bad_recipient` are the two refusals.
+   */
+  async proposeOwnership(toUserId: string): Promise<OwnershipTransfer> {
+    const res = await apiFetch<{ transfer: OwnershipTransfer }>('/ownership/transfer', {
+      method: 'POST',
+      body: { toUserId },
+    });
+    return res.transfer;
+  },
+
+  /**
+   * Accept, and become the owner. Answers the caller's OWN new shape, because
+   * the client has to repaint: the person who sent this as a writer is an
+   * owner by the time it returns.
+   */
+  async acceptOwnership(): Promise<AuthUser> {
+    return (await apiFetch<{ user: AuthUser }>('/ownership/transfer/accept', { method: 'POST' }))
+      .user;
+  },
+
+  /** The sender withdrawing or the recipient declining — one route for both. */
+  async declineOwnership(): Promise<void> {
+    await apiFetch<{ ok: true }>('/ownership/transfer/decline', { method: 'POST' });
   },
 };
 
