@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { ClerkProvider, SignIn, useAuth, useClerk } from '@clerk/clerk-react';
 import { apiFetch } from '../../data/api';
-import { adoptUser } from '../../data/session';
+import {
+  adoptUser,
+  clearClerkSignOutPending,
+  clerkSignOutPending,
+} from '../../data/session';
 import { ApiError } from '../../data/errors';
 import { Button } from '../ui/primitives';
 import type { AuthUser } from '../../data/types';
@@ -37,8 +41,30 @@ function Exchange() {
   const [state, setState] = useState<'idle' | 'exchanging' | 'not_invited' | 'failed'>('idle');
   const started = useRef(false);
 
+  /*
+   * SIGNING OUT HAPPENS HERE, and it has to, which is worth stating before the
+   * exchange below reads as the only thing this component does.
+   *
+   * `logout()` can destroy our session but not Clerk's — they are separate
+   * sessions on separate domains — so it leaves a marker and this runs on the
+   * way to the sign-in screen, where Clerk is loaded by definition. Without it
+   * the effect below would find `isSignedIn` still true and trade the surviving
+   * Clerk session for a fresh cookie, which is precisely the shape of "sign out
+   * does nothing": everything we owned was cleared, and the sign-in screen put
+   * the person straight back in.
+   *
+   * ORDERED BEFORE THE EXCHANGE EFFECT so React runs it first on a mount where
+   * both are live. `started` is claimed as well, so the exchange cannot fire
+   * for the session being torn down even if the effects are ever reordered.
+   */
   useEffect(() => {
-    if (!isSignedIn || started.current) return;
+    if (!isSignedIn || !clerkSignOutPending()) return;
+    started.current = true;
+    void signOut().finally(clearClerkSignOutPending);
+  }, [isSignedIn, signOut]);
+
+  useEffect(() => {
+    if (!isSignedIn || started.current || clerkSignOutPending()) return;
     started.current = true;
     setState('exchanging');
     void (async () => {

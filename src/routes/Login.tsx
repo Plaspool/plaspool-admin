@@ -3,7 +3,13 @@ import { Navigate, useLocation } from 'react-router-dom';
 import { ClerkProvider, SignIn, useAuth, useClerk } from '@clerk/clerk-react';
 import { apiFetch } from '../data/api';
 import { ApiError } from '../data/errors';
-import { adoptUser, getSession, subscribe } from '../data/session';
+import {
+  adoptUser,
+  clearClerkSignOutPending,
+  clerkSignOutPending,
+  getSession,
+  subscribe,
+} from '../data/session';
 import { BrandLogo } from '../components/BrandLogo';
 import type { AuthUser } from '../data/types';
 import './auth.css';
@@ -48,8 +54,18 @@ function Exchange() {
   const [state, setState] = useState<'idle' | 'exchanging' | 'not_invited' | 'failed'>('idle');
   const started = useRef(false);
 
+  /* Signing out of Clerk, for the reason `src/v2/shell/ClerkGate.tsx` gives at
+     length: `logout()` cannot reach Clerk's session, so it leaves a marker and
+     this — the one place with Clerk loaded — honours it. Without it the effect
+     below re-exchanges the surviving Clerk session and sign out does nothing. */
   useEffect(() => {
-    if (!isSignedIn || started.current) return;
+    if (!isSignedIn || !clerkSignOutPending()) return;
+    started.current = true;
+    void signOut().finally(clearClerkSignOutPending);
+  }, [isSignedIn, signOut]);
+
+  useEffect(() => {
+    if (!isSignedIn || started.current || clerkSignOutPending()) return;
     started.current = true;
     setState('exchanging');
     void (async () => {

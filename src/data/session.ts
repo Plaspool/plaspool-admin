@@ -139,6 +139,57 @@ function remember(user: AuthUser | null): void {
   }
 }
 
+/**
+ * "SOMEBODY DELIBERATELY SIGNED OUT AND CLERK HAS NOT BEEN TOLD YET."
+ *
+ * THE BUG THIS EXISTS FOR, because it is not obvious and it shipped. Clerk is
+ * the only auth: our `POST /auth/logout` destroys the session row and clears
+ * `__Host-studio_session`, and then `Gate` renders the sign-in screen — which
+ * is `ClerkGate`, which sees a Clerk session that is STILL LIVE and trades it
+ * for a brand-new cookie on the spot. Sign out cleared everything it owned and
+ * the screen signed the person straight back in. From the outside, the button
+ * did nothing.
+ *
+ * Clearing this side is not enough because the two sessions are separate:
+ * Clerk's lives on `clerk.plaspool.com` and outlives anything we delete. So
+ * logout leaves this marker, and `ClerkGate` — the one place in the app that is
+ * guaranteed to have Clerk loaded — reads it, calls Clerk's `signOut()`, and
+ * clears it. That ends the Clerk session for real rather than merely declining
+ * to use it once.
+ *
+ * `localStorage` AND NOT `sessionStorage`, deliberately: a person who signs out
+ * and closes the tab must not have the next tab silently re-exchange the Clerk
+ * session that survived. It is cleared the moment Clerk has actually been
+ * signed out, so it cannot strand anybody.
+ */
+const SIGNED_OUT_KEY = 'blog-admin:clerk-signout-pending';
+
+export function markClerkSignOutPending(): void {
+  try {
+    localStorage.setItem(SIGNED_OUT_KEY, '1');
+  } catch {
+    /* No storage means the marker cannot be left. `logout()` still asks the
+       already-loaded Clerk to sign out below, which covers the ordinary case;
+       what is lost is the guarantee after a reload. */
+  }
+}
+
+export function clerkSignOutPending(): boolean {
+  try {
+    return localStorage.getItem(SIGNED_OUT_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function clearClerkSignOutPending(): void {
+  try {
+    localStorage.removeItem(SIGNED_OUT_KEY);
+  } catch {
+    /* nothing to clear if there was nowhere to write it */
+  }
+}
+
 // ------------------------------------------------------------------ replay
 
 let replaySettled: Promise<void> = Promise.resolve();
@@ -338,6 +389,25 @@ export async function logout(opts: { confirmed?: boolean } = {}): Promise<Logout
    * that is worse than honouring the destructive half.
    */
   await api.logout().catch(() => undefined);
+
+  /*
+   * AND CLERK'S SESSION, which our cookie has nothing to do with. The marker
+   * is set FIRST and unconditionally: whether or not Clerk happens to be
+   * loaded in this tab right now, `ClerkGate` must find it on the way to the
+   * sign-in screen (see `markClerkSignOutPending`).
+   */
+  markClerkSignOutPending();
+
+  /*
+   * If Clerk is already loaded — which it is whenever this tab did the
+   * sign-in — end it here and now rather than a render later. Purely a
+   * narrowing of the window in which a closed tab could leave the Clerk
+   * session alive; the marker above is what makes it correct.
+   */
+  const clerk = (globalThis as { Clerk?: { signOut?: () => Promise<unknown> } }).Clerk;
+  if (typeof clerk?.signOut === 'function') {
+    await clerk.signOut().then(clearClerkSignOutPending, () => undefined);
+  }
 
   await clearCache();
   remember(null);
