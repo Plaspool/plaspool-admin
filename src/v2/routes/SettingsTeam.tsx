@@ -14,6 +14,7 @@ import {
   teamApi,
   type MintedInvite,
   type TeamInvite,
+  type OwnershipTransfer,
   type TeamRefusal,
   type TeamUser,
 } from '../../data/api-team';
@@ -106,15 +107,23 @@ export default function SettingsTeam() {
   const [inviting, setInviting] = useState(false);
   const [reRoling, setReRoling] = useState<TeamUser | null>(null);
   const [confirmDisable, setConfirmDisable] = useState<TeamUser | null>(null);
+  const [handingTo, setHandingTo] = useState<TeamUser | null>(null);
+  const [transfer, setTransfer] = useState<OwnershipTransfer | null>(null);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
-      const [members, open] = await Promise.all([
+      const [members, open, pending] = await Promise.all([
         teamApi.listUsers(signal),
         teamApi.listInvites(false, signal),
+        /* BEST-EFFORT, and the `.catch` is the point: a pending transfer is
+           context beside the list, not the list. Letting it into the
+           `Promise.all` unguarded meant one failing read blanked the whole
+           team screen — which is how the existing suite noticed. */
+        teamApi.ownershipTransfer(signal).catch(() => null),
       ]);
       setUsers(members);
       setInvites(open);
+      setTransfer(pending);
       setLoadError(null);
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === 'AbortError') return;
@@ -143,6 +152,34 @@ export default function SettingsTeam() {
   function plainToast(cause: unknown) {
     if (refusalToast(cause)) return;
     toast.show(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.', 'critical');
+  }
+
+  /**
+   * Offer the store to somebody.
+   *
+   * NOTHING MOVES HERE — the recipient has to accept, and until they do the
+   * only visible change is the waiting row below. That is why the modal says
+   * "ask" rather than "transfer": a dialog promising something it does not do
+   * is how people learn not to read dialogs.
+   */
+  async function handOver(u: TeamUser) {
+    setHandingTo(null);
+    try {
+      setTransfer(await teamApi.proposeOwnership(u.id));
+      toast.show(`Asked ${who(u)} to take over as owner`);
+    } catch (cause) {
+      plainToast(cause);
+    }
+  }
+
+  async function withdraw() {
+    try {
+      await teamApi.declineOwnership();
+      setTransfer(null);
+      toast.show('Transfer withdrawn');
+    } catch (cause) {
+      plainToast(cause);
+    }
   }
 
   async function disable(u: TeamUser) {
@@ -284,6 +321,20 @@ export default function SettingsTeam() {
                       Change role…
                     </MenuItem>
                   ) : null}
+                  {/* Only the owner may give the store away — `requireOwner()`
+                      on the route, and `canManage` already says a developer
+                      cannot demote the owner. Hidden rather than disabled,
+                      the same rule the missing ⋯ follows. */}
+                  {viewer?.role === 'owner' && !self && u.disabledAt === null && transfer === null ? (
+                    <MenuItem
+                      onSelect={() => {
+                        close();
+                        setHandingTo(u);
+                      }}
+                    >
+                      Make owner…
+                    </MenuItem>
+                  ) : null}
                   {manage && !self ? (
                     <>
                       <MenuSeparator />
@@ -354,6 +405,23 @@ export default function SettingsTeam() {
         Disabling an account signs that person out everywhere immediately. Enabling it later
         lets them sign in again, but they will have to sign in fresh.
       </p>
+
+      {transfer && viewer && transfer.from.id === viewer.id ? (
+        <Banner tone="warn">
+          <strong>{transfer.to.displayName || transfer.to.email}</strong> has been asked to take
+          over as owner. Nothing changes until they accept — and when they do, you become a
+          developer.{' '}
+          <Button tone="plain" onClick={() => void withdraw()}>
+            Withdraw
+          </Button>
+        </Banner>
+      ) : transfer ? (
+        <Banner tone="info">
+          <strong>{transfer.from.displayName || transfer.from.email}</strong> has asked{' '}
+          <strong>{transfer.to.displayName || transfer.to.email}</strong> to take over as owner.
+          The roles below change when they accept.
+        </Banner>
+      ) : null}
 
       <Card title="Invites">
         {invites === null && !loadError ? (
@@ -435,6 +503,30 @@ export default function SettingsTeam() {
             void load();
           }}
         />
+      ) : null}
+
+      {handingTo ? (
+        <Modal
+          title={`Ask ${who(handingTo)} to take over?`}
+          onClose={() => setHandingTo(null)}
+          footer={
+            <>
+              <Button onClick={() => setHandingTo(null)}>Cancel</Button>
+              <Button tone="primary" onClick={() => void handOver(handingTo)}>
+                Ask them
+              </Button>
+            </>
+          }
+        >
+          <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
+            They have to accept before anything changes. When they do, they become the owner and{' '}
+            <strong>you become a developer</strong> — you keep access to everything, but you can no
+            longer remove them or take the store back. Only they can hand it on again.
+          </p>
+          <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
+            You can withdraw the offer until they accept. It runs out after seven days.
+          </p>
+        </Modal>
       ) : null}
 
       {confirmDisable ? (

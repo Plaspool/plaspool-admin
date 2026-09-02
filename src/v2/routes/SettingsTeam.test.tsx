@@ -151,6 +151,7 @@ const DAY = 86_400_000;
 
 const USERS = '/api/users';
 const INVITES = '/api/invites';
+const TRANSFER = '/api/ownership/transfer';
 
 const member = (over: Partial<TeamUser> & Pick<TeamUser, 'id' | 'email' | 'role'>): TeamUser => ({
   displayName: '',
@@ -222,11 +223,26 @@ const minted = {
 };
 
 /** The list routes, and the POST that shares the invites path. */
-function withTeam(users: TeamUser[], invites: TeamInvite[] = []): void {
+function withTeam(
+  users: TeamUser[],
+  invites: TeamInvite[] = [],
+  transfer: unknown = null,
+): void {
   when(USERS, { items: users });
   when(INVITES, (_url, init) =>
     (init.method ?? 'GET') === 'GET' ? { body: { items: invites } } : { status: 201, body: minted },
   );
+  /* The screen asks on every load. Stubbed for every case rather than only the
+     transfer ones, because an unstubbed endpoint is a rejected promise and the
+     screen's own resilience to that is a separate question from what each of
+     these tests is about. */
+  when(TRANSFER, (_url, init) =>
+    (init.method ?? 'GET') === 'GET'
+      ? { body: { transfer } }
+      : { status: 201, body: { transfer } },
+  );
+  when(`${TRANSFER}/decline`, { ok: true });
+  when(`${TRANSFER}/accept`, { user: { id: 'u_writer', role: 'owner' } });
 }
 
 function mount() {
@@ -458,5 +474,98 @@ describe('the team screen', () => {
         "Developers can't remove or change the owner or other developers.",
       ),
     ).toBeTruthy();
+  });
+});
+
+describe('handing the store over', () => {
+  const offer = {
+    id: 't_1',
+    from: { id: 'u_owner', displayName: 'Amara Owner', email: 'amara@plaspool.com' },
+    to: { id: 'u_writer', displayName: 'Wole Writer', email: 'wole@plaspool.com' },
+    createdAt: NOW - 3_600_000,
+    expiresAt: NOW + 7 * DAY,
+  };
+
+  const asOwner = () => {
+    fixture.session.user = {
+      id: 'u_owner',
+      email: 'amara@plaspool.com',
+      displayName: 'Amara Owner',
+      role: 'owner',
+    };
+  };
+
+  it('offers “Make owner…” to the OWNER only, and only on somebody else', async () => {
+    /*
+     * `requireOwner()` on the route, and `canManage` already says a developer
+     * may not demote the owner — proposing to move the owner's role is that
+     * same act under another verb. Hidden rather than disabled, the rule the
+     * missing ⋯ already follows.
+     */
+    const user = userEvent.setup();
+    withTeam([owner, devViewer, writer, suspended], [openInvite]);
+    mount();
+
+    // The default viewer here is the DEVELOPER: no such item anywhere.
+    const devMenu = await openMenu(user, 'Wole Writer');
+    expect(within(devMenu).queryByRole('menuitem', { name: /Make owner/ })).toBeNull();
+  });
+
+  it('shows it to the owner, and asks rather than transferring', async () => {
+    const user = userEvent.setup();
+    asOwner();
+    withTeam([owner, devViewer, writer]);
+    mount();
+
+    const menu = await openMenu(user, 'Wole Writer');
+    await user.click(within(menu).getByRole('menuitem', { name: 'Make owner…' }));
+
+    /*
+     * THE DIALOG HAS TO SAY WHAT ACTUALLY HAPPENS. Nothing moves until the
+     * recipient accepts, and the sender becomes a developer rather than losing
+     * access — a dialog that promised the transfer outright would be describing
+     * the feature the owner explicitly did not ask for.
+     */
+    const dialog = await screen.findByRole('dialog', { name: /Ask Wole Writer to take over/ });
+    expect(within(dialog).getByText(/have to accept/i)).toBeTruthy();
+    expect(within(dialog).getByText(/you become a developer/i)).toBeTruthy();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Ask them' }));
+
+    await waitFor(() => expect(bodiesOf(TRANSFER, 'POST')).toHaveLength(1));
+    // KEY BY KEY — the recipient's id and nothing else.
+    expect(bodiesOf(TRANSFER, 'POST')[0]).toEqual({ toUserId: 'u_writer' });
+  });
+
+  it('tells the sender it is waiting, and lets them withdraw', async () => {
+    const user = userEvent.setup();
+    asOwner();
+    withTeam([owner, devViewer, writer], [], offer);
+    mount();
+
+    expect(await screen.findByText(/has been asked to take over as owner/i)).toBeTruthy();
+    /* And the row action is gone while one is live — the server refuses a
+       second with `already_pending`, so offering the control would be a
+       control in front of a guaranteed refusal. */
+    const menu = await openMenu(user, 'Wole Writer');
+    expect(within(menu).queryByRole('menuitem', { name: /Make owner/ })).toBeNull();
+    await user.keyboard('{Escape}');
+
+    await user.click(screen.getByRole('button', { name: 'Withdraw' }));
+    await waitFor(() =>
+      expect(
+        calls.filter((c) => c.path === `${TRANSFER}/decline` && c.init.method === 'POST'),
+      ).toHaveLength(1),
+    );
+  });
+
+  it('shows a bystanding admin whose store is moving, with no controls', async () => {
+    /* A developer is not a party. They still need to know the roles below are
+       about to change — but withdrawing is the sender's to do. */
+    withTeam([owner, devViewer, writer], [], offer);
+    mount();
+
+    expect(await screen.findByText(/has asked/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Withdraw' })).toBeNull();
   });
 });
