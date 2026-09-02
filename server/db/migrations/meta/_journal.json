@@ -337,6 +337,20 @@
                         "when":  1786600004000,
                         "tag":  "0740_ledger_reason_order_number",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  48,
+                        "version":  "7",
+                        "when":  1786600004100,
+                        "tag":  "0760_shop_delivery_settings",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  49,
+                        "version":  "7",
+                        "when":  1786600004200,
+                        "tag":  "0780_address_location",
+                        "breakpoints":  true
                     }
                 ]
 }

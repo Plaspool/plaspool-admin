@@ -284,6 +284,46 @@ export interface AddressSnapshot {
    * same thing: no district named, priced at the state's zone.
    */
   district?: string | null;
+  /**
+   * WHERE THE DOOR IS — the pin a shopper optionally shared (migration 0780).
+   *
+   * OPTIONAL for the same reason `district` is: every event serialized before
+   * 0780 lacks the property and a replayed payload must not become invalid
+   * retroactively. Absent and null both mean no pin, which is the ordinary
+   * case — the prompt is optional by design and ships switched off.
+   *
+   * IT IS FOR THE RIDER AND PRICES NOTHING. Nothing in this system has
+   * coordinates to measure it against; see migration 0780's header for the
+   * long form, and `location.pricing: false` on the public config for the
+   * version the storefront reads.
+   */
+  location?: AddressLocation | null;
+}
+
+/**
+ * A shared location, in DECIMAL DEGREES on the wire.
+ *
+ * Stored as integer micro-degrees (`shop_addresses.location_lat_e6`), the way
+ * money is stored in minor units — `numeric` reads back as a string from both
+ * drivers and `double precision` makes a coordinate that no longer compares
+ * equal to itself across a round trip. The conversion happens in
+ * `server/shop/cart/checkout/repo.ts` and nowhere else.
+ */
+export interface AddressLocation {
+  /** -90 … 90. */
+  lat: number;
+  /** -180 … 180. */
+  lng: number;
+  /**
+   * Metres, whole. `null` for a `'pin'` — a spot dropped on a map genuinely has
+   * no accuracy figure, and inventing one would make a guess look measured.
+   */
+  accuracyM: number | null;
+  /** `'device'` is the browser's Geolocation API; `'pin'` is dropped by hand. */
+  source: 'device' | 'pin';
+  /** Epoch-ms. Paired with the coordinate by a CHECK — a fix of unknown age is
+   *  worse than no fix, because nothing on screen says how old it is. */
+  capturedAt: number;
 }
 
 /**

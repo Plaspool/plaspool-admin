@@ -632,7 +632,9 @@ describe('checkout.completed', () => {
     // The address is a COPY. `shop_addresses` is Cart's table under R3, so an
     // event carrying only an id would force the callback brief §7 forbids.
     // `district` rides along since 0460 — null here, because UK names none.
-    expect(payload.shippingAddress).toEqual({ ...UK, district: null });
+    // `location` rides along since 0780 — null here, and null on almost every
+    // order: the pin is optional and the prompt ships switched off.
+    expect(payload.shippingAddress).toEqual({ ...UK, district: null, location: null });
 
     // The holds, so whoever commits stock on capture knows which ones.
     expect(payload.reservationIds).toEqual([]);
