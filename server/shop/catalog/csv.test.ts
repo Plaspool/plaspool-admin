@@ -2,7 +2,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { freshDb } from '../../test/harness';
 import type { TestCtx } from '../../test/harness';
-import { httpClient, json } from '../../test/http';
+import { httpClient, json, TEST_ORIGIN } from '../../test/http';
+import { DEFAULT_ADMIN_ORIGIN } from '../../admin-url';
 import type { HttpClient } from '../../test/http';
 import type { Mailer } from '../../mail/port';
 import { registerCsvMailer, resetCsvMailer } from './csv';
@@ -174,12 +175,19 @@ describe('export', () => {
     expect(body.export.rowCount).toBe(2);
     expect(body.emailed).toBe(true);
     expect(body.export.id).toMatch(/^exp_/);
-    // origins[0], never a Host header — the test origin is what createApp got.
-    expect(body.export.url).toMatch(
-      new RegExp(
-        `^https://studio\\.test/api/shop/admin/products/exports/${body.export.id}/download\\?token=`,
-      ),
+    /*
+     * THE ADMIN'S OWN ORIGIN, never a Host header and no longer `origins[0]`.
+     * `TEST_ORIGIN` is both what `createApp` got and what the allow-list holds,
+     * so the assertion this replaces passed for a link built the wrong way —
+     * see `server/admin-url.ts` for the invitation that shipped pointing at a
+     * deploy alias. The download below is driven by pathname, so the origin is
+     * asserted here and nowhere else.
+     */
+    expect(body.export.url).toBe(
+      `${DEFAULT_ADMIN_ORIGIN}/api/shop/admin/products/exports/${body.export.id}` +
+        `/download?token=${new URL(body.export.url).searchParams.get('token') ?? ''}`,
     );
+    expect(body.export.url).not.toContain(TEST_ORIGIN);
     exportId = body.export.id;
     exportUrl = body.export.url;
 

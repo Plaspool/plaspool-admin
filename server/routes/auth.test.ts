@@ -21,6 +21,7 @@ import { freshDb, type TestCtx } from '../test/harness';
 import { TEST_ORIGIN, httpClient, json } from '../test/http';
 import { SESSION_COOKIE } from '../middleware/session';
 import { INVITE_PATH } from './auth';
+import { DEFAULT_ADMIN_ORIGIN } from '../admin-url';
 import { createInvite } from '../repo/users';
 import type { AuthUser } from '../../shared/types';
 import type { AppDeps } from '../index';
@@ -144,8 +145,16 @@ describe('the invite routes', () => {
     expect(res.status).toBe(201);
     const body = await json<{ invite: Record<string, unknown> }>(res);
     expect(body.invite).toMatchObject({ email: 'new@test.local', role: 'writer' });
-    // The URL is built from the configured origin, never from a Host header.
-    expect(body.invite.url).toBe(`${TEST_ORIGIN}${INVITE_PATH}`);
+    /*
+     * THE ADMIN'S OWN ORIGIN, NEVER THE REQUEST'S AND NEVER THE ALLOW-LIST'S.
+     * `TEST_ORIGIN` is both what this request came from and what `APP_ORIGINS`
+     * holds, so an assertion written against the old `origins[0]` shape reads
+     * as perfectly sensible and passes — which is exactly how the real thing
+     * shipped pointing at a `*.vercel.app` alias where Clerk cannot load and
+     * the invitee gets a blank page.
+     */
+    expect(body.invite.url).toBe(`${DEFAULT_ADMIN_ORIGIN}${INVITE_PATH}`);
+    expect(body.invite.url).not.toContain(TEST_ORIGIN);
   });
 
   it('the invite link carries no credential at all', async () => {
@@ -326,7 +335,7 @@ describe('POST /api/invites and the mail it sends', () => {
     expect(res.status).toBe(201);
     const body = await json<{ invite: { url: string }; emailed: boolean }>(res);
     expect(body.emailed).toBe(false);
-    expect(body.invite.url).toBe(`${TEST_ORIGIN}${INVITE_PATH}`);
+    expect(body.invite.url).toBe(`${DEFAULT_ADMIN_ORIGIN}${INVITE_PATH}`);
 
     /*
      * And the row is open, which is the half that matters for hand delivery:
