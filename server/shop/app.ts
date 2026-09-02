@@ -22,6 +22,7 @@ import { resolveShopCustomer } from './cart/identity/customers';
 import { SHOP_CURRENCY } from './currency';
 import { shopAdminRoutes } from './admin/routes';
 import { shippingZoneRoutes } from './cart/checkout/shipping-zones-routes';
+import { deliverySettingsRoutes } from './settings/routes';
 import { ShippingZonePreconditionFailedError } from './cart/checkout/shipping-zones-repo';
 
 /**
@@ -279,6 +280,19 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
    * Catalog's `/admin/categories` and the dashboard's read surface are.
    */
   shop.route('/', shippingZoneRoutes);
+
+  /*
+   * DELIVERY SETTINGS — `/admin/delivery-settings` (migration 0760). The switch
+   * that decides whether checkout asks for a district at all, so it belongs
+   * beside the zones and areas it governs rather than in a settings router of
+   * its own. `settings` domain, guarded per route inside the router.
+   *
+   * ITS PUBLIC HALF IS NOT HERE. `GET /api/public/shop/delivery-config` is
+   * mounted in `server/index.ts` ABOVE `sessionMiddleware`, because it carries
+   * `Cache-Control: public` and must be cookieless by construction — the same
+   * split `server/shop/reviews/public.ts` makes and for the same reason.
+   */
+  shop.route('/', deliverySettingsRoutes);
 
   /*
    * THE DASHBOARD'S READ SURFACE — `/admin/stats`, `/admin/customers`,

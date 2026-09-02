@@ -28,6 +28,7 @@ import { registerOrdersDefaults } from './shop/orders/ports';
 import { resendMailer } from './mail/resend';
 import { SHOP_PREFIX, shopApp } from './shop/app';
 import { createReviewPublicRoutes } from './shop/reviews/public';
+import { createDeliveryConfigRoutes } from './shop/settings/public';
 import { createPaymentRoutes, createWebhookRoutes } from './shop/payments/routes';
 import { checkoutPort } from './shop/cart/port';
 import { drainCommerceEvents } from './shop/orders/repo/consumer';
@@ -460,6 +461,24 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * `originGuard` and two rate budgets. See `server/shop/reviews/public.ts`.
    */
   app.route(API_PREFIX, createReviewPublicRoutes());
+
+  /*
+   * THE PUBLIC DELIVERY CONFIG — the address form as data (migration 0760),
+   * which the storefront renders its checkout address step from.
+   *
+   * Beside the three public routers above and ABOVE `sessionMiddleware` for
+   * their shared reason: the response carries `Cache-Control: public`, and
+   * mounted here `c.get('user')` is structurally `undefined`, so cookieless by
+   * construction rather than by review. Every field in it is a property of the
+   * SHOP — which questions the form asks, what the limits are, where the
+   * district list lives — and nothing per-viewer may be added to it.
+   *
+   * THE WRITE IS NOT IN IT. `PATCH /api/shop/admin/delivery-settings` lives in
+   * the shop app below, behind a session and the `settings` domain. A mutation
+   * inside a cacheable router puts "may be stored by a shared cache" and
+   * "writes a row" in one file, which is the confusion this split prevents.
+   */
+  app.route(API_PREFIX, createDeliveryConfigRoutes());
 
   app.use(`${API_PREFIX}/*`, originGuard(deps.origins));
 

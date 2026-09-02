@@ -13,6 +13,8 @@ import {
   startCheckout,
 } from '../checkout/repo';
 import { loadShippingZonesForCheckout } from '../checkout/shipping-zones-repo';
+import { loadDeliveryRules } from '../../settings/repo';
+import { ADDRESS_MAX_LENGTHS } from '../../settings/config';
 import { extendReservations } from '../reservations/repo';
 import { runCartMaintenance } from '../events/consumer';
 import { assertCronRequest } from '../cron-auth';
@@ -53,9 +55,22 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
    * table has zero rows, exactly as a fresh deployment needs.
    */
   async function loadConfig(db: Db): Promise<CheckoutConfig> {
-    const dbZones = await loadShippingZonesForCheckout(db);
+    /*
+     * BOTH READS IN PARALLEL. They are independent — the zones table and the
+     * settings singleton — and this runs on every address, options, shipping
+     * and freeze call, so serialising them would add a round trip to the
+     * checkout's hottest path for nothing.
+     */
+    const [dbZones, rules] = await Promise.all([
+      loadShippingZonesForCheckout(db),
+      loadDeliveryRules(db),
+    ]);
     return {
       zones: dbZones.length > 0 ? dbZones : deps.zones,
+      /* How addresses are collected and which regions are served (migration
+       * 0760). Read live for the same reason the zones are: a switch the owner
+       * flips must reach the next checkout call, not the next deploy. */
+      rules,
       storeCurrency: deps.storeCurrency,
       /* SpoolPoints, when this deployment wired them (admin#2). Passed straight
        * through: the route decides nothing about redemption, `freezeCheckout`
@@ -189,6 +204,14 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
       // to retry, and retrying cannot fix a place we refuse to go.
       if (result.reason === 'outside_delivery_area') {
         return c.json({ error: 'outside_delivery_area' }, 409);
+      }
+      // Its own code for the same reason, and a DIFFERENT one: the message
+      // above names a district the customer picked from a list, and under
+      // simple mode there is no list to send them back to. "We don't deliver
+      // to Kano yet" and "we don't deliver to Gwarinpa" need different
+      // sentences and different next steps.
+      if (result.reason === 'outside_service_region') {
+        return c.json({ error: 'outside_service_region' }, 409);
       }
       /* `operation` keeps carrying the reason here for the consumers that
          already read it that way; `reason` says the same thing in the field
@@ -348,25 +371,79 @@ const Base = z.number().int().positive().optional();
  * registered route and fails if a NUL in a string body field produces a 5xx, so
  * these routes either inherit this or fail that test.
  */
+/**
+ * THE OPTIONAL PIN (migration 0780). Decimal degrees on the wire; the repo
+ * stores integer micro-degrees.
+ *
+ * `capturedAt` IS NOT ACCEPTED HERE — the server stamps it. A client-supplied
+ * timestamp is untrusted input that an operator would read as fact ("this pin
+ * was taken at 14:02"), and clock skew on a phone would make some of them
+ * wrong with nothing on screen saying so. Stamped here it means "when this pin
+ * was attached to this address", which is both true and the question an
+ * operator is actually asking. What the browser knows and the server does not
+ * — the coordinate, how accurate the fix was, and whether a person dropped it
+ * by hand — is exactly what it sends.
+ *
+ * THE BOUNDS ARE REAL AND THE COLUMN REPEATS THEM. A swapped lat/lng is the
+ * classic mistake and it is silent: `7.49508, 9.05785` is a legal pair of
+ * numbers and a spot in the Gulf of Guinea. Latitude bounded at 90 catches a
+ * longitude in the latitude slot for every point outside the tropics.
+ */
+const Location = z
+  .object({
+    lat: z.number().finite().min(-90).max(90),
+    lng: z.number().finite().min(-180).max(180),
+    /** Metres. `null` or absent for a hand-dropped pin, which has none. */
+    accuracyM: z.number().finite().min(0).max(10_000_000).nullable().optional(),
+    source: z.enum(['device', 'pin']),
+  })
+  .strict()
+  .transform((l) => ({
+    lat: l.lat,
+    lng: l.lng,
+    /* Rounded: `coords.accuracy` is a float and the column is `integer`. */
+    accuracyM: l.accuracyM == null ? null : Math.round(l.accuracyM),
+    source: l.source,
+    capturedAt: Date.now(),
+  }));
+
+/**
+ * THE LENGTHS COME FROM `ADDRESS_MAX_LENGTHS`, WHICH THE PUBLIC CONFIG ROUTE
+ * ALSO PUBLISHES — one source of truth rather than two that a test compares.
+ *
+ * The storefront renders `maxLength` on each input from
+ * `GET /api/public/shop/delivery-config`, so a limit that drifted from this
+ * schema would let a shopper type an address the form accepted and this route
+ * then 400'd, naming a field and nothing else. Sharing the constant makes that
+ * unrepresentable instead of merely tested.
+ */
 const Address = z
   .object({
-    name: str().min(1).max(200),
-    line1: str().min(1).max(200),
-    line2: str().max(200).nullable().optional(),
-    city: str().min(1).max(120),
-    region: str().max(120).nullable().optional(),
-    postalCode: str().max(40).nullable().optional(),
+    name: str().min(1).max(ADDRESS_MAX_LENGTHS.name),
+    line1: str().min(1).max(ADDRESS_MAX_LENGTHS.line1),
+    line2: str().max(ADDRESS_MAX_LENGTHS.line2).nullable().optional(),
+    city: str().min(1).max(ADDRESS_MAX_LENGTHS.city),
+    region: str().max(ADDRESS_MAX_LENGTHS.region).nullable().optional(),
+    postalCode: str().max(ADDRESS_MAX_LENGTHS.postalCode).nullable().optional(),
     // Two uppercase letters, refused here AND by a CHECK in migration 0120: the
     // shipping zone and therefore the tax rate are derived from this, so a
     // lowercase code would silently pick the fallback zone and charge the wrong
     // tax.
     countryCode: str().regex(/^[A-Z]{2}$/),
-    phone: str().max(40).nullable().optional(),
+    phone: str().max(ADDRESS_MAX_LENGTHS.phone).nullable().optional(),
     // A `marketing_service_areas.key`, CHOSEN from the storefront's picker —
     // never parsed from `line1`. No shape check beyond length: an unknown key
     // already means "no opinion — zone rate" by construction (migration 0460),
     // and a switched-off one is refused by the repo, not the schema.
-    district: str().max(120).nullable().optional(),
+    district: str().max(ADDRESS_MAX_LENGTHS.district).nullable().optional(),
+    /*
+     * OPTIONAL, AND THE STOREFRONT SENDS IT ONLY WHEN THE PUBLIC CONFIG SAYS
+     * `location.offer` IS TRUE. This object is `.strict()`, so a server old
+     * enough to reject this key is also old enough to never advertise the
+     * button — the config IS the feature flag for the wire shape, and there is
+     * no window in which a storefront can send a field its server refuses.
+     */
+    location: Location.nullable().optional(),
   })
   .strict()
   .transform((a) => ({
@@ -379,6 +456,7 @@ const Address = z
     countryCode: a.countryCode,
     phone: a.phone ?? null,
     district: a.district ?? null,
+    location: a.location ?? null,
   }));
 
 const AddressesBody = z

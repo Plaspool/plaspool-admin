@@ -1,4 +1,5 @@
 import { sql } from 'drizzle-orm';
+import { toEpochMs } from '../../../db/client';
 import type { Db } from '../../../db/client';
 import { BadRequestError, NotFoundError } from '../../../repo/errors';
 import { CartPreconditionError, CartStaleWriteError } from '../errors';
@@ -14,10 +15,13 @@ import {
   zoneFor,
 } from './shipping';
 import type { ShippingZone } from './shipping';
+import { DEFAULT_DELIVERY_RULES, servesRegion } from '../../settings/repo';
+import type { DeliveryRules } from '../../settings/repo';
 import type { CatalogPort } from '../catalog-port';
 import type { Reservation, Shortfall } from '../reservations/repo';
 import type { TotalsInputLine } from '../totals/compute';
 import type {
+  AddressLocation,
   AddressSnapshot,
   CheckoutCompletedLine,
   CheckoutCompletedPayload,
@@ -54,6 +58,18 @@ import type {
 
 export interface CheckoutConfig {
   zones: readonly ShippingZone[];
+  /**
+   * How addresses are collected and which regions are served — the
+   * `shop_delivery_settings` singleton (migration 0760), loaded per request
+   * beside the zones so a switch the owner flips reaches the next checkout
+   * call rather than the next deploy.
+   *
+   * OPTIONAL, AND ABSENT MEANS `DEFAULT_DELIVERY_RULES` — district mode, no
+   * region restriction, which is the behaviour every total in this file had
+   * before the settings row existed. That is what makes this additive: a
+   * caller that never heard of delivery settings prices exactly as it did.
+   */
+  rules?: DeliveryRules;
   storeCurrency: string;
   /**
    * SpoolPoints, if this deployment wired them (admin#2). See
@@ -77,6 +93,31 @@ function assertAddress(a: AddressSnapshot): void {
   if (!a.city.trim()) throw new BadRequestError('city');
 }
 
+/**
+ * MICRO-DEGREES BACK TO DEGREES (migration 0780), and this is the only place
+ * that knows the column is scaled. Divided rather than multiplied because
+ * integer/1e6 is exact for every value the column can hold, while the outbound
+ * `Math.round(x * 1e6)` is where the one rounding happens.
+ *
+ * The `location_ck` constraint pairs lat, lng, source and capturedAt, so a
+ * non-null latitude guarantees the other three — the casts below are total
+ * rather than hopeful.
+ */
+function rowToLocation(row: Record<string, unknown>): AddressLocation | null {
+  if (row.location_lat_e6 == null) return null;
+  return {
+    lat: Number(row.location_lat_e6) / 1e6,
+    lng: Number(row.location_lng_e6) / 1e6,
+    accuracyM: row.location_accuracy_m == null ? null : Number(row.location_accuracy_m),
+    source: String(row.location_source) === 'pin' ? 'pin' : 'device',
+    /* `toEpochMs` rather than `Number`, though the CHECK above already makes a
+     * null unreachable here: `Number(null)` is 0, which is finite, is a valid
+     * timestamp and renders as 1 January 1970 — so if that constraint were ever
+     * dropped the failure would be a plausible wrong date instead of a throw. */
+    capturedAt: toEpochMs(row.location_captured_at),
+  };
+}
+
 function rowToAddress(row: Record<string, unknown>): AddressSnapshot {
   return {
     name: String(row.name),
@@ -88,8 +129,13 @@ function rowToAddress(row: Record<string, unknown>): AddressSnapshot {
     countryCode: String(row.country_code),
     phone: row.phone == null ? null : String(row.phone),
     district: row.district == null ? null : String(row.district),
+    location: rowToLocation(row),
   };
 }
+
+const ADDRESS_COLUMNS = sql`name, line1, line2, city, region, postal_code, country_code,
+                            phone, district, location_lat_e6, location_lng_e6,
+                            location_accuracy_m, location_source, location_captured_at`;
 
 export async function getAddress(
   db: Db,
@@ -97,7 +143,7 @@ export async function getAddress(
   kind: AddressKind,
 ): Promise<AddressSnapshot | null> {
   const res = await db.execute(sql`
-    SELECT name, line1, line2, city, region, postal_code, country_code, phone, district
+    SELECT ${ADDRESS_COLUMNS}
       FROM shop_addresses WHERE cart_id = ${cartId} AND kind = ${kind}`);
   return res.rows[0] ? rowToAddress(res.rows[0]) : null;
 }
@@ -124,7 +170,52 @@ interface DistrictRuling {
 
 const ZONE_RATE: DistrictRuling = { refused: false, rateMinor: null };
 
-async function districtRuling(db: Db, district: string | null): Promise<DistrictRuling> {
+/** `config.rules`, or the pre-0760 behaviour for a caller that has none. */
+function rulesOf(config: CheckoutConfig): DeliveryRules {
+  return config.rules ?? DEFAULT_DELIVERY_RULES;
+}
+
+/**
+ * Is this address outside the regions the shop serves (migration 0760)?
+ *
+ * CHECKED WHEREVER THE DISTRICT REFUSAL IS CHECKED — the address, the options,
+ * the shipping choice and the freeze — because it is the same kind of fact and
+ * carries the same hazard. `putAddresses` refuses at the door where the message
+ * is cheapest, and the freeze refuses again because an owner can ADD a
+ * restriction while a cart sits at the payment step. A cart addressed before
+ * that moment would otherwise sail through to a charge for a delivery the shop
+ * has just said it will not make, and the answer after the freeze is a refund.
+ *
+ * `null` — the seeded value — serves everywhere and costs nothing.
+ */
+function outsideServiceRegion(config: CheckoutConfig, address: AddressSnapshot): boolean {
+  return !servesRegion(rulesOf(config).servedRegions, address.region);
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * SIMPLE MODE SHORT-CIRCUITS TO THE ZONE RATE — AND THAT IS THE WHOLE REASON
+ * `address_mode` TOUCHES THE MONEY PATH AT ALL.
+ *
+ * A district only ever reaches this function because it is STORED on the
+ * address row, and a stored district outlives the switch that stopped
+ * collecting it. Without this branch, a cart whose address was captured on
+ * Monday under the district form would still be priced — or REFUSED — by that
+ * district at Friday's freeze, while the shopper looks at a form that never
+ * asked. They would watch the number move after they had already seen it,
+ * which is the exact failure freezing exists to prevent, arrived at from the
+ * other side.
+ *
+ * It is checked BEFORE the query rather than after, so simple mode also costs
+ * one round trip less per checkout call than district mode does.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+async function districtRuling(
+  db: Db,
+  config: CheckoutConfig,
+  district: string | null,
+): Promise<DistrictRuling> {
+  if (rulesOf(config).addressMode === 'simple') return ZONE_RATE;
   if (district == null) return ZONE_RATE;
   const res = await db.execute(sql`
     SELECT delivers, rate_minor FROM shop_delivery_areas WHERE area_key = ${district}`);
@@ -185,8 +276,32 @@ export async function putAddresses(
   // between the two moments — but this is where the message is cheapest.)
   // Only the SHIPPING district is ruled on: a billing address is where the
   // card lives, not where the parcel goes.
-  const ruling = await districtRuling(db, a.shipping.district ?? null);
+  const ruling = await districtRuling(db, config, a.shipping.district ?? null);
   if (ruling.refused) throw new BadRequestError('outside_delivery_area');
+
+  /*
+   * AND THE REGION RESTRICTION, WHICH IS THE OTHER HALF OF SIMPLE MODE.
+   *
+   * A switched-off district is the only way this shop could previously say "we
+   * do not go there", and simple mode stops collecting the district — so
+   * without this, turning the switch on silently promises delivery anywhere
+   * the catch-all zone reaches, which is all of Nigeria. `served_regions` is
+   * how that is said instead, and it is enforced here for the same reason the
+   * district refusal is: while the form is still in front of the customer.
+   *
+   * IT APPLIES IN BOTH MODES, deliberately. It is a statement about where the
+   * shop delivers, not about which form is on screen, and a restriction that
+   * evaporated when the owner switched back to districts would be a trap.
+   * `null` — the seeded value — means no restriction and no behaviour change.
+   *
+   * ITS OWN ERROR CODE, not `outside_delivery_area`: the storefront's message
+   * for that one names a district the customer picked from a list, and there
+   * is no list here. "We don't deliver to Kano yet" and "we don't deliver to
+   * Gwarinpa" need different sentences and different next steps.
+   */
+  if (outsideServiceRegion(config, a.shipping)) {
+    throw new BadRequestError('outside_service_region');
+  }
 
   const zone = zoneFor(config.zones, a.shipping.countryCode, a.shipping.region);
   // The cart write goes FIRST because it carries the CAS and the state guard: if
@@ -202,17 +317,38 @@ export async function putAddresses(
     ['billing', a.billing],
   ] as const) {
     if (!address) continue;
+    /*
+     * THE PIN IS WRITTEN WHOLE OR NOT AT ALL, and the five columns move
+     * together on the UPDATE branch too — so re-submitting the form without
+     * sharing a location CLEARS a pin shared on the previous attempt rather
+     * than leaving a stale one attached to an address that has since changed.
+     * `shop_addresses_location_ck` would refuse a half-written pin anyway; this
+     * is what stops one ever being attempted.
+     */
+    const loc = address.location ?? null;
     await db.execute(sql`
       INSERT INTO shop_addresses (id, cart_id, kind, name, line1, line2, city, region,
-                                  postal_code, country_code, phone, district)
+                                  postal_code, country_code, phone, district,
+                                  location_lat_e6, location_lng_e6, location_accuracy_m,
+                                  location_source, location_captured_at)
       VALUES (${newId('address')}, ${a.cartId}, ${kind}, ${address.name}, ${address.line1},
               ${address.line2}, ${address.city}, ${address.region}, ${address.postalCode},
-              ${address.countryCode}, ${address.phone}, ${address.district ?? null})
+              ${address.countryCode}, ${address.phone}, ${address.district ?? null},
+              ${loc === null ? null : Math.round(loc.lat * 1e6)}::integer,
+              ${loc === null ? null : Math.round(loc.lng * 1e6)}::integer,
+              ${loc === null || loc.accuracyM === null ? null : Math.round(loc.accuracyM)}::integer,
+              ${loc === null ? null : loc.source}::text,
+              ${loc === null ? null : loc.capturedAt}::bigint)
       ON CONFLICT (cart_id, kind) DO UPDATE
         SET name = EXCLUDED.name, line1 = EXCLUDED.line1, line2 = EXCLUDED.line2,
             city = EXCLUDED.city, region = EXCLUDED.region,
             postal_code = EXCLUDED.postal_code, country_code = EXCLUDED.country_code,
-            phone = EXCLUDED.phone, district = EXCLUDED.district`);
+            phone = EXCLUDED.phone, district = EXCLUDED.district,
+            location_lat_e6 = EXCLUDED.location_lat_e6,
+            location_lng_e6 = EXCLUDED.location_lng_e6,
+            location_accuracy_m = EXCLUDED.location_accuracy_m,
+            location_source = EXCLUDED.location_source,
+            location_captured_at = EXCLUDED.location_captured_at`);
   }
 
   return { zone: zone.id };
@@ -233,8 +369,12 @@ export async function shippingOptionsForCart(
   // AND NONE TO A REFUSED DISTRICT. `putAddresses` already refuses these, but
   // the owner can switch a district off while a cart is mid-checkout; an empty
   // list is the honest answer, and the freeze backs it with a hard refusal.
-  const ruling = await districtRuling(db, address.district ?? null);
+  const ruling = await districtRuling(db, config, address.district ?? null);
   if (ruling.refused) return [];
+  // AND NONE OUTSIDE THE SERVED REGIONS, for the same reason: the restriction
+  // can be added while a cart is mid-checkout, and an empty list is the honest
+  // answer until the shopper changes the address.
+  if (outsideServiceRegion(config, address)) return [];
   return shippingOptionsFor(
     zoneFor(config.zones, address.countryCode, address.region),
     config.storeCurrency,
@@ -248,8 +388,11 @@ export async function setShipping(
 ): Promise<ShippingQuote> {
   const address = await getAddress(db, a.cartId, 'shipping');
   if (!address) throw new BadRequestError('shipping_address');
-  const ruling = await districtRuling(db, address.district ?? null);
+  const ruling = await districtRuling(db, config, address.district ?? null);
   if (ruling.refused) throw new BadRequestError('outside_delivery_area');
+  if (outsideServiceRegion(config, address)) {
+    throw new BadRequestError('outside_service_region');
+  }
   const zone = zoneFor(config.zones, address.countryCode, address.region);
   const option = shippingOptionById(zone, config.storeCurrency, a.optionId);
   // An option from ANOTHER zone is refused rather than honoured: accepting the
@@ -308,6 +451,11 @@ export type FreezeOutcome =
   | { ok: false; reason: 'empty_cart' }
   | { ok: false; reason: 'no_shipping_address' }
   | { ok: false; reason: 'outside_delivery_area' }
+  /** The address's region is outside `served_regions` (migration 0760). Its own
+   *  reason rather than `outside_delivery_area`: the storefront's message for
+   *  that one names a district the customer picked from a list, and in simple
+   *  mode there is no list. */
+  | { ok: false; reason: 'outside_service_region' }
   | { ok: false; reason: 'unresolved_lines'; variantIds: string[] }
   | {
       ok: false;
@@ -422,8 +570,14 @@ export async function freezeCheckout(
   // owner can switch a district off while this cart sits at the payment step,
   // and the freeze is the last instant a refusal costs nothing. After it, the
   // answer would be a refund.
-  const districts = await districtRuling(db, address.district ?? null);
+  const districts = await districtRuling(db, config, address.district ?? null);
   if (districts.refused) return { ok: false, reason: 'outside_delivery_area' };
+  // AND THE REGION RESTRICTION, ruled on again for the identical reason: an
+  // owner can add one while this cart sits at the payment step, and the freeze
+  // is the last instant a refusal costs nothing rather than a refund.
+  if (outsideServiceRegion(config, address)) {
+    return { ok: false, reason: 'outside_service_region' };
+  }
 
   const zone = zoneFor(config.zones, address.countryCode, address.region);
   const chosen = cart.shippingOptionId

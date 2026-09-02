@@ -53,6 +53,7 @@ const RULES: readonly Rule[] = [
   { prefix: '/api/shop/admin/shipping-zones', domain: 'settings' },
   { prefix: '/api/shop/admin/shipping-options', domain: 'settings' },
   { prefix: '/api/shop/admin/delivery-areas', domain: 'settings' },
+  { prefix: '/api/shop/admin/delivery-settings', domain: 'settings' },
   { prefix: '/api/shop/admin/products', domain: 'products' },
   { prefix: '/api/shop/admin/variants', domain: 'products' },
   { prefix: '/api/shop/admin/inventory', domain: 'products' },

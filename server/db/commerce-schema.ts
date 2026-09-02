@@ -492,3 +492,17 @@ export * from '../shop/cart/schema';
 // database by `server/shop/reviews/schema.test.ts`.
 // ============================================================================
 export * from '../shop/reviews/schema';
+
+// ============================================================================
+// DELIVERY SETTINGS — owned by `server/shop/settings/` (migration range
+// 0760–0779). RE-EXPORTED FROM A FILE THAT SUBSYSTEM OWNS EXCLUSIVELY,
+// following Catalog, Payments, Cart and Reviews above and for the reason they
+// record: a block declared here is a block a wholesale overwrite deletes
+// silently, while a lost `export *` is one line `tsc` names immediately.
+//
+// `shop_delivery_settings` — the CHECK-pinned singleton that decides how
+// checkout asks for an address. §4's purpose is preserved: the table is
+// reachable from this one import path, and its applied shape is asserted
+// against a migrated database by `server/shop/settings/schema.test.ts`.
+// ============================================================================
+export * from '../shop/settings/schema';
