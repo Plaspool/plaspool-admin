@@ -40,6 +40,7 @@ import { drainPaymentEvents } from './shop/payments/webhook';
 import { createRefund } from './shop/payments/refunds';
 import { paystackProvider } from './shop/payments/config';
 import { redemptionPort } from './marketing/redemption/port';
+import { discountPort } from './marketing/discounts/port';
 import type { Mailer } from './mail/port';
 import type { PaymentProvider } from './shop/payments/provider/types';
 import type { AppEnv } from './app-env';
@@ -223,6 +224,9 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
     /* SpoolPoints. Orders spends them at the capture and gives them back on a
      * cancellation or a refund; see the seam comment below. */
     redemption: (db) => redemptionPort(db),
+    /* Discount codes. Orders only COUNTS a use, at the capture — it never
+       decides whether a code applies; the freeze settled that (admin#100). */
+    discounts: (db) => discountPort(db),
     /*
      * THE FIFTH SEAM (task-d3): ISSUE A REFUND. `POST /admin/orders/:id/cancel`
      * calls this, through `RefundIssuer` (`shop/orders/ports.ts`), to refund a
@@ -357,7 +361,14 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
           /* The inline drain applies `payment.captured` too, so it must be able to
            * spend points — otherwise whether a debit happens would depend on
            * which drain got there first. */
-          { origin, redemption: (handle) => redemptionPort(handle) },
+          {
+            origin,
+            redemption: (handle) => redemptionPort(handle),
+            /* And the discount code's use, counted on the same event — so
+               whether a campaign's tally moves does not depend on which drain
+               reached the capture first. */
+            discounts: (handle) => discountPort(handle),
+          },
           { limit: 10, passes: 2, budgetMs: 5_000 },
         ),
     }),
@@ -711,7 +722,14 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
           /* The inline drain applies `payment.captured` too, so it must be able to
            * spend points — otherwise whether a debit happens would depend on
            * which drain got there first. */
-          { origin, redemption: (handle) => redemptionPort(handle) },
+          {
+            origin,
+            redemption: (handle) => redemptionPort(handle),
+            /* And the discount code's use, counted on the same event — so
+               whether a campaign's tally moves does not depend on which drain
+               reached the capture first. */
+            discounts: (handle) => discountPort(handle),
+          },
           { limit: 10, passes: 2, budgetMs: 5_000 },
         ),
     }),
@@ -734,7 +752,16 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * conflict errors with a `product` rather than a `post`, falling through to
    * `toResponse` for every other row of the §8 table.
    */
-  app.route(`${API_PREFIX}${SHOP_PREFIX}`, shopApp({ redemption: (db) => redemptionPort(db) }));
+  app.route(
+    `${API_PREFIX}${SHOP_PREFIX}`,
+    shopApp({
+      redemption: (db) => redemptionPort(db),
+      /* Discount codes (admin#100 Part B) — marketing's second port into the
+         shop, injected here for the reason the first one is: this is the only
+         file that may know both halves. */
+      discounts: (db) => discountPort(db),
+    }),
+  );
 
   return app;
 }

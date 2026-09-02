@@ -77,7 +77,12 @@ export function fakeCheckoutPort(
         shipping: null,
         tax: { zone: 'test', label: 'none', rateBps: 0 },
         adjustments: [],
+        // No code, as no Payments behaviour depends on one: this fake exists to
+        // answer "what is owed", and a discount has already been applied by the
+        // time a total reaches Payments.
+        discount: null,
         subtotal: total,
+        discountTotal: nothing,
         adjustmentTotal: nothing,
         shippingTotal: nothing,
         taxTotal: nothing,

@@ -3,6 +3,7 @@ import { getEnv } from '../env';
 import type { AppEnv } from '../app-env';
 import type { Db } from '../db/client';
 import type { PointsRedemptionPort } from '../../shared/marketing/redemption';
+import type { DiscountCodePort } from '../../shared/marketing/discounts';
 import { toResponse } from '../middleware/errors';
 import {
   ProductPreconditionFailedError,
@@ -51,11 +52,19 @@ export interface ShopAppOptions {
    * the frozen port cannot take one itself.
    */
   redemption?: (db: Db) => PointsRedemptionPort;
+  /**
+   * Discount codes, injected at `server/index.ts` (admin#100 Part B). A factory
+   * over the request's handle, for the reason `redemption` is one.
+   *
+   * Passed straight down to the cart router. The shop app decides nothing about
+   * a code; `applyDiscount` and `priceCart` do.
+   */
+  discounts?: (db: Db) => DiscountCodePort;
 }
 
 export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
   const shop = new Hono<AppEnv>();
-  const { redemption } = opts;
+  const { redemption, discounts } = opts;
 
   /**
    * Catalog's two conflict errors, rendered with the payload they carry.
@@ -235,6 +244,10 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
       catalog: catalogPort,
       storeCurrency: SHOP_CURRENCY,
       bridgeSecret: getEnv().SHOP_AUTH_BRIDGE_SECRET || undefined,
+      /* Discount codes (admin#100 Part B), when `server/index.ts` wired them.
+         Undefined turns the feature off end to end: the cart view reports
+         `discountCodesEnabled: false` and the apply route answers 501. */
+      discounts,
       /*
        * THE COMMERCE OUTBOX'S SCHEDULED BACKSTOP (admin#29), AND THIS IS THE
        * SEAM THAT MAKES IT ONE CRON INSTEAD OF TWO.

@@ -5,10 +5,12 @@ import { requireAuth } from '../../../middleware/session';
 import { NotFoundError } from '../../../repo/errors';
 import { getCart } from '../cart/repo';
 import {
+  applyDiscount,
   freezeCheckout,
   frozenTotals,
   previewCheckout,
   putAddresses,
+  removeDiscount,
   setShipping,
   shippingOptionsForCart,
   startCheckout,
@@ -77,6 +79,8 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
        * through: the route decides nothing about redemption, `freezeCheckout`
        * does. */
       redemption: deps.redemption,
+      /* Discount codes, likewise (admin#100 Part B). */
+      discounts: deps.discounts,
     };
   }
 
@@ -229,6 +233,58 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     return c.json({ totals: result.totals, redemption: result.redemption });
   });
 
+  /**
+   * Apply a discount code to the cart (admin#100 Part B, storefront#113).
+   *
+   * ═══ 501 WHEN THE PORT IS NOT WIRED, AND NOT 404 ═══
+   * "This deployment does not do discount codes" and "that code does not exist"
+   * are different facts and need different words: the first is not something a
+   * shopper can fix by typing a better code. It is also the discipline the
+   * bridge exchange already keeps for a missing `bridgeSecret`. In practice a
+   * storefront never reaches it, because `discountCodesEnabled` on the cart view
+   * is derived from the same dependency and it will not render the field.
+   *
+   * A REJECTION IS A 409 WITH ITS REASON, never a bare 400. storefront#113:
+   * "never a generic 'something went wrong'" — each of the six reasons implies a
+   * different next step, and a shopper told the generic one retries, which
+   * cannot fix any of them.
+   */
+  routes.post('/checkout/discount', async (c) => {
+    if (!deps.discounts) return c.json({ error: 'not_implemented' }, 501);
+    const db = shopDb(c);
+    const body = await readJson(c, DiscountBody);
+    const cart = await requireCart(c, db);
+    const config = await loadConfig(db);
+
+    const result = await applyDiscount(db, config, {
+      cartId: cart.id,
+      code: body.code,
+      baseRevision: body.baseRevision,
+      now: Date.now(),
+    });
+    if (!result.ok) {
+      return c.json({ error: 'discount_rejected', reason: result.reason }, 409);
+    }
+    return c.json({ discount: result.discount });
+  });
+
+  /**
+   * Take the code off the cart. IDEMPOTENT: clearing nothing is a 204, because
+   * the storefront's control must not have to know whether a code is applied,
+   * and a 409 there is a dead end on the screen whose job is to escape one.
+   *
+   * NO 501 GUARD, deliberately — removing a code needs no port, and a
+   * deployment that lost the dependency must still let a shopper clear the code
+   * that is now refusing their freeze.
+   */
+  routes.delete('/checkout/discount', async (c) => {
+    const db = shopDb(c);
+    const body = await readJsonOrEmpty(c, BaseOnlyBody);
+    const cart = await requireCart(c, db);
+    await removeDiscount(db, { cartId: cart.id, baseRevision: body.baseRevision });
+    return c.body(null, 204);
+  });
+
   /** The frozen totals, for a client re-rendering the payment step. */
   routes.get('/checkout/totals', async (c) => {
     const db = shopDb(c);
@@ -371,6 +427,13 @@ function refusePricing(c: Context<ShopEnv>, result: PricingRefusal) {
   // sentences and different next steps.
   if (result.reason === 'outside_service_region') {
     return c.json({ error: 'outside_service_region' }, 409);
+  }
+  /* THE SAME BODY THE APPLY ROUTE ANSWERS, so a storefront reads "your code
+   * stopped working" identically whether it learns it while typing the code or
+   * at the freeze. The alternative is two shapes for one situation and a branch
+   * that only ever runs on the rarer of them. */
+  if (result.reason === 'discount_rejected') {
+    return c.json({ error: 'discount_rejected', reason: result.discountReason }, 409);
   }
   /* `operation` keeps carrying the reason here for the consumers that
      already read it that way; `reason` says the same thing in the field
@@ -548,6 +611,21 @@ const FreezeBody = z
  */
 const PreviewBody = z
   .object({ redeemPoints: z.number().int().min(0).max(100_000_000).optional() })
+  .strict();
+
+/**
+ * The apply route's body.
+ *
+ * TRIMMED AND BOUNDED HERE, UPPERCASED IN THE PORT. The route refuses a blank
+ * or absurd string so the database is never asked about one; the normalisation
+ * that has to agree with the model's own spelling lives next to the model, so
+ * every caller inherits it — including the freeze's re-validation, which reads
+ * a code off a cart rather than off a request.
+ *
+ * 64 IS THE COLUMN'S OWN LIMIT (migration 0820's CHECK, and the model's).
+ */
+const DiscountBody = z
+  .object({ code: str().trim().min(1).max(64), baseRevision: Base })
   .strict();
 
 const SweepBody = z

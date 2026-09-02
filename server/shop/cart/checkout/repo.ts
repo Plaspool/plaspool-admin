@@ -32,6 +32,11 @@ import type {
   PointsRedemptionPort,
   RedemptionQuote,
 } from '../../../../shared/marketing/redemption';
+import type {
+  DiscountCodePort,
+  DiscountRejection,
+} from '../../../../shared/marketing/discounts';
+import type { CodeDiscount } from '../../../../shared/commerce/ports';
 
 /**
  * Checkout — a state machine over the cart (brief §5).
@@ -79,6 +84,15 @@ export interface CheckoutConfig {
    * means no adjustment — the behaviour every total in this file had before.
    */
   redemption?: (db: Db) => PointsRedemptionPort;
+  /**
+   * Discount codes, if this deployment wired them (admin#100 Part B). A factory
+   * over the request's handle, for the reason `redemption` is one.
+   *
+   * ABSENT MEANS THE FEATURE IS OFF, and the cart view stops advertising it —
+   * `discountCodesEnabled` is derived from this and nothing else, so a
+   * storefront never renders a field whose route would 501.
+   */
+  discounts?: (db: Db) => DiscountCodePort;
 }
 
 // ------------------------------------------------------------------ addresses
@@ -447,23 +461,14 @@ export async function startCheckout(
 
 // --------------------------------------------------------------------- freeze
 
-export type FreezeOutcome =
-  | { ok: true; totals: FrozenTotals }
-  | { ok: false; reason: 'empty_cart' }
-  | { ok: false; reason: 'no_shipping_address' }
-  | { ok: false; reason: 'outside_delivery_area' }
-  /** The address's region is outside `served_regions` (migration 0760). Its own
-   *  reason rather than `outside_delivery_area`: the storefront's message for
-   *  that one names a district the customer picked from a list, and in simple
-   *  mode there is no list. */
-  | { ok: false; reason: 'outside_service_region' }
-  | { ok: false; reason: 'unresolved_lines'; variantIds: string[] }
-  | {
-      ok: false;
-      reason: 'currency_mismatch';
-      expected: string;
-      found: Array<{ where: string; currency: string }>;
-    };
+/**
+ * ONE LIST OF REFUSALS, NOT THREE. The freeze, the preview and `priceCart` all
+ * refuse for exactly the same reasons — they run the same arithmetic — and this
+ * used to restate them, which meant a new reason had to be added in three
+ * places or one caller could not report it. `PricingRefusal` is that list; each
+ * arm is documented where it is declared, on `PriceOutcome`.
+ */
+export type FreezeOutcome = { ok: true; totals: FrozenTotals } | PricingRefusal;
 
 /**
  * What the freeze decided about SpoolPoints, or null for the ordinary cart.
@@ -553,8 +558,23 @@ type PriceOutcome =
   | { ok: false; reason: 'empty_cart' }
   | { ok: false; reason: 'no_shipping_address' }
   | { ok: false; reason: 'outside_delivery_area' }
+  /** The address's region is outside `served_regions` (migration 0760). Its own
+   *  reason rather than `outside_delivery_area`: the storefront's message for
+   *  that one names a district the customer picked from a list, and in simple
+   *  mode there is no list. */
   | { ok: false; reason: 'outside_service_region' }
   | { ok: false; reason: 'unresolved_lines'; variantIds: string[] }
+  /**
+   * The cart's discount code no longer applies (admin#100 Part B).
+   *
+   * REFUSED RATHER THAN PRICED WITHOUT IT, and that is the whole decision. An
+   * owner can disable a campaign while a cart sits at the payment step; pricing
+   * on without the code would charge the shopper MORE than the screen showed
+   * them, silently, which is the one outcome a checkout must never produce.
+   * `discountReason` is the port's own reason, so the storefront can say "that
+   * code expired" and offer the new total rather than "something went wrong".
+   */
+  | { ok: false; reason: 'discount_rejected'; discountReason: DiscountRejection }
   | {
       ok: false;
       reason: 'currency_mismatch';
@@ -593,6 +613,9 @@ async function priceCart(
   config: CheckoutConfig,
   cart: Cart,
   redeemPoints: number | undefined,
+  /* For the discount code's schedule, and nothing else — the totals engine is
+     still clockless, which is the property `compute.ts` exists to keep. */
+  now: number,
 ): Promise<PriceOutcome> {
   const lines = await listLines(db, cart.id);
   if (lines.length === 0) return { ok: false, reason: 'empty_cart' };
@@ -674,6 +697,36 @@ async function priceCart(
   const tax = cart.taxZone ? taxRateFor(zone) : unknownZoneTaxRate();
 
   /*
+   * THE DISCOUNT CODE, RE-JUDGED HERE AND NOT TRUSTED FROM WHEN IT WAS APPLIED
+   * — the same argument the district ruling makes twenty lines up, and for the
+   * same reason: the owner can switch a campaign off while this cart sits at the
+   * payment step, and this is the last instant a refusal costs nothing.
+   *
+   * A DEAD CODE REFUSES. See `PriceOutcome`'s arm for why that beats pricing
+   * without it.
+   *
+   * NO PORT MEANS NO CODE CAN BE HONOURED. If a deployment has a code on a cart
+   * and no way to judge it, the only safe answers are "refuse" and "charge more
+   * than we showed" — so it refuses, as `not_found`, which is also what the
+   * shopper would be told if the row really had gone.
+   */
+  let discount: CodeDiscount | null = null;
+  if (cart.discountCode) {
+    if (!config.discounts) {
+      return { ok: false, reason: 'discount_rejected', discountReason: 'not_found' };
+    }
+    const judged = await config.discounts(db).validate({
+      code: cart.discountCode,
+      currency: cart.currency,
+      now,
+    });
+    if (!judged.ok) {
+      return { ok: false, reason: 'discount_rejected', discountReason: judged.reason };
+    }
+    discount = judged.discount;
+  }
+
+  /*
    * PRICED ONCE WITHOUT POINTS, THEN — IF THERE ARE ANY — ONCE MORE WITH THEM.
    *
    * `max_redeem_bps` is "how much of an ORDER may be paid for in points", so the
@@ -694,21 +747,39 @@ async function priceCart(
     // then change.
     tax,
     adjustments: [],
+    /* NO CODE IN THIS PASS, DELIBERATELY. This total exists for one purpose —
+       to be the number `max_redeem_bps` is a share of — and the owner settled
+       on 2026-09-02 that the cap measures the UNDISCOUNTED order. Feeding the
+       code in here would make a shopper's points worth less on a coded order
+       and would let each discount move the other's base, which is a cap that
+       changes depending on the order the two were applied in. */
+    discount: null,
   });
 
   const redemption = undiscounted.ok
     ? await quoteRedemption(db, config, cart, undiscounted.totals.grandTotal.amount, redeemPoints)
     : null;
 
-  const computed = redemption
-    ? computeTotals({
-        currency: cart.currency,
-        lines: totalsLines,
-        shipping,
-        tax,
-        adjustments: [redemption.quote.adjustment],
-      })
-    : undiscounted;
+  /*
+   * THE REAL PASS: both discounts, at their own points in the pipeline. The
+   * code reduces the taxable base (step 1c of `compute.ts`); the points come
+   * off after tax, as an `Adjustment`, because they are a payment instrument
+   * rather than a reduction in what the goods cost.
+   *
+   * Skipped entirely when there is neither, so an ordinary cart is still priced
+   * exactly once — `undiscounted` is already that answer.
+   */
+  const computed =
+    redemption || discount
+      ? computeTotals({
+          currency: cart.currency,
+          lines: totalsLines,
+          shipping,
+          tax,
+          adjustments: redemption ? [redemption.quote.adjustment] : [],
+          discount,
+        })
+      : undiscounted;
 
   if (!computed.ok) {
     if (computed.reason === 'unresolved_lines') {
@@ -755,11 +826,13 @@ export async function freezeCheckout(
     });
   }
 
-  const priced = await priceCart(db, catalog, config, cart, a.redeemPoints);
+  // Read once, before pricing, so the discount code's window and the row's
+  // `updated_at` are judged against the same instant.
+  const now = Date.now();
+  const priced = await priceCart(db, catalog, config, cart, a.redeemPoints, now);
   if (!priced.ok) return priced;
   const { totals, frozenLines, redemption } = priced;
 
-  const now = Date.now();
   const base = a.baseRevision ?? cart.revision;
   const res = await db.execute(sql`
     UPDATE shop_carts
@@ -875,7 +948,7 @@ export async function previewCheckout(
   const cart = await getCart(db, a.cartId);
   if (!cart) throw new NotFoundError(a.cartId);
 
-  const priced = await priceCart(db, catalog, config, cart, a.redeemPoints);
+  const priced = await priceCart(db, catalog, config, cart, a.redeemPoints, Date.now());
   if (!priced.ok) return priced;
 
   const { quote } = priced.redemption ?? {};
@@ -891,6 +964,127 @@ export async function previewCheckout(
         }
       : null,
   };
+}
+
+// ------------------------------------------------------------------ discounts
+
+export type ApplyDiscountOutcome =
+  | { ok: true; discount: CodeDiscount }
+  | { ok: false; reason: DiscountRejection };
+
+/**
+ * Put a discount code on the cart (admin#100 Part B, storefront#113).
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * IT STORES THE ROW'S SPELLING, NOT THE SHOPPER'S. `validate()` normalises and
+ * hands back the code as the model holds it, so `welcome10` and ` WeLcOmE10 `
+ * both persist as `WELCOME10` — and the freeze's re-read therefore asks about
+ * exactly the string the model can match.
+ *
+ * IT VALIDATES BEFORE IT WRITES, so a rejected code leaves no trace. A cart
+ * carrying a code that never applied would price identically and then refuse at
+ * the freeze, which is a dead end reached one screen too late.
+ *
+ * ONLY ON AN OPEN CART. Every cart-field write in this file is guarded on
+ * `status = 'open'`; a frozen checkout's price is struck, and a code applied
+ * after it would be a discount the customer is not charged.
+ *
+ * NOTHING IS RESERVED. Two shoppers can both hold the last use of a capped
+ * code — see `discountPort`'s header for why that is the right trade for a
+ * marketing budget, and where it is settled instead.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+export async function applyDiscount(
+  db: Db,
+  config: CheckoutConfig,
+  a: { cartId: string; code: string; baseRevision?: number; now: number },
+): Promise<ApplyDiscountOutcome> {
+  const cart = await getCart(db, a.cartId);
+  if (!cart) throw new NotFoundError(a.cartId);
+  if (cart.status !== 'open') {
+    throw new CartPreconditionError('apply_discount', {
+      id: cart.id,
+      status: cart.status,
+      revision: cart.revision,
+      currency: cart.currency,
+    });
+  }
+  /* A deployment with no port cannot honour a code, and pretending otherwise
+     would put a string on the cart that the freeze then refuses. */
+  if (!config.discounts) return { ok: false, reason: 'not_found' };
+
+  const judged = await config.discounts(db).validate({
+    code: a.code,
+    currency: cart.currency,
+    now: a.now,
+  });
+  if (!judged.ok) return { ok: false, reason: judged.reason };
+
+  await writeDiscountCode(
+    db,
+    a.cartId,
+    judged.discount.code,
+    a.baseRevision ?? cart.revision,
+    a.now,
+  );
+  return { ok: true, discount: judged.discount };
+}
+
+/**
+ * Take the code off the cart.
+ *
+ * A NO-OP WHEN THERE IS NOTHING TO REMOVE, deliberately: the storefront's
+ * "clear" control must not have to know whether a code is applied, and a 409
+ * there would be a dead end on the screen whose whole job is to get a shopper
+ * out of one. Idempotent, for the reason a DELETE should be.
+ */
+export async function removeDiscount(
+  db: Db,
+  a: { cartId: string; baseRevision?: number },
+): Promise<void> {
+  const cart = await getCart(db, a.cartId);
+  if (!cart) throw new NotFoundError(a.cartId);
+  if (cart.status !== 'open') {
+    throw new CartPreconditionError('remove_discount', {
+      id: cart.id,
+      status: cart.status,
+      revision: cart.revision,
+      currency: cart.currency,
+    });
+  }
+  if (cart.discountCode === null) return;
+  await writeDiscountCode(db, a.cartId, null, a.baseRevision ?? cart.revision, Date.now());
+}
+
+/** The one statement both of the above write, so the CAS and the status guard
+ *  are stated once rather than twice with a chance of diverging. */
+async function writeDiscountCode(
+  db: Db,
+  cartId: string,
+  code: string | null,
+  base: number,
+  now: number,
+): Promise<void> {
+  const res = await db.execute(sql`
+    UPDATE shop_carts
+       -- A bare NULL bind needs an explicit cast or Postgres raises 42P18 (§5).
+       SET discount_code = ${code}::text,
+           revision = revision + 1,
+           updated_at = ${now}
+     WHERE id = ${cartId} AND revision = ${base} AND status = 'open'
+    RETURNING revision`);
+  if (res.rows.length > 0) return;
+
+  const after = await getCart(db, cartId);
+  if (!after) throw new NotFoundError(cartId);
+  const snap = {
+    id: after.id,
+    status: after.status,
+    revision: after.revision,
+    currency: after.currency,
+  };
+  if (after.status !== 'open') throw new CartPreconditionError('discount', snap);
+  throw new CartStaleWriteError(base, after.revision, snap);
 }
 
 /**
@@ -1038,7 +1232,7 @@ async function buildCompletedPayload(
    * by the same statement that wrote it.
    */
   const stored = await db.execute(sql`
-    SELECT frozen_lines, redemption_points, redemption_email
+    SELECT frozen_lines, frozen_totals, redemption_points, redemption_email, discount_code
       FROM shop_carts WHERE id = ${cartId}`);
   const frozen = (stored.rows[0]?.frozen_lines ?? []) as StoredCheckoutLine[];
 
@@ -1060,6 +1254,30 @@ async function buildCompletedPayload(
     points == null || redemptionEmail == null
       ? null
       : { email: String(redemptionEmail), points: Number(points) };
+
+  /*
+   * THE DISCOUNT CODE, ON THE SAME TERMS (admin#100 Part B).
+   *
+   * The AMOUNT comes off the frozen totals rather than being recomputed: it is
+   * what the customer was actually charged less, after the clamp, and it is
+   * already stored. `discountTotal` is negative there because it is a summand;
+   * it goes on the wire POSITIVE because the consumer records "what this code
+   * cost the campaign", which is not a summand of anything.
+   *
+   * A cart with a code but no parseable totals is impossible here — this runs
+   * after the freeze, which wrote both — so the fallback is 0 rather than a
+   * throw: an event that parks is worse than a reconciliation figure of zero on
+   * an order that was charged correctly.
+   */
+  const code = stored.rows[0]?.discount_code;
+  const frozenTotalsRow = parseFrozenTotals(stored.rows[0]?.frozen_totals);
+  const discount =
+    code == null
+      ? null
+      : {
+          code: String(code),
+          amountMinor: Math.abs(frozenTotalsRow?.discountTotal.amount ?? 0),
+        };
 
   /*
    * `unitAmount` AND `lineTotal`, JOINED ON `variantId` FROM THE FROZEN TOTALS.
@@ -1122,6 +1340,7 @@ async function buildCompletedPayload(
     billingAddress: await getAddress(db, cartId, 'billing'),
     reservationIds: held.map((reservation) => reservation.id),
     redemption,
+    discount,
     occurredAt: 0,
   };
 }

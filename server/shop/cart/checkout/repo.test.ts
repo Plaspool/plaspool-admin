@@ -374,6 +374,10 @@ describe('freezeCheckout', () => {
         bulkPercentBps: 0,
         effectiveUnit: { amount: 1999, currency: CURRENCY },
         lineTotal: { amount: 3998, currency: CURRENCY },
+        /* Migration 0820, and the same story one feature later: no code is
+           applied to this cart, so the line's share of one is zero — which is
+           what every frozen total looked like before discount codes existed. */
+        codeDiscount: { amount: 0, currency: CURRENCY },
         taxable: true,
         taxAmount: { amount: 800, currency: CURRENCY },
       },
