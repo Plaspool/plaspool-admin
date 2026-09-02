@@ -177,7 +177,7 @@ describe('CSV export and import on the product list', () => {
     });
     mount();
 
-    await openMenuItem(user, 'Export…');
+    await openMenuItem(user, 'Export');
     await screen.findByText(/download link goes to/);
     await user.click(screen.getByRole('button', { name: 'Email me the export' }));
 
@@ -186,6 +186,45 @@ describe('CSV export and import on the product list', () => {
     const link = screen.getByRole('link', { name: 'Download now' });
     expect(link.getAttribute('href')).toBe(url);
     expect(wrote(EXPORT, 'POST')).toBe(true);
+  });
+
+  it('the export action is labelled with the WHOLE catalogue, not this page', async () => {
+    const user = userEvent.setup();
+    /*
+     * Two different answers on one path, told apart by `withTotal`: the paged
+     * list this screen renders, and the count-only request the Export label
+     * needs. A page of one row and a catalogue of twelve is the whole point —
+     * `all.length` would have said "Export (1)" and the file would carry 12.
+     */
+    when(LIST, (url) => ({
+      body:
+        url.searchParams.get('withTotal') === '1'
+          ? { items: [product('prod_a')], nextCursor: null, total: 12 }
+          : { items: [product('prod_a')], nextCursor: 'cursor_page_2' },
+    }));
+    mount();
+
+    await screen.findByText('Spool prod_a');
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    expect(await screen.findByRole('menuitem', { name: 'Export (12)' })).toBeTruthy();
+
+    // Only the number is wanted, so the count request asks for one row.
+    const counted = calls.find((c) => c.path.includes('withTotal=1'));
+    expect(counted, 'no request carried withTotal=1').toBeTruthy();
+    const query = new URL(counted!.path, 'https://studio.test').searchParams;
+    expect([query.get('limit'), query.get('status')]).toEqual(['1', null]);
+
+    /*
+     * EVERY item carries an icon, which is an ALIGNMENT rule and not a
+     * decoration one: `.menu__item` is a flex row with a gap, so one item
+     * without an icon starts its text 24px left of its neighbours. Export and
+     * Import were the two bare ones next to the analytics item's eye.
+     */
+    const items = screen.getAllByRole('menuitem');
+    expect(items.length).toBeGreaterThan(1);
+    expect(items.map((item) => [item.textContent, Boolean(item.querySelector('svg'))])).toEqual(
+      items.map((item) => [item.textContent, true]),
+    );
   });
 
   it('import previews on file choice, then applies — both carrying the typed csv and replace:true', async () => {
@@ -206,7 +245,7 @@ describe('CSV export and import on the product list', () => {
     });
     mount();
 
-    await openMenuItem(user, 'Import…');
+    await openMenuItem(user, 'Import');
     await user.upload(screen.getByLabelText('CSV file'), csvFile());
 
     // The preview is the SERVER'S counts, problems included.
@@ -235,7 +274,7 @@ describe('CSV export and import on the product list', () => {
     });
     mount();
 
-    await openMenuItem(user, 'Import…');
+    await openMenuItem(user, 'Import');
     await user.click(
       screen.getByRole('checkbox', { name: /Update products that are already here/ }),
     );
@@ -274,7 +313,7 @@ describe('CSV export and import on the product list', () => {
     });
     mount();
 
-    await openMenuItem(user, 'Import…');
+    await openMenuItem(user, 'Import');
     await user.upload(screen.getByLabelText('CSV file'), csvFile());
     await screen.findByText('1 new · 0 to update · 0 rows with problems');
     await user.click(screen.getByRole('button', { name: 'Import products' }));
