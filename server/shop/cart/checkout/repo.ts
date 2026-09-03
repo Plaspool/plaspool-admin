@@ -5,6 +5,7 @@ import { BadRequestError, NotFoundError } from '../../../repo/errors';
 import { CartPreconditionError, CartStaleWriteError } from '../errors';
 import { newId } from '../ids';
 import { getCart, listLines, updateCartFields } from '../cart/repo';
+import type { Cart } from '../cart/repo';
 import { heldReservations, reserveForCheckout } from '../reservations/repo';
 import { computeTotals, parseFrozenTotals } from '../totals/compute';
 import {
@@ -537,33 +538,66 @@ async function quoteRedemption(
 }
 
 /**
- * Price the cart once, store the answer, and close the door.
+ * Everything the pricing pass decided, for the caller that will store it.
+ *
+ * The failure arms are `FreezeOutcome`'s failure arms exactly, which is what
+ * lets `freezeCheckout` return one of these unchanged.
+ */
+type PriceOutcome =
+  | {
+      ok: true;
+      totals: FrozenTotals;
+      frozenLines: StoredCheckoutLine[];
+      redemption: FrozenRedemption | null;
+    }
+  | { ok: false; reason: 'empty_cart' }
+  | { ok: false; reason: 'no_shipping_address' }
+  | { ok: false; reason: 'outside_delivery_area' }
+  | { ok: false; reason: 'outside_service_region' }
+  | { ok: false; reason: 'unresolved_lines'; variantIds: string[] }
+  | {
+      ok: false;
+      reason: 'currency_mismatch';
+      expected: string;
+      found: Array<{ where: string; currency: string }>;
+    };
+
+/**
+ * PRICE THE CART. The arithmetic, and nothing else — no write, no clock.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ONE PRICING PATH, TWO CALLERS, AND THAT IS THE WHOLE REASON THIS FUNCTION IS
+ * SEPARATE FROM `freezeCheckout` (admin#100 Part A).
+ *
+ * `previewCheckout` shows a shopper a discount and a total; `freezeCheckout`
+ * then charges them. If those two numbers came from two pieces of arithmetic
+ * they would agree today and diverge the first time somebody edited one of
+ * them — and the shopper would find out at the payment step, having already
+ * been shown a smaller figure. Sharing this function makes that divergence
+ * unrepresentable rather than merely tested; `preview.test.ts` drives both
+ * callers against one cart and compares the whole `FrozenTotals`.
+ *
+ * WHAT IS DELIBERATELY NOT HERE: the status guard, the `UPDATE`, and the clock.
+ * They belong to the freeze alone. A preview must be able to re-price a cart
+ * that is already `converting` — a shopper reloading the payment step — and a
+ * read has no business refusing that.
  *
  * Every input to `computeTotals` is gathered HERE and passed in: this function
- * has the database and the clock, and the engine has neither. That separation is
- * the whole design — see `totals/compute.ts`.
+ * has the database, and the engine has neither it nor a clock. That separation
+ * is the whole design — see `totals/compute.ts`.
+ * ═══════════════════════════════════════════════════════════════════════════
  */
-export async function freezeCheckout(
+async function priceCart(
   db: Db,
   catalog: CatalogPort,
   config: CheckoutConfig,
-  a: { cartId: string; baseRevision?: number; redeemPoints?: number },
-): Promise<FreezeOutcome> {
-  const cart = await getCart(db, a.cartId);
-  if (!cart) throw new NotFoundError(a.cartId);
-  if (cart.status !== 'open') {
-    throw new CartPreconditionError('freeze', {
-      id: cart.id,
-      status: cart.status,
-      revision: cart.revision,
-      currency: cart.currency,
-    });
-  }
-
-  const lines = await listLines(db, a.cartId);
+  cart: Cart,
+  redeemPoints: number | undefined,
+): Promise<PriceOutcome> {
+  const lines = await listLines(db, cart.id);
   if (lines.length === 0) return { ok: false, reason: 'empty_cart' };
 
-  const address = await getAddress(db, a.cartId, 'shipping');
+  const address = await getAddress(db, cart.id, 'shipping');
   if (!address) return { ok: false, reason: 'no_shipping_address' };
 
   // RULED ON AGAIN AT THE MONEY MOMENT, not trusted from `putAddresses`: the
@@ -663,7 +697,7 @@ export async function freezeCheckout(
   });
 
   const redemption = undiscounted.ok
-    ? await quoteRedemption(db, config, cart, undiscounted.totals.grandTotal.amount, a.redeemPoints)
+    ? await quoteRedemption(db, config, cart, undiscounted.totals.grandTotal.amount, redeemPoints)
     : null;
 
   const computed = redemption
@@ -691,15 +725,46 @@ export async function freezeCheckout(
     // `bad_currency` means the CART's own currency column is not ISO-4217, which
     // no ordinary path can produce — the CHECK in migration 0120 refuses it. A
     // corrupt row, then, and a 500 is the honest answer.
-    throw new Error(`cart ${a.cartId} has an unusable currency`);
+    throw new Error(`cart ${cart.id} has an unusable currency`);
   }
+
+  return { ok: true, totals: computed.totals, frozenLines, redemption };
+}
+
+/**
+ * Price the cart once, store the answer, and close the door.
+ *
+ * The arithmetic is `priceCart`'s, shared with the preview so the number a
+ * shopper was shown is the number they are charged. What is added here is the
+ * one-way part: the status guard, the clock, and the single `UPDATE`.
+ */
+export async function freezeCheckout(
+  db: Db,
+  catalog: CatalogPort,
+  config: CheckoutConfig,
+  a: { cartId: string; baseRevision?: number; redeemPoints?: number },
+): Promise<FreezeOutcome> {
+  const cart = await getCart(db, a.cartId);
+  if (!cart) throw new NotFoundError(a.cartId);
+  if (cart.status !== 'open') {
+    throw new CartPreconditionError('freeze', {
+      id: cart.id,
+      status: cart.status,
+      revision: cart.revision,
+      currency: cart.currency,
+    });
+  }
+
+  const priced = await priceCart(db, catalog, config, cart, a.redeemPoints);
+  if (!priced.ok) return priced;
+  const { totals, frozenLines, redemption } = priced;
 
   const now = Date.now();
   const base = a.baseRevision ?? cart.revision;
   const res = await db.execute(sql`
     UPDATE shop_carts
        SET status = 'converting',
-           frozen_totals = ${JSON.stringify(computed.totals)}::jsonb,
+           frozen_totals = ${JSON.stringify(totals)}::jsonb,
            frozen_lines = ${JSON.stringify(frozenLines)}::jsonb,
            frozen_at = ${now},
            /*
@@ -732,7 +797,100 @@ export async function freezeCheckout(
     throw new CartStaleWriteError(base, after.revision, snap);
   }
 
-  return { ok: true, totals: computed.totals };
+  return { ok: true, totals };
+}
+
+// -------------------------------------------------------------------- preview
+
+/**
+ * The refusals, named once so the preview and the freeze cannot drift apart —
+ * and exported so the two ROUTES can share one mapping onto the error table.
+ * Structurally identical to `FreezeOutcome`'s failure arms by construction.
+ */
+export type PricingRefusal = Extract<PriceOutcome, { ok: false }>;
+
+/**
+ * What a preview reports about the shopper's points.
+ *
+ * `pointsApplied` IS THE CLAMP, MADE VISIBLE (storefront#112). `quote()` already
+ * reduces a request to what the rules allow — the balance, `min_redeem_points`,
+ * and `max_redeem_bps` as a share of the order — and returning only the discount
+ * would let a storefront say "5,000,000 points spent" beside a £5 reduction. The
+ * number that was actually spent is the one the customer is owed a sight of, so
+ * it is reported separately from the money rather than inferred from it.
+ *
+ * `discountMinor` IS POSITIVE. The `Adjustment` on the wire is negative because
+ * it is summed into a total; this field is read out loud as "£5.00 off", and a
+ * storefront that has to remember to negate a field will one day forget.
+ */
+export interface PreviewRedemption {
+  /** How many points the rules actually spent — never how many were asked for. */
+  pointsApplied: number;
+  /** The discount those points bought, in minor units, as a positive number. */
+  discountMinor: number;
+  /** What the balance would be afterwards, for the widget's copy. */
+  balanceAfter: number;
+}
+
+export type PreviewOutcome =
+  | { ok: true; totals: FrozenTotals; redemption: PreviewRedemption | null }
+  | PricingRefusal;
+
+/**
+ * Price the cart AS THE FREEZE WOULD, and write nothing (admin#100 Part A).
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * WHY THIS EXISTS. `quote()` has been correct since admin#2 and unreachable
+ * over HTTP the whole time: its only caller is inside `freezeCheckout`, and
+ * freezing is the one-way step on the way to payment. So a storefront could not
+ * tell a shopper what their points were worth until after the point of no
+ * return, and the widget said so — "your discount is applied on the next
+ * screen, before you pay" was an honest workaround for a missing endpoint.
+ *
+ * THE ONLY THING IT ADDS TO `priceCart` IS A SHAPE. Every rule — the switch, the
+ * currency match, the minimum, the balance, the cap — is `quote()`'s, and the
+ * arithmetic is the freeze's own. That is the point: see `priceCart`.
+ *
+ * IT WRITES NOTHING, RESERVES NOTHING, FREEZES NOTHING. There is no `UPDATE`
+ * here and no clock, and `quote()` reserves nothing by construction (spec D9) —
+ * a preview a shopper never acts on must leave no trace, or an abandoned tab
+ * would strand a balance.
+ *
+ * NO `baseRevision`. That parameter exists to make a WRITE fail when the cart
+ * moved underneath it; a read has nothing to lose the race for. A preview of a
+ * cart that has since changed is simply a stale number, and the freeze — which
+ * does take one — is where that is caught.
+ *
+ * A NON-`open` CART IS PRICED, NOT REFUSED, which is the one place this is more
+ * permissive than the freeze. A shopper who reloads the payment step on a
+ * `converting` cart is asking a question, not trying to change anything.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+export async function previewCheckout(
+  db: Db,
+  catalog: CatalogPort,
+  config: CheckoutConfig,
+  a: { cartId: string; redeemPoints?: number },
+): Promise<PreviewOutcome> {
+  const cart = await getCart(db, a.cartId);
+  if (!cart) throw new NotFoundError(a.cartId);
+
+  const priced = await priceCart(db, catalog, config, cart, a.redeemPoints);
+  if (!priced.ok) return priced;
+
+  const { quote } = priced.redemption ?? {};
+  return {
+    ok: true,
+    totals: priced.totals,
+    redemption: quote
+      ? {
+          pointsApplied: quote.points,
+          // The adjustment is negative; this field is read as "£5.00 off".
+          discountMinor: Math.abs(quote.adjustment.amount.amount),
+          balanceAfter: quote.balanceAfter,
+        }
+      : null,
+  };
 }
 
 /**

@@ -7,6 +7,7 @@ import { getCart } from '../cart/repo';
 import {
   freezeCheckout,
   frozenTotals,
+  previewCheckout,
   putAddresses,
   setShipping,
   shippingOptionsForCart,
@@ -20,7 +21,7 @@ import { runCartMaintenance } from '../events/consumer';
 import { assertCronRequest } from '../cron-auth';
 import { cartCookie } from '../identity/cookies';
 import { CHECKOUT_START_LIMIT, CHECKOUT_START_WINDOW_MS } from '../limits';
-import type { CheckoutConfig } from '../checkout/repo';
+import type { CheckoutConfig, PricingRefusal } from '../checkout/repo';
 import type { ShopCartDeps } from './deps';
 import { shopDb, shopLimit } from '../shop-env';
 import type { ShopEnv } from '../shop-env';
@@ -185,45 +186,47 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
       baseRevision: body.baseRevision,
       redeemPoints: body.redeemPoints,
     });
-    if (!result.ok) {
-      if (result.reason === 'unresolved_lines') {
-        return c.json(
-          { error: 'unavailable_lines', variantIds: result.variantIds },
-          409,
-        );
-      }
-      if (result.reason === 'currency_mismatch') {
-        return c.json(
-          { error: 'currency_mismatch', expected: result.expected, found: result.found },
-          409,
-        );
-      }
-      // Its own error code rather than the catch-all: the storefront has to
-      // tell the customer "we do not deliver to <district>" and offer the
-      // address step back — a generic precondition message reads as a glitch
-      // to retry, and retrying cannot fix a place we refuse to go.
-      if (result.reason === 'outside_delivery_area') {
-        return c.json({ error: 'outside_delivery_area' }, 409);
-      }
-      // Its own code for the same reason, and a DIFFERENT one: the message
-      // above names a district the customer picked from a list, and under
-      // simple mode there is no list to send them back to. "We don't deliver
-      // to Kano yet" and "we don't deliver to Gwarinpa" need different
-      // sentences and different next steps.
-      if (result.reason === 'outside_service_region') {
-        return c.json({ error: 'outside_service_region' }, 409);
-      }
-      /* `operation` keeps carrying the reason here for the consumers that
-         already read it that way; `reason` says the same thing in the field
-         that only ever means why. Same value, two keys, nothing broken. */
-      return c.json(
-        { error: 'precondition_failed', operation: result.reason, reason: result.reason },
-        409,
-      );
-    }
+    if (!result.ok) return refusePricing(c, result);
 
     await extendReservations(db, cart.id);
     return c.json({ totals: result.totals });
+  });
+
+  /**
+   * Price the cart WITHOUT freezing it (admin#100 Part A, storefront#112).
+   *
+   * ═══ WHY IT IS A POST, GIVEN THAT IT WRITES NOTHING ═══
+   * Because it takes a body, and because it must never be cached. `redeemPoints`
+   * is the shopper's opt-in; as a GET it would be a query parameter on a URL
+   * that a browser, a proxy or a CDN is entitled to cache — and the answer
+   * depends on the caller's cart cookie and their points balance, so one
+   * shopper's total could be served to another. That is the same reasoning
+   * `reviews/public.ts` sets out for keeping per-viewer data off a cacheable
+   * router. The route is otherwise a read in every sense that matters: no
+   * `UPDATE`, no reservation, no clock, and the cart's revision is untouched —
+   * which `routes/preview.test.ts` asserts rather than assumes.
+   *
+   * NO `baseRevision`. Every other checkout write takes one so a stale client
+   * loses the race rather than overwriting; a read has no race to lose. The
+   * freeze still takes one, which is where a cart that moved underneath the
+   * shopper is actually caught.
+   *
+   * THE SAME REFUSALS AS THE FREEZE, through the same function, so a storefront
+   * that can render one can render the other and the two cannot drift.
+   */
+  routes.post('/checkout/preview', async (c) => {
+    const db = shopDb(c);
+    const body = await readJsonOrEmpty(c, PreviewBody);
+    const cart = await requireCart(c, db);
+    const config = await loadConfig(db);
+
+    const result = await previewCheckout(db, deps.catalog, config, {
+      cartId: cart.id,
+      redeemPoints: body.redeemPoints,
+    });
+    if (!result.ok) return refusePricing(c, result);
+
+    return c.json({ totals: result.totals, redemption: result.redemption });
   });
 
   /** The frozen totals, for a client re-rendering the payment step. */
@@ -330,6 +333,52 @@ async function maintenance(c: Context<ShopEnv>, deps: ShopCartDeps, limit?: numb
     : null;
 
   return { ...cart, events };
+}
+
+/**
+ * One pricing refusal, rendered — shared by the freeze and the preview.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ONE MAPPING, TWO ROUTES, for the reason `priceCart` is one function: the
+ * preview exists to tell a shopper what the freeze will do, and a preview that
+ * reported a refusal differently from the freeze would send them round a loop
+ * the storefront had no branch for. Both are `409` — none of these is fixable
+ * by asking again (spec §8's retry policy stops there) and every body carries
+ * what the shopper needs to fix it themselves.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+function refusePricing(c: Context<ShopEnv>, result: PricingRefusal) {
+  if (result.reason === 'unresolved_lines') {
+    return c.json({ error: 'unavailable_lines', variantIds: result.variantIds }, 409);
+  }
+  if (result.reason === 'currency_mismatch') {
+    return c.json(
+      { error: 'currency_mismatch', expected: result.expected, found: result.found },
+      409,
+    );
+  }
+  // Its own error code rather than the catch-all: the storefront has to
+  // tell the customer "we do not deliver to <district>" and offer the
+  // address step back — a generic precondition message reads as a glitch
+  // to retry, and retrying cannot fix a place we refuse to go.
+  if (result.reason === 'outside_delivery_area') {
+    return c.json({ error: 'outside_delivery_area' }, 409);
+  }
+  // Its own code for the same reason, and a DIFFERENT one: the message
+  // above names a district the customer picked from a list, and under
+  // simple mode there is no list to send them back to. "We don't deliver
+  // to Kano yet" and "we don't deliver to Gwarinpa" need different
+  // sentences and different next steps.
+  if (result.reason === 'outside_service_region') {
+    return c.json({ error: 'outside_service_region' }, 409);
+  }
+  /* `operation` keeps carrying the reason here for the consumers that
+     already read it that way; `reason` says the same thing in the field
+     that only ever means why. Same value, two keys, nothing broken. */
+  return c.json(
+    { error: 'precondition_failed', operation: result.reason, reason: result.reason },
+    409,
+  );
 }
 
 async function requireCart(c: Context<ShopEnv>, db: Db) {
@@ -486,6 +535,19 @@ const BaseOnlyBody = z.object({ baseRevision: Base }).strict();
  */
 const FreezeBody = z
   .object({ baseRevision: Base, redeemPoints: z.number().int().min(0).max(100_000_000).optional() })
+  .strict();
+
+/**
+ * The preview's body — the freeze's, minus the revision it has no race to lose.
+ *
+ * `redeemPoints` CARRIES THE SAME MEANING IT CARRIES AT THE FREEZE, deliberately
+ * and to the letter: absent means spend nothing, a number larger than the
+ * balance is clamped by `quote()` rather than refused, and `0` converts to
+ * nothing and answers null. A preview that read the field differently from the
+ * freeze would show a shopper a discount the freeze then declined to give.
+ */
+const PreviewBody = z
+  .object({ redeemPoints: z.number().int().min(0).max(100_000_000).optional() })
   .strict();
 
 const SweepBody = z
