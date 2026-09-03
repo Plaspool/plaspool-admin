@@ -358,6 +358,13 @@
                         "when":  1786600004300,
                         "tag":  "0800_ownership_transfers",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  51,
+                        "version":  "7",
+                        "when":  1786600004400,
+                        "tag":  "0820_checkout_discount_codes",
+                        "breakpoints":  true
                     }
                 ]
 }

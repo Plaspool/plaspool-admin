@@ -48,6 +48,8 @@ export interface Cart {
   email: string | null;
   shippingOptionId: string | null;
   taxZone: string | null;
+  /** Uppercase discount code, or null when none is applied (migration 0820). */
+  discountCode: string | null;
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
@@ -85,6 +87,10 @@ const CART_COLUMNS = [
   'email',
   'shipping_option_id',
   'tax_zone',
+  /* The applied discount code, or NULL (migration 0820). Stored on the cart
+     rather than derived, so it survives a reload and is re-validated at the
+     freeze — an owner can switch a code off while a cart sits at payment. */
+  'discount_code',
   'created_at',
   'updated_at',
   'expires_at',
@@ -102,6 +108,7 @@ function rowToCart(row: Record<string, unknown>): Cart {
     email: row.email == null ? null : String(row.email),
     shippingOptionId: row.shipping_option_id == null ? null : String(row.shipping_option_id),
     taxZone: row.tax_zone == null ? null : String(row.tax_zone),
+    discountCode: row.discount_code == null ? null : String(row.discount_code),
     createdAt: toEpochMs(row.created_at),
     updatedAt: toEpochMs(row.updated_at),
     expiresAt: toEpochMs(row.expires_at),

@@ -274,7 +274,7 @@ const discount = (id: string, code: string, kind = 'percent'): SQL => sql`
 // ------------------------------------------------------------ shape of the DDL
 
 describe('migration 0011 is applied', () => {
-  it('creates all ten tables — nine from 0011, service areas from 0012', async () => {
+  it('creates all eleven tables — nine from 0011, 0012 and 0820 one each', async () => {
     const res = await db.execute(sql`
       SELECT table_name FROM information_schema.tables
        WHERE table_schema = 'public' AND table_name LIKE 'marketing_%'`);
@@ -282,6 +282,9 @@ describe('migration 0011 is applied', () => {
       'marketing_balances',
       'marketing_banners',
       'marketing_discount_codes',
+      /* Migration 0820 — one row per order that spent a code, and the thing
+         that makes `redeemed_count` idempotent under a replayed webhook. */
+      'marketing_discount_redemptions',
       'marketing_email_intents',
       'marketing_ledger',
       'marketing_programs',

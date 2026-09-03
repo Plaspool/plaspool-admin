@@ -16,6 +16,7 @@ import type { AccessLink } from '../mailer';
 import { BUILT_IN } from '../../../email/system-templates';
 import type { TemplateSet } from '../../../email/system-templates';
 import type { PointsRedemptionPort } from '../../../../shared/marketing/redemption';
+import type { DiscountCodePort } from '../../../../shared/marketing/discounts';
 import {
   CONSUMER,
   cancelOrder,
@@ -114,6 +115,12 @@ export interface ConsumerDeps {
    * `OrdersDeps.redemption`.
    */
   redemption?: (db: Db) => PointsRedemptionPort;
+  /**
+   * Discount codes (admin#100 Part B). Used at the capture only, to COUNT a use
+   * — nothing here ever decides whether a code applies; that was settled at the
+   * freeze and the price is already struck.
+   */
+  discounts?: (db: Db) => DiscountCodePort;
 
   /**
    * The system templates in force, loaded ONCE per sweep by the caller.
@@ -280,6 +287,61 @@ async function spendPoints(
 }
 
 /**
+ * Count one use of the order's discount code (admin#100 Part B).
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * A SIBLING OF `spendPoints`, DELIBERATELY, down to the shape of its failure.
+ * It runs on `payment.captured`, after the order is marked paid; the sale has
+ * happened and the discount has already been given. So it NEVER THROWS and
+ * never refuses — a throw would park an event whose state change stands, and an
+ * opinion about a completed order is worth nothing to anyone.
+ *
+ * IDEMPOTENT BY CONSTRUCTION, in the port: `marketing_discount_redemptions`
+ * keys on `order_id`, so a replayed sweep lands on the row the first pass wrote
+ * rather than counting a second use. See migration 0820's header for why a bare
+ * `redeemed_count + 1` could not have been made safe.
+ *
+ * THE AMOUNT IS READ OFF THE ORDER'S OWN ROW, and it is there rather than in the
+ * cart because this runs on a LATER event than the one that created the order —
+ * Orders may not read `shop_carts` (contract §2), so the number travels on
+ * `checkout.completed` and lands in a column. Migration 0820 makes the same
+ * argument from the schema's side.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+async function countDiscountUse(
+  db: Db,
+  deps: ConsumerDeps,
+  orderId: string,
+): Promise<string | null> {
+  if (!deps.discounts) return null;
+  try {
+    /* READ HERE RATHER THAN THROUGH `Order`, for the reason `spendPoints` gives:
+     * `ORDER_COLUMNS` is an explicit list and a campaign's code is not something
+     * an order page needs. */
+    const res = await db.execute(sql`
+      SELECT discount_code, discount_amount_minor, currency, order_number
+        FROM shop_orders WHERE id = ${orderId}`);
+    const row = res.rows[0];
+    if (!row || row.discount_code == null) return null;
+
+    return await deps.discounts(db).redeem({
+      orderId,
+      orderNumber: String(row.order_number),
+      code: String(row.discount_code),
+      /* Off this order's own row. Migration 0820's CHECK pairs the two columns,
+       * so a non-null code guarantees a non-null amount. */
+      amountMinor: Number(row.discount_amount_minor ?? 0),
+      currency: String(row.currency),
+      now: Date.now(),
+    });
+  } catch (err: unknown) {
+    return `anomaly: could not count the use of discount code after payment — ${
+      err instanceof Error ? err.message : String(err)
+    }; the order is paid and was charged with it applied, reconcile with marketing`;
+  }
+}
+
+/**
  * Give back the points a cancelled or refunded order spent.
  *
  * CALLED FROM THE CONSUMER'S FAILURE PATHS **AND FROM THE OWNER'S CANCEL ROUTE**
@@ -442,9 +504,23 @@ async function dispatch(
        * the sweep is a cron-driven request that is still executing here.
        */
       const redeemed = await spendPoints(db, deps, read.order.id, now);
-      return redeemed === null
+      /*
+       * AND THE DISCOUNT CODE'S USE, COUNTED AT THE SAME MOMENT AND FOR THE SAME
+       * REASON (admin#100 Part B, owner's decision 2026-09-02): a code is spent
+       * when the money arrives, so an abandoned checkout never burns one use of
+       * a capped campaign.
+       *
+       * SEQUENTIAL, NOT `Promise.all`. Both write, and the Neon HTTP driver has
+       * no transaction to hold them together (CLAUDE.md §3) — running them
+       * concurrently would buy one round trip and cost the ability to say which
+       * of the two failed. Each is independently idempotent, so a replay redoes
+       * neither.
+       */
+      const counted = await countDiscountUse(db, deps, read.order.id);
+      const details = [redeemed, counted].filter((d): d is string => d !== null);
+      return details.length === 0
         ? { kind: 'applied' }
-        : { kind: 'applied', detail: redeemed };
+        : { kind: 'applied', detail: details.join('; ') };
     }
 
     case 'payment.failed': {

@@ -318,6 +318,8 @@ async function view(
       shippingOptionId: current.shippingOptionId,
       taxZone: current.taxZone,
       customerId: current.customerId,
+      /* The applied code, so it survives a reload (storefront#113). */
+      discountCode: current.discountCode,
     },
     lines: quoted.map(({ line, quote }) => ({
       id: line.id,
@@ -337,6 +339,19 @@ async function view(
      * what makes the "no longer available" badge worth reading.
      */
     preview: computed.ok ? computed.totals : null,
+    /*
+     * THE CAPABILITY FLAG (storefront#113). "The field must not render until the
+     * API advertises the capability. Shipping an input that 404s is worse than
+     * shipping nothing."
+     *
+     * DERIVED FROM THE DEPENDENCY, never a constant. A hardcoded `true` would be
+     * a promise this deployment might not keep — the apply route answers 501
+     * without the port — and the storefront would render a field that fails. It
+     * is on the cart view because that is the read the checkout page already
+     * makes, so the field appears the day this deploys with no storefront
+     * deploy, which is exactly what the issue asks for.
+     */
+    discountCodesEnabled: deps.discounts !== undefined,
     changes,
   };
 }

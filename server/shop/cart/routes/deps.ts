@@ -5,6 +5,7 @@ import type { Db } from '../../../db/client';
 import type { CatalogPort } from '../catalog-port';
 import type { ShippingZone } from '../checkout/shipping';
 import type { PointsRedemptionPort } from '../../../../shared/marketing/redemption';
+import type { DiscountCodePort } from '../../../../shared/marketing/discounts';
 
 /**
  * Everything the shop routes need that is not a database handle.
@@ -91,6 +92,18 @@ export interface ShopCartDeps {
    * what makes the wiring safe to add to a shop that is already taking money.
    */
   redemption?: (db: Db) => PointsRedemptionPort;
+
+  /**
+   * Discount codes (admin#100 Part B). A factory over the request's handle, for
+   * every reason `redemption` above is one — including the type-only import,
+   * which reaches `shared/` and never `server/marketing/`.
+   *
+   * NO DEFAULT, AND ABSENT IS A REAL STATE rather than an oversight: the cart
+   * view reports `discountCodesEnabled: false` and the apply route answers 501.
+   * A default that pretended would put a code on a cart that the freeze then
+   * refused — the shopper would be shown a discount and charged without it.
+   */
+  discounts?: (db: Db) => DiscountCodePort;
 }
 
 /** What the injected commerce drain reports back. Counts only — the per-event
@@ -111,5 +124,6 @@ export function resolveShopCartDeps(partial: Partial<ShopCartDeps> = {}): ShopCa
     zones: partial.zones ?? DEFAULT_SHIPPING_ZONES,
     sweepEvents: partial.sweepEvents,
     redemption: partial.redemption,
+    discounts: partial.discounts,
   };
 }

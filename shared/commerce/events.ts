@@ -430,6 +430,26 @@ export interface CheckoutCompletedPayload {
    * at this event but is `pending`, and points are spent when money arrives.
    */
   redemption?: { email: string; points: number } | null;
+  /**
+   * THE DISCOUNT CODE APPLIED TO THIS CHECKOUT, and what it took off
+   * (admin#100 Part B).
+   *
+   * `null` IS THE ORDINARY CASE. Optional as well as nullable, for the reason
+   * `redemption` above is both: every event written before this field existed is
+   * still in the outbox and must keep parsing.
+   *
+   * WHY IT RIDES HERE AT ALL, given that the money is already in
+   * `totals.discountTotal`. The consumer has to tell marketing WHICH CODE was
+   * used, and `FrozenTotals` is a shop-owned shape that a browser bundle also
+   * compiles — it carries the rule, not the campaign's identity. Orders cannot
+   * read `shop_carts` (contract §2), so the code travels or it does not arrive.
+   *
+   * `discountMinor` IS POSITIVE, and is what the code ACTUALLY took off after
+   * the clamp — not what the rule said it would. A campaign's cost is measured
+   * in the former, and re-deriving it later would mean re-running an allocation
+   * against a cart that no longer exists.
+   */
+  discount?: { code: string; amountMinor: number } | null;
   /** Epoch-ms, from the same clock reading as the state change that caused it. */
   occurredAt: number;
 }

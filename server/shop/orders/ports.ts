@@ -4,6 +4,7 @@ import type { Db } from '../../db/client';
 import type { PaymentPort } from '../../../shared/commerce/ports';
 import { LoggingMailer, type Mailer } from './mailer';
 import type { PointsRedemptionPort } from '../../../shared/marketing/redemption';
+import type { DiscountCodePort } from '../../../shared/marketing/discounts';
 
 /**
  * What this subsystem needs from the two it cannot see, **taken by injection** (contract
@@ -173,6 +174,24 @@ export interface OrdersDeps {
    * customer whose checkout fails.
    */
   redemption?: (db: Db) => PointsRedemptionPort;
+  /**
+   * DISCOUNT CODES — COUNTED, NEVER JUDGED (admin#100 Part B).
+   *
+   * A factory over the handle and typed from `shared/marketing/discounts.ts`,
+   * for every reason `redemption` above is. This subsystem never imports
+   * `server/marketing/**`.
+   *
+   * THE ONLY METHOD THIS SUBSYSTEM CALLS IS `redeem()`. Whether a code applies
+   * was settled at the freeze, and the price is already struck by the time an
+   * order exists — an Orders-side `validate()` could only ever disagree with a
+   * charge that has already been made.
+   *
+   * ABSENT MEANS THE TALLY DOES NOT MOVE. The order is still created, paid and
+   * confirmed at the discounted price; only the campaign's count goes unwritten,
+   * which is a deployment that has not wired marketing rather than a customer
+   * whose checkout fails.
+   */
+  discounts?: (db: Db) => DiscountCodePort;
   /**
    * ISSUE A REFUND (task-d3). Wired at the composition root to the real
    * `createRefund`. `null` when absent — NOT a silent no-op like `drainPayments`

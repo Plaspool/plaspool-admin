@@ -658,14 +658,24 @@ export async function createOrderFromCheckout(
             subtotal, shipping_total, tax_total, grand_total,
             status, shipping_address, billing_address, placed_at,
             revision, source_event_id, checkout_id,
-            redemption_points, redemption_email)
+            redemption_points, redemption_email,
+            discount_code, discount_amount_minor)
           VALUES (
             ${orderId}, ${orderNumber}, ${input.customerId}, ${input.email}, ${input.currency},
             ${input.subtotal}, ${input.shippingTotal}, ${input.taxTotal}, ${input.grandTotal},
             'pending', ${jsonb(input.shippingAddress)}, ${jsonb(input.billingAddress)},
             ${event.occurredAt}, 1, ${event.id}, ${input.checkoutId},
             ${input.redemption?.points ?? null}::integer,
-            ${input.redemption?.email ?? null}::text)
+            ${input.redemption?.email ?? null}::text,
+            /* The code AND what it took off, carried from the cart through
+               the event (migration 0820). Both, because the capture counts the
+               use on a LATER event and Orders may not read the cart tables to
+               go and find the number then — contract §2, and the reason
+               redemption_points sits on this table too.
+               (Bare column names: a backtick here would end the sql template
+               and the error would name neither SQL nor the backtick.) */
+            ${input.discount?.code ?? null}::text,
+            ${input.discount?.amountMinor ?? null}::integer)
           RETURNING ${sql.raw(ORDER_COLUMNS.join(', '))}
         ), ins_lines AS (
           INSERT INTO shop_order_lines (id, order_id, line_no, variant_id, sku, title,
