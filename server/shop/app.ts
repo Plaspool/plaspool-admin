@@ -16,6 +16,7 @@ import { routes as catalog } from './catalog/routes';
 import { createReviewRoutes } from './reviews/routes';
 import { queueReviewApprovedEmail } from './orders/review-mail';
 import { catalogPort } from './catalog/port';
+import { checkoutPaymentsPort } from './payments/port';
 import { orders } from './orders/routes';
 import { drainCommerceEvents } from './orders/repo/consumer';
 import { cartShopRoutes } from './cart/routes';
@@ -284,6 +285,38 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
        * redemption existed.
        */
       redemption,
+      /*
+       * ═══════════════════════════════════════════════════════════════════════
+       * PAYMENTS → CART, SO A FROZEN CHECKOUT CAN BE UNFROZEN.
+       *
+       * THE SECOND SEAM THIS FILE OWNS, and the same shape as the Catalog one
+       * above it: Cart declares `CheckoutPaymentsPort`
+       * (`cart/payments-port.ts`), Payments exports an object of that shape
+       * (`payments/port.ts`) without naming Cart's type, and this line is the
+       * only place in the application that knows both halves. The assignment
+       * is where the two are structurally checked against each other — a
+       * mismatch is a compile error HERE, which is where somebody wiring the
+       * seam is already looking.
+       *
+       * PAYMENTS IS MOUNTED IN `server/index.ts`, NOT HERE (see the block at
+       * the bottom of this file), and that does not matter to this line: what
+       * is injected is a port over the request's handle, not a router. The
+       * mount decides which URLs answer; this decides what Cart may ask.
+       *
+       * ═══ WITHOUT THIS LINE THE FEATURE IS OFF, LOUDLY ═══
+       *
+       * `thawCheckout` refuses with 501 when the port is absent rather than
+       * reopening a cart it cannot prove was unpaid — so forgetting this line
+       * leaves `POST /checkout/cancel` answering `not_implemented` and address
+       * edits answering the same 409 they answer today. That is the deliberate
+       * inverse of the trap admin#27 recorded, where an unwired `CheckoutPort`
+       * let the highest-severity route in the system run and quietly do
+       * nothing. `composition.test.ts` drives this through the real
+       * `createApp()` for the reason that file exists: Cart's own suites
+       * inject their own port and would stay green with this line deleted.
+       * ═══════════════════════════════════════════════════════════════════════
+       */
+      payments: checkoutPaymentsPort,
     }),
   );
 

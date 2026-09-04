@@ -516,6 +516,134 @@ describe('the checkout flow, end to end', () => {
   });
 });
 
+/**
+ * BACKING OUT OF PAYMENT — through the real `createApp()`, which is the only
+ * place the Payments→Cart port is actually wired.
+ *
+ * CLAUDE.md §2's rule, applied: Cart's own suites inject their own fake port
+ * and would stay green if `server/shop/app.ts` never passed the real one. These
+ * do not. Deleting the `payments: checkoutPaymentsPort` line turns every test
+ * below into a 501, which is the failure mode admin#27 cost an order to learn.
+ */
+describe('a shopper who reaches the payment page and does not pay', () => {
+  /** A cart taken to `converting`, exactly as the storefront takes it. */
+  async function frozen(): Promise<{ id: string; revision: number }> {
+    const view = await newCart();
+    await client.post('/api/shop/cart/lines', { variantId: tee.id, qty: 1 });
+    await client.request('/api/shop/checkout/addresses', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shipping: LAGOS }),
+    });
+    expect((await client.post('/api/shop/checkout/freeze')).status).toBe(200);
+    const after = await json<CartView>(await client.get('/api/shop/cart'));
+    expect(after.cart?.status).toBe('converting');
+    return { id: view.cart!.id, revision: after.cart!.revision };
+  }
+
+  /** A payment intent in whatever state, written straight into Payments' table. */
+  async function intent(checkoutId: string, status: string): Promise<void> {
+    await ctx.db.execute(sql`
+      INSERT INTO shop_payment_intents
+        (id, checkout_id, amount, currency, status, idempotency_key, request_fingerprint,
+         refunded_total, created_at, updated_at, revision)
+      VALUES (${`pi_${status}_${checkoutId}`}, ${checkoutId}, 1000, ${CURRENCY}, ${status},
+              ${`key_${status}_${checkoutId}`}, 'fp', 0, 1, 1, 1)`);
+  }
+
+  it('gets their basket back — POST /checkout/cancel reopens the cart', async () => {
+    const cart = await frozen();
+
+    const res = await client.post('/api/shop/checkout/cancel');
+
+    expect(res.status).toBe(200);
+    const body = await json<{ cart: { status: string; revision: number } }>(res);
+    expect(body.cart.status).toBe('open');
+    expect(body.cart.revision).toBeGreaterThan(cart.revision);
+
+    // And the basket really is usable again — the line write that was refused
+    // while it was converting now succeeds.
+    expect((await client.post('/api/shop/cart/lines', { variantId: tee.id, qty: 1 })).status)
+      .toBe(201);
+  });
+
+  it('CANCELS the pending intent on the way out', async () => {
+    const cart = await frozen();
+    await intent(cart.id, 'requires_payment');
+
+    expect((await client.post('/api/shop/checkout/cancel')).status).toBe(200);
+
+    const after = await ctx.db.execute(sql`
+      SELECT status FROM shop_payment_intents WHERE checkout_id = ${cart.id}`);
+    expect(after.rows[0]?.status).toBe('cancelled');
+  });
+
+  it('REFUSES to reopen a checkout that was actually paid', async () => {
+    /*
+     * The cart is `converting` and an intent is `captured` — the shape a
+     * capture leaves behind when the inline completion did not run
+     * (`completeCheckoutForIntent` names three ways). It needs the sweep, which
+     * will turn it into an order, NOT a thaw that would let the shopper edit
+     * the address the order is about to be built from.
+     */
+    const cart = await frozen();
+    await intent(cart.id, 'captured');
+
+    const res = await client.post('/api/shop/checkout/cancel');
+
+    expect(res.status).toBe(409);
+    const body = await json<{ error: string; operation: string }>(res);
+    expect(body.error).toBe('precondition_failed');
+    expect(body.operation).toBe('checkout_paid');
+    const after = await json<CartView>(await client.get('/api/shop/cart'));
+    expect(after.cart?.status).toBe('converting');
+  });
+
+  it('EDITING THE ADDRESS is enough — the 409 the shopper actually hit is gone', async () => {
+    /*
+     * ═══ THE ORIGINAL BUG, END TO END ═══
+     *
+     * `PUT /checkout/addresses` on a frozen cart answered
+     * `409 precondition_failed / operation: update_cart` on every attempt, for
+     * ever, and nothing in the application could clear it. A shopper correcting
+     * a mistyped street was locked out of their own basket permanently.
+     */
+    const cart = await frozen();
+    await intent(cart.id, 'requires_payment');
+
+    const res = await client.request('/api/shop/checkout/addresses', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shipping: { ...LAGOS, line1: '2 Broad Street' } }),
+    });
+
+    expect(res.status).toBe(200);
+    const after = await json<CartView>(await client.get('/api/shop/cart'));
+    expect(after.cart?.status).toBe('open');
+    // The new address is stored, and the old payment is no longer live.
+    const stored = await ctx.db.execute(sql`
+      SELECT line1 FROM shop_addresses WHERE cart_id = ${cart.id} AND kind = 'shipping'`);
+    expect(stored.rows[0]?.line1).toBe('2 Broad Street');
+    // Re-freezing from here is what the shopper does next, and it works.
+    expect((await client.post('/api/shop/checkout/freeze')).status).toBe(200);
+  });
+
+  it('is idempotent — a second cancel is a 200, not a conflict', async () => {
+    // The storefront fires this from a back button, a link and a `beforeunload`
+    // without tracking which of them already ran.
+    await frozen();
+    expect((await client.post('/api/shop/checkout/cancel')).status).toBe(200);
+    const second = await client.post('/api/shop/checkout/cancel');
+    expect(second.status).toBe(200);
+    expect((await json<{ cart: { status: string } }>(second)).cart.status).toBe('open');
+  });
+
+  it('404s a browser with no cart at all, rather than inventing one', async () => {
+    const res = await client.post('/api/shop/checkout/cancel');
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('the maintenance cron route', () => {
   it('is refused to an anonymous caller', async () => {
     // Sweeping reaches `CatalogPort` once per expired hold, so an anonymous

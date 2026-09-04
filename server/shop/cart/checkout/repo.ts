@@ -2,10 +2,12 @@ import { sql } from 'drizzle-orm';
 import { toEpochMs } from '../../../db/client';
 import type { Db } from '../../../db/client';
 import { BadRequestError, NotFoundError } from '../../../repo/errors';
-import { CartPreconditionError, CartStaleWriteError } from '../errors';
+import { CartPreconditionError, CartStaleWriteError, NotImplementedError } from '../errors';
 import { newId } from '../ids';
-import { getCart, listLines, updateCartFields } from '../cart/repo';
+import { CART_TTL_MS, canTransition, getCart, listLines, updateCartFields } from '../cart/repo';
 import type { Cart } from '../cart/repo';
+import { paymentStatusRank } from '../../../../shared/commerce/ports';
+import type { CheckoutPaymentsPort } from '../payments-port';
 import { heldReservations, reserveForCheckout } from '../reservations/repo';
 import { computeTotals, parseFrozenTotals } from '../totals/compute';
 import {
@@ -93,6 +95,236 @@ export interface CheckoutConfig {
    * storefront never renders a field whose route would 501.
    */
   discounts?: (db: Db) => DiscountCodePort;
+  /**
+   * PAYMENTS, read-only but for one narrow cancel — the port that lets
+   * `thawCheckout` open the freeze's one-way door. See
+   * `server/shop/cart/payments-port.ts` for why the door needed a handle and
+   * why this is the only fact Cart cannot answer for itself.
+   *
+   * ABSENT REFUSES — IT DOES NOT PRETEND, and that is the opposite of the
+   * defaults above it. `rules`, `redemption` and `discounts` all have an absent
+   * meaning that is a correct, weaker behaviour. There is no correct weaker
+   * behaviour for "unfreeze a checkout without checking whether it was paid":
+   * the choice is between refusing and risking a second charge. So a
+   * deployment that forgets to wire this keeps answering the 409 it answers
+   * today, which is a bug, rather than reopening paid carts, which is money.
+   */
+  payments?: CheckoutPaymentsPort;
+}
+
+// -------------------------------------------------------------------- thawing
+
+/**
+ * `authorized` and everything above it on the payment ladder.
+ *
+ * THE BAR IS `authorized`, NOT `captured`, and the gap between them is the
+ * whole reason this constant is named rather than inlined. `authorized` means
+ * the customer finished the payment flow and the money is committed even though
+ * the capture has not been recorded yet; reopening on that would be reopening a
+ * cart that is about to become an order. `paymentStatusRank` puts `failed` and
+ * `cancelled` BELOW `authorized` on purpose (see its comment), so both of those
+ * fall the other side of this line and do not block a shopper's recovery —
+ * which is exactly right, because "we stopped expecting money" is the state a
+ * back-out produces.
+ */
+const COMMITTED_RANK = paymentStatusRank('authorized');
+
+/** What `cancelIntent` will actually move. Anything at or above this rank is
+ *  already settled one way or another and is left alone. */
+const CANCELLABLE_BELOW_RANK = paymentStatusRank('cancelled');
+
+/**
+ * Unfreeze a checkout: `converting → open`, and give the shopper their basket
+ * back.
+ *
+ * ═══ THE HANDLE ON THE INSIDE OF THE ONE-WAY DOOR ═══
+ *
+ * `freezeCheckout`'s header calls the freeze a one-way door and means it. What
+ * it did not say is that the door had no handle: `converting → open` sat in the
+ * transition allow-list from the beginning, with a comment promising "a
+ * customer who backs out of checkout gets their basket back rather than a cart
+ * they can never edit again", and `setCartStatus` was never once called with it
+ * outside a test. `routes/cart.ts` asserted the same thing in prose — "a
+ * payment that fails sends it back to `open`" — and nothing did.
+ *
+ * The cost was total and silent. A shopper who reached the Paystack page and
+ * did not pay — closed the tab, was declined, changed their mind about the
+ * address — got `409 precondition_failed / update_cart` from every subsequent
+ * address or shipping edit, for ever, and `LIVE_STATUSES` kept handing the same
+ * dead cart back to the cookie. This function is that promised edge.
+ *
+ * ═══ WHAT IT CLEARS, AND WHY CLEARING IS NOT OPTIONAL ═══
+ *
+ * `frozenTotals()` reads `frozen_totals` with NO STATUS GUARD, and
+ * `createIntent` prices a payment from it. Flipping the status alone would
+ * leave an `open`, freely editable cart whose stale frozen total is still
+ * chargeable — a shopper could thaw, change their address into a different
+ * shipping zone, and still be billed the old number. So the freeze's OUTPUTS go
+ * with the status, in the same statement, and `frozenTotals()` then throws
+ * until a new freeze runs. That is fail-closed: the failure mode of clearing
+ * too much is "you must press Pay again", and of clearing too little is "you
+ * were charged the wrong amount".
+ *
+ * `discount_code` is deliberately KEPT. It is an INPUT the shopper typed on an
+ * open cart, like their lines and their address, not an output of the freeze —
+ * and making somebody re-enter a promo code because their card was declined is
+ * the small cruelty this whole function exists to remove.
+ *
+ * ═══ IDEMPOTENT, BECAUSE THE CALLER IS A RETRY ═══
+ *
+ * An already-open cart returns unchanged rather than raising. The storefront
+ * calls this from a "change my details" button that a shopper can press twice,
+ * and from a page that may have reloaded after the first call succeeded.
+ */
+export async function thawCheckout(
+  db: Db,
+  config: CheckoutConfig,
+  a: { cartId: string; baseRevision?: number },
+): Promise<Cart> {
+  const cart = await getCart(db, a.cartId);
+  if (!cart) throw new NotFoundError(a.cartId);
+  if (cart.status === 'open') return cart;
+
+  // `converted` and `abandoned` are terminal and the allow-list says so. A
+  // converted cart is an ORDER — reopening it would be un-selling something.
+  if (!canTransition(cart.status, 'open')) {
+    throw new CartPreconditionError('cancel_checkout', snapshotOf(cart));
+  }
+
+  /*
+   * NO PORT, NO THAW. `CheckoutConfig.payments` states the reasoning: this is
+   * the one dependency in this file whose absence must refuse rather than
+   * degrade, because the weaker behaviour would be reopening carts that were
+   * paid for. 501 rather than 500 — permanent, named, and outside the client
+   * retry policy (`cart/errors.ts`), so a misconfigured deployment is legible
+   * in a log instead of being an anonymous failure retried for thirty seconds.
+   */
+  const port = config.payments;
+  if (!port) throw new NotImplementedError('checkout_cancel');
+
+  const intents = await port.intentsFor(db, a.cartId);
+  /*
+   * MONEY MOVED — REFUSED, AND THIS IS THE GUARD THE WHOLE PORT EXISTS FOR.
+   *
+   * A capture normally drives `converting → converted` inline, so a
+   * `converting` cart is USUALLY unpaid. `completeCheckoutForIntent` documents
+   * three ways that inline completion does not happen while the capture is
+   * still recorded — an unwired port, an unknown exception, a lost race — and
+   * each leaves a PAID cart at `converting`, indistinguishable from this
+   * function's target by anything Cart can see on its own.
+   *
+   * Such a cart needs the sweep, which will complete it, not a thaw. Reopening
+   * it and re-freezing at a new total would build the order from numbers the
+   * customer was never charged.
+   */
+  if (intents.some((intent) => paymentStatusRank(intent.status) >= COMMITTED_RANK)) {
+    throw new CartPreconditionError('checkout_paid', snapshotOf(cart));
+  }
+
+  /*
+   * CANCEL FIRST, THEN REOPEN. The order matters in only one direction: a crash
+   * between the two leaves cancelled intents on a still-frozen cart, which the
+   * next attempt fixes and which charges nobody. The reverse order would leave
+   * a live payment page pointed at a cart whose total is about to move.
+   *
+   * Paystack cannot be told (`cancelIntent`: it has no endpoint that cancels an
+   * uncompleted transaction), so a shopper who kept the old tab can still pay
+   * it. That is recorded as an anomaly by the rank ladder rather than lost, and
+   * refusing to hold money we took would be the worse answer.
+   */
+  for (const intent of intents) {
+    if (paymentStatusRank(intent.status) < CANCELLABLE_BELOW_RANK) {
+      await port.cancel(db, intent.id);
+    }
+  }
+
+  const now = Date.now();
+  const base = a.baseRevision ?? cart.revision;
+  /*
+   * `status = 'converting'` IS IN THE PREDICATE, not only in the allow-list
+   * check above — same discipline as `setCartStatus`, and for the same reason:
+   * the allow-list ran against a row that has already been read, so on its own
+   * it is exactly the stale pre-check the CAS rules forbid. A NULL bind needs
+   * its cast or Postgres raises 42P18 (§5).
+   */
+  const res = await db.execute(sql`
+    UPDATE shop_carts
+       SET status = 'open',
+           frozen_totals = ${null}::jsonb,
+           frozen_lines = ${null}::jsonb,
+           frozen_at = ${null}::bigint,
+           redemption_points = ${null}::integer,
+           redemption_email = ${null}::text,
+           revision = revision + 1,
+           updated_at = ${now},
+           expires_at = ${now + CART_TTL_MS}
+     WHERE id = ${a.cartId} AND revision = ${base} AND status = 'converting'
+    RETURNING revision`);
+
+  if (res.rows.length === 0) {
+    const after = await getCart(db, a.cartId);
+    if (!after) throw new NotFoundError(a.cartId);
+    // Somebody else already thawed it — the shopper's other tab, or their
+    // second press. That is the outcome this caller wanted, not a conflict.
+    if (after.status === 'open') return after;
+    if (after.status !== 'converting') {
+      throw new CartPreconditionError('cancel_checkout', snapshotOf(after));
+    }
+    throw new CartStaleWriteError(base, after.revision, snapshotOf(after));
+  }
+
+  const after = await getCart(db, a.cartId);
+  if (!after) throw new NotFoundError(a.cartId);
+  return after;
+}
+
+/**
+ * Make the cart writable for an edit that is guarded on `status = 'open'`, and
+ * report which revision the edit must now chain off.
+ *
+ * ═══ WHY THE REVISION COMES BACK ═══
+ *
+ * The thaw is itself a write, so it bumps `revision`. The caller's
+ * `baseRevision` — the shopper's optimistic token, taken before any of this —
+ * is spent HERE, on the thaw's own CAS, and is stale by the time the address
+ * write runs. Handing it on unchanged would answer a successful recovery with
+ * `409 stale_write`, which is the same dead end this function was written to
+ * remove, one step further along. So the edit chains off the revision the thaw
+ * produced: the shopper's token is still checked exactly once, at the first
+ * write that consumes it.
+ *
+ * A cart that is already `open` returns the caller's own value untouched, so
+ * the ordinary checkout path — which is every checkout that has not been
+ * frozen — reaches `updateCartFields` with precisely what it had before this
+ * function existed, and consults Payments not at all.
+ */
+async function makeEditable(
+  db: Db,
+  config: CheckoutConfig,
+  a: { cartId: string; baseRevision?: number },
+): Promise<number | undefined> {
+  const cart = await getCart(db, a.cartId);
+  if (!cart) throw new NotFoundError(a.cartId);
+  /*
+   * ONLY `converting` IS THAWED. `converted` and `abandoned` fall through
+   * untouched so the guarded write refuses them exactly as it always has —
+   * changing what THOSE answer is a separate decision from giving an unpaid
+   * checkout its basket back, and this function is not the place to make it.
+   */
+  if (cart.status !== 'converting') return a.baseRevision;
+  const thawed = await thawCheckout(db, config, a);
+  return thawed.revision;
+}
+
+/** The four fields a 409 hands back so a client can re-render without a second
+ *  request — `CartSnapshot`, built the one way rather than inline per site. */
+function snapshotOf(cart: Cart) {
+  return {
+    id: cart.id,
+    status: cart.status,
+    revision: cart.revision,
+    currency: cart.currency,
+  };
 }
 
 // ------------------------------------------------------------------ addresses
@@ -319,11 +551,24 @@ export async function putAddresses(
   }
 
   const zone = zoneFor(config.zones, a.shipping.countryCode, a.shipping.region);
+  /*
+   * A FROZEN CHECKOUT IS THAWED HERE RATHER THAN REFUSED — and the position of
+   * this line, AFTER both refusals and BEFORE any write, is the whole of what
+   * makes it safe. An address the shop will not deliver to still costs nothing
+   * and changes nothing; only an address that is going to be stored reopens the
+   * cart. `makeEditable` is a no-op for the ordinary open cart.
+   *
+   * Editing a delivery address IS backing out of payment, said in the only
+   * vocabulary a checkout form has. Refusing it — which is what happened until
+   * this line existed — told a shopper who had simply mistyped their street
+   * that their basket was permanently unusable.
+   */
+  const base = await makeEditable(db, config, a);
   // The cart write goes FIRST because it carries the CAS and the state guard: if
   // the cart is not open, or has moved on, no address is written at all.
   await updateCartFields(db, {
     cartId: a.cartId,
-    baseRevision: a.baseRevision,
+    baseRevision: base,
     fields: { taxZone: zone.id },
   });
 
@@ -414,9 +659,13 @@ export async function setShipping(
   // UK next-day price for a parcel to France is a real loss on every order.
   if (!option) throw new BadRequestError('shipping_option');
 
+  /* Thawed for the same reason `putAddresses` is, and in the same position —
+   * after every refusal, before the first write. Choosing a different delivery
+   * speed after seeing the payment page is backing out of it. */
+  const base = await makeEditable(db, config, a);
   await updateCartFields(db, {
     cartId: a.cartId,
-    baseRevision: a.baseRevision,
+    baseRevision: base,
     fields: { shippingOptionId: option.id },
   });
   // Re-priced on the way OUT, not on the way in: the cart stores the option ID

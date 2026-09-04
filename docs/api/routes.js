@@ -1858,7 +1858,11 @@ window.API_ROUTES = [
       [403, 'forbidden', ''],
       [404, 'gone', ''],
       [409, 'stale_write', ''],
-      [409, 'precondition_failed', ''],
+      [
+        409,
+        'precondition_failed',
+        'A FROZEN cart is no longer refused here: an address edit on a <code>converting</code> cart unfreezes it (cancelling the pending intent and clearing the totals) and then writes, so re-submitting the form is all a shopper needs to recover. What still refuses is <code>operation: "checkout_paid"</code> — the payment was taken, and the address the order is being built from may not move. See <code>POST /checkout/cancel</code>',
+      ],
     ],
   },
   {
@@ -1883,7 +1887,53 @@ window.API_ROUTES = [
     sum: 'Choose a shipping option.',
     body: `{ "optionId": "std", "baseRevision": 7 }`,
     res: { 200: `{ "shipping": { "id": "std", "label": "…", "amount": { "amount": 395, "currency": "GBP" }, "taxable": true } }` },
-    errs: [[400, 'bad_request', ''], [403, 'forbidden', ''], [404, 'gone', ''], [409, 'stale_write', ''], [409, 'precondition_failed', '']],
+    errs: [
+      [400, 'bad_request', ''],
+      [403, 'forbidden', ''],
+      [404, 'gone', ''],
+      [409, 'stale_write', ''],
+      [
+        409,
+        'precondition_failed',
+        'Unfreezes a <code>converting</code> cart rather than refusing it, exactly as <code>PUT /checkout/addresses</code> does. <code>operation: "checkout_paid"</code> still refuses',
+      ],
+    ],
+  },
+  {
+    surface: 'shop',
+    group: 'Checkout',
+    m: 'POST',
+    p: '/api/shop/checkout/cancel',
+    auth: 'public',
+    src: 'server/shop/cart/routes/checkout.ts',
+    sum: 'Back out of payment and get the basket back.',
+    desc:
+      '<strong>Call this whenever the shopper leaves a payment page without paying</strong> — a back button, a "change my details" link, a declined card, a closed tab. It moves the cart <code>converting → open</code>, cancels the pending payment intent, and clears the frozen totals so nothing stale can be charged.<br><br>' +
+      'Without it a frozen cart is a <strong>dead end</strong>: every later <code>PUT /checkout/addresses</code> and <code>PUT /checkout/shipping</code> answers <code>409 precondition_failed</code> with <code>operation: "update_cart"</code>, permanently, and the cookie keeps resolving to the same unusable basket.<br><br>' +
+      '<strong>Idempotent.</strong> An already-open cart answers 200 and writes nothing, so it is safe to fire from several handlers without tracking which one ran. <code>baseRevision</code> is optional here — a shopper abandoning a payment has no competing writer to race.<br><br>' +
+      'After this the shopper is back at the address step: edit what they came back to change, then <code>/checkout/freeze</code> again. <strong>The totals are gone until you do</strong> — <code>GET /checkout/totals</code> and creating a payment intent both 404 in between, deliberately, so a stale number can never be charged against a changed address.<br><br>' +
+      'Editing an address or a shipping option on a frozen cart now does this <em>implicitly</em>, so a storefront that only ever re-submits the form recovers without calling this at all. Call it explicitly when the shopper leaves without editing anything.',
+    body: `{ "baseRevision": 9 }     // optional; the whole body may be omitted`,
+    res: {
+      200: `{ "cart": { "id": "crt_…", "status": "open", "revision": 10, "currency": "NGN" } }`,
+    },
+    errs: [
+      [400, 'bad_request', ''],
+      [403, 'forbidden', ''],
+      [404, 'gone', 'No cart cookie, or it names a cart that is gone'],
+      [
+        409,
+        'precondition_failed',
+        '<code>{ error, operation, cart }</code>. <code>operation: "checkout_paid"</code> means the payment WAS taken and the order is still being built — send the shopper to their order, never back to the basket. <code>operation: "cancel_checkout"</code> means the cart is already <code>converted</code> or <code>abandoned</code>',
+      ],
+      [409, 'stale_write', 'Only when you sent a <code>baseRevision</code> and lost the race'],
+      [429, 'rate_limited', ''],
+      [
+        501,
+        'not_implemented',
+        '<code>{ error, feature: "checkout_cancel" }</code> — this deployment has no payments port wired, so it cannot prove the checkout was unpaid and refuses rather than guessing. A deployment fault, not a client one',
+      ],
+    ],
   },
   {
     surface: 'shop',
