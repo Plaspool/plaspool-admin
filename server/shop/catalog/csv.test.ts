@@ -22,10 +22,20 @@ import { registerCsvMailer, resetCsvMailer } from './csv';
  * the feature is what catches a gate rule drifting.
  */
 
+/*
+ * SPELLED OUT RATHER THAN BUILT FROM `CSV_COLUMNS`, because the header IS the
+ * contract — a file a person exported last week has to keep importing. Deriving
+ * it from the source would make this assertion agree with any change, including
+ * one that reorders the columns and silently lands prices in the stock column.
+ * The appended block (Product Image onward) is the media and variant-setup work
+ * of 2026-09-04; the first sixteen have not moved.
+ */
 const HEADER =
   'Handle,Title,Status,Category,Tags,Description,Overview,SEO Title,SEO Description,' +
   'Variant SKU,Variant Options,Variant Price,Variant Compare At Price,Variant Cost,' +
-  'Variant Stock,Variant Backorderable';
+  'Variant Stock,Variant Backorderable,' +
+  'Product Image,Product Gallery,Variant Image,Variant Color Hex,' +
+  'Variant Weight Grams,Variant Position,Variant Status';
 
 const EXPORT_PATH = '/api/shop/admin/products/export';
 const IMPORT_PATH = '/api/shop/admin/products/import';
@@ -616,5 +626,266 @@ describe('import', () => {
     const product = await adminProductBySlug('blank-desc');
     expect(product.status).toBe('draft'); // empty Status cell leaves the default
     expect(product.description).toEqual(controlDoc);
+  });
+});
+
+// ============================================================================
+
+/**
+ * THE 2026-09-04 REGRESSION: THE ROUND TRIP USED TO FLATTEN DESCRIPTIONS AND
+ * DROP EVERY PICTURE.
+ *
+ * The `Description` column carried `description_text` — `docToText` output,
+ * blocks already collapsed — and the import wrapped it in one paragraph, so
+ * export → import destroyed every heading, list and bold run it touched. It did
+ * that to PLA Silk and PLA Basic in production. There was no image column at
+ * all, so a variant's photograph, its swatch, its weight, its order and its
+ * active/discontinued state were simply absent from the file.
+ *
+ * These tests drive the real routes end to end: export the catalogue, feed the
+ * exported bytes straight back to import, and read the product through the
+ * admin API. Anything the format cannot carry shows up as a difference.
+ */
+describe('lossless round trip', () => {
+  /** A description with the structure the flattening destroyed. */
+  const richDoc = {
+    type: 'doc',
+    content: [
+      { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Key Features' }] },
+      {
+        type: 'bulletList',
+        content: [
+          {
+            type: 'listItem',
+            content: [
+              { type: 'paragraph', content: [{ type: 'text', text: 'Glossy, silk-like finish' }] },
+            ],
+          },
+          {
+            type: 'listItem',
+            content: [
+              {
+                type: 'paragraph',
+                content: [
+                  { type: 'text', marks: [{ type: 'bold' }], text: 'Material:' },
+                  { type: 'text', text: ' Silk PLA' },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+
+  const COVER = 'img_cover0000000000000000000000';
+  const GALLERY = 'img_gallery00000000000000000000';
+  const VARIANT_IMG = 'img_variant00000000000000000000';
+
+  async function seedImage(id: string): Promise<string> {
+    const now = Date.now();
+    const owner = ctx.users.writer;
+    await ctx.db.execute(sql`
+      INSERT INTO images (id, owner_id, storage_key, content_type, width, height,
+                          byte_size, checksum, created_at, committed_at, unreferenced_since)
+      VALUES (${id}, ${owner.id}::uuid, ${`images/${owner.id}/${id}`},
+              'image/png', NULL, NULL, 1000, NULL, ${now}, ${now}, NULL)`);
+    return id;
+  }
+
+  /** The whole catalogue as the export writes it. */
+  async function exportCsv(): Promise<string> {
+    const res = await http.post(EXPORT_PATH, {});
+    expect(res.status).toBe(201);
+    const url = (await json<{ export: { url: string } }>(res)).export.url;
+    const download = await http.get(url.replace(DEFAULT_ADMIN_ORIGIN, ''));
+    expect(download.status).toBe(200);
+    return await download.text();
+  }
+
+  let productId: string;
+  let variantId: string;
+
+  beforeAll(async () => {
+    await login();
+    await ctx.db.execute(sql`DELETE FROM shop_products`);
+
+    await seedImage(COVER);
+    await seedImage(GALLERY);
+    await seedImage(VARIANT_IMG);
+
+    const created = await http.post('/api/shop/admin/products', {
+      title: 'Silk Spool',
+      category: 'Fibre',
+      description: richDoc,
+      coverImageId: COVER,
+      imageIds: [GALLERY],
+    });
+    expect(created.status).toBe(201);
+    productId = (await json<{ product: { id: string } }>(created)).product.id;
+
+    const variant = await http.post(`/api/shop/admin/products/${productId}/variants`, {
+      sku: 'SILK-YELLOW-1KG',
+      optionValues: { Size: '1kg', Color: 'Yellow' },
+      onHand: 7,
+      imageId: VARIANT_IMG,
+      colorHex: '#ffd700',
+      weightGrams: 1200,
+    });
+    expect(variant.status).toBe(201);
+    variantId = (await json<{ variant: { id: string } }>(variant)).variant.id;
+  });
+
+  it('exports the description as HTML, not as flattened text', async () => {
+    const csv = await exportCsv();
+    // The three things the old plain-text column could not carry.
+    expect(csv).toContain('<h2>Key Features</h2>');
+    expect(csv).toContain('<strong>Material:</strong>');
+    expect(csv).toContain('<ul><li><p>Glossy, silk-like finish</p></li>');
+  });
+
+  it('exports the product media and the variant media and setup', async () => {
+    const csv = await exportCsv();
+    expect(csv).toContain(COVER);
+    expect(csv).toContain(GALLERY);
+    expect(csv).toContain(VARIANT_IMG);
+    expect(csv).toContain('#ffd700');
+    expect(csv).toContain('1200');
+  });
+
+  it('re-importing an untouched export leaves the description byte-identical', async () => {
+    /*
+     * The statement the old code could not make at all: the stored jsonb and
+     * its derived text are compared, not "it looks the same afterwards".
+     *
+     * The product ROW is still written — an import is authoritative about
+     * title, category, tags and the rest, so `revision` advances by one every
+     * time. That is the pre-existing behaviour of `applyUpdate` and is not
+     * what this work changed; the description not moving is.
+     */
+    const before = await ctx.db.execute(sql`
+      SELECT description, description_text, overview_fallback FROM shop_products
+       WHERE id = ${productId}`);
+    const beforeVariant = await ctx.db.execute(sql`
+      SELECT image_id, color_hex, weight_grams, position, status FROM shop_variants
+       WHERE id = ${variantId}`);
+
+    const res = await http.post(IMPORT_PATH, { csv: await exportCsv(), mode: 'apply' });
+    expect(res.status).toBe(200);
+    expect(await json(res)).toMatchObject({ created: 0, updated: 1, invalid: [] });
+
+    const after = await ctx.db.execute(sql`
+      SELECT description, description_text, overview_fallback FROM shop_products
+       WHERE id = ${productId}`);
+    const afterVariant = await ctx.db.execute(sql`
+      SELECT image_id, color_hex, weight_grams, position, status FROM shop_variants
+       WHERE id = ${variantId}`);
+
+    // The document, and both values derived from it on write.
+    expect(after.rows[0]).toEqual(before.rows[0]);
+    expect(afterVariant.rows[0]).toEqual(beforeVariant.rows[0]);
+  });
+
+  it('preview reports the untouched export as pure updates', async () => {
+    const res = await http.post(IMPORT_PATH, { csv: await exportCsv(), mode: 'preview' });
+    expect(res.status).toBe(200);
+    expect(await json(res)).toMatchObject({ creates: 0, updates: 1, invalid: [] });
+  });
+
+  it('applies a description a person actually edited in the spreadsheet', async () => {
+    const csv = await exportCsv();
+    const edited = csv.replace('<h2>Key Features</h2>', '<h2>What You Get</h2>');
+    expect(edited).not.toBe(csv);
+
+    const res = await http.post(IMPORT_PATH, { csv: edited, mode: 'apply' });
+    expect(res.status).toBe(200);
+    expect(await json(res)).toMatchObject({ updated: 1, invalid: [] });
+
+    const product = await adminProductBySlug('silk-spool');
+    const blocks = (product.description as { content: { type: string; content: { text: string }[] }[] })
+      .content;
+    expect(blocks[0]!.content[0]!.text).toBe('What You Get');
+    // Still a heading with a list under it — the edit changed words, not shape.
+    expect(blocks.map((block) => block.type)).toEqual(['heading', 'bulletList']);
+  });
+
+  it('round trips a variant made discontinued in the file', async () => {
+    const csv = await exportCsv();
+    const rows = csv.split(/\r?\n/).filter((line) => line !== '');
+    // The trailing Variant Status cell of the one data row.
+    rows[1] = rows[1]!.replace(/active$/, 'discontinued');
+    const res = await http.post(IMPORT_PATH, { csv: rows.join('\n'), mode: 'apply' });
+    expect(res.status).toBe(200);
+    expect(await json(res)).toMatchObject({ updated: 1, invalid: [] });
+
+    const after = await ctx.db.execute(sql`SELECT status FROM shop_variants WHERE id = ${variantId}`);
+    expect(after.rows[0].status).toBe('discontinued');
+
+    // And back, so the suite leaves the fixture as it found it.
+    const restored = (await exportCsv()).replace(/discontinued/g, 'active');
+    expect((await http.post(IMPORT_PATH, { csv: restored, mode: 'apply' })).status).toBe(200);
+  });
+
+  it('leaves the new fields alone when an OLD sixteen-column file is imported', async () => {
+    /*
+     * The whole reason the columns were APPENDED rather than inserted. A file
+     * exported before this work has no media columns at all, and an absent
+     * column means "leave alone" — never "clear", which would strip every
+     * photograph off the catalogue and report a clean success.
+     */
+    const before = await ctx.db.execute(sql`
+      SELECT image_id, color_hex, weight_grams FROM shop_variants WHERE id = ${variantId}`);
+    const oldHeader = HEADER.split(',').slice(0, 16).join(',');
+    const csv = [oldHeader, 'silk-spool,Silk Spool,,,,,,,,SILK-YELLOW-1KG,,,,,,'].join('\n');
+
+    const res = await http.post(IMPORT_PATH, { csv, mode: 'apply' });
+    expect(res.status).toBe(200);
+    expect(await json(res)).toMatchObject({ updated: 1, invalid: [] });
+
+    const after = await ctx.db.execute(sql`
+      SELECT image_id, color_hex, weight_grams FROM shop_variants WHERE id = ${variantId}`);
+    expect(after.rows[0]).toEqual(before.rows[0]);
+    const cover = await ctx.db.execute(sql`
+      SELECT cover_image_id FROM shop_products WHERE id = ${productId}`);
+    expect(cover.rows[0].cover_image_id).toBe(COVER);
+  });
+
+  it('names a bad swatch, weight, position or variant status on its own row', async () => {
+    const csv = [
+      HEADER,
+      'bad-cells,Bad Cells,,,,,,,,BAD-1,,,,,,,,,,not-a-colour,12.5,-3,retired',
+    ].join('\n');
+    const res = await http.post(IMPORT_PATH, { csv, mode: 'preview' });
+    expect(res.status).toBe(200);
+    const body = await json<{ invalid: { line: number; problem: string }[] }>(res);
+    expect(body.invalid).toHaveLength(1);
+    expect(body.invalid[0]!.problem).toContain('bad Variant Color Hex "not-a-colour"');
+    expect(body.invalid[0]!.problem).toContain('bad Variant Weight Grams "12.5"');
+    expect(body.invalid[0]!.problem).toContain('bad Variant Position "-3"');
+    expect(body.invalid[0]!.problem).toContain('unknown Variant Status "retired"');
+  });
+
+  it('refuses an image id that names nothing, on the row that carries it', async () => {
+    const csv = [
+      HEADER,
+      'silk-spool,Silk Spool,,,,,,,,SILK-YELLOW-1KG,,,,,,,,,img_missing000000000000000000,,,,',
+    ].join('\n');
+    const res = await http.post(IMPORT_PATH, { csv, mode: 'apply' });
+    expect(res.status).toBe(200);
+    const body = await json<{ invalid: { problem: string }[] }>(res);
+    expect(body.invalid.map((problem) => problem.problem).join(' ')).toContain('imageId');
+  });
+
+  it('still accepts a plain-text description cell, so a Shopify-shaped file imports', async () => {
+    const csv = [HEADER, 'plain-desc,Plain Desc,,,,Just some words,,,,,,,,,,,,,,,,,'].join('\n');
+    const res = await http.post(IMPORT_PATH, { csv, mode: 'apply' });
+    expect(res.status).toBe(200);
+    expect(await json(res)).toMatchObject({ created: 1, invalid: [] });
+
+    const product = await adminProductBySlug('plain-desc');
+    expect(product.description).toEqual({
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Just some words' }] }],
+    });
   });
 });
