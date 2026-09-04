@@ -889,3 +889,98 @@ describe('lossless round trip', () => {
     });
   });
 });
+
+// ============================================================================
+
+/**
+ * A HANDLE THAT NAMES A PRODUCT IN THE TRASH.
+ *
+ * Watched happen on production 2026-09-04: exported at 19:47:13, the product
+ * moved to the trash at 19:47:29, the same file imported at 19:47:39. Trash is
+ * a SOFT delete, so the row keeps its slug and its variants keep their SKUs —
+ * but the import's lookups filtered `deleted_at IS NULL`, saw no such handle,
+ * and created a NEW product, which had to take a `…-2` slug because the
+ * trashed row still owned the original. `createVariant` was then refused by
+ * `shop_variants_sku_unique`, because that same trashed row still owned the
+ * SKU. The result was a duplicate that could never hold a variant.
+ *
+ * Refusing the row is the owner's call (2026-09-04): restoring it here would
+ * mean an import silently un-deleting products, a thousand rows at a time.
+ */
+describe('a handle that is in the trash', () => {
+  let productId: string;
+  let handle: string;
+
+  /** Handle plus title; every later column is absent, which the import reads
+   *  as "leave alone" — the same shape a spreadsheet's trimmed row has. */
+  const fileFor = (slug: string): string => [HEADER, `${slug},Binned Spool`].join('\n');
+
+  beforeAll(async () => {
+    await login();
+    const created = await http.post('/api/shop/admin/products', {
+      title: 'Binned Spool',
+      category: 'Fibre',
+    });
+    expect(created.status).toBe(201);
+    const product = (await json<{ product: { id: string; slug: string } }>(created)).product;
+    productId = product.id;
+    handle = product.slug;
+
+    // `http.del`, not `http.delete` — and this is a SOFT delete.
+    const trashed = await http.del(`/api/shop/admin/products/${productId}`);
+    expect(trashed.status).toBe(200);
+  });
+
+  it('preview refuses the row instead of promising a create', async () => {
+    const res = await http.post(IMPORT_PATH, { csv: fileFor(handle), mode: 'preview' });
+    expect(res.status).toBe(200);
+    const body = await json<{ creates: number; updates: number; invalid: { problem: string }[] }>(res);
+    expect(body.creates).toBe(0);
+    expect(body.updates).toBe(0);
+    expect(body.invalid).toHaveLength(1);
+    expect(body.invalid[0]!.problem).toContain('is in the trash');
+  });
+
+  it('apply refuses it and mints no twin', async () => {
+    const before = await ctx.db.execute(sql`SELECT count(*)::int AS n FROM shop_products`);
+
+    const res = await http.post(IMPORT_PATH, { csv: fileFor(handle), mode: 'apply' });
+    expect(res.status).toBe(200);
+    const body = await json<{ created: number; updated: number; invalid: { problem: string }[] }>(res);
+    expect(body).toMatchObject({ created: 0, updated: 0 });
+    expect(body.invalid[0]!.problem).toContain('is in the trash');
+
+    // The whole point: no `…-2` duplicate, and the trashed row is untouched.
+    const after = await ctx.db.execute(sql`SELECT count(*)::int AS n FROM shop_products`);
+    expect(after.rows[0].n).toBe(before.rows[0].n);
+    const row = await ctx.db.execute(sql`
+      SELECT slug, deleted_at FROM shop_products WHERE id = ${productId}`);
+    expect(row.rows[0].slug).toBe(handle);
+    expect(row.rows[0].deleted_at).not.toBeNull();
+  });
+
+  it('names the handle and says what to do about it', async () => {
+    const res = await http.post(IMPORT_PATH, { csv: fileFor(handle), mode: 'preview' });
+    const body = await json<{ invalid: { problem: string }[] }>(res);
+    // Preview and apply share one sentence, so the modal cannot promise
+    // something apply then does differently.
+    expect(body.invalid[0]!.problem).toContain(handle);
+    expect(body.invalid[0]!.problem).toContain('restore that product first');
+  });
+
+  it('imports normally once the product is restored', async () => {
+    const restored = await http.post(`/api/shop/admin/products/${productId}/restore`, {});
+    expect(restored.status).toBe(200);
+
+    const res = await http.post(IMPORT_PATH, { csv: fileFor(handle), mode: 'apply' });
+    expect(res.status).toBe(200);
+    expect(await json(res)).toMatchObject({ created: 0, updated: 1, invalid: [] });
+
+    // Updated in place — still one product, still the same id.
+    const row = await ctx.db.execute(sql`
+      SELECT id, deleted_at FROM shop_products WHERE slug = ${handle}`);
+    expect(row.rows).toHaveLength(1);
+    expect(row.rows[0].id).toBe(productId);
+    expect(row.rows[0].deleted_at).toBeNull();
+  });
+});

@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { Archive, Download, Package, Plus, Tags, Trash2, Upload } from 'lucide-react';
+import {
+  Archive,
+  ArchiveRestore,
+  Download,
+  Package,
+  Plus,
+  Tags,
+  Trash2,
+  Upload,
+} from 'lucide-react';
 import { shopApi, type ProductStatus, type ShopProduct, type ShopTag } from '../../data/api-shop';
 import {
   shopCsvApi,
@@ -15,7 +24,13 @@ import { humanise, productTone, shortDate } from '../lib/format';
 import { AnalyticsBar, AnalyticsMenuItem, PageHeader, useAnalyticsBar, type Metric } from '../ui/Page';
 import { Badge, Banner, Button, ButtonLink, EmptyState, SplitEmpty } from '../ui/primitives';
 import { SpoolTiles } from '../ui/illustrations';
-import { DataTable, IdCell, TablePager, type Column } from '../ui/DataTable';
+import {
+  DataTable,
+  IdCell,
+  TablePager,
+  type BulkConfig,
+  type Column,
+} from '../ui/DataTable';
 import { Checkbox } from '../ui/Field';
 import { StoredImg } from '../ui/Img';
 import { MenuItem } from '../ui/Menu';
@@ -37,11 +52,21 @@ import { useToast } from '../ui/Toast';
  * mark. It lands with the in-depth product work.
  */
 
+/*
+ * TRASH IS A TAB HERE AND A VIEW EVERYWHERE ELSE. `deleted_at` is independent
+ * of `status`, so a trashed product keeps whatever status it had — which is why
+ * this list is the only way to reach one. Until this tab existed there was no
+ * route to a trashed product at all: the detail screen has had a working
+ * Restore button the whole time (`ProductDetail.tsx`) and nothing could
+ * navigate to it. The server already answered `status=trash`; only the tab was
+ * missing.
+ */
 const TABS: { value: ProductStatus | 'all'; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'active', label: 'Active' },
   { value: 'draft', label: 'Draft' },
   { value: 'archived', label: 'Archived' },
+  { value: 'trash', label: 'Trash' },
 ];
 
 export default function Products() {
@@ -192,6 +217,76 @@ export default function Products() {
     { key: 'updated', header: 'Updated', label: 'Updated', render: (p) => shortDate(p.updatedAt) },
   ];
 
+  /*
+   * Restore is the ONLY bulk action that means anything in the trash — publish,
+   * archive and "move to trash" either fail or are no-ops on a deleted row, and
+   * a control that can only refuse is worse than no control.
+   */
+  const bulkConfig: BulkConfig =
+    tab === 'trash'
+      ? {
+          pills: [
+            {
+              label: 'Restore',
+              icon: <ArchiveRestore aria-hidden="true" />,
+              onAction: (keys) =>
+                void bulkTransition(
+                  keys,
+                  (id) => shopApi.transitionProduct(id, 'restore'),
+                  'restored',
+                ),
+            },
+          ],
+        }
+      : {
+    pills: [
+      {
+        label: 'Set as draft',
+        onAction: (keys) =>
+          void bulkTransition(keys, (id) => shopApi.transitionProduct(id, 'unpublish'), 'set as draft'),
+      },
+    ],
+    menuGroups: [
+      {
+        items: [
+          {
+            label: 'Publish products',
+            onAction: (keys) =>
+              void bulkTransition(keys, (id) => shopApi.transitionProduct(id, 'publish'), 'published'),
+          },
+          {
+            label: 'Archive products',
+            icon: <Archive aria-hidden="true" />,
+            onAction: (keys) =>
+              void bulkTransition(keys, (id) => shopApi.transitionProduct(id, 'archive'), 'archived'),
+          },
+          {
+            label: 'Move to trash',
+            icon: <Trash2 aria-hidden="true" />,
+            critical: true,
+            onAction: (keys) =>
+              void bulkTransition(keys, (id) => shopApi.trashProduct(id), 'moved to the trash'),
+          },
+        ],
+      },
+      {
+        section: 'Organise',
+        items: [
+          {
+            label: 'Add tags…',
+            icon: <Tags aria-hidden="true" />,
+            onAction: (keys) => setTagAction({ mode: 'add', keys }),
+          },
+          {
+            label: 'Remove tags…',
+            icon: <Tags aria-hidden="true" />,
+            onAction: (keys) => setTagAction({ mode: 'remove', keys }),
+          },
+        ],
+      },
+    ],
+        };
+
   return (
     <div className="page">
       <PageHeader
@@ -249,54 +344,7 @@ export default function Products() {
         rowKey={(p) => p.id}
         hrefFor={(p) => `/products/${p.id}`}
         loading={loading}
-        bulk={{
-          pills: [
-            {
-              label: 'Set as draft',
-              onAction: (keys) =>
-                void bulkTransition(keys, (id) => shopApi.transitionProduct(id, 'unpublish'), 'set as draft'),
-            },
-          ],
-          menuGroups: [
-            {
-              items: [
-                {
-                  label: 'Publish products',
-                  onAction: (keys) =>
-                    void bulkTransition(keys, (id) => shopApi.transitionProduct(id, 'publish'), 'published'),
-                },
-                {
-                  label: 'Archive products',
-                  icon: <Archive aria-hidden="true" />,
-                  onAction: (keys) =>
-                    void bulkTransition(keys, (id) => shopApi.transitionProduct(id, 'archive'), 'archived'),
-                },
-                {
-                  label: 'Move to trash',
-                  icon: <Trash2 aria-hidden="true" />,
-                  critical: true,
-                  onAction: (keys) =>
-                    void bulkTransition(keys, (id) => shopApi.trashProduct(id), 'moved to the trash'),
-                },
-              ],
-            },
-            {
-              section: 'Organise',
-              items: [
-                {
-                  label: 'Add tags…',
-                  icon: <Tags aria-hidden="true" />,
-                  onAction: (keys) => setTagAction({ mode: 'add', keys }),
-                },
-                {
-                  label: 'Remove tags…',
-                  icon: <Tags aria-hidden="true" />,
-                  onAction: (keys) => setTagAction({ mode: 'remove', keys }),
-                },
-              ],
-            },
-          ],
-        }}
+        bulk={bulkConfig}
         tabs={{
           value: tab,
           tabs: TABS,
