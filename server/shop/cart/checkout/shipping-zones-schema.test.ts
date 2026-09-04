@@ -86,18 +86,40 @@ describe('shop_shipping_zones DDL', () => {
     expect(idx?.indexdef).toMatch(/is_fallback/i);
   });
 
-  it('seeded exactly the three Nigerian zones', async () => {
+  /*
+   * FOUR ZONES SINCE MIGRATION 0900, and the change of fallback is the point of
+   * this assertion rather than an incidental edit to it.
+   *
+   * Until 0900 the catch-all was `zone_rest_of_nigeria`, whose `countries` was
+   * empty — which per 0240 means "every country no other zone claims", so a
+   * London address was priced as domestic Nigerian delivery and charged
+   * Nigerian VAT. 0900 gives that zone the country it is named after and hands
+   * the fallback to `zone_international`.
+   *
+   * Both halves are pinned below: Rest of Nigeria must still exist AND must no
+   * longer be the fallback, because a regression that merely dropped the new
+   * zone would otherwise silently restore the old mispricing.
+   */
+  it('seeded the three Nigerian zones plus the international catch-all', async () => {
     const rows = await ctx.db.execute(sql`
-      SELECT id, label, is_fallback FROM shop_shipping_zones ORDER BY position
+      SELECT id, label, is_fallback, countries FROM shop_shipping_zones ORDER BY position
     `);
     expect(rows.rows.map((r) => (r as { id: string }).id)).toEqual([
       'zone_abuja',
       'zone_lagos',
       'zone_rest_of_nigeria',
+      'zone_international',
     ]);
+
     const fallbacks = rows.rows.filter((r) => (r as { is_fallback: boolean }).is_fallback);
     expect(fallbacks).toHaveLength(1);
-    expect((fallbacks[0] as { id: string }).id).toBe('zone_rest_of_nigeria');
+    expect((fallbacks[0] as { id: string }).id).toBe('zone_international');
+
+    // Rest of Nigeria now matches by COUNTRY, which is what stops it catching
+    // the world. An empty array here would be the old bug, exactly.
+    const restOfNigeria = rows.rows.find((r) => (r as { id: string }).id === 'zone_rest_of_nigeria');
+    expect((restOfNigeria as { countries: string[] }).countries).toEqual(['NG']);
+    expect((fallbacks[0] as { countries: string[] }).countries).toEqual([]);
   });
 
   it('refuses a second fallback zone via the partial unique index', async () => {
@@ -122,6 +144,9 @@ describe('shop_shipping_options DDL', () => {
         'zone_id',
         'label',
         'amount_minor',
+        // Migration 0900. NULL means "derive it from the rate in
+        // shop_currency_settings"; set, it overrides for this option.
+        'amount_usd_minor',
         'estimate',
         'position',
         'created_at',
