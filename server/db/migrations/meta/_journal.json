@@ -393,6 +393,13 @@
                         "when":  1786600004800,
                         "tag":  "0900_international_zone",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  56,
+                        "version":  "7",
+                        "when":  1786600004900,
+                        "tag":  "0920_return_costs",
+                        "breakpoints":  true
                     }
                 ]
 }

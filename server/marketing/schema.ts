@@ -81,6 +81,22 @@ export const marketingPrograms = pgTable(
     unitLabelPlural: text('unit_label_plural'),
     minUnitsPerReturn: integer('min_units_per_return'),
     pointsPerUnit: integer('points_per_unit'),
+    /**
+     * WHAT ONE ACCEPTED UNIT COSTS US, in minor units — the reward side of the
+     * cost-per-unit figure, and NOT derived from `pointsPerUnit` (0920).
+     *
+     * A point's worth lives in `marketing_settings` as a redemption rate that
+     * ships as a placeholder at zero; costing the programme through it would
+     * print ₦0 everywhere until somebody set it and then re-price all of
+     * history the day they did. This is the naira number the owner already
+     * says out loud, and NULL means nobody has said it — which the analytics
+     * screen reports as missing rather than as zero.
+     */
+    unitCostMinor: integer('unit_cost_minor'),
+    /** What buying one NEW costs, minor units — the benchmark "against buying
+     *  new" is measured against. Live rather than snapshotted: it is a
+     *  comparison against today's market, and the screen says so. */
+    unitMarketCostMinor: integer('unit_market_cost_minor'),
     status: text('status').$type<'active' | 'paused'>().notNull().default('active'),
     /**
      * THE RESERVED EXTENSION POINT, deliberately empty in v1 — the zod schema
@@ -122,6 +138,18 @@ export const marketingPrograms = pgTable(
     check(
       'marketing_programs_points_per_unit_ck',
       sql`${t.pointsPerUnit} IS NULL OR ${t.pointsPerUnit} > 0`,
+    ),
+    /* `>= 0` and not `> 0`, unlike the points rate above: a programme that
+     * pays nothing in money is a real arrangement (the reward is the points),
+     * while a programme that awards zero points is a programme that does
+     * nothing at all. */
+    check(
+      'marketing_programs_unit_cost_ck',
+      sql`${t.unitCostMinor} IS NULL OR ${t.unitCostMinor} >= 0`,
+    ),
+    check(
+      'marketing_programs_unit_market_cost_ck',
+      sql`${t.unitMarketCostMinor} IS NULL OR ${t.unitMarketCostMinor} >= 0`,
     ),
     /* A `unit_return` program with no rate is a program the inspect statement
      * cannot price; an `adhoc` program with a minimum is a rule nothing reads. */
@@ -231,6 +259,22 @@ export const marketingServiceAreas = pgTable(
     /** True only for rows migration 0012 installed. Renaming one keeps it true —
      *  it only ever meant "this row did not come from a person". */
     seeded: boolean('seeded').notNull().default(false),
+    /**
+     * WHAT A PICKUP FROM THIS DISTRICT NORMALLY COSTS, minor units, per line
+     * (0920). Four independent standards; NULL means "we have no standard for
+     * that line here", not zero.
+     *
+     * RESOLVED AT READ TIME AND NEVER COPIED ONTO A RETURN, deliberately —
+     * unlike `pointsPerUnitSnapshot`, which is a promise made to a customer
+     * and must never move. A transport standard is an estimate nobody was
+     * promised: correcting one should improve every estimate leaning on it
+     * rather than leave stale copies behind, and a copy on the row would be
+     * indistinguishable from a figure a person actually typed.
+     */
+    stdTransportMinor: integer('std_transport_minor'),
+    stdLocalMinor: integer('std_local_minor'),
+    stdDriverMinor: integer('std_driver_minor'),
+    stdFeesMinor: integer('std_fees_minor'),
     sortOrder: integer('sort_order').notNull().default(0),
     revision: integer('revision').notNull().default(1),
     createdAt: epochMs('created_at').notNull(),
@@ -258,6 +302,17 @@ export const marketingServiceAreas = pgTable(
           AND array_position(${t.aliases}, NULL) IS NULL`,
     ),
     check('marketing_service_areas_sort_order_ck', sql`${t.sortOrder} >= 0`),
+    /* ONE CHECK OVER FOUR COLUMNS rather than four checks: they say the same
+     * thing about the same idea, and a refusal that names
+     * `..._std_costs_ck` tells a reader everything the four separate names
+     * would have. */
+    check(
+      'marketing_service_areas_std_costs_ck',
+      sql`(${t.stdTransportMinor} IS NULL OR ${t.stdTransportMinor} >= 0)
+          AND (${t.stdLocalMinor} IS NULL OR ${t.stdLocalMinor} >= 0)
+          AND (${t.stdDriverMinor} IS NULL OR ${t.stdDriverMinor} >= 0)
+          AND (${t.stdFeesMinor} IS NULL OR ${t.stdFeesMinor} >= 0)`,
+    ),
     check('marketing_service_areas_revision_ck', sql`${t.revision} > 0`),
     /*
      * NOTE: `marketing_service_areas_region_name_uq` — UNIQUE over
@@ -314,6 +369,36 @@ export const marketingReturnRequests = pgTable(
     qtyRejected: integer('qty_rejected'),
     pointsPerUnitSnapshot: integer('points_per_unit_snapshot').notNull(),
     pointsAwarded: integer('points_awarded'),
+    /**
+     * The MONEY rate this return is costed at, copied from the programme at
+     * creation (0920) — the same snapshot discipline as
+     * `pointsPerUnitSnapshot` one line up, and for the same reason.
+     *
+     * NULLABLE, unlike the points snapshot, and the reader falls back to the
+     * programme's current rate. That is what let 0920 ship with no backfill:
+     * every return that predates the column prices at whatever the owner
+     * types first, which is the only honest answer available for it.
+     */
+    unitCostMinorSnapshot: integer('unit_cost_minor_snapshot'),
+    /**
+     * WHAT THIS PICKUP COST US, minor units, four named lines (0920). Each is
+     * independent and each is optional: a pickup recorded with only a
+     * transport figure is an ordinary record, not a half-filled form.
+     *
+     * NULL AND ZERO ARE DIFFERENT AND BOTH ARE REAL. Zero is a person saying
+     * "our van was going anyway, this leg cost nothing". NULL is nobody having
+     * written it down, and the reader substitutes the district's standard for
+     * it — which is what lets the analytics screen count how much of its own
+     * headline is estimated.
+     */
+    costTransportMinor: integer('cost_transport_minor'),
+    costLocalMinor: integer('cost_local_minor'),
+    costDriverMinor: integer('cost_driver_minor'),
+    costFeesMinor: integer('cost_fees_minor'),
+    /** Why this pickup cost what it did — "second trip, first driver broke
+     *  down". NULL when nobody wrote one; never `''`, like every other
+     *  optional sentence in this subsystem. */
+    costNote: text('cost_note'),
     rejectedReason: text('rejected_reason'),
     cancelReason: text('cancel_reason'),
     source: text('source').$type<'customer' | 'admin'>().notNull(),
@@ -351,6 +436,21 @@ export const marketingReturnRequests = pgTable(
           AND (${t.qtyRejected} IS NULL OR ${t.qtyRejected} >= 0)`,
     ),
     check('marketing_return_requests_points_snapshot_ck', sql`${t.pointsPerUnitSnapshot} > 0`),
+    check(
+      'marketing_return_requests_unit_cost_ck',
+      sql`${t.unitCostMinorSnapshot} IS NULL OR ${t.unitCostMinorSnapshot} >= 0`,
+    ),
+    check(
+      'marketing_return_requests_costs_ck',
+      sql`(${t.costTransportMinor} IS NULL OR ${t.costTransportMinor} >= 0)
+          AND (${t.costLocalMinor} IS NULL OR ${t.costLocalMinor} >= 0)
+          AND (${t.costDriverMinor} IS NULL OR ${t.costDriverMinor} >= 0)
+          AND (${t.costFeesMinor} IS NULL OR ${t.costFeesMinor} >= 0)`,
+    ),
+    check(
+      'marketing_return_requests_cost_note_ck',
+      sql`${t.costNote} IS NULL OR ${t.costNote} <> ''`,
+    ),
     check(
       'marketing_return_requests_points_awarded_ck',
       sql`${t.pointsAwarded} IS NULL OR ${t.pointsAwarded} >= 0`,
@@ -418,6 +518,11 @@ export const marketingReturnEvents = pgTable(
         | 'rejected'
         | 'cancelled'
         | 'note'
+        /** What this pickup cost us was written down or corrected (0920). A
+         *  transport invoice that arrives three weeks late is an edit somebody
+         *  will need to explain, so it goes in the history like every other
+         *  change to the row. */
+        | 'costed'
       >()
       .notNull(),
     actorType: text('actor_type').$type<'admin' | 'customer' | 'system'>().notNull(),
@@ -433,7 +538,7 @@ export const marketingReturnEvents = pgTable(
     check(
       'marketing_return_events_type_ck',
       sql`${t.type} IN ('requested','scheduled','collected','received',
-                        'inspected','rejected','cancelled','note')`,
+                        'inspected','rejected','cancelled','note','costed')`,
     ),
     check(
       'marketing_return_events_actor_ck',

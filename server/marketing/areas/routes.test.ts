@@ -618,6 +618,46 @@ describe('the areas an owner edits — contract #6.1b', () => {
     expect(await json(res)).toMatchObject({ error: 'gone' });
   });
 
+  it('carries the district’s standard pickup cost, and null clears one', async () => {
+    await makeArea(SERVED, 'Cabbage Quarter', true);
+
+    const set = await owner.patch(`${API}/areas/${SERVED}`, {
+      expectedRevision: 1,
+      stdTransportMinor: 200000,
+      stdLocalMinor: 50000,
+      /* Zero is a REAL standard — "we pass that way anyway" — and it is not
+       * the same as having none. The analytics reader leans on the
+       * difference, so the wire has to preserve it. */
+      stdDriverMinor: 0,
+    });
+    expect(set.status).toBe(200);
+    expect(await json(set)).toMatchObject({
+      area: {
+        stdTransportMinor: 200000,
+        stdLocalMinor: 50000,
+        stdDriverMinor: 0,
+        stdFeesMinor: null,
+      },
+    });
+
+    const cleared = await owner.patch(`${API}/areas/${SERVED}`, {
+      expectedRevision: 2,
+      stdTransportMinor: null,
+    });
+    expect(cleared.status).toBe(200);
+    /* Back to "we have no standard here", which is what a figure typed into
+       the wrong box has to be undoable to. The other lines are untouched. */
+    expect(await json(cleared)).toMatchObject({
+      area: { stdTransportMinor: null, stdLocalMinor: 50000 },
+    });
+
+    const negative = await owner.patch(`${API}/areas/${SERVED}`, {
+      expectedRevision: 3,
+      stdFeesMinor: -1,
+    });
+    expect(negative.status).toBe(400);
+  });
+
   it('has no DELETE — switching off is the retirement', async () => {
     /*
      * The absence is the design (plan §6.1b). An area that has ever held a

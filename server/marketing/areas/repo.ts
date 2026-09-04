@@ -59,6 +59,21 @@ export interface ServiceArea {
    *  is. Scoped to the open set like `open` and `loadUnits` beside it: an area
    *  whose only old return was awarded last month is not an area with a problem. */
   oldestAgeMs: number | null;
+  /**
+   * WHAT A PICKUP FROM THIS DISTRICT NORMALLY COSTS, minor units, per line
+   * (0920). NULL means "no standard for that line here", never zero.
+   *
+   * SHOWN AS A PLACEHOLDER AND NEVER PRE-FILLED into the return's form, which
+   * is the whole reason the fallback is a read rather than a copy: a figure
+   * saved onto a return because somebody accepted a default is
+   * indistinguishable from one they measured, and the analytics screen would
+   * lose the only thing that lets it say how much of its headline is
+   * estimated.
+   */
+  stdTransportMinor: number | null;
+  stdLocalMinor: number | null;
+  stdDriverMinor: number | null;
+  stdFeesMinor: number | null;
 }
 
 export interface AreasView {
@@ -85,7 +100,9 @@ const OPEN_STATUSES = ['requested', 'scheduled', 'collected', 'received'] as con
 const NEEDS_ACTION_STATUSES = ['requested', 'received'] as const;
 
 const AREA_COLUMNS = sql.raw(
-  'id, key, region, name, aliases, active, seeded, sort_order, revision, created_at, updated_at',
+  `id, key, region, name, aliases, active, seeded, sort_order,
+   std_transport_minor, std_local_minor, std_driver_minor, std_fees_minor,
+   revision, created_at, updated_at`,
 );
 
 /** The row as the API carries it, minus the counts a join supplies. */
@@ -98,9 +115,38 @@ export interface AreaRow {
   active: boolean;
   seeded: boolean;
   sortOrder: number;
+  /**
+   * WHAT A PICKUP FROM THIS DISTRICT NORMALLY COSTS, minor units, per line
+   * (0920). NULL means "no standard for that line here", never zero.
+   *
+   * SHOWN AS A PLACEHOLDER AND NEVER PRE-FILLED into the return's form, which
+   * is the whole reason the fallback is a read rather than a copy: a figure
+   * saved onto a return because somebody accepted a default is
+   * indistinguishable from one they measured, and the analytics screen would
+   * lose the only thing that lets it say how much of its headline is
+   * estimated.
+   */
+  stdTransportMinor: number | null;
+  stdLocalMinor: number | null;
+  stdDriverMinor: number | null;
+  stdFeesMinor: number | null;
   revision: number;
   createdAt: number;
   updatedAt: number;
+}
+
+/** The four standards off any row shape that carries them, as numbers or
+ *  nulls. Written once because three readers need it and each `Number(x)` on a
+ *  NULL is a silent `0` — which would turn "no standard here" into "this
+ *  district is free", the one wrong answer that looks plausible. */
+function stdCosts(row: Record<string, unknown>) {
+  const at = (key: string): number | null => (row[key] == null ? null : Number(row[key]));
+  return {
+    stdTransportMinor: at('std_transport_minor'),
+    stdLocalMinor: at('std_local_minor'),
+    stdDriverMinor: at('std_driver_minor'),
+    stdFeesMinor: at('std_fees_minor'),
+  };
 }
 
 function rowToArea(row: Record<string, unknown>): AreaRow {
@@ -115,6 +161,7 @@ function rowToArea(row: Record<string, unknown>): AreaRow {
     active: row.active === true,
     seeded: row.seeded === true,
     sortOrder: Number(row.sort_order),
+    ...stdCosts(row),
     revision: Number(row.revision),
     createdAt: toEpochMs(row.created_at),
     updatedAt: toEpochMs(row.updated_at),
@@ -164,6 +211,7 @@ export interface AreasQuery {
 export async function listAreas(db: Db, q: AreasQuery): Promise<AreasView> {
   const res = await db.execute(sql`
     SELECT a.id, a.key, a.region, a.name, a.active, a.seeded, a.revision,
+           a.std_transport_minor, a.std_local_minor, a.std_driver_minor, a.std_fees_minor,
            COALESCE(c.needs_action, 0) AS needs_action,
            COALESCE(c.open_count, 0) AS open_count,
            COALESCE(c.load_units, 0) AS load_units,
@@ -183,6 +231,7 @@ export async function listAreas(db: Db, q: AreasQuery): Promise<AreasView> {
       active: row.active === true,
       seeded: row.seeded === true,
       revision: Number(row.revision),
+      ...stdCosts(row),
       needsAction: Number(row.needs_action),
       open: Number(row.open_count),
       loadUnits: Number(row.load_units),
@@ -347,6 +396,15 @@ export interface AreaPatch {
   aliases?: string[];
   active?: boolean;
   sortOrder?: number;
+  /**
+   * The district's standard pickup cost, per line (0920). `null` CLEARS one —
+   * back to "we have no standard here", which is a different claim from "it is
+   * free" and the only way to unset a figure typed by mistake.
+   */
+  stdTransportMinor?: number | null;
+  stdLocalMinor?: number | null;
+  stdDriverMinor?: number | null;
+  stdFeesMinor?: number | null;
 }
 
 export interface AreaWriteOptions {
@@ -472,7 +530,21 @@ const PATCHABLE: Record<keyof AreaPatch, string> = {
   aliases: 'aliases',
   active: 'active',
   sortOrder: 'sort_order',
+  stdTransportMinor: 'std_transport_minor',
+  stdLocalMinor: 'std_local_minor',
+  stdDriverMinor: 'std_driver_minor',
+  stdFeesMinor: 'std_fees_minor',
 };
+
+/** The four money fields, so the assignment loop can cast their NULLs. A bound
+ *  `null` in a SET has no target column to infer from and is SQLSTATE 42P18 at
+ *  run time rather than at build time. */
+const MONEY_FIELDS = new Set<keyof AreaPatch>([
+  'stdTransportMinor',
+  'stdLocalMinor',
+  'stdDriverMinor',
+  'stdFeesMinor',
+]);
 
 /**
  * Contract #6.1b — rename, re-alias, reorder, and the Switch that decides where
@@ -532,6 +604,8 @@ export async function patchArea(
       );
     } else if (field === 'name') {
       assignments.push(sql`${column} = ${name}`);
+    } else if (MONEY_FIELDS.has(field)) {
+      assignments.push(sql`${column} = ${patch[field]}::integer`);
     } else {
       assignments.push(sql`${column} = ${patch[field]}`);
     }

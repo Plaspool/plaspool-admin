@@ -157,6 +157,43 @@ export default function DeliveryAreas() {
     }
   }
 
+  /**
+   * The district's STANDARD PICKUP COST — what a return from here normally
+   * costs us to fetch (migration 0920).
+   *
+   * A DIFFERENT DIRECTION FROM EVERY OTHER COLUMN ON THIS SCREEN, which is
+   * why it says so in its own header: the rate beside it is what we CHARGE a
+   * customer to deliver out, and this is what it COSTS US to collect in. They
+   * share a table only because they are both facts about a district.
+   *
+   * It is never copied onto a return. The cost form shows it as grey
+   * placeholder text, and the analytics screen resolves it at read time — so
+   * correcting one here improves every estimate that leaned on it, all the
+   * way back.
+   */
+  async function writeStandard(
+    area: ServiceArea,
+    patch: Record<string, number | null>,
+  ): Promise<boolean> {
+    try {
+      const next = await marketingApi.patchArea(area.id, {
+        expectedRevision: area.revision,
+        ...patch,
+      });
+      setAreas((list) => (list ?? []).map((a) => (a.id === next.id ? { ...a, ...next } : a)));
+      return true;
+    } catch (cause) {
+      toast.show(
+        cause instanceof Error && cause.message ? cause.message : 'Something went wrong.',
+        'critical',
+      );
+      /* A CAS miss means another tab moved it — re-read rather than guess, the
+         same recovery `write` above takes. */
+      void load();
+      return false;
+    }
+  }
+
   /** The master switch: one press means "deliver to all of this state". */
   async function switchAll(next: boolean) {
     if (!shown) return;
@@ -211,6 +248,13 @@ export default function DeliveryAreas() {
       label: 'Delivery rate',
       numeric: true,
       render: (row) => <RateCell row={row} zone={zoneFor(zones, row.area.region)} onWrite={write} />,
+    },
+    {
+      key: 'pickup',
+      header: 'Pickup costs us',
+      label: 'Pickup costs us',
+      numeric: true,
+      render: (row) => <PickupCostCell area={row.area} onWrite={writeStandard} />,
     },
   ];
 
@@ -419,6 +463,140 @@ function RateCell({
                 Use the state price
               </Button>
             ) : null}
+            <span className="spacer" />
+            <Button tone="plain" onClick={close}>
+              Cancel
+            </Button>
+            <Button tone="primary" busy={busy} onClick={() => void commit(close)}>
+              Save
+            </Button>
+          </PopEditFoot>
+        </>
+      )}
+    </PopEdit>
+  );
+}
+
+/**
+ * WHAT A PICKUP FROM THIS DISTRICT NORMALLY COSTS US — four lines, one popover.
+ *
+ * THIS IS A STANDARD, NOT A CHARGE, and the column header says so because it
+ * runs the opposite way to every other number on this screen: the rate beside
+ * it is what a customer pays to have goods delivered out, this is what it
+ * costs us to collect goods in.
+ *
+ * IT IS NEVER COPIED ONTO A RETURN. The cost form on a pickup shows these as
+ * grey placeholders and the analytics screen resolves them at read time, so a
+ * correction here reaches every estimate that ever leaned on it — including
+ * last year's. That is the whole reason it is a live setting rather than a
+ * default somebody accepts once.
+ */
+const STANDARD_LINES = [
+  { key: 'stdTransportMinor', label: 'Transport in' },
+  { key: 'stdLocalMinor', label: 'Local delivery' },
+  { key: 'stdDriverMinor', label: 'Driver' },
+  { key: 'stdFeesMinor', label: 'Loading and fees' },
+] as const;
+
+type StandardKey = (typeof STANDARD_LINES)[number]['key'];
+
+function PickupCostCell({
+  area,
+  onWrite,
+}: {
+  area: ServiceArea;
+  onWrite: (area: ServiceArea, patch: Record<string, number | null>) => Promise<boolean>;
+}) {
+  /**
+   * `== null`, NEVER `=== null`, ON EVERY ONE OF THESE — and the difference is
+   * a crash, not a nicety.
+   *
+   * These four columns are younger than the API contract, so any payload
+   * written before 0920 — a cached response, an older deployment answering a
+   * newer bundle, a fixture — carries `undefined` rather than `null`, and
+   * `plainMajor(undefined)` throws `MoneyShapeError` from inside a `useState`
+   * initialiser, which takes the whole screen down rather than one cell. The
+   * same lesson every new `FrozenTotals` field has taught this codebase.
+   */
+  const box = (minor: number | null | undefined): string =>
+    minor == null ? '' : plainMajor(minor, STORE_CURRENCY);
+
+  const [draft, setDraft] = useState<Record<StandardKey, string>>(() => ({
+    stdTransportMinor: box(area.stdTransportMinor),
+    stdLocalMinor: box(area.stdLocalMinor),
+    stdDriverMinor: box(area.stdDriverMinor),
+    stdFeesMinor: box(area.stdFeesMinor),
+  }));
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const set = STANDARD_LINES.filter((l) => area[l.key] != null);
+  const total = set.reduce((n, l) => n + (area[l.key] ?? 0), 0);
+
+  async function commit(close: () => void) {
+    const patch: Record<string, number | null> = {};
+    for (const line of STANDARD_LINES) {
+      const text = draft[line.key].trim();
+      if (text === '') {
+        /* An empty box CLEARS the standard — back to "we have no standard
+           here", which is a different claim from "it is free" and the only
+           way a figure typed into the wrong box is undone. */
+        patch[line.key] = null;
+        continue;
+      }
+      const parsed = parseMajor(text, STORE_CURRENCY);
+      if (!parsed.ok) {
+        setError(`${line.label}: ${moneyRefusalMessage(parsed.reason, STORE_CURRENCY)}`);
+        return;
+      }
+      patch[line.key] = parsed.minor;
+    }
+    setBusy(true);
+    const ok = await onWrite(area, patch);
+    setBusy(false);
+    if (ok) close();
+  }
+
+  return (
+    <PopEdit
+      ariaLabel={`What a pickup from ${area.name} costs us`}
+      value={
+        set.length > 0 ? (
+          <span className="num">{money(total, STORE_CURRENCY)}</span>
+        ) : (
+          <span className="muted">No standard</span>
+        )
+      }
+    >
+      {(close) => (
+        <>
+          <p className="muted" style={{ fontSize: 'var(--t-sm)', margin: '0 0 var(--s2)' }}>
+            What a pickup from {area.name} normally costs us. Staff can type the real figures on
+            each return; these fill in the ones nobody wrote down. Leave a box empty for “we have
+            no standard”.
+          </p>
+          {STANDARD_LINES.map((line) => (
+            <AffixField
+              key={line.key}
+              label={line.label}
+              prefix={STORE_CURRENCY}
+              inputMode="decimal"
+              value={draft[line.key]}
+              onChange={(e) => {
+                setDraft((d) => ({ ...d, [line.key]: e.target.value }));
+                setError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void commit(close);
+              }}
+            />
+          ))}
+          {error ? (
+            <span className="field__error" role="alert">
+              {error}
+            </span>
+          ) : null}
+          <PopEditFoot>
             <span className="spacer" />
             <Button tone="plain" onClick={close}>
               Cancel
