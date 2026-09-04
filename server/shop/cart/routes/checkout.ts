@@ -14,6 +14,7 @@ import {
   setShipping,
   shippingOptionsForCart,
   startCheckout,
+  thawCheckout,
 } from '../checkout/repo';
 import { loadShippingZonesForCheckout } from '../checkout/shipping-zones-repo';
 import { loadDeliveryRules } from '../../settings/repo';
@@ -81,6 +82,9 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
       redemption: deps.redemption,
       /* Discount codes, likewise (admin#100 Part B). */
       discounts: deps.discounts,
+      /* Payments, for the one question a thaw has to ask before it reopens a
+       * frozen checkout. Absent refuses — see `ShopCartDeps.payments`. */
+      payments: deps.payments,
     };
   }
 
@@ -170,6 +174,69 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
       baseRevision: body.baseRevision,
     });
     return c.json({ shipping: option });
+  });
+
+  /**
+   * Back out of payment: `converting → open`, basket intact.
+   *
+   * ═══ THE ROUTE THAT SHOULD HAVE EXISTED FROM THE START ═══
+   *
+   * `cart/repo.ts` has always listed `converting → open` as a legal transition
+   * with a comment promising exactly this, and until now no route, function or
+   * scheduled job anywhere in the application performed it. A shopper who
+   * reached Paystack and did not pay was locked out of their own checkout
+   * permanently — see `thawCheckout` for the full account.
+   *
+   * ═══ SAFE TO CALL WHENEVER THE SHOPPER LEAVES A PAYMENT PAGE ═══
+   *
+   * Idempotent on an already-open cart (200, nothing written), so the
+   * storefront may fire it from a back button, a "change my details" link, and
+   * a `beforeunload` without tracking which of them ran. What it is NOT safe
+   * to call blindly on is a cart that was paid: that answers 409
+   * `operation: 'checkout_paid'` and the shopper should be sent to their
+   * order, not back to the basket.
+   *
+   * `baseRevision` is OPTIONAL here where the edit routes want it. A shopper
+   * abandoning a payment has no competing writer to lose a race against, and
+   * demanding a token they may not have would make the recovery fail for
+   * exactly the disoriented caller it exists to serve.
+   */
+  routes.post('/checkout/cancel', async (c) => {
+    const db = shopDb(c);
+    const body = await readJsonOrEmpty(c, BaseOnlyBody);
+    const cart = await requireCart(c, db);
+    /*
+     * ITS OWN BUCKET, not `shop-checkout:`. Sharing the start limiter would let
+     * a shopper who backed out twice exhaust the allowance for STARTING a
+     * checkout — locking them out of the thing the cancel exists to return
+     * them to. Same numbers, separate key.
+     */
+    await shopLimit(
+      c,
+      `shop-checkout-cancel:${cart.id}`,
+      CHECKOUT_START_LIMIT,
+      CHECKOUT_START_WINDOW_MS,
+    );
+    const config = await loadConfig(db);
+    const after = await thawCheckout(db, config, {
+      cartId: cart.id,
+      baseRevision: body.baseRevision,
+    });
+    /*
+     * THE CART COMES BACK, not a bare `{ ok: true }`. Its `revision` is the
+     * token every subsequent edit must chain off, and its `status` is what the
+     * storefront re-renders from — asking for both in a second round trip
+     * would leave a window in which the page shows a frozen basket that is no
+     * longer frozen.
+     */
+    return c.json({
+      cart: {
+        id: after.id,
+        status: after.status,
+        revision: after.revision,
+        currency: after.currency,
+      },
+    });
   });
 
   /**

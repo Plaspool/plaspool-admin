@@ -3,6 +3,7 @@ import { DEFAULT_SHIPPING_ZONES, DEFAULT_STORE_CURRENCY } from '../checkout/ship
 import { SHOP_SESSION_TTL_MS } from '../identity/customers';
 import type { Db } from '../../../db/client';
 import type { CatalogPort } from '../catalog-port';
+import type { CheckoutPaymentsPort } from '../payments-port';
 import type { ShippingZone } from '../checkout/shipping';
 import type { PointsRedemptionPort } from '../../../../shared/marketing/redemption';
 import type { DiscountCodePort } from '../../../../shared/marketing/discounts';
@@ -104,6 +105,24 @@ export interface ShopCartDeps {
    * refused — the shopper would be shown a discount and charged without it.
    */
   discounts?: (db: Db) => DiscountCodePort;
+
+  /**
+   * PAYMENTS, for one question and one narrow write: may this frozen checkout
+   * be unfrozen, and cancel the intent that was holding it.
+   *
+   * A PORT AND NOT A FACTORY, unlike the two above it, because
+   * `CheckoutPaymentsPort` takes the database handle on every method — it was
+   * declared by Cart in `server/shop/cart/payments-port.ts` rather than frozen
+   * in `shared/`, so it had no reason to inherit the constraint that made
+   * `redemption` a closure.
+   *
+   * ABSENT REFUSES RATHER THAN DEGRADES — the one field in this interface for
+   * which "either correct or refuses" resolves to refuses. `POST
+   * /checkout/cancel` answers 501 and an address edit on a frozen cart keeps
+   * answering the 409 it answers today. Both are visibly broken; the
+   * alternative default reopens carts that were paid for, which is not.
+   */
+  payments?: CheckoutPaymentsPort;
 }
 
 /** What the injected commerce drain reports back. Counts only — the per-event
@@ -125,5 +144,6 @@ export function resolveShopCartDeps(partial: Partial<ShopCartDeps> = {}): ShopCa
     sweepEvents: partial.sweepEvents,
     redemption: partial.redemption,
     discounts: partial.discounts,
+    payments: partial.payments,
   };
 }

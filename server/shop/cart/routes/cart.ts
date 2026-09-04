@@ -158,6 +158,22 @@ async function limitWrites(c: Context<ShopEnv>, cartId: string): Promise<void> {
  * looking at the page that will either finish or fail — a payment that fails
  * sends it back to `open` and they still have their basket. `converted` and
  * `abandoned` are terminal, and `currentCart` retires the cookie naming one.
+ *
+ * ═══ THAT SECOND SENTENCE WAS A LIE FOR THE WHOLE LIFE OF THIS FILE ═══
+ *
+ * Nothing sent a cart back to `open`. `converting → open` was in the
+ * transition allow-list and `setCartStatus` was never called with it outside a
+ * test, so keeping `converting` here did not preserve a basket — it PINNED a
+ * dead one. A shopper who reached Paystack and did not pay got the same
+ * unusable cart back from every `GET /cart` for ever, and every address edit
+ * answered `409 precondition_failed / update_cart`, while `converted` and
+ * `abandoned` at least cleared the cookie and gave them a fresh basket.
+ *
+ * It is true NOW: `thawCheckout` performs that transition, `POST
+ * /checkout/cancel` exposes it, and an address or shipping edit does it
+ * implicitly. Keeping `converting` live is therefore load-bearing rather than
+ * aspirational — it is what lets the shopper come back to the cart the cancel
+ * is about to reopen.
  */
 const LIVE_STATUSES: readonly Cart['status'][] = ['open', 'converting'];
 

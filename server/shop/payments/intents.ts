@@ -110,6 +110,29 @@ export async function getIntentByProviderRef(
   return res.rows[0] ? mapIntentRow(res.rows[0]) : null;
 }
 
+/**
+ * Every intent for one checkout, oldest first.
+ *
+ * TWO COLUMNS, NOT `INTENT_COLUMNS`, and the narrowness is the point: the only
+ * caller is the composition root's adapter for Cart's `CheckoutPaymentsPort`,
+ * which asks one question — did money move on this checkout — and must not be
+ * handed `idempotency_key`, `authorization_url` or `last_error` on its way to
+ * answering it. Same projection discipline as `paymentPort.status`.
+ */
+export async function intentsForCheckout(
+  db: Db,
+  checkoutId: string,
+): Promise<Array<{ id: string; status: PaymentStatus }>> {
+  const res = await db.execute(sql`
+    SELECT id, status FROM shop_payment_intents
+     WHERE checkout_id = ${checkoutId}
+     ORDER BY created_at, id`);
+  return res.rows.map((row) => ({
+    id: String(row.id),
+    status: row.status as PaymentStatus,
+  }));
+}
+
 async function getIntentByKey(db: Db, key: string): Promise<PaymentIntentRow | null> {
   const res = await db.execute(
     sql`SELECT ${INTENT_COLUMNS} FROM shop_payment_intents WHERE idempotency_key = ${key}`,

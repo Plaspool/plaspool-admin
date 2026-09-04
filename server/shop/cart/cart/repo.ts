@@ -385,6 +385,19 @@ export async function removeLine(
  * gets their basket back rather than a cart they can never edit again. It is
  * also the A→B→A edge, and `repo.test.ts` executes it to show the CAS refuses a
  * stale write across it.
+ *
+ * ═══ AND FOR MONTHS THAT SENTENCE DESCRIBED NOTHING ═══
+ *
+ * The edge was listed here, tested here, and PERFORMED NOWHERE: `setCartStatus`
+ * had exactly one caller in the whole application (`merge.ts`, moving a guest
+ * cart to `abandoned`), so no route, function or job ever walked it. The
+ * customer this comment promises to look after was locked out of their own
+ * checkout permanently instead — every address edit a `409
+ * precondition_failed / update_cart`, for ever.
+ *
+ * `checkout/repo.ts#thawCheckout` is the caller it was always missing. A legal
+ * transition with no caller is a promise, not a behaviour; if another edge here
+ * ever has no caller either, that is the same bug and not a spare part.
  */
 const TRANSITIONS: Record<CartStatus, readonly CartStatus[]> = {
   open: ['converting', 'abandoned'],
