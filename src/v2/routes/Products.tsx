@@ -628,6 +628,11 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
           Any column you leave out is kept as it is. Prices are in naira with two decimals, and
           stock is the exact number you have, not a change to it.
         </p>
+        <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
+          The description column keeps its styling as HTML — the tags in it are the headings, lists
+          and bold text. Leave them alone and the styling comes back unchanged. Plain words work
+          too, and become a single paragraph.
+        </p>
         <label className="field">
           <span className="field__label">CSV file</span>
           <input
