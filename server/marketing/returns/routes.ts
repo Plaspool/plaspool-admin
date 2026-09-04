@@ -27,7 +27,9 @@ import {
   receive,
   reject,
   schedule,
+  setCosts,
 } from './repo';
+import { RETURN_ANALYTICS_RANGES, returnCostAnalytics } from './analytics';
 import { listEmailIntents, listReturns, readListItem, MAX_SEARCH_LENGTH } from './query';
 import type { AppEnv } from '../../app-env';
 import type { Db } from '../../db/client';
@@ -141,6 +143,21 @@ const QTY = z.number().int().min(1).max(INT4_MAX);
 const COUNT = z.number().int().min(0).max(INT4_MAX);
 
 /**
+ * One line of what a pickup cost, in MINOR UNITS.
+ *
+ * `.nullable()` AND `.optional()` MEAN DIFFERENT THINGS HERE and the form
+ * relies on both: absent leaves the line alone, an explicit `null` clears it
+ * back to "nobody wrote it down". Without the second, a figure typed into the
+ * wrong box could only be corrected to another figure, never to silence —
+ * and the screen's estimate-versus-receipt count would stay wrong forever.
+ *
+ * ZERO IS ALLOWED AND IS NOT THE SAME AS NULL. "Our van was going anyway" is a
+ * real, common answer, and `min(1)` here would force staff to lie about it by
+ * leaving the box empty.
+ */
+const MONEY = z.number().int().min(0).max(INT4_MAX);
+
+/**
  * REQUIRED on every transition, unlike the blog's optional `baseRevision`.
  * Every screen that moves a return has read one first, and without the token a
  * second tab silently overwrites the first — the failure the revision column
@@ -196,6 +213,16 @@ const ListQuery = z
    * worse than a refusal: `?vieww=done` would quietly return the whole queue
    * and look like a bug in the tab strip.
    */
+  .strict();
+
+/**
+ * Contract #16's only parameter. A `z.enum` and not a number, because every
+ * value is a scan bound — `?range=3650` typed for `365` would be a full-table
+ * scan served with a straight face. `all` is offered because the owner's
+ * question is explicitly a long-run one.
+ */
+const AnalyticsQuery = z
+  .object({ range: z.enum(RETURN_ANALYTICS_RANGES).optional() })
   .strict();
 
 /**
@@ -316,6 +343,32 @@ const CancelBody = z
  *  and demanding a token would make an editor's stale tab unable to write down
  *  what a customer just said on the phone. */
 const NoteBody = z.object({ note: NOTE }).strict();
+
+/**
+ * Contract #15 — what this pickup cost us.
+ *
+ * `expectedRevision` IS REQUIRED, unlike the note's body one line up, and the
+ * difference is real: a note does not change the return and this does. Two
+ * people correcting the same pickup's costs from two tabs must not silently
+ * overwrite one another.
+ *
+ * STRICT AND FOUR NAMED LINES rather than a single total, which is the owner's
+ * ask: seeing that transport is the half that moved is the entire reason to
+ * record them separately.
+ */
+const CostsBody = z
+  .object({
+    expectedRevision: EXPECTED_REVISION,
+    transportMinor: MONEY.nullable().optional(),
+    localMinor: MONEY.nullable().optional(),
+    driverMinor: MONEY.nullable().optional(),
+    feesMinor: MONEY.nullable().optional(),
+    /** Why it cost what it did — "second trip, the first driver broke down".
+     *  Optional like every reason field in this admin since 2026-09-03, and
+     *  nullable so it can be cleared. */
+    note: REASON.nullable().optional(),
+  })
+  .strict();
 
 /**
  * The board's multi-select — contract #6.4.
@@ -444,6 +497,8 @@ export interface ReturnDetailBody {
     status: 'active' | 'paused';
     pointsPerUnit: number;
     minUnitsPerReturn: number;
+    unitCostMinor: number | null;
+    unitMarketCostMinor: number | null;
   };
   events: ReturnEventRow[];
   emailIntents: EmailIntentState[];
@@ -487,6 +542,12 @@ async function readDetail(db: Db, id: string): Promise<ReturnDetailBody | null> 
        */
       pointsPerUnit: program.pointsPerUnit ?? request.pointsPerUnitSnapshot,
       minUnitsPerReturn: program.minUnitsPerReturn ?? request.qtyDeclared,
+      /* The MONEY rates (0920), so the panel can price this pickup without a
+       * second request. NULL here is a real answer — "nobody has said what a
+       * unit costs us" — and the screen renders it as missing rather than as
+       * a confident zero. */
+      unitCostMinor: program.unitCostMinor,
+      unitMarketCostMinor: program.unitMarketCostMinor,
     },
     events,
     emailIntents,
@@ -539,6 +600,25 @@ routes.get('/returns', auth, async (c) => {
  * guarantee. `routes.test.ts` pins it.
  * ═══════════════════════════════════════════════════════════════════════════
  */
+/**
+ * Contract #16 — WHAT A RETURNED UNIT ACTUALLY COSTS US.
+ *
+ * REGISTERED ABOVE THE `/:id` ROUTES for the same reason `bulk` is: `analytics`
+ * is a legal value for `:id`, and a return whose id happened to be that word
+ * would otherwise shadow the screen. Nothing collides today, so the ordering
+ * costs nothing and buys the guarantee.
+ *
+ * `requireAuth` AND NOT AN ANALYTICS-DOMAIN GUARD. Every route in this file is
+ * staff-level (spec D12's matrix, superseded by migration 0680's roles), and
+ * the figures here are the marketing team's own operating numbers rather than
+ * the shop's revenue — the client hides the entry point from roles without the
+ * marketing domain, and this is the same wall every sibling route stands on.
+ */
+routes.get('/returns/analytics', auth, async (c) => {
+  const { range } = readQuery(c, AnalyticsQuery);
+  return c.json(await returnCostAnalytics(currentDb(c), { now: Date.now(), range: range ?? '90' }));
+});
+
 routes.post('/returns/bulk', auth, async (c) => {
   const db = currentDb(c);
   const { action, items, body } = await readJson(c, BulkBody);
@@ -757,6 +837,33 @@ routes.post('/returns/:id/cancel', auth, async (c) => {
 
 /** Contract #14 — an entry in the history and nothing else: no CAS, no revision
  *  bump, legal in every status including the terminal ones. */
+/**
+ * Contract #15 — record or correct what this pickup cost.
+ *
+ * LEGAL IN EVERY STATUS, including the terminal ones, which is why there is no
+ * transition guard: a transport invoice arrives days after the return was
+ * awarded and closed, and refusing the correction then would strand the
+ * dashboard's headline at whatever was known on the day. The CAS still
+ * applies — this changes the row.
+ *
+ * ANY STAFF MEMBER, not the owner. Writing down what a van cost is warehouse
+ * work, and a figure that needs a second person is a figure that stops being
+ * recorded (the same argument `inspect` makes for its own guard). What is
+ * owner-only in this subsystem is changing what a return is WORTH, and the
+ * money RATE lives on the programme behind `requireOwner`, not here.
+ */
+routes.post('/returns/:id/costs', auth, async (c) => {
+  const id = pathParam(c, 'id');
+  const { expectedRevision, ...costs } = await readJson(c, CostsBody);
+  const row = await setCosts(currentDb(c), id, {
+    ...costs,
+    expectedRevision,
+    actorId: currentUser(c).id,
+    now: Date.now(),
+  });
+  return c.json({ request: wireRequest(row) });
+});
+
 routes.post('/returns/:id/notes', auth, async (c) => {
   const id = pathParam(c, 'id');
   const { note } = await readJson(c, NoteBody);

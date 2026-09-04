@@ -96,6 +96,15 @@ const CommonFields = {
  * catalogue's `bad_request` treatment needs: an inline error keyed by field, with
  * the focus moved to that input.
  */
+/**
+ * A money rate on a programme, MINOR UNITS.
+ *
+ * `min(0)` and not `min(1)`, unlike `COUNT`: a programme that pays nothing in
+ * money is a real arrangement — the reward is the points — while a programme
+ * awarding zero points is a programme that does nothing at all.
+ */
+const MONEY = z.number().int().min(0).max(2_147_483_647);
+
 const CreateProgramBody = z.discriminatedUnion('kind', [
   z
     .object({
@@ -105,6 +114,11 @@ const CreateProgramBody = z.discriminatedUnion('kind', [
       unitLabelPlural: LABEL,
       minUnitsPerReturn: COUNT,
       pointsPerUnit: COUNT,
+      /* OPTIONAL, unlike the points rate beside them: a programme is complete
+       * without a money rate — it just cannot be costed until one is set, and
+       * the analytics screen says exactly that rather than inventing a zero. */
+      unitCostMinor: MONEY.optional(),
+      unitMarketCostMinor: MONEY.optional(),
     })
     .strict(),
   z
@@ -152,6 +166,19 @@ const ProgramPatchBody = z
     unitLabelPlural: LABEL.optional(),
     minUnitsPerReturn: COUNT.optional(),
     pointsPerUnit: COUNT.optional(),
+    /**
+     * THE TWO MONEY RATES (0920), and they are OWNER-ONLY by virtue of being
+     * on this route: `patchProgram` is already the owner's, because changing
+     * what a return is WORTH is the thing spec D12 reserves. Recording what a
+     * van cost is anybody's and lives on the return instead.
+     *
+     * `min(0)` and not `min(1)`, unlike `COUNT` above: a programme that pays
+     * nothing in money is a real arrangement — the reward is the points — and
+     * `null` clears the rate back to "we have not decided", which is a
+     * different claim from zero and the only way to undo a mistyped figure.
+     */
+    unitCostMinor: MONEY.nullable().optional(),
+    unitMarketCostMinor: MONEY.nullable().optional(),
     status: z.enum(['active', 'paused']).optional(),
   })
   .strict();

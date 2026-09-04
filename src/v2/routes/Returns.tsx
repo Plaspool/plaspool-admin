@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { PackageOpen, Plus, Truck } from 'lucide-react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { BarChart3, PackageOpen, Plus, Truck } from 'lucide-react';
 import {
   labelsOf,
   marketingApi,
@@ -19,9 +19,9 @@ import {
 import { ApiError } from '../../data/errors';
 import { getSession } from '../../data/session';
 import { useAsync } from '../lib/useAsync';
-import { dateTime, humanise, shortDate } from '../lib/format';
+import { dateTime, humanise, money, shortDate } from '../lib/format';
 import { PageHeader } from '../ui/Page';
-import { Badge, Banner, Button, EmptyState, type BadgeTone } from '../ui/primitives';
+import { Badge, Banner, Button, ButtonLink, EmptyState, type BadgeTone } from '../ui/primitives';
 import { DataTable, IdCell, TablePager, type Column } from '../ui/DataTable';
 import { Defs } from '../ui/Defs';
 import { SelectField, TextArea, TextField } from '../ui/Field';
@@ -261,6 +261,10 @@ export default function Returns() {
                 options={boardOptions}
               />
             ) : null}
+            <ButtonLink to="/orders/returns/analytics">
+              <BarChart3 aria-hidden="true" />
+              What items cost us
+            </ButtonLink>
             <Button tone="primary" size="lg" onClick={() => setIntake(true)}>
               <Plus aria-hidden="true" />
               New return
@@ -338,6 +342,12 @@ export default function Returns() {
         <ReturnModal
           id={openId}
           initialStage={openStage}
+          /* For the cost form's PLACEHOLDERS — the district's standard shown
+             in grey, never pre-filled into the box. Only active districts are
+             fetched here (that is what the board switcher wants), so a return
+             in a retired one simply gets no suggestion; the analytics reader
+             still resolves its standard server-side. */
+          areas={areas.data?.areas ?? []}
           onClose={() => setOpenId(null)}
           onChanged={reload}
         />
@@ -362,6 +372,9 @@ export default function Returns() {
 
 type Stage =
   | 'view'
+  /** What the pickup cost us. Not a transition — it is legal in every status,
+   *  including the closed ones, because a transport invoice arrives late. */
+  | 'costs'
   | 'schedule'
   | 'collect'
   | 'receive'
@@ -404,11 +417,13 @@ function eventLine(event: ReturnEvent): TimelineEvent {
 function ReturnModal({
   id,
   initialStage,
+  areas,
   onClose,
   onChanged,
 }: {
   id: string;
   initialStage: Stage;
+  areas: ServiceArea[];
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -469,6 +484,10 @@ function ReturnModal({
   }
 
   const request = detail?.request ?? null;
+  /** The district this pickup belongs to, for its standard costs. `null` for
+   *  an out-of-area return and for one in a district that has been retired —
+   *  both mean "no suggestion", which the form shows as an empty box. */
+  const area = areas.find((a) => a.id === request?.serviceAreaId) ?? null;
 
   return (
     <Modal
@@ -485,6 +504,9 @@ function ReturnModal({
                   {ACTION_LABEL[action]}
                 </Button>
               ))}
+            <Button tone="plain" onClick={() => setStage('costs')}>
+              What it cost…
+            </Button>
             <Button tone="plain" onClick={() => setStage('note')}>
               Add note…
             </Button>
@@ -554,6 +576,7 @@ function ReturnModal({
                     },
                   ]
                 : []),
+              ...costRows(request, area, detail.program.unitCostMinor),
               ...(request.rejectedReason ? [{ label: 'Rejected because', value: request.rejectedReason }] : []),
               ...(request.cancelReason ? [{ label: 'Cancelled because', value: request.cancelReason }] : []),
             ]}
@@ -579,6 +602,20 @@ function ReturnModal({
             <Timeline events={detail.events.map(eventLine)} />
           </div>
         </div>
+      ) : stage === 'costs' ? (
+        <CostsForm
+          request={request}
+          area={area}
+          busy={busy}
+          problem={problem}
+          onBack={() => setStage('view')}
+          onSubmit={(patch) =>
+            void run(
+              () => marketingApi.setReturnCosts(request.id, { expectedRevision: request.revision, ...patch }),
+              'Saved what it cost',
+            )
+          }
+        />
       ) : stage === 'schedule' ? (
         <ScheduleForm
           request={request}
@@ -699,6 +736,297 @@ function ReturnModal({
         />
       )}
     </Modal>
+  );
+}
+
+/* ═══════════════════════════════════════════════════ WHAT IT COST US ════ */
+
+/**
+ * The four lines a pickup is costed in, and the words for each.
+ *
+ * FOUR AND NOT ONE TOTAL, which is the owner's ask: seeing that TRANSPORT is
+ * the half that moved is the entire reason to record them apart. `std` names
+ * the district's standard for the same line — read for a placeholder only,
+ * never written onto the return.
+ */
+const COST_LINES = [
+  {
+    key: 'transportMinor',
+    row: 'costTransportMinor',
+    std: 'stdTransportMinor',
+    label: 'Transport in',
+    hint: 'The long leg — getting them to the workshop.',
+  },
+  {
+    key: 'localMinor',
+    row: 'costLocalMinor',
+    std: 'stdLocalMinor',
+    label: 'Local delivery',
+    hint: 'The run around the district itself.',
+  },
+  {
+    key: 'driverMinor',
+    row: 'costDriverMinor',
+    std: 'stdDriverMinor',
+    label: 'Driver',
+    hint: 'What the driver was paid for this trip.',
+  },
+  {
+    key: 'feesMinor',
+    row: 'costFeesMinor',
+    std: 'stdFeesMinor',
+    label: 'Loading and fees',
+    hint: 'Loading, park fees, anything else on the day.',
+  },
+] as const;
+
+type CostKey = (typeof COST_LINES)[number]['key'];
+
+/** Minor units → what goes in the box. Naira, plain, no separators, because
+ *  the box is a number input and a comma in one is not a number. */
+const toBox = (minor: number | null | undefined): string =>
+  /* `== null`, NEVER `=== null`. These columns are younger than the API
+     contract, so a payload from before 0920 — a cached response, an older
+     deployment answering a newer bundle, a fixture — carries `undefined`, and
+     `String(undefined / 100)` is the string "NaN" sitting in a money box. */
+  minor == null ? '' : String(minor / 100);
+
+/**
+ * What is in the box → minor units, or `null` for an empty one.
+ *
+ * `undefined` IS THE THIRD ANSWER and it means "this is not a number" — the
+ * form refuses to save rather than sending something the server will 400.
+ * Naira are multiplied by 100 and ROUNDED: a pasted `2500.005` is a typo, not
+ * a fraction of a kobo, and rounding is what keeps it an integer the column
+ * will accept.
+ */
+function fromBox(text: string): number | null | undefined {
+  const trimmed = text.trim();
+  if (trimmed === '') return null;
+  const naira = Number(trimmed);
+  if (!Number.isFinite(naira) || naira < 0) return undefined;
+  return Math.round(naira * 100);
+}
+
+/**
+ * What this pickup cost, for the read-only panel.
+ *
+ * IT SAYS WHERE EACH FIGURE CAME FROM. A line nobody typed is shown as the
+ * district's standard and labelled "standard" — because a screen that renders
+ * an estimate and a receipt identically is how the number on the dashboard
+ * stops meaning anything.
+ */
+function costRows(
+  request: ReturnRequest,
+  area: ServiceArea | null,
+  unitCostMinor: number | null,
+): { label: string; value: ReactNode }[] {
+  /* `!= null` throughout — see `toBox`. */
+  const typed = COST_LINES.some((l) => request[l.row] != null);
+  const parts: string[] = [];
+  let total = 0;
+
+  for (const l of COST_LINES) {
+    const own = request[l.row] ?? null;
+    const std = (area ? area[l.std] : null) ?? null;
+    const value = own ?? std;
+    if (value === null) continue;
+    total += value;
+    parts.push(`${l.label} ${money(value, 'NGN')}${own === null ? ' (standard)' : ''}`);
+  }
+
+  if (parts.length === 0) {
+    return [
+      {
+        label: 'What it cost us',
+        value: <span className="muted">Not recorded — it counts as nothing on the analytics.</span>,
+      },
+    ];
+  }
+
+  /* The reward side, priced at the rate FROZEN onto this return — never
+     today's, which is the whole point of the snapshot. */
+  const rate = request.unitCostMinorSnapshot ?? unitCostMinor ?? null;
+  const kept = request.qtyAccepted;
+  const reward = rate !== null && kept !== null ? kept * rate : null;
+
+  return [
+    {
+      label: 'What it cost us',
+      value: (
+        <span>
+          <strong>{money(total, 'NGN')}</strong>
+          {typed ? '' : ' — all estimated from the district'}
+          <br />
+          <span className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+            {parts.join(' · ')}
+          </span>
+          {request.costNote ? (
+            <>
+              <br />
+              <span className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+                {request.costNote}
+              </span>
+            </>
+          ) : null}
+        </span>
+      ),
+    },
+    ...(reward !== null && kept !== null && kept > 0
+      ? [
+          {
+            label: 'All in, per item kept',
+            value: (
+              <span>
+                <strong>{money(Math.round((reward + total) / kept), 'NGN')}</strong>{' '}
+                <span className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+                  {money(reward, 'NGN')} paid out + {money(total, 'NGN')} to fetch them, over{' '}
+                  {kept} kept
+                </span>
+              </span>
+            ),
+          },
+        ]
+      : []),
+  ];
+}
+
+/**
+ * The cost form.
+ *
+ * THE DISTRICT'S STANDARD IS A PLACEHOLDER AND NEVER A PRE-FILLED VALUE, and
+ * that is the single most important line in this component. Pre-filling would
+ * save the standard onto the return the moment somebody pressed Save, and an
+ * estimate saved that way is indistinguishable from a figure a person
+ * measured — which would quietly destroy the one thing the analytics screen
+ * uses to say how much of its own headline it trusts.
+ *
+ * AN EMPTY BOX SENDS `null`, NOT NOTHING. Clearing a figure typed into the
+ * wrong box has to be possible, and the wire spells that difference out.
+ */
+function CostsForm({
+  request,
+  area,
+  busy,
+  problem,
+  onBack,
+  onSubmit,
+}: {
+  request: ReturnRequest;
+  area: ServiceArea | null;
+  busy: boolean;
+  problem: string | null;
+  onBack: () => void;
+  onSubmit: (patch: Partial<Record<CostKey, number | null>> & { note: string | null }) => void;
+}) {
+  const [boxes, setBoxes] = useState<Record<CostKey, string>>(() => ({
+    transportMinor: toBox(request.costTransportMinor),
+    localMinor: toBox(request.costLocalMinor),
+    driverMinor: toBox(request.costDriverMinor),
+    feesMinor: toBox(request.costFeesMinor),
+  }));
+  const [note, setNote] = useState(request.costNote ?? '');
+
+  const parsed = COST_LINES.map((l) => [l.key, fromBox(boxes[l.key])] as const);
+  const bad = parsed.some(([, value]) => value === undefined);
+
+  /* Live, so the person typing sees the answer they are actually after rather
+     than four numbers they have to add up themselves. */
+  const total = parsed.reduce<number>((sum, [key, value]) => {
+    const line = COST_LINES.find((l) => l.key === key)!;
+    const std = (area ? area[line.std] : null) ?? null;
+    return sum + (value === undefined ? 0 : (value ?? std ?? 0));
+  }, 0);
+  const kept = request.qtyAccepted;
+
+  return (
+    <div className="stack">
+      <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
+        <strong>What did this pickup cost us?</strong> Fill in what you know — every box is
+        optional. Anything you leave empty falls back to the standard for this district, and the
+        analytics page says how many pickups it had to estimate.
+      </p>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 12rem), 1fr))',
+          gap: 'var(--s3)',
+        }}
+      >
+        {COST_LINES.map((line) => {
+          const std = (area ? area[line.std] : null) ?? null;
+          return (
+            <TextField
+              key={line.key}
+              label={line.label}
+              type="number"
+              min={0}
+              step="1"
+              inputMode="decimal"
+              value={boxes[line.key]}
+              /* GREY, NOT FILLED IN. The number is a suggestion until somebody
+                 types it, and that difference is what the dashboard counts. */
+              placeholder={std === null ? '₦0' : `₦${(std / 100).toLocaleString()} standard`}
+              hint={line.hint}
+              error={
+                fromBox(boxes[line.key]) === undefined ? 'Enter an amount in naira' : undefined
+              }
+              onChange={(e) => setBoxes((b) => ({ ...b, [line.key]: e.target.value }))}
+            />
+          );
+        })}
+      </div>
+
+      <TextArea
+        label="Why (optional)"
+        rows={2}
+        value={note}
+        placeholder="Second trip — the first driver broke down"
+        onChange={(e) => setNote(e.target.value)}
+      />
+
+      <p className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+        {bad ? (
+          'Fix the amounts above to see the total.'
+        ) : (
+          <>
+            <strong>{money(total, 'NGN')}</strong> to fetch this pickup
+            {kept !== null && kept > 0
+              ? ` — ${money(Math.round(total / kept), 'NGN')} an item on top of what we paid out`
+              : ''}
+            {area ? '' : ' · no district, so nothing is estimated for the empty boxes'}
+          </>
+        )}
+      </p>
+
+      {problem ? (
+        <span className="field__error" role="alert">
+          {problem}
+        </span>
+      ) : null}
+
+      <div className="row" style={{ justifyContent: 'flex-end', gap: 'var(--s2)' }}>
+        <Button tone="plain" onClick={onBack}>
+          Back
+        </Button>
+        <Button
+          tone="primary"
+          busy={busy}
+          disabled={bad}
+          onClick={() => {
+            const patch: Partial<Record<CostKey, number | null>> = {};
+            for (const [key, value] of parsed) patch[key] = value ?? null;
+            /* A blank note is sent as `null` and never as an empty string —
+               one spelling of blank, the rule every optional sentence in this
+               admin has followed since 2026-09-03. */
+            onSubmit({ ...patch, note: note.trim() || null });
+          }}
+        >
+          Save what it cost
+        </Button>
+      </div>
+    </div>
   );
 }
 

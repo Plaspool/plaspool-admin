@@ -73,7 +73,12 @@ export type ReturnEventType =
   | 'inspected'
   | 'rejected'
   | 'cancelled'
-  | 'note';
+  | 'note'
+  /** What the pickup cost us was written down or corrected (0920). It is a
+   *  change to the row, so it belongs in the history — and a transport invoice
+   *  that lands three weeks late is exactly the edit somebody later has to
+   *  explain. */
+  | 'costed';
 
 /** `marketing_email_intents_kind_ck` — the two outcomes of an inspection. */
 export type EmailIntentKind = 'return_awarded' | 'return_rejected';

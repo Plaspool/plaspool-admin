@@ -25,6 +25,8 @@ import Customers from './routes/Customers';
 import Featured from './routes/Featured';
 import Banners from './routes/Banners';
 import Returns from './routes/Returns';
+import ReturnsAnalytics from './routes/ReturnsAnalytics';
+import ReturnsAnalyticsAreas from './routes/ReturnsAnalyticsAreas';
 import Marketing from './routes/Marketing';
 import Settings from './routes/Settings';
 import SettingsShipping from './routes/SettingsShipping';
@@ -129,6 +131,10 @@ const router = createHashRouter([
       { path: '/orders', element: <Orders /> },
       { path: '/orders/:id', element: <OrderDetail /> },
       { path: '/orders/returns', element: <Returns /> },
+      /* What a returned item really costs us — the charts, and the district
+         table as its own subpage. The same split `/analytics` uses. */
+      { path: '/orders/returns/analytics', element: <ReturnsAnalytics /> },
+      { path: '/orders/returns/analytics/areas', element: <ReturnsAnalyticsAreas /> },
       { path: '/orders/delivery', element: <DeliveryAreas /> },
 
       /* ── products ────────────────────────────────────────────────────── */

@@ -90,6 +90,24 @@ export interface ReturnRow {
    *  through the FK — see `createRequest`. */
   pointsPerUnitSnapshot: number;
   pointsAwarded: number | null;
+  /**
+   * The MONEY rate this return is costed at, copied from the programme at
+   * creation (0920) — the same discipline as `pointsPerUnitSnapshot` above.
+   *
+   * NULLABLE, unlike the points snapshot: the column is younger than the rows,
+   * and the programme had no money rate when the older ones were created. The
+   * analytics reader falls back to the programme's CURRENT rate for those,
+   * which is what let 0920 ship without a backfill.
+   */
+  unitCostMinorSnapshot: number | null;
+  /** What this pickup cost us, minor units, four independent lines. NULL is
+   *  "nobody wrote it down" — a district standard stands in for it on read —
+   *  and 0 is a person saying the leg cost nothing. */
+  costTransportMinor: number | null;
+  costLocalMinor: number | null;
+  costDriverMinor: number | null;
+  costFeesMinor: number | null;
+  costNote: string | null;
   rejectedReason: string | null;
   cancelReason: string | null;
   source: 'customer' | 'admin';
@@ -128,6 +146,13 @@ export interface ProgramSnapshot {
   unitLabelPlural: string | null;
   minUnitsPerReturn: number | null;
   pointsPerUnit: number | null;
+  /** What one accepted unit costs us in MONEY, minor units (0920). NULL means
+   *  the programme has not been given a costing rate; the analytics screen
+   *  says so rather than printing a zero it cannot justify. */
+  unitCostMinor: number | null;
+  /** What buying one new costs, minor units — the "against buying new"
+   *  benchmark. Live, never snapshotted: it is a comparison against today. */
+  unitMarketCostMinor: number | null;
 }
 
 export interface ReturnRead {
@@ -201,6 +226,12 @@ const REQUEST_COLUMN_NAMES = [
   'qty_rejected',
   'points_per_unit_snapshot',
   'points_awarded',
+  'unit_cost_minor_snapshot',
+  'cost_transport_minor',
+  'cost_local_minor',
+  'cost_driver_minor',
+  'cost_fees_minor',
+  'cost_note',
   'rejected_reason',
   'cancel_reason',
   'source',
@@ -237,7 +268,8 @@ const PROGRAM_COLUMNS = sql.raw(
   `p.id AS prog_id, p.status AS prog_status, p.kind AS prog_kind, p.name AS prog_name,
    p.points_label_singular AS prog_points_one, p.points_label_plural AS prog_points_other,
    p.unit_label_singular AS prog_unit_one, p.unit_label_plural AS prog_unit_other,
-   p.min_units_per_return AS prog_min_units, p.points_per_unit AS prog_points_per_unit`,
+   p.min_units_per_return AS prog_min_units, p.points_per_unit AS prog_points_per_unit,
+   p.unit_cost_minor AS prog_unit_cost, p.unit_market_cost_minor AS prog_unit_market_cost`,
 );
 
 function rowToRequest(row: Record<string, unknown>): ReturnRow {
@@ -257,6 +289,14 @@ function rowToRequest(row: Record<string, unknown>): ReturnRow {
     qtyRejected: row.qty_rejected == null ? null : Number(row.qty_rejected),
     pointsPerUnitSnapshot: Number(row.points_per_unit_snapshot),
     pointsAwarded: row.points_awarded == null ? null : Number(row.points_awarded),
+    unitCostMinorSnapshot:
+      row.unit_cost_minor_snapshot == null ? null : Number(row.unit_cost_minor_snapshot),
+    costTransportMinor:
+      row.cost_transport_minor == null ? null : Number(row.cost_transport_minor),
+    costLocalMinor: row.cost_local_minor == null ? null : Number(row.cost_local_minor),
+    costDriverMinor: row.cost_driver_minor == null ? null : Number(row.cost_driver_minor),
+    costFeesMinor: row.cost_fees_minor == null ? null : Number(row.cost_fees_minor),
+    costNote: row.cost_note == null ? null : String(row.cost_note),
     rejectedReason: row.rejected_reason == null ? null : String(row.rejected_reason),
     cancelReason: row.cancel_reason == null ? null : String(row.cancel_reason),
     source: row.source as ReturnRow['source'],
@@ -286,6 +326,9 @@ function rowToProgram(row: Record<string, unknown>): ProgramSnapshot {
     unitLabelPlural: row.prog_unit_other == null ? null : String(row.prog_unit_other),
     minUnitsPerReturn: row.prog_min_units == null ? null : Number(row.prog_min_units),
     pointsPerUnit: row.prog_points_per_unit == null ? null : Number(row.prog_points_per_unit),
+    unitCostMinor: row.prog_unit_cost == null ? null : Number(row.prog_unit_cost),
+    unitMarketCostMinor:
+      row.prog_unit_market_cost == null ? null : Number(row.prog_unit_market_cost),
   };
 }
 
@@ -666,8 +709,8 @@ export async function createRequest(db: Db, input: CreateReturnInput): Promise<R
       WITH ins AS (
         INSERT INTO marketing_return_requests
           (id, program_id, customer_email, customer_id, customer_name, customer_phone,
-           pickup_address, qty_declared, points_per_unit_snapshot, source, service_area_id,
-           created_at, updated_at)
+           pickup_address, qty_declared, points_per_unit_snapshot, unit_cost_minor_snapshot,
+           source, service_area_id, created_at, updated_at)
         ${
           /*
            * TWO SHAPES, ASSEMBLED — never one statement with a disabled arm. An
@@ -681,11 +724,13 @@ export async function createRequest(db: Db, input: CreateReturnInput): Promise<R
             ? sql`VALUES (${id}, ${program.id}, ${email}, ${input.customerId ?? null},
                     ${input.customerName ?? null}, ${input.customerPhone ?? null},
                     ${address(input.pickupAddress) ?? null}, ${input.qtyDeclared},
-                    ${pointsPerUnit}, ${input.source}, NULL, ${input.now}, ${input.now})`
+                    ${pointsPerUnit}, ${program.unitCostMinor}::integer,
+                    ${input.source}, NULL, ${input.now}, ${input.now})`
             : sql`SELECT ${id}, ${program.id}, ${email}, ${input.customerId ?? null},
                     ${input.customerName ?? null}, ${input.customerPhone ?? null},
                     ${address(input.pickupAddress) ?? null}, ${input.qtyDeclared},
-                    ${pointsPerUnit}, ${input.source}, a.id, ${input.now}, ${input.now}
+                    ${pointsPerUnit}, ${program.unitCostMinor}::integer,
+                    ${input.source}, a.id, ${input.now}, ${input.now}
                     FROM marketing_service_areas a
                    WHERE a.id = ${area.id} AND a.active`
         }
@@ -925,6 +970,132 @@ export async function addNote(db: Db, id: string, input: NoteInput): Promise<Ret
   const row = res.rows[0];
   if (!row) throw new NotFoundError(id);
   return rowToEvent(row);
+}
+
+// ------------------------------------------------------------------ the costs
+
+/**
+ * What one pickup cost us — the four lines, plus a sentence about why.
+ *
+ * ABSENT AND NULL MEAN DIFFERENT THINGS, and both are needed. An absent field
+ * is "do not touch this line"; an explicit `null` CLEARS it back to "nobody
+ * wrote it down", which is how a figure typed into the wrong box is undone.
+ * Without the second, a mistyped 250000 could only ever be corrected to
+ * another number, never to silence, and the screen's estimate-vs-receipt
+ * count would be permanently wrong for that pickup.
+ *
+ * `0` IS A THIRD, REAL VALUE: our own van was already going and this leg cost
+ * nothing. That is why the columns are nullable rather than defaulted to
+ * zero, and why the analytics reader can honestly say how many of its own
+ * figures are estimates.
+ */
+export interface CostsInput extends Cas {
+  transportMinor?: number | null;
+  localMinor?: number | null;
+  driverMinor?: number | null;
+  feesMinor?: number | null;
+  note?: string | null;
+}
+
+/** Field → column, and the object is also the SET clause's whole vocabulary:
+ *  a column absent here is a column this route cannot write. */
+const COST_COLUMNS: Record<'transportMinor' | 'localMinor' | 'driverMinor' | 'feesMinor', string> =
+  {
+    transportMinor: 'cost_transport_minor',
+    localMinor: 'cost_local_minor',
+    driverMinor: 'cost_driver_minor',
+    feesMinor: 'cost_fees_minor',
+  };
+
+/**
+ * Contract #15 — record or correct what a pickup cost.
+ *
+ * LEGAL IN EVERY STATUS, WHICH IS WHY IT IS NOT A `Transition`. A transport
+ * invoice arrives days after the return was awarded and closed, and a rule
+ * that refused the correction then would mean the dashboard's headline could
+ * never be made right — the figure would be stranded in an inbox. It carries
+ * a CAS anyway, unlike `addNote`, because unlike a note this DOES change the
+ * row: two people editing the same pickup's costs from two tabs must not
+ * silently overwrite one another.
+ *
+ * ONE STATEMENT, CTE-CHAINED like every other write here: the timeline entry
+ * `SELECT … FROM upd`, so a CAS that matched nothing writes no history either.
+ * `db.transaction` is forbidden (spec §Global) and would 500 in production
+ * while passing every test in this file.
+ */
+export async function setCosts(db: Db, id: string, input: CostsInput): Promise<ReturnRow> {
+  const assignments: SQL[] = [];
+  const recorded: Record<string, unknown> = {};
+
+  for (const field of Object.keys(COST_COLUMNS) as (keyof typeof COST_COLUMNS)[]) {
+    const value = input[field];
+    if (value === undefined) continue;
+    if (value !== null && (!Number.isInteger(value) || value < 0)) {
+      throw new BadRequestError(field);
+    }
+    /* CAST REQUIRED. A bound `null` in a SET has no target column to infer
+     * from on the Neon driver and is SQLSTATE 42P18 at run time — the same
+     * trap `timelineEntryFragment` documents for its own NULLs. */
+    assignments.push(sql`${sql.raw(COST_COLUMNS[field])} = ${value}::integer`);
+    recorded[field] = value;
+  }
+
+  if (input.note !== undefined) {
+    /* Blank and absent are ONE state and it is NULL — the rule every optional
+     * sentence in this subsystem follows since 2026-09-03, and the one
+     * `marketing_return_requests_cost_note_ck` insists on over `''`. */
+    const note = input.note === null ? null : input.note.trim() || null;
+    assignments.push(sql`cost_note = ${note}::text`);
+    recorded.note = note;
+  }
+
+  /* Nothing to write is a BAD REQUEST rather than a no-op that bumps the
+   * revision: silently invalidating every other open editor's CAS token for a
+   * write that moved nothing is worse than saying so. */
+  if (assignments.length === 0) throw new BadRequestError('costs');
+
+  const res = await db.execute(sql`
+    WITH upd AS (
+      UPDATE marketing_return_requests
+         SET ${sql.join(assignments, sql`, `)},
+             revision = revision + 1,
+             updated_at = ${input.now}
+       WHERE id = ${id} AND revision = ${input.expectedRevision}
+      RETURNING ${REQUEST_COLUMNS}
+    ), evt AS (
+      ${timelineEntryFragment({
+        from: sql`upd`,
+        id: newId(ID.timeline),
+        requestId: sql`upd.id`,
+        type: 'costed',
+        actorType: 'admin',
+        actorId: input.actorId ?? null,
+        note: null,
+        /* WHAT WAS SET, not what the row now holds. A correction three weeks
+         * later has to read as "transport changed to 4,200", and a snapshot of
+         * every column would make the one field that moved impossible to
+         * find among four that did not. */
+        data: recorded,
+        occurredAt: input.now,
+      })}
+    )
+    SELECT ${REQUEST_COLUMNS} FROM upd`);
+
+  const row = res.rows[0];
+  if (row) return rowToRequest(row);
+
+  /* Zero rows: either the return is gone or somebody else wrote it first.
+   * There is no third possibility here — unlike a transition, no status can
+   * refuse this — so `refuse()`'s invalid-transition branch would be dead
+   * code and a misleading error code. */
+  const read = await readReturn(db, id);
+  if (!read) throw new NotFoundError(id);
+  throw new StaleMarketingWriteError(
+    input.expectedRevision,
+    read.request.revision,
+    'request',
+    conflictPayload(read.request),
+  );
 }
 
 // ---------------------------------------------------------------- the inspect

@@ -352,6 +352,10 @@ describe('the admin intake — contract #5', () => {
       status: 'active',
       pointsPerUnit: 7,
       minUnitsPerReturn: 4,
+      /* 0920 — the panel prices the pickup from these without a second read.
+       * NULL is a real answer here ("nobody has said"), never a zero. */
+      unitCostMinor: null,
+      unitMarketCostMinor: null,
     });
     expect(detail.events.map((e) => e.type)).toEqual(['requested']);
     expect(detail.emailIntents).toEqual([]);
