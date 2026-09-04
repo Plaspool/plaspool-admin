@@ -1,0 +1,63 @@
+-- A USD PRICE PER VARIANT (range 0860-0879; owner's queue, 2026-09-04).
+--
+-- The owner asked to sell abroad. Paystack settles the question of how: a
+-- Nigeria-registered business may charge NGN and USD and NOTHING ELSE. One
+-- currency per account, with Nigeria and Kenya the only exceptions and USD the
+-- only addition. Cedis or rand would each need a separate business registered
+-- in that country, so "the other African currencies" are not a thing this shop
+-- can switch on. NGN at home, USD everywhere else, and that is the whole set.
+--
+-- A COLUMN ON THE VARIANT, NOT A SECOND ROW IN shop_prices — and this is the
+-- decision worth reading, because 0400 argued the opposite way for compare-at
+-- and the reasoning has to be answered rather than ignored.
+--
+-- 0400 says: a price that CHARGES someone belongs in shop_prices, because it is
+-- effective-dated and an order line snapshots it. A USD price does charge
+-- someone, so by that rule it belongs there, and shop_prices has carried a
+-- currency column since 0100 precisely to allow it.
+--
+-- What decides it against is shop_prices_current_uq. It is UNIQUE on
+-- (variant_id) WHERE effective_to IS NULL, and ELEVEN separate reads join
+-- `ON pr.variant_id = v.id AND pr.effective_to IS NULL` on the strength of it —
+-- the catalog port, the product projection, the list query, the storefront
+-- feed. Widening that index to (variant_id, currency) does not fail those
+-- joins; it DOUBLES their rows, silently, in every product list in the admin
+-- and the storefront. That is the shape of bug this codebase keeps getting
+-- caught by: green suite, wrong page.
+--
+-- And the audit argument 0400 makes is already satisfied somewhere else. What a
+-- customer was actually charged is frozen onto the order — frozen_lines and
+-- frozen_totals are copied and never recomputed (brief §6) — so the history
+-- that matters for money survives without shop_prices carrying a second
+-- currency. What is lost is "what did we LIST this at in dollars last Tuesday",
+-- which nobody has asked for and which no screen renders.
+--
+-- So: last-writer-wins on the variant, exactly as compare_at_minor and
+-- cost_minor are, and for the same reason those are.
+--
+-- NULL MEANS DERIVE IT, NOT "FREE" AND NOT "UNAVAILABLE". The dollar price a
+-- shopper sees is normally the naira price converted at the rate in
+-- shop_currency_settings and rounded up (0880). This column is the OVERRIDE
+-- the owner asked for: set it and that variant departs from the rate, leave it
+-- and the variant follows every rate change with no per-product work. Every
+-- variant written before today has NULL, which is the true state and needs no
+-- backfill.
+--
+-- MINOR UNITS, integer, never numeric and never a float (contract §10) — the
+-- same rule shop_prices.amount documents at length. USD minor units are CENTS,
+-- so 4999 is $49.99. Note the scale differs from naira: 100 kobo to the naira
+-- and 100 cents to the dollar happen to agree, but nothing here relies on that.
+--
+-- NO compare_at_usd_minor. The struck-through figure is derived from the same
+-- rate as everything else, for the reason 0400 gives: it is rendered only
+-- beside the current price and in that price's currency, so a shopper reading
+-- dollars gets a dollar compare-at without a column to maintain.
+ALTER TABLE shop_variants
+  ADD COLUMN price_usd_minor integer;--> statement-breakpoint
+
+-- Zero is a real dollar price (a free sample) exactly as shop_prices.amount
+-- permits zero; negative is not. NULL passes a CHECK by definition, which is
+-- what keeps "derive it" representable.
+ALTER TABLE shop_variants
+  ADD CONSTRAINT shop_variants_price_usd_minor_ck
+  CHECK (price_usd_minor IS NULL OR price_usd_minor >= 0);

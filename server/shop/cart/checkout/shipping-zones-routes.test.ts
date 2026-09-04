@@ -32,13 +32,16 @@ describe('GET /admin/shipping-zones', () => {
     expect(res.status).toBe(401);
   });
 
-  it('lists the seeded Nigerian zones with their options', async () => {
+  // Four since migration 0900 — the international catch-all joined, and it
+  // carries its own delivery option like every other zone.
+  it('lists the seeded Nigerian zones and the international one, with their options', async () => {
     await login();
     const res = await http.get('/api/shop/admin/shipping-zones');
     expect(res.status).toBe(200);
     const body = await json<{ items: Array<{ id: string; options: unknown[] }> }>(res);
     expect(body.items.map((z) => z.id).sort()).toEqual([
       'zone_abuja',
+      'zone_international',
       'zone_lagos',
       'zone_rest_of_nigeria',
     ]);
