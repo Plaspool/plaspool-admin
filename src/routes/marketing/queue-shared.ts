@@ -128,7 +128,7 @@ export const FIELD_MESSAGE: Record<string, string> = {
   qtyDeclared: 'Say how many are coming back.',
   qtyAccepted: 'That count wasn’t accepted.',
   qtyRejected: 'That count wasn’t accepted.',
-  rejectedReason: 'Say why some were refused — the customer is told.',
+  rejectedReason: 'That reason wasn’t accepted — it may be too long.',
   programId: 'That program can’t take this return.',
   customerName: 'That name wasn’t accepted.',
   customerPhone: 'That phone number wasn’t accepted.',
@@ -235,7 +235,11 @@ export function primaryOf(row: { allowedActions?: ReturnAction[] }): Exclude<Ret
  *  navigation to the full inspection screen. */
 export interface BonusIntent {
   points: number;
-  reason: string;
+  /** `null` when the owner gave none — optional since 2026-09-03. It is NOT
+   *  `''`: the URL cannot distinguish an absent `bonusWhy` from an empty one,
+   *  so both read back as "nobody said" and only one spelling reaches the
+   *  request. */
+  reason: string | null;
 }
 
 /**
@@ -248,18 +252,23 @@ export interface BonusIntent {
  * every return — the actual shape of "I set a bonus and nothing happened", which
  * had nothing to do with who was signed in or what status the return was in.
  *
- * MALFORMED INPUT READS AS "NO BONUS" RATHER THAN AS AN ERROR — a tampered link,
- * a `bonus` with no `bonusWhy` — because the inspection itself is legal without
- * one and a link this screen cannot fully honour should not block the write it
- * still can make.
+ * MALFORMED INPUT READS AS "NO BONUS" RATHER THAN AS AN ERROR — a tampered
+ * link, a `bonus` that is not a positive whole number — because the inspection
+ * itself is legal without one and a link this screen cannot fully honour should
+ * not block the write it still can make.
+ *
+ * A MISSING `bonusWhy` IS NO LONGER MALFORMED. It used to void the whole bonus,
+ * because a bonus without a reason was a 400; reasons are optional since
+ * 2026-09-03, so it now reads back as a bonus with no reason, which is exactly
+ * what the modal let the owner enter.
  */
 export function bonusFromParams(params: URLSearchParams): BonusIntent | null {
   const raw = params.get('bonus');
   if (raw === null) return null;
   const points = Number(raw);
   const reason = (params.get('bonusWhy') ?? '').trim();
-  if (!Number.isInteger(points) || points < 1 || reason === '') return null;
-  return { points, reason };
+  if (!Number.isInteger(points) || points < 1) return null;
+  return { points, reason: reason === '' ? null : reason };
 }
 
 /** Everything after the primary that this screen can actually perform: the

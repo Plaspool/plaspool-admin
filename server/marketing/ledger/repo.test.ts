@@ -329,7 +329,7 @@ describe('credit and debit — the counter is maintained, the ledger explains it
 // ------------------------------------------------------------- adjustments
 
 describe('adjust — contract #18', () => {
-  it('refuses a zero delta and an empty reason by field name, writing nothing', async () => {
+  it('refuses a zero delta by field name, writing nothing', async () => {
     const zero = await rejection<BadRequestError>(
       adjust(db, { email: EMAIL, delta: 0, reason: 'Goodwill', actorId: ACTOR, now: NOW }),
     );
@@ -339,13 +339,37 @@ describe('adjust — contract #18', () => {
      * 500 the client retries five times. */
     expect(zero.detail).toBe('delta');
 
-    const blank = await rejection<BadRequestError>(
-      adjust(db, { email: EMAIL, delta: 10, reason: '   ', actorId: ACTOR, now: NOW }),
-    );
-    expect(blank.detail).toBe('reason');
-
     expect(await ledgerRows()).toHaveLength(0);
     expect(await wallet()).toBeNull();
+  });
+
+  /*
+   * THE REASON IS OPTIONAL SINCE 2026-09-03 (owner’s instruction), and this is
+   * the half of the test above that used to assert the opposite.
+   *
+   * THE ASSERTION THAT MATTERS IS NULL, NOT SUCCESS. `marketing_ledger_reason_ck`
+   * refuses the empty string and migration 0840 only dropped NOT NULL — so a
+   * blank stored as an empty string would be SQLSTATE 23514, and a blank stored
+   * as null has to read back through the projection as null.
+   */
+  it('takes a blank or absent reason, storing null and never an empty string', async () => {
+    const absent = await adjust(db, { email: EMAIL, delta: 10, actorId: ACTOR, now: NOW });
+    expect(absent.entry.reason).toBeNull();
+    expect(absent.balance).toBe(10);
+
+    const spaces = await adjust(db, {
+      email: EMAIL,
+      delta: 5,
+      reason: '   ',
+      actorId: ACTOR,
+      now: NOW + 1,
+    });
+    expect(spaces.entry.reason).toBeNull();
+
+    // Straight out of the column, past the projection.
+    const rows = await ledgerRows();
+    expect(rows).toHaveLength(2);
+    for (const row of rows) expect(row.reason).toBeNull();
   });
 
   it('refuses an unknown programId as a field error, not a foreign-key 500', async () => {
@@ -363,16 +387,15 @@ describe('adjust — contract #18', () => {
     expect(err.detail).toBe('programId');
   });
 
-  it('names the blank reason before it goes looking for the programId', async () => {
-    /*
-     * THE ORDER IS THE ASSERTION, and it is the only thing that earns the blank
-     * check in `adjust` its place: `move` refuses an empty reason too, so a
-     * fixture with one bad field cannot tell the two checks apart. With BOTH
-     * fields wrong the inline error has to land on the box the admin actually
-     * left empty rather than on a `programId` the form filled in from a Select —
-     * delete the check and this reads `programId`, which points at a control
-     * that is not the problem.
-     */
+  /*
+   * WAS 'names the blank reason before it goes looking for the programId'. That
+   * ordering test existed because a blank reason and an unknown programId were
+   * both errors and only one of them named the box the admin had actually left
+   * empty. A blank reason is not an error any more, so the ordering it pinned has
+   * nothing left to order — what still has to be true is that the blank does not
+   * MASK the programId, which is the same fixture read the other way round.
+   */
+  it('still names an unknown programId when the reason is blank', async () => {
     const err = await rejection<BadRequestError>(
       adjust(db, {
         email: EMAIL,
@@ -383,7 +406,7 @@ describe('adjust — contract #18', () => {
         now: NOW,
       }),
     );
-    expect(err.detail).toBe('reason');
+    expect(err.detail).toBe('programId');
     expect(await ledgerRows()).toHaveLength(0);
   });
 

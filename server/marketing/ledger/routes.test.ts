@@ -245,7 +245,7 @@ describe('POST /adjustments — contract #18', () => {
     expect(ok.entry.delta).toBe(-40);
   });
 
-  it('refuses a zero delta and an empty reason with 400 naming the field', async () => {
+  it('refuses a zero delta with 400 naming the field', async () => {
     const email = nextEmail('bad');
 
     const zero = await post({ email, delta: 0, reason: 'Goodwill' });
@@ -255,16 +255,31 @@ describe('POST /adjustments — contract #18', () => {
      * there. Reaching `marketing_ledger_delta_ck` instead would be a 500. */
     expect(await json(zero)).toMatchObject({ error: 'bad_request', detail: 'delta' });
 
+    expect(await summary(email)).toMatchObject({ balance: 0, lifetimeEarned: 0 });
+  });
+
+  /*
+   * ABSENT IS THE BLANK; THE EMPTY STRING IS STILL A 400, and the distinction is
+   * the whole test. The body keeps `.min(1)` INSIDE its `.optional()`, so a
+   * client that builds the field and sends nothing in it is a caller bug worth
+   * naming, while omitting the key is what a person leaving the box empty
+   * produces — `filled()` in `api-marketing.ts` drops it before the request is
+   * built.
+   *
+   * Reasons went optional on the owner's instruction, 2026-09-03.
+   */
+  it('accepts an omitted reason and still refuses an empty one', async () => {
+    const email = nextEmail('blank');
+
     const blank = await post({ email, delta: 10, reason: '   ' });
     expect(blank.status).toBe(400);
     expect(await json(blank)).toMatchObject({ error: 'bad_request', detail: 'reason' });
+    expect(await summary(email)).toMatchObject({ balance: 0 });
 
     const missing = await post({ email, delta: 10 });
-    expect(missing.status).toBe(400);
-    expect(await json(missing)).toMatchObject({ error: 'bad_request', detail: 'reason' });
-
-    // Nothing of the three was written.
-    expect(await summary(email)).toMatchObject({ balance: 0, lifetimeEarned: 0 });
+    expect(missing.status).toBe(201);
+    expect(await json(missing)).toMatchObject({ entry: { reason: null }, balance: 10 });
+    expect(await summary(email)).toMatchObject({ balance: 10, lifetimeEarned: 10 });
   });
 
   it('refuses an unknown programId as a field error, not a foreign-key 500', async () => {

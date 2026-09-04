@@ -8,9 +8,10 @@ import { Float } from './Float';
  *
  * A panel rather than an in-place input, deliberately: the two writes this
  * exists for are money and stock, and both carry a REASON field (`shop_prices`
- * records why a price moved; `adjustInventory` refuses a change without one).
- * An inline input has nowhere to put the reason, which is how "quick edit"
- * designs end up padding `reason: 'edit'` into an audit trail.
+ * records why a price moved; `catalog.inventory.adjusted` records why stock
+ * did). Both are OPTIONAL since 2026-09-03 — the panel is still the right shape,
+ * because an inline input has nowhere to OFFER a reason, and a field nobody is
+ * shown is one nobody fills in.
  *
  * The panel rides `Float`: it lives in table cells and in the phone's
  * details sheet, which are exactly the two clipping ancestors (`.tscroll`,

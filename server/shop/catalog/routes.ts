@@ -315,9 +315,23 @@ const AdjustBody = z
   .object({
     /** Signed, and never zero: an adjustment of nothing is a caller bug. */
     delta: z.number().int(),
-    /** MANDATORY. An unexplained stock change is the thing you will most wish
-     *  you had logged (brief §6). */
-    reason: str().min(1).max(400),
+    /**
+     * OPTIONAL since 2026-09-03, on the owner's instruction — it was mandatory
+     * from the day it was written.
+     *
+     * The audit argument has not changed and the ledger is still kept: an
+     * unexplained stock change is the thing you will most wish you had logged
+     * (brief §6). What changed is the judgement about what a REQUIRED field
+     * actually buys. A count nobody can correct without composing a sentence is
+     * a count that stays wrong, and "stock" typed to get past the form is a
+     * worse record than no reason at all, because it reads like one.
+     *
+     * `.min(1)` SURVIVES INSIDE THE `.optional()`, deliberately. Omitting the
+     * key is "nobody said"; an empty STRING is a client that built the field and
+     * sent nothing in it, which is a caller bug worth naming. Both end up as
+     * NULL in the event either way — see `adjustInventory`.
+     */
+    reason: str().min(1).max(400).optional(),
   })
   .strict();
 

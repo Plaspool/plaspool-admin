@@ -341,7 +341,7 @@ describe('variants, prices and inventory over HTTP', () => {
     expect(res.status).toBe(400);
   });
 
-  it('adjusts inventory with a reason, and refuses one without', async () => {
+  it('adjusts inventory with a reason, without one, and refuses a blank one', async () => {
     const created = await createProduct('Adjust Route');
     const variantRes = await http.post(`/api/shop/admin/products/${created.id}/variants`, {
       sku: 'ADJUST-1',
@@ -358,12 +358,32 @@ describe('variants, prices and inventory over HTTP', () => {
       inventory: { onHand: 8, available: 8 },
     });
 
-    // `reason` is mandatory: an unexplained stock change is the thing you will
-    // most wish you had logged.
+    /*
+     * `reason` IS OPTIONAL SINCE 2026-09-03 (owner's instruction) — this
+     * assertion used to be a 400. The stock still moves and the event is still
+     * written; it just carries a null reason, which `server/shop/admin/audit.ts`
+     * has rendered since it was written.
+     */
     const noReason = await http.post(`/api/shop/admin/inventory/${variant.id}/adjust`, {
       delta: -1,
     });
-    expect(noReason.status).toBe(400);
+    expect(noReason.status).toBe(200);
+    expect(await json<{ inventory: { onHand: number } }>(noReason)).toMatchObject({
+      inventory: { onHand: 7, available: 7 },
+    });
+
+    /*
+     * A BLANK STRING IS STILL A 400, and that is the half worth keeping. The
+     * body's schema keeps `.min(1)` inside its `.optional()`: omitting the key
+     * is a person who left the box empty, sending `''` is a client that built
+     * the field and put nothing in it, and only the second is a bug.
+     */
+    const blank = await http.post(`/api/shop/admin/inventory/${variant.id}/adjust`, {
+      delta: -1,
+      reason: '',
+    });
+    expect(blank.status).toBe(400);
+    expect(await json<{ detail: string }>(blank)).toMatchObject({ detail: 'reason' });
   });
 
   it('a duplicate SKU is a 409 naming the SKU, not a 500 and not a bare 400', async () => {

@@ -644,15 +644,16 @@ describe('the catalogue, on the wire', () => {
     });
   });
 
-  it('needs a rejection reason iff something was rejected, both ways', async () => {
+  it('takes a rejection with no reason, and refuses a reason with no rejection', async () => {
     const row = await returnAt('received', capsProgramId);
+    /* Optional since 2026-09-03; the "reason with nothing rejected" direction
+     * stayed, because that one stores a sentence about goods nobody refused. */
     const missing = await move(row.id, 'inspect', {
       expectedRevision: row.revision,
       qtyAccepted: 3,
       qtyRejected: 1,
     });
-    expect(missing.status).toBe(400);
-    expect(await json(missing)).toMatchObject({ error: 'bad_request', detail: 'rejectedReason' });
+    expect(missing.status).toBe(200);
 
     const spurious = await move(row.id, 'inspect', {
       expectedRevision: row.revision,
@@ -752,7 +753,7 @@ describe('the inspection bonus is the OWNER’s — contract #6.5', () => {
     expect(body.bonus).toEqual({ points: 25, reason: 'Carried them down three flights' });
   });
 
-  it('refuses a top-up with no reason as a field error', async () => {
+  it('takes a top-up with no reason, answering with a null one', async () => {
     const row = await returnAt('received', capsProgramId);
     const res = await move(row.id, 'inspect', {
       expectedRevision: row.revision,
@@ -760,8 +761,10 @@ describe('the inspection bonus is the OWNER’s — contract #6.5', () => {
       qtyRejected: 0,
       bonusPoints: 25,
     });
-    expect(res.status).toBe(400);
-    expect(await json(res)).toMatchObject({ error: 'bad_request', detail: 'bonusReason' });
+    expect(res.status).toBe(200);
+    /* `null` on the wire, not an absent key and not `""` — the storefront and
+     * the admin both render this field. */
+    expect(await json(res)).toMatchObject({ bonus: { points: 25, reason: null } });
   });
 });
 
@@ -931,7 +934,12 @@ describe('POST /returns/bulk — contract #6.4', () => {
      * before discovering it.
      */
     const row = await returnAt('requested', capsProgramId);
-    const res = await bulk({ action: 'reject', items: [item(row)], body: {} });
+    /* AN EMPTY `reason`, NOT AN ABSENT ONE. Since 2026-09-03 the reason is
+     * optional, so `{}` is a perfectly good reject body and would prove nothing
+     * about when the body is parsed. `.min(1)` survives inside the `.optional()`
+     * precisely so a client that builds the field and sends nothing in it is
+     * still a named 400 — which is what makes it a usable malformed body here. */
+    const res = await bulk({ action: 'reject', items: [item(row)], body: { reason: '' } });
     expect(res.status).toBe(400);
     expect(await json(res)).toMatchObject({ error: 'bad_request', detail: 'reason' });
 
