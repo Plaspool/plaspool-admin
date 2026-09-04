@@ -785,28 +785,67 @@ function groupRows(rows: ImportRow[], invalid: CsvProblem[]): ImportGroup[] {
  * by-slug read is the storefront's (active only), and this one exists for
  * exactly one caller.
  */
-async function existingSlugs(db: Db, slugs: string[]): Promise<Set<string>> {
-  const existing = new Set<string>();
-  if (slugs.length === 0) return existing;
+/**
+ * What each handle names TODAY: a live product, a trashed one, or nothing.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THESE TWO LOOKUPS USED TO FILTER `deleted_at IS NULL`, AND THAT MINTED TWINS.
+ *
+ * Watched happen on production 2026-09-04: export at 19:47:13, product moved
+ * to the trash at 19:47:29, the same file imported at 19:47:39. Trash is a
+ * SOFT delete — the row keeps its slug and its variants keep their SKUs — but
+ * a lookup that cannot see it reports "no such handle", so the import created
+ * a NEW product, which had to take the slug `…-2-2` because the trashed row
+ * still holds the original. Then `createVariant` was refused by
+ * `shop_variants_sku_unique`, because that same trashed row still owns the
+ * SKU. The result was a nameless duplicate that could never hold a variant,
+ * and the only hint was one line in `invalid`.
+ *
+ * `shop_products_slug_unique` is across the WHOLE table, trash included, so a
+ * handle names at most one product and this answer is never ambiguous.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+type SlugState = 'live' | 'trashed';
+
+async function slugStates(db: Db, slugs: string[]): Promise<Map<string, SlugState>> {
+  const states = new Map<string, SlugState>();
+  if (slugs.length === 0) return states;
   const res = await db.execute(sql`
-    SELECT slug FROM shop_products
-     WHERE slug = ANY(${sql.param(slugs)}::text[]) AND deleted_at IS NULL`);
-  for (const row of res.rows) if (row.slug != null) existing.add(String(row.slug));
-  return existing;
+    SELECT slug, deleted_at FROM shop_products
+     WHERE slug = ANY(${sql.param(slugs)}::text[])`);
+  for (const row of res.rows) {
+    if (row.slug == null) continue;
+    states.set(String(row.slug), row.deleted_at == null ? 'live' : 'trashed');
+  }
+  return states;
 }
 
 async function productBySlug(
   db: Db,
   slug: string,
-): Promise<{ id: string; status: string } | null> {
+): Promise<{ id: string; status: string; trashed: boolean } | null> {
   const res = await db.execute(sql`
-    SELECT id, status FROM shop_products
-     WHERE slug = ${slug} AND deleted_at IS NULL`);
+    SELECT id, status, deleted_at FROM shop_products WHERE slug = ${slug}`);
   const row = res.rows[0];
-  return row ? { id: String(row.id), status: String(row.status) } : null;
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    status: String(row.status),
+    trashed: row.deleted_at != null,
+  };
 }
 
-/** The Description cell as a document: one paragraph of the text. */
+/**
+ * ONE sentence, used by BOTH preview and apply, so the modal cannot promise
+ * something the apply then does differently. Refusing is the owner's call
+ * (2026-09-04): an import that silently un-trashed products would bring back
+ * things somebody deliberately deleted, and it would do it a thousand rows at
+ * a time.
+ */
+function trashedHandleProblem(handle: string): string {
+  return `handle "${handle}" is in the trash — restore that product first, or give this row a different Handle`;
+}
+
 /** A refusal as one line a spreadsheet author can act on. Subclasses first —
  *  DuplicateSkuError IS a BadRequestError, and "refused: sku" helps nobody. */
 function problemOf(err: unknown): string {
@@ -1198,7 +1237,7 @@ csvRoutes.post('/admin/products/import', auth, async (c) => {
   const groups = groupRows(rows, invalid);
 
   if (body.mode === 'preview') {
-    const existing = await existingSlugs(
+    const states = await slugStates(
       db,
       groups.map((group) => group.handle),
     );
@@ -1206,7 +1245,14 @@ csvRoutes.post('/admin/products/import', auth, async (c) => {
     let updates = 0;
     let skips = 0;
     for (const group of groups) {
-      if (existing.has(group.handle)) {
+      const state = states.get(group.handle);
+      if (state === 'trashed') {
+        // Counted as neither create nor update: apply refuses this row, and
+        // the preview has to say the same thing.
+        invalid.push({ line: group.line, problem: trashedHandleProblem(group.handle) });
+        continue;
+      }
+      if (state === 'live') {
         /* Preview must agree with apply: with `replace` off, an existing
          * handle is a SKIP, not an update — otherwise the modal promises
          * changes apply will not make. */
@@ -1226,6 +1272,16 @@ csvRoutes.post('/admin/products/import', auth, async (c) => {
     // apply decides against the catalogue as it stands now, not as it stood
     // when somebody previewed — and one code path cannot disagree with itself.
     const existing = await productBySlug(db, group.handle);
+    /*
+     * A TRASHED HANDLE IS REFUSED, NEVER CREATED AROUND. Falling through to
+     * the create below is what produced the `…-2-2` duplicate on production;
+     * see `slugStates`. Restoring it here instead was considered and declined
+     * by the owner — an import must not un-delete.
+     */
+    if (existing?.trashed) {
+      invalid.push({ line: group.line, problem: trashedHandleProblem(group.handle) });
+      continue;
+    }
     if (existing && !body.replace) {
       skipped += 1;
       continue;
