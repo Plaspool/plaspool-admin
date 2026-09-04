@@ -365,6 +365,13 @@
                         "when":  1786600004400,
                         "tag":  "0820_checkout_discount_codes",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  52,
+                        "version":  "7",
+                        "when":  1786600004500,
+                        "tag":  "0840_optional_ledger_reason",
+                        "breakpoints":  true
                     }
                 ]
 }

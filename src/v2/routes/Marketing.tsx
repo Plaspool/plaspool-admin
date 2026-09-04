@@ -886,16 +886,18 @@ function CreditModal({
       setError('Enter a whole number of points. Use a minus sign to take points away.');
       return;
     }
-    if (!reason.trim()) {
-      setError('Enter a reason. It is saved permanently.');
-      return;
-    }
+    /* NO REASON GUARD since 2026-09-03 (owner's instruction). This is the one
+     * ledger row nothing else in the database explains, so the field is still
+     * asked for and still prefilled from the presets — it just no longer stops
+     * the entry being saved. */
     setBusy(true);
     setError(null);
     try {
       const result = await marketingApi.adjust({
         email: addr,
         delta: n,
+        /* `filled()` drops a blank before the body is built, so this sends no
+         * `reason` key rather than `''` — which the route still refuses. */
         reason: reason.trim(),
         ...(programId ? { programId } : {}),
       });
@@ -968,9 +970,10 @@ function CreditModal({
           </div>
         </div>
         <TextField
-          label="Reason"
+          label="Reason (optional)"
           value={reason}
           placeholder="Goodwill for the late pickup"
+          hint="Saved permanently. Nothing else records why these points moved."
           onChange={(e) => {
             setReason(e.target.value);
             setError(null);

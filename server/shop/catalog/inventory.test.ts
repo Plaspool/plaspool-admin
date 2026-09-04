@@ -449,12 +449,9 @@ describe('adjustInventory', () => {
     });
   });
 
-  it('refuses a zero delta, an empty reason and a write-off larger than the stock', async () => {
+  it('refuses a zero delta and a write-off larger than the stock', async () => {
     const { variant } = await seedSellable(ctx.db, actor(), { onHand: 5 });
     await expect(adjustInventory(ctx.db, variant.id, 0, 'why', actor())).rejects.toBeInstanceOf(
-      BadRequestError,
-    );
-    await expect(adjustInventory(ctx.db, variant.id, 1, '   ', actor())).rejects.toBeInstanceOf(
       BadRequestError,
     );
     // `on_hand >= 0` as a 400 that names the field, not a 500 the client retries
@@ -462,6 +459,43 @@ describe('adjustInventory', () => {
     await expect(adjustInventory(ctx.db, variant.id, -50, 'oops', actor())).rejects.toBeInstanceOf(
       BadRequestError,
     );
+    expect(await getInventory(ctx.db, variant.id)).toMatchObject({ onHand: 5 });
+  });
+
+  /*
+   * THE REASON IS OPTIONAL SINCE 2026-09-03 (owner's instruction), and this is
+   * the test that used to assert the opposite. Both spellings of "nobody said"
+   * — an absent argument and a field of spaces — must reach the event as JSON
+   * NULL, because `server/shop/admin/audit.ts` renders `reason: string | null`
+   * and an empty string there would be a second blank it does not recognise.
+   */
+  it('adjusts with NO reason, storing null rather than an empty string', async () => {
+    const { variant } = await seedSellable(ctx.db, actor(), { onHand: 5 });
+
+    const level = await adjustInventory(ctx.db, variant.id, 4, undefined, actor());
+    expect(level).toMatchObject({ onHand: 9 });
+
+    await adjustInventory(ctx.db, variant.id, 1, '   ', actor());
+    expect(await getInventory(ctx.db, variant.id)).toMatchObject({ onHand: 10 });
+
+    const adjusted = (await eventsFor(ctx.db, variant.id)).filter(
+      (e) => e.type === 'catalog.inventory.adjusted',
+    );
+    expect(adjusted).toHaveLength(2);
+    for (const event of adjusted) {
+      expect(event.payload).toMatchObject({ variantId: variant.id, actorId: actor().id });
+      // Not `''`, and not the key being absent from the payload either.
+      expect((event.payload as { reason: unknown }).reason).toBeNull();
+    }
+  });
+
+  /* A NUL byte is still refused, optional or not: Postgres cannot store one and
+   * the error it raises at the column names nothing a caller can act on. */
+  it('still refuses a reason carrying a NUL byte', async () => {
+    const { variant } = await seedSellable(ctx.db, actor(), { onHand: 5 });
+    await expect(
+      adjustInventory(ctx.db, variant.id, 1, 'stock take', actor()),
+    ).rejects.toBeInstanceOf(BadRequestError);
     expect(await getInventory(ctx.db, variant.id)).toMatchObject({ onHand: 5 });
   });
 

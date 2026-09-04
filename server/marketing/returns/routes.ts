@@ -290,17 +290,19 @@ const InspectBody = z
      * backstop rather than a workflow.
      */
     bonusPoints: z.number().int().min(1).max(INT4_MAX).optional(),
-    /** Required iff `bonusPoints` is present — the repository holds that rule,
-     *  because it is a rule about two fields rather than about one. */
+    /** Refused unless `bonusPoints` is present, and no longer required when it
+     *  is — the repository holds that rule, because it is a rule about two
+     *  fields rather than about one. */
     bonusReason: REASON.optional(),
     note: OPTIONAL_NOTE,
   })
   .strict();
 
-/** Contract #12. The reason is REQUIRED: a refusal a customer cannot be given a
- *  reason for is a support conversation nobody has the record for. */
+/** Contract #12. The reason is OPTIONAL since 2026-09-03 (owner's instruction);
+ *  it was required, because a refusal a customer cannot be given a reason for is
+ *  a support conversation nobody has the record for. The screen still asks. */
 const RejectBody = z
-  .object({ expectedRevision: EXPECTED_REVISION, reason: REASON })
+  .object({ expectedRevision: EXPECTED_REVISION, reason: REASON.optional() })
   .strict();
 
 /** Contract #13. The reason is OPTIONAL, unlike a rejection: "the customer

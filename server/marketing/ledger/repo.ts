@@ -63,8 +63,13 @@ export interface LedgerEntry {
    * RENDER-FINAL AT WRITE TIME (spec D2d). Displayed verbatim and never
    * re-rendered through today's labels: a rename in June must not rewrite what
    * March said.
+   *
+   * NULLABLE SINCE MIGRATION 0840 — a manual adjustment may now be saved with
+   * nothing typed here (owner's instruction, 2026-09-03). Every renderer must
+   * therefore have something to show for "nobody said"; the column's CHECK
+   * still refuses `''`, so blank is NULL and only NULL.
    */
-  reason: string;
+  reason: string | null;
   programId: string | null;
   /**
    * The program's CURRENT name, joined at read time — a live pointer, NOT part
@@ -95,7 +100,7 @@ export interface CustomerRow {
   lastEntryAt: number | null;
   /** Enough of the newest row to say what last happened, without a second
    *  request per line. `null` for an account that has never earned anything. */
-  lastEntry: { kind: LedgerKind; delta: number; reason: string } | null;
+  lastEntry: { kind: LedgerKind; delta: number; reason: string | null } | null;
 }
 
 /** Contract §Types `CustomerSummary` — the detail header. */
@@ -154,8 +159,16 @@ export interface BalanceMoveInput {
   email: string;
   /** Positive. The direction is the function that was called. */
   amount: number;
-  /** RENDER-FINAL: already interpolated from the labels of this instant. */
-  reason: string;
+  /**
+   * RENDER-FINAL: already interpolated from the labels of this instant.
+   *
+   * OPTIONAL, because the manual adjustment above it is (2026-09-03). The
+   * STRUCTURAL kinds still always pass one and should keep doing so — an award
+   * or a redemption has a sentence the system itself can write, and there is no
+   * screen where a person is asked to supply it. This is optional for the one
+   * kind where a person types it.
+   */
+  reason?: string | null;
   kind: LedgerKind;
   /** The shop's id, when the caller knows one. First writer wins on the balance
    *  row — see `balanceUpsertFragment`. */
@@ -213,15 +226,21 @@ async function move(
     throw new BadRequestError('amount');
   }
   /*
-   * TRIMMED HERE AND STORED TRIMMED, one rule for every caller. A blank is not a
-   * value: `marketing_ledger_reason_ck` only refuses the empty string, so a
-   * field of spaces would satisfy it and render as nothing in the one column
-   * that explains why a balance moved. The routes' zod trims too — this is the
-   * backstop for anything reaching the executors from somewhere else, which by
-   * A8 is the checkout seam.
+   * TRIMMED HERE AND STORED TRIMMED, one rule for every caller, and A BLANK
+   * BECOMES NULL RATHER THAN `''`.
+   *
+   * `marketing_ledger_reason_ck` only refuses the empty string, so a field of
+   * spaces would satisfy it and render as nothing in the one column that
+   * explains why a balance moved — two spellings of "nobody said", one of which
+   * no reader would think to check for. Migration 0840 dropped the column's NOT
+   * NULL so the honest one is available; the CHECK stays, and is NULL-tolerant
+   * by definition (`NULL <> ''` is NULL, which a CHECK passes).
+   *
+   * The routes' zod trims too — this is the backstop for anything reaching the
+   * executors from somewhere else, which by A8 is the checkout seam.
    */
-  const reason = input.reason.trim();
-  if (reason === '') throw new BadRequestError('reason');
+  const said = (input.reason ?? '').trim();
+  const reason = said === '' ? null : said;
 
   const entryId = newId(ID.ledger);
   const amount = sql`${input.amount}`;
@@ -334,7 +353,7 @@ export interface AdjustmentInput {
   /** SIGNED, unlike the executors': this is what an admin typed, and the sign
    *  is the Credit/Debit control they chose. */
   delta: number;
-  reason: string;
+  reason?: string;
   programId?: string;
   customerId?: string;
   actorId: string;
@@ -353,8 +372,15 @@ export interface Adjustment {
  * KIND `manual`, WHICH IS THE ONLY KIND WITH NO STRUCTURAL COUNTERPART. An
  * award points at the return it paid for and a redemption points at the order it
  * discounted, and the partial uniques make each of them happen once. A manual
- * adjustment points at a person's judgement — so `reason` is REQUIRED, and it is
- * the only record of why the number moved.
+ * adjustment points at a person's judgement, and `reason` is the only record of
+ * why the number moved.
+ *
+ * IT IS NEVERTHELESS OPTIONAL SINCE 2026-09-03 (owner's instruction, migration
+ * 0840). That is a real loss and it is worth being clear about which: this is
+ * the one ledger kind whose row cannot be reconstructed from anything else in
+ * the database, so a blank one is permanently unexplained. The screen still asks
+ * for it and still offers presets — it just no longer refuses to save without
+ * one.
  *
  * OWNER-ONLY AT THE ROUTE (spec D12's frozen role matrix): processing a return
  * is any staff member's work, and minting points from nothing is not.
@@ -368,7 +394,6 @@ export async function adjust(db: Db, input: AdjustmentInput): Promise<Adjustment
    * because that is what the body calls it.
    */
   if (!Number.isInteger(input.delta) || input.delta === 0) throw new BadRequestError('delta');
-  if (input.reason.trim() === '') throw new BadRequestError('reason');
 
   /*
    * An unknown program is a FIELD error, not a 500 — the same call contract #20
@@ -391,8 +416,9 @@ export async function adjust(db: Db, input: AdjustmentInput): Promise<Adjustment
   const write: BalanceMoveInput = {
     email: input.email,
     amount: Math.abs(input.delta),
-    /* `move` trims and refuses a blank; the check above is here so the field
-     * error names `reason` before anything else about the body is judged. */
+    /* `move` trims, and turns a blank into NULL. Nothing here has to decide
+     * that, and nothing here should — one rule, in one place, for every caller
+     * including the checkout seam. */
     reason: input.reason,
     kind: 'manual',
     customerId: input.customerId ?? null,
@@ -440,7 +466,7 @@ function rowToEntry(row: Record<string, unknown>): LedgerEntry {
     // columns, which both drivers agree about. Only `created_at` is int8.
     delta: Number(row.delta),
     balanceAfter: Number(row.balance_after),
-    reason: String(row.reason),
+    reason: row.reason == null ? null : String(row.reason),
     programId: row.program_id == null ? null : String(row.program_id),
     programName: row.program_name == null ? null : String(row.program_name),
     returnRequestId: row.return_request_id == null ? null : String(row.return_request_id),
@@ -764,7 +790,7 @@ function rowToCustomer(row: Record<string, unknown>): CustomerRow {
             /* VERBATIM, like every other history string in this subsystem: the
              * directory's summary line is the reason as it was written, not one
              * re-rendered from today's labels. */
-            reason: String(row.last_reason),
+            reason: row.last_reason == null ? null : String(row.last_reason),
           },
   };
 }

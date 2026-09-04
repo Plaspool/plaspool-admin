@@ -1462,7 +1462,7 @@ const FIELD_TROUBLE: Record<string, string> = {
   category: 'That category name isn’t usable.',
   tags: 'One of those tags isn’t usable.',
   delta: 'That stock change would take the count below zero.',
-  reason: 'A reason is required.',
+  reason: 'That reason wasn’t accepted — it may be too long.',
   amount: 'That price isn’t a whole number of minor units.',
   currency: 'That currency code isn’t a three-letter ISO code.',
   coverImageId: 'That cover image isn’t one this shop can use yet.',

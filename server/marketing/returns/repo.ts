@@ -826,9 +826,19 @@ export const receive = (db: Db, id: string, input: StepInput): Promise<ReturnRow
   runTransition(db, id, RECEIVE, input);
 
 export interface RejectInput extends Cas {
-  /** Required: a refusal a customer cannot be given a reason for is a support
-   *  conversation nobody has the record for. */
-  reason: string;
+  /**
+   * OPTIONAL SINCE 2026-09-03 (owner's instruction). It was required, and the
+   * argument for that still holds and is now the screen's job to make: a refusal
+   * a customer cannot be given a reason for is a support conversation nobody has
+   * the record for, and this one IS SENT TO THE CUSTOMER — `renderReturnRejected`
+   * puts it in the email under "Reason:".
+   *
+   * `events.ts` has always omitted that paragraph when the reason is null, for
+   * returns rejected before this field was routinely filled, so a blank one
+   * sends a refusal with no explanation rather than an email that says "Reason:"
+   * and nothing.
+   */
+  reason?: string;
 }
 
 const REJECT: Transition<RejectInput> = {
@@ -838,17 +848,21 @@ const REJECT: Transition<RejectInput> = {
    * at that point would close a return over a pile of goods nobody counted. */
   from: ['requested', 'scheduled'],
   set: (arg, now) => sql`
-    status = 'rejected', rejected_reason = ${arg.reason}, closed_at = ${now}`,
+    status = 'rejected', rejected_reason = ${rejectionReason(arg)}, closed_at = ${now}`,
   /* The reason travels as the event's `note` rather than inside `data`: it is a
-   * sentence a human wrote and the timeline prints sentences. */
-  event: (arg) => ({ type: 'rejected', note: arg.reason, data: null }),
+   * sentence a human wrote and the timeline prints sentences. Null when none was
+   * written, which the timeline already renders as a bare "Rejected". */
+  event: (arg) => ({ type: 'rejected', note: rejectionReason(arg), data: null }),
 };
 
+/** Blank and absent are one state, and it is NULL. `rejected_reason` is nullable
+ *  from `0011` — it has always had to describe returns closed before this field
+ *  existed — so there is no second spelling for a reader to learn. */
+const rejectionReason = (arg: RejectInput): string | null => arg.reason?.trim() || null;
+
 /** Contract #12. */
-export async function reject(db: Db, id: string, input: RejectInput): Promise<ReturnRow> {
-  if (input.reason.trim() === '') throw new BadRequestError('reason');
-  return runTransition(db, id, REJECT, input);
-}
+export const reject = (db: Db, id: string, input: RejectInput): Promise<ReturnRow> =>
+  runTransition(db, id, REJECT, input);
 
 export interface CancelInput extends Cas {
   reason?: string;
@@ -955,7 +969,7 @@ export interface InspectOutcome {
   award: { points: number; balance: number } | null;
   /** The top-up, when there was one. Reported separately so the success copy can
    *  say "120 + 25" rather than a 145 nobody can decompose. */
-  bonus: { points: number; reason: string } | null;
+  bonus: { points: number; reason: string | null } | null;
 }
 
 const INSPECT_FROM: readonly ReturnStatus[] = ['received'];
@@ -1001,24 +1015,28 @@ export async function inspect(
     throw new BadRequestError('qtyRejected');
   }
   /*
-   * REQUIRED IFF SOMETHING WAS REJECTED, both ways. A rejection nobody explained
-   * is a dispute with no record; a reason stored against a return where nothing
-   * was rejected is a history that says "Damaged" about goods that were all
-   * accepted. The UI renders the Select only when the derived count is above
-   * zero, so neither direction is reachable from the screen — this is the
-   * backstop for everything else that can POST.
+   * ONE DIRECTION ONLY, SINCE 2026-09-03. It used to be required iff something
+   * was rejected, both ways; the owner made every reason field optional, so the
+   * "you must explain a rejection" half is gone.
+   *
+   * THE OTHER HALF STAYS, AND IS NOT THE SAME RULE. A reason stored against a
+   * return where nothing was rejected is a history that says "Damaged" about
+   * goods that were all accepted — a wrong record rather than a missing one, and
+   * refusing it forces nobody to type anything. The UI renders the Select only
+   * when the derived count is above zero, so it is still unreachable from the
+   * screen; this is the backstop for everything else that can POST.
    */
   const reason = input.rejectedReason?.trim() ?? '';
-  if (input.qtyRejected > 0 && reason === '') throw new BadRequestError('rejectedReason');
   if (input.qtyRejected === 0 && reason !== '') throw new BadRequestError('rejectedReason');
 
   /*
    * THE BONUS, AND ITS THREE RULES.
    *
-   * A REASON IS REQUIRED BOTH WAYS, exactly as the rejection reason above is: a
-   * discretionary credit nobody explained is an argument with no record, and a
-   * reason stored where nothing was granted is a history that describes a
-   * payment that never happened.
+   * A REASON IS OPTIONAL WITH THE BONUS AND REFUSED WITHOUT IT, exactly as the
+   * rejection reason above now is, and for the same asymmetry: a discretionary
+   * credit nobody explained is a record with a gap in it, while a reason stored
+   * where nothing was granted is a record that describes a payment that never
+   * happened. Only the second is a lie, so only the second is refused.
    *
    * AND IT NEEDS SOMETHING TO SIT BESIDE. With nothing accepted there is no
    * award, no ledger row and no balance change — a "bonus" there would be a
@@ -1028,9 +1046,12 @@ export async function inspect(
    */
   const bonus = input.bonusPoints;
   const bonusReason = input.bonusReason?.trim() ?? '';
+  /* `''` is the shape the two-field rules below are written in; NULL is the
+   *  shape the ledger column and the event payload are written in. Converted
+   *  once, here, rather than at each of the three sites that store it. */
+  const storedBonusReason = bonusReason === '' ? null : bonusReason;
   if (bonus !== undefined) {
     if (!Number.isInteger(bonus) || bonus < 1) throw new BadRequestError('bonusPoints');
-    if (bonusReason === '') throw new BadRequestError('bonusReason');
     if (input.qtyAccepted < 1) throw new BadRequestError('bonusPoints');
   } else if (bonusReason !== '') {
     throw new BadRequestError('bonusReason');
@@ -1173,8 +1194,9 @@ export async function inspect(
         kind: 'manual',
         delta: sql`${topUp}::integer`,
         balanceAfter: sql`bal.balance`,
-        /* The owner's own words, verbatim and forever. */
-        reason: bonusReason,
+        /* The owner's own words, verbatim and forever — or NULL if they gave
+         * none, which `marketing_ledger_reason_ck` insists on over `''`. */
+        reason: storedBonusReason,
         returnRequestId: sql`upd.id`,
         orderId: sql`NULL`,
         actorType: 'admin',
@@ -1211,7 +1233,7 @@ export async function inspect(
        * a year later without re-reading a ledger row that may have been filtered
        * out of view. */
       bonusPoints: topUp > 0 ? topUp : null,
-      bonusReason: topUp > 0 ? bonusReason : null,
+      bonusReason: topUp > 0 ? storedBonusReason : null,
       pointsPerUnit: perUnit,
       pointsLabelSingular: read.program.pointsLabelSingular,
       pointsLabelPlural: read.program.pointsLabelPlural,
@@ -1269,7 +1291,7 @@ export async function inspect(
   return {
     row: request,
     award: { points: request.pointsAwarded, balance: Number(row.new_balance) },
-    bonus: topUp > 0 ? { points: topUp, reason: bonusReason } : null,
+    bonus: topUp > 0 ? { points: topUp, reason: storedBonusReason } : null,
   };
 }
 

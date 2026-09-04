@@ -249,7 +249,10 @@ describe('the marketing screen', () => {
 
     await user.type(within(dialog).getByLabelText('Customer email'), 'dara@example.com');
     await user.type(within(dialog).getByLabelText('Points'), '-500');
-    await user.type(within(dialog).getByLabelText('Reason'), 'Fixing a double credit');
+    await user.type(
+      within(dialog).getByLabelText('Reason (optional)'),
+      'Fixing a double credit',
+    );
     await user.click(within(dialog).getByRole('button', { name: 'Save entry' }));
 
     await waitFor(() => expect(asked(ADJUSTMENTS)).toBeTruthy());

@@ -431,8 +431,13 @@ export interface LedgerEntry {
   delta: number;
   /** Stored at write time, so a row renders "120 → 180" without a window function. */
   balanceAfter: number;
-  /** A render-final snapshot. Display verbatim — see `ReturnEvent.data`. */
-  reason: string;
+  /** A render-final snapshot. Display verbatim — see `ReturnEvent.data`.
+   *
+   *  NULL SINCE 2026-09-03: a manual adjustment may be saved with nothing typed
+   *  (migration 0840). Every renderer needs something to show for "nobody
+   *  said" — the column's CHECK still refuses `''`, so blank is only ever
+   *  null. */
+  reason: string | null;
   programId: string | null;
   programName: string | null;
   returnRequestId: string | null;
@@ -451,7 +456,7 @@ export interface CustomerRow {
   balance: number;
   lifetimeEarned: number;
   lastEntryAt: number | null;
-  lastEntry: { kind: LedgerKind; delta: number; reason: string } | null;
+  lastEntry: { kind: LedgerKind; delta: number; reason: string | null } | null;
 }
 
 export interface CustomerSummary {
@@ -467,7 +472,9 @@ export interface AdjustmentDraft {
   email: string;
   /** Non-zero. Negative is a debit, and a debit below zero is refused. */
   delta: number;
-  reason: string;
+  /** Optional since 2026-09-03. `filled()` drops both `undefined` and `''`
+   *  before the body is built, so a blank box never reaches the wire. */
+  reason?: string;
   programId?: string;
   customerId?: string;
 }
@@ -644,7 +651,7 @@ export interface InspectResult {
    *  numbers — which is what lets the success copy say "120 + 25". */
   award: { points: number; balance: number } | null;
   /** The top-up, when there was one. */
-  bonus: { points: number; reason: string } | null;
+  bonus: { points: number; reason: string | null } | null;
 }
 
 export interface AdjustmentResult {
@@ -924,7 +931,14 @@ export const marketingApi = {
 
   /** #12. Pre-receipt refusal only. Once goods are in hand the honest route is
    *  `inspect` with `qtyAccepted: 0`, so the quantities are still recorded. */
-  async reject(id: string, draft: { expectedRevision: number; reason: string }): Promise<ReturnRequest> {
+  async reject(
+    id: string,
+    /** The reason is optional since 2026-09-03. It is the one on this screen
+     *  that reaches the CUSTOMER — `renderReturnRejected` mails it — so the
+     *  form still asks for it; `filled()` drops a blank rather than sending
+     *  `''`, which the route's `.min(1)` would refuse. */
+    draft: { expectedRevision: number; reason?: string },
+  ): Promise<ReturnRequest> {
     return transition(id, 'reject', { ...draft });
   },
 

@@ -1304,18 +1304,28 @@ export const shopApi = {
     return res.price;
   },
 
-  /** `reason` is MANDATORY server-side: an unexplained stock change is the one
-   *  you will most wish you had logged. */
+  /**
+   * `reason` is OPTIONAL since 2026-09-03 — it was mandatory server-side, on the
+   * argument that an unexplained stock change is the one you will most wish you
+   * had logged. The ledger is still kept; the field just no longer blocks a
+   * correction.
+   *
+   * OMITTED RATHER THAN SENT EMPTY, the same way `setVariantPrice` above does
+   * it: the body's schema is `.strict()` and its `reason` is still `.min(1)`
+   * INSIDE the `.optional()`, so `{ reason: '' }` is a 400 while an absent key
+   * is the blank. One rule for both fields, in one place, rather than four
+   * screens each remembering.
+   */
   async adjustInventory(
     variantId: string,
     delta: number,
-    reason: string,
+    reason?: string,
   ): Promise<{ variantId: string; onHand: number; reserved: number; available: number }> {
     const res = await shopFetch<{
       inventory: { variantId: string; onHand: number; reserved: number; available: number };
     }>(`${BASE}/inventory/${seg(variantId)}/adjust`, {
       method: 'POST',
-      body: { delta, reason },
+      body: { delta, ...(reason && reason.trim() ? { reason: reason.trim() } : {}) },
       id: variantId,
       subject: 'Variant',
     });

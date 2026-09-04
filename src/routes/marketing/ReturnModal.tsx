@@ -71,7 +71,7 @@ export function ReturnModal({
    *  server answers 403 as a backstop; this is the workflow. */
   isOwner: boolean;
   onClose: () => void;
-  onInspect: (bonus: { points: number; reason: string } | null) => void;
+  onInspect: (bonus: { points: number; reason: string | null } | null) => void;
   onNoted: () => void;
 }) {
   const [detail, setDetail] = useState<ReturnDetailPayload | null>(null);
@@ -235,7 +235,7 @@ export function ReturnModal({
                     {bonus > 0 && (
                       <>
                         <label className="mktform__label" htmlFor="mkt-bonus-why">
-                          Reason — kept for good
+                          Reason (optional) — kept for good
                         </label>
                         <input
                           id="mkt-bonus-why"
@@ -263,10 +263,13 @@ export function ReturnModal({
                     /* The bonus travels WITH the inspection — one statement, two
                        ledger rows — rather than being a second write somebody
                        could forget to make. */
-                    disabled={bonus > 0 && bonusReason.trim() === ''}
+                    /* THE REASON NO LONGER GATES THIS (2026-09-03). The
+                       bonus itself still does: zero means no bonus at all. */
                     onClick={() =>
                       onInspect(
-                        bonus > 0 ? { points: bonus, reason: bonusReason.trim() } : null,
+                        bonus > 0
+                          ? { points: bonus, reason: bonusReason.trim() || null }
+                          : null,
                       )
                     }
                   >

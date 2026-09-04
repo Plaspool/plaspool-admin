@@ -547,7 +547,18 @@ describe('the return detail', () => {
     });
   });
 
-  it('relabels the primary when nothing is being kept, and refuses it without a reason', async () => {
+  /*
+   * WAS '… and refuses it without a reason'. Reasons went optional on the
+   * owner's instruction, 2026-09-03, so leaving the Select on 'Pick a reason…'
+   * is a legal inspection that posts no `rejectedReason` at all.
+   *
+   * BOTH BODIES ARE ASSERTED, and that is the point of keeping one test: the
+   * unchosen one must OMIT the key rather than send the sentinel or an empty
+   * string, and the chosen one must still send the label. The repository still
+   * refuses a reason when nothing was rejected, which is the direction that
+   * survived.
+   */
+  it('relabels the primary when nothing is being kept, with or without a reason', async () => {
     const user = userEvent.setup();
     when('/api/marketing/programs', { programs: [] });
     when(path(receivedRow.id), returnDetails.received);
@@ -564,13 +575,8 @@ describe('the return detail', () => {
     await user.click(inPanel().getByRole('button', { name: 'Reject everything…' }));
     const record = inPanel().getByRole('button', { name: 'Record — nothing to award' });
 
-    // A refusal still has to say why, and the form asks before the server does.
-    await user.click(record);
-    expect(inPanel().getByText('Pick a reason for the ones being refused.')).toBeTruthy();
-    expect(calls.some((c) => c.path.includes('/inspect'))).toBe(false);
-
-    await user.click(inPanel().getByRole('combobox', { name: 'Why they were rejected' }));
-    await user.click(await screen.findByRole('option', { name: 'Not ours' }));
+    // NOTHING PICKED: the form no longer stops, and the sentinel value the
+    // Select carries for "unchosen" must not reach the wire.
     await user.click(record);
     await user.click(within(sheet()).getByRole('button', { name: 'Record — nothing to award' }));
 
@@ -581,8 +587,23 @@ describe('the return detail', () => {
       // rejection rather than a body the server refuses for a missing field.
       qtyAccepted: 0,
       qtyRejected: 6,
-      rejectedReason: 'Not ours',
     });
+
+    // …and picking one still sends the LABEL, which is what gets stored and
+    // mailed — not a code for each surface to translate.
+    await user.click(inPanel().getByRole('combobox', { name: 'Why they were rejected' }));
+    await user.click(await screen.findByRole('option', { name: 'Not ours' }));
+    await user.click(inPanel().getByRole('button', { name: 'Record — nothing to award' }));
+    await user.click(within(sheet()).getByRole('button', { name: 'Record — nothing to award' }));
+
+    await waitFor(() =>
+      expect(sent(`${path(receivedRow.id)}/inspect`, 'POST')).toEqual({
+        expectedRevision: receivedRow.revision,
+        qtyAccepted: 0,
+        qtyRejected: 6,
+        rejectedReason: 'Not ours',
+      }),
+    );
   });
 
   it('keeps a half-counted inspection when somebody else got there first', async () => {

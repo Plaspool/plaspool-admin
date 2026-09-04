@@ -293,13 +293,22 @@ export async function commitHold(db: Db, reservationId: string): Promise<boolean
 // ---------------------------------------------------------------- adjustment
 
 /**
- * An admin moves the count, with a stated reason, and it goes in the outbox.
+ * An admin moves the count, and it goes in the outbox.
  *
- * `reason` IS MANDATORY AND IS NOT A FREE PASS FOR AN EMPTY STRING. An
- * unexplained stock change is the thing you will most wish you had logged
- * (brief §6) — the difference between "we wrote off 12 damaged units on Tuesday"
- * and a count that is simply wrong with no record of when it stopped being
- * right.
+ * `reason` IS OPTIONAL SINCE 2026-09-03 (owner's instruction), and was mandatory
+ * before that. The audit case for it is unchanged and still worth making in the
+ * UI's placeholder — an unexplained stock change is the thing you will most wish
+ * you had logged (brief §6), the difference between "we wrote off 12 damaged
+ * units on Tuesday" and a count that is simply wrong with no record of when it
+ * stopped being right. But REQUIRING it did not produce that record; it produced
+ * "stock" and "fix", and counts left uncorrected because nobody wanted to argue
+ * with a form.
+ *
+ * BLANK IS STORED AS NULL, NOT AS `''`. `catalog.inventory.adjusted` is read by
+ * `server/shop/admin/audit.ts`, whose `reason` has been `string | null` since it
+ * was written — for price rows older than migration 0009 — and which renders
+ * exactly that state. An empty string would be a second spelling of "nobody
+ * said" that every reader would have to learn.
  *
  * The event is written in the SAME STATEMENT (contract §6 rule 1), so an
  * adjustment that commits without its event, or an event for an adjustment that
@@ -314,12 +323,14 @@ export async function adjustInventory(
   db: Db,
   variantId: string,
   delta: number,
-  reason: string,
+  reason: string | undefined,
   actor: AuthUser,
 ): Promise<InventoryLevel> {
   if (!Number.isInteger(delta) || delta === 0) throw new BadRequestError('delta');
-  const cleanReason = rejectNul(reason.trim(), 'reason');
-  if (!cleanReason) throw new BadRequestError('reason');
+  /* `rejectNul` STILL RUNS on anything that was said. Optional means a caller
+   * may say nothing; it does not mean a caller may say a NUL byte, which
+   * Postgres refuses at the column with an error no reader can act on. */
+  const cleanReason = rejectNul((reason ?? '').trim(), 'reason') || null;
   const now = Date.now();
 
   const row = await db

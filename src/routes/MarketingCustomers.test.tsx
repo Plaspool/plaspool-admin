@@ -452,7 +452,7 @@ describe('the customers screen', () => {
     await choose(user, 'Reason', 'Goodwill');
 
     // The preset WRITES the box — what is stored is what the box says.
-    expect(screen.getByLabelText('What it says on the ledger')).toHaveProperty(
+    expect(screen.getByLabelText('What it says on the ledger (optional)')).toHaveProperty(
       'value',
       'Goodwill',
     );
@@ -519,7 +519,18 @@ describe('the customers screen', () => {
     expect(screen.getByLabelText('Amount')).toHaveProperty('value', '60');
   });
 
-  it('refuses to write an entry with no reason, whatever the preset filled in', async () => {
+  /*
+   * WAS 'refuses to write an entry with no reason, whatever the preset filled
+   * in'. Reasons went optional on the owner's instruction, 2026-09-03.
+   *
+   * WHAT IS LEFT IS THE HALF THAT WAS ALWAYS THE POINT: the preset is a
+   * STARTING POINT, not a value that survives being deleted. Emptying the box
+   * after picking "Walk-in return" must post no reason at all — not the preset
+   * the Select put there, and not an empty string, which the route still
+   * refuses because `.min(1)` survives inside its `.optional()`. `filled()` in
+   * `api-marketing.ts` is what drops it.
+   */
+  it('posts no reason when the preset is deleted, rather than the preset', async () => {
     const user = userEvent.setup();
     withSettings();
     withCustomer();
@@ -529,22 +540,16 @@ describe('the customers screen', () => {
     await user.type(screen.getByLabelText('Amount'), '25');
     await choose(user, 'Reason', 'Walk-in return');
 
-    const box = screen.getByLabelText('What it says on the ledger');
+    const box = screen.getByLabelText('What it says on the ledger (optional)');
     expect(box).toHaveProperty('value', 'Walk-in return, counted at the counter');
 
-    // Emptied on purpose: the preset is a starting point, not a value that
-    // survives being deleted.
     await user.clear(box);
     await user.click(within(dialog).getByRole('button', { name: 'Credit 25 Bottle Caps' }));
 
-    // The client mirrors the server's required-ness so the message lands under
-    // the box rather than arriving as a toast about a field path.
-    expect(
-      within(field('What it says on the ledger')).getByText(
-        'Say why. It is written into the row and can never be edited.',
-      ),
-    ).toBeTruthy();
-    expect(sentNothing(ADJUSTMENTS)).toBe(true);
+    await waitFor(() => expect(asked(ADJUSTMENTS)).toBeTruthy());
+    const body = sent(ADJUSTMENTS, 'POST') as Record<string, unknown>;
+    expect(body).not.toHaveProperty('reason');
+    expect(body).toMatchObject({ delta: 25, email: DARA });
   });
 
   it('gives a writer the history and nothing to change it with', async () => {

@@ -455,6 +455,10 @@ export const marketingReturnEvents = pgTable(
  * `reason` IS RENDER-FINAL AT WRITE TIME, never a template resolved later: the
  * words a customer is shown for a March award must still read as they did in
  * March after the shop renames the programme in June.
+ *
+ * IT IS NULLABLE SINCE MIGRATION 0840 (owner's instruction, 2026-09-03): a
+ * manual adjustment may be saved with nothing typed. The CHECK below stays and
+ * still refuses the empty string, so blank has exactly one spelling.
  */
 export const marketingLedger = pgTable(
   'marketing_ledger',
@@ -469,7 +473,7 @@ export const marketingLedger = pgTable(
       .notNull(),
     delta: integer('delta').notNull(),
     balanceAfter: integer('balance_after').notNull(),
-    reason: text('reason').notNull(),
+    reason: text('reason'),
     returnRequestId: text('return_request_id'),
     /** The shop's order id. TEXT, no FK. */
     orderId: text('order_id'),

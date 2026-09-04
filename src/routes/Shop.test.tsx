@@ -493,14 +493,20 @@ describe('the catalogue', () => {
     const price = await screen.findByLabelText('New price (GBP)');
     await user.type(price, '25.00');
 
-    // The WHY is not optional in this UI even though the wire tolerates its
-    // absence for pre-0009 rows — an unexplained price move is the row nobody
-    // can act on in six months.
+    /*
+     * THE WHY NO LONGER GATES THE BUTTON. It never gated the WIRE — the route
+     * has tolerated its absence since migration 0009, for the price rows written
+     * before that column existed — and this screen was the last thing still
+     * demanding it. Aligned 2026-09-03 with the owner's instruction that every
+     * reason field be optional. What is asserted here is that a reason PICKED
+     * still travels, key for key.
+     */
     const set = screen.getByRole('button', { name: 'Set price' }) as HTMLButtonElement;
-    expect(set.disabled).toBe(true);
-    await user.click(screen.getByRole('combobox', { name: 'Why did the price change?' }));
+    expect(set.disabled).toBe(false);
+    await user.click(
+      screen.getByRole('combobox', { name: 'Why did the price change? (optional)' }),
+    );
     await user.click(await screen.findByRole('option', { name: 'New supplier invoice' }));
-    await waitFor(() => expect(set.disabled).toBe(false));
     await user.click(set);
 
     await waitFor(() => expect(asked('/api/shop/admin/variants/v_1/price')).toBeTruthy());
@@ -523,7 +529,9 @@ describe('the catalogue', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Adjust price' }));
     await user.type(await screen.findByLabelText('New price (GBP)'), '19.999');
-    await user.click(screen.getByRole('combobox', { name: 'Why did the price change?' }));
+    await user.click(
+      screen.getByRole('combobox', { name: 'Why did the price change? (optional)' }),
+    );
     await user.click(await screen.findByRole('option', { name: 'New supplier invoice' }));
 
     await waitFor(() => expect(screen.getByText(/2 decimal places/)).toBeTruthy());
@@ -532,7 +540,13 @@ describe('the catalogue', () => {
     ).toBe(true);
   });
 
-  it('will not adjust stock without a reason, and the question is ABOVE its picker', async () => {
+  /*
+   * WAS 'will not adjust stock without a reason, …'. Reasons went optional on
+   * the owner's instruction, 2026-09-03, so the button is live on the number
+   * alone. The DOM-ORDER half of this test is untouched and is the half worth
+   * keeping.
+   */
+  it('adjusts stock on the number alone, and the question is ABOVE its picker', async () => {
     const user = userEvent.setup();
     when('/api/shop/admin/products/p_1', {
       product: { ...PRODUCT, variants: [VARIANT] },
@@ -542,7 +556,8 @@ describe('the catalogue', () => {
     await user.click(await screen.findByRole('button', { name: 'Adjust stock' }));
     await user.type(await screen.findByLabelText('Change by'), '10');
     const adjust = screen.getByRole('button', { name: 'Adjust stock' }) as HTMLButtonElement;
-    expect(adjust.disabled).toBe(true);
+    // A number is now the whole gate — no reason has been picked yet.
+    await waitFor(() => expect(adjust.disabled).toBe(false));
 
     /*
      * THE QUESTION IS A VISIBLE LABEL RENDERED BEFORE THE CONTROL — a bare
@@ -550,17 +565,22 @@ describe('the catalogue', () => {
      * old panel whose meaning you could only learn by opening it. DOM order is
      * asserted, not just presence: a label after the dropdown fails this.
      */
-    const picker = screen.getByRole('combobox', { name: 'Why did the stock change?' });
-    const label = screen.getByText('Why did the stock change?', { selector: 'span.label' });
+    const picker = screen.getByRole('combobox', {
+      name: 'Why did the stock change? (optional)',
+    });
+    const label = screen.getByText('Why did the stock change? (optional)', {
+      selector: 'span.label',
+    });
     expect(
       label.compareDocumentPosition(picker) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
 
     /*
-     * A PICKER, and that is the point of it: a mandatory free text box collects
-     * "fix" and "x", which satisfies the server and tells the next reader
-     * nothing. Six presets plus "Something else" means the common answer is one
-     * click and the audit trail is still readable a year later.
+     * A PICKER, and that is why it survived the field becoming optional: a free
+     * text box collects "fix" and "x", which tells the next reader nothing. Six
+     * presets plus "Something else" means the common answer is one click and the
+     * audit trail is still readable a year later — which is worth more when
+     * nothing forces an answer at all.
      */
     await user.click(picker);
     await user.click(await screen.findByRole('option', { name: 'Stocktake recount' }));
@@ -631,7 +651,9 @@ describe('the catalogue', () => {
     // and come back as a 400 — so the form refuses BEFORE the promise, with
     // the reason where the arithmetic line would be.
     await user.type(box, '-3');
-    await user.click(screen.getByRole('combobox', { name: 'Why did the stock change?' }));
+    await user.click(
+      screen.getByRole('combobox', { name: 'Why did the stock change? (optional)' }),
+    );
     await user.click(await screen.findByRole('option', { name: 'Damaged or faulty — written off' }));
 
     expect(screen.getByText(/can’t write off more than there is/)).toBeTruthy();

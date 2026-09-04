@@ -1,0 +1,50 @@
+-- EVERY REASON FIELD IN THE ADMIN BECOMES OPTIONAL (range 0840-0859; owner's
+-- instruction, 2026-09-03).
+--
+-- WHAT THE OWNER ASKED FOR. Every "Reason" box in the admin refused to save
+-- without a sentence: the stock adjustment on the inventory screen, the manual
+-- points adjustment, the return refusal and the inspection's rejected-items
+-- reason. All four are now optional, on the screens and at the routes.
+--
+-- WHY THIS IS THE ONLY MIGRATION IT NEEDS. Three of the four already had a
+-- nullable column and were required in CODE alone:
+--
+--   * `shop_prices.reason`             -- nullable since 0009, already optional
+--   * `marketing_return_requests.rejected_reason`  -- nullable since 0011
+--   * the stock reason is not a column at all: it lives in the
+--     `catalog.inventory.adjusted` payload in `commerce_events`, and
+--     `server/shop/admin/audit.ts` has rendered `reason: string | null` since
+--     it was written, for the price rows older than 0009.
+--
+-- `marketing_ledger.reason` is the one that is NOT NULL, and a manual
+-- adjustment saved with nothing typed would be SQLSTATE 23502 at the column --
+-- a 500 with no row in the error table, on the exact path the owner asked to
+-- unblock. Hence this file, and hence its ordering constraint below.
+--
+-- THE CHECK STAYS, AND IT IS ALREADY NULL-TOLERANT.
+-- `marketing_ledger_reason_ck` is `CHECK (reason <> '')`. Against NULL that
+-- expression evaluates to NULL, and a CHECK passes on anything that is not
+-- FALSE -- so dropping NOT NULL admits NULL and keeps refusing the empty
+-- string, which is exactly the shape wanted. Blank is spelled ONE way. Two
+-- spellings of "nobody said" is a distinction every reader would have to learn
+-- and one of them would forget: `server/marketing/ledger/repo.ts` converts a
+-- blank to NULL for every caller, including the checkout seam.
+--
+-- NOTHING IS BACKFILLED AND NOTHING NEEDS TO BE. Every row that exists has a
+-- reason -- the column has been NOT NULL since 0011 -- and inventing NULLs for
+-- them would destroy real history to make the column look uniform. This only
+-- widens what may be written from here on.
+--
+-- WHY DROPPING NOT NULL IS SAFE TO RUN AHEAD OF THE CODE, WHICH IS THE
+-- ORDER IT WILL ARRIVE IN. A merged migration reaches production before the
+-- code that reads it, always. This one only WIDENS the column, so the deployed
+-- code -- which still sends a reason on every path -- keeps working unchanged
+-- between this applying and the new bundle shipping. The reverse order is the
+-- one that breaks: deploying the code first would 23502 on the first blank
+-- adjustment. APPLY THIS BEFORE DEPLOYING.
+--
+-- HAND-WRITTEN, for the reason every migration in this range is: commerce and
+-- marketing tables are invisible to drizzle-kit, so `push` and `generate` are
+-- both out (CLAUDE.md §3).
+
+ALTER TABLE marketing_ledger ALTER COLUMN reason DROP NOT NULL;

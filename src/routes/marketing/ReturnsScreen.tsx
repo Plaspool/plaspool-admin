@@ -620,7 +620,13 @@ export function ReturnsScreen() {
                 act: 'inspect',
                 ...(bonus === null
                   ? {}
-                  : { bonus: String(bonus.points), bonusWhy: bonus.reason }),
+                  : {
+                      bonus: String(bonus.points),
+                      /* No `bonusWhy` at all when none was given, rather than an
+                         empty one — `bonusFromParams` reads both the same way,
+                         and this keeps the URL honest. */
+                      ...(bonus.reason === null ? {} : { bonusWhy: bonus.reason }),
+                    }),
               }).toString()}`,
             })
           }

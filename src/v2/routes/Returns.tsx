@@ -641,8 +641,12 @@ function ReturnModal({
         <ReasonStep
           title="Refuse this return?"
           body="Use this before anything is collected — nothing gets counted. If the items are already with you, check them in and accept zero instead, so the numbers are still recorded."
-          label="Why it is refused"
-          required
+          label="Why it is refused (optional)"
+          /* OPTIONAL SINCE 2026-09-03 (owner's instruction). This one is MAILED
+           * to the customer — leave it blank and they get a refusal with no
+           * explanation, which the email renders as a missing paragraph rather
+           * than an empty "Reason:". */
+          required={false}
           confirmLabel="Reject return"
           critical
           busy={busy}
@@ -650,7 +654,11 @@ function ReturnModal({
           onBack={() => setStage('view')}
           onConfirm={(reason) =>
             void run(
-              () => marketingApi.reject(request.id, { expectedRevision: request.revision, reason }),
+              () =>
+              marketingApi.reject(request.id, {
+                expectedRevision: request.revision,
+                ...(reason ? { reason } : {}),
+              }),
               'Return rejected',
             )
           }
@@ -859,25 +867,26 @@ function InspectForm({
       setError('Use whole numbers. You can’t accept more than arrived.');
       return;
     }
-    if (nRejected > 0 && !rejectedReason.trim()) {
-      setError('Say why you turned items down. The customer is emailed this reason.');
-      return;
-    }
+    /* NEITHER REASON IS DEMANDED since 2026-09-03. The labels still say what
+     * each one is for, and the rejected-items reason still says that the
+     * customer reads it — that argument is now the copy's job, not the form's. */
     const nBonus = bonus.trim() === '' ? undefined : Number(bonus);
     if (nBonus !== undefined && (!Number.isInteger(nBonus) || nBonus <= 0)) {
       setError('A bonus must be a whole number of points, above zero.');
-      return;
-    }
-    if (nBonus !== undefined && !bonusReason.trim()) {
-      setError('Say why you added a bonus. It is saved permanently.');
       return;
     }
     onSubmit(
       {
         qtyAccepted: nAccepted,
         qtyRejected: nRejected,
-        ...(nRejected > 0 ? { rejectedReason: rejectedReason.trim() } : {}),
-        ...(nBonus !== undefined ? { bonusPoints: nBonus, bonusReason: bonusReason.trim() } : {}),
+        /* KEY OMITTED WHEN BLANK, both here and below. The route's REASON is
+         * still `.min(1)` inside its `.optional()`, and the repository still
+         * REFUSES a rejected-items reason when nothing was rejected — optional
+         * means "you need not explain", not "the record may contradict itself". */
+        ...(nRejected > 0 && rejectedReason.trim() ? { rejectedReason: rejectedReason.trim() } : {}),
+        ...(nBonus !== undefined
+          ? { bonusPoints: nBonus, ...(bonusReason.trim() ? { bonusReason: bonusReason.trim() } : {}) }
+          : {}),
         ...(note.trim() ? { note: note.trim() } : {}),
       },
       nAccepted > 0
@@ -930,7 +939,8 @@ function InspectForm({
 
       {nRejected > 0 ? (
         <TextField
-          label="Why units were rejected"
+          label="Why units were rejected (optional)"
+          hint="The customer is emailed this."
           value={rejectedReason}
           onChange={(e) => {
             setRejectedReason(e.target.value);
@@ -958,9 +968,9 @@ function InspectForm({
           </div>
           <div style={{ flex: 2 }}>
             <TextField
-              label="Bonus reason"
+              label="Bonus reason (optional)"
               value={bonusReason}
-              placeholder="Required with a bonus"
+              placeholder="Saved permanently"
               onChange={(e) => {
                 setBonusReason(e.target.value);
                 setError(null);

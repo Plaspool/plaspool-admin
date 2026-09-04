@@ -240,7 +240,10 @@ describe('the returns queue', () => {
     // …and the award restates the promised snapshot rate: 4 × 7.
     expect(screen.getByText('Awards 28 Bottle Caps')).toBeTruthy();
 
-    await user.type(screen.getByLabelText('Why units were rejected'), 'Two crushed flat');
+    await user.type(
+      screen.getByLabelText('Why units were rejected (optional)'),
+      'Two crushed flat',
+    );
     await user.click(screen.getByRole('button', { name: 'Award points' }));
 
     await waitFor(() => expect(asked(inspectPath(receivedRow.id))).toBeTruthy());

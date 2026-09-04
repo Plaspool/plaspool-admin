@@ -159,8 +159,12 @@ export interface LedgerEntryDraft {
    * words a customer is shown for a March award must still read as they did in
    * March after the shop renames the programme in June — so this arrives already
    * interpolated from the labels of that instant, and nothing re-renders it.
+   *
+   * NULL IS "NOBODY SAID", and reachable only from a manual adjustment left
+   * blank (migration 0840). The `::text` cast on the bind below already covers
+   * it — a bare NULL parameter here would be SQLSTATE 42P18.
    */
-  reason: string;
+  reason: string | null;
   returnRequestId: SQL;
   orderId: SQL;
   actorType: ActorType;
