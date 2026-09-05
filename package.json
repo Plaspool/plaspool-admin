@@ -16,7 +16,9 @@
     "build": "tsc -b && vite build && vite build --config vite.server.config.ts",
     "lint": "oxlint",
     "test": "vitest run",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy:prod": "tsx scripts/deploy.ts --prod",
+    "deploy:dev": "tsx scripts/deploy.ts --dev"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1107.0",
