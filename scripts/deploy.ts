@@ -268,20 +268,31 @@ try {
     process.exit(1);
   }
 
-  if (PROD) {
-    /* "Auto-assign Custom Production Domains" is enabled on this project, and
-       it covers CLI deploys carrying --prod. Every custom domain on the project
-       is therefore re-pointed at THIS deployment — including the dev host, which
-       is on the list only because a Vercel project with no Git integration has
-       no preview slot to put a domain in. So a production deploy silently steals
-       the dev URL, and it then serves production under a name that production's
-       own APP_ORIGINS does not list, which surfaces as CORS failures on a screen
-       that looks otherwise fine. Self-healing on the next deploy:dev — but only
-       if you know to run it. */
-    console.log(`\n  ! ${DEV_ALIAS} has just been re-assigned to THIS production`);
-    console.log('    deployment by auto-assign. Run `npm run deploy:dev` to take it back.');
-  }
-
+  /*
+   * WHY THIS DEPLOY DOES NOT STEAL THE DEV DOMAIN, AND WHAT WOULD BRING THAT
+   * BACK. "Auto-assign Custom Production Domains" is enabled and covers CLI
+   * deploys carrying --prod, so it re-points every PRODUCTION domain at the new
+   * deployment. What makes a domain production is `gitBranch: null`, and this
+   * project has no Git integration, so the dashboard offers no way to set that
+   * field and every domain added through the UI or `vercel domains add` lands
+   * as production — the dev host included. It was duly stolen twice, once
+   * mid-session while somebody was signing in, which presents as "Not on the
+   * team yet" because you are suddenly authenticating against production.
+   *
+   * The fix is one PATCH through `vercel api`, which the dashboard cannot do
+   * but the API accepts regardless of Git:
+   *
+   *   npx vercel api "/v9/projects/<projectId>/domains/<host>?teamId=<teamId>" \
+   *     -X PATCH -f gitBranch=dev --scope <scope>
+   *
+   * The branch name is a label; nothing tracks it. Non-null is the whole point.
+   * Verified 2026-09-05 by running this very command: production moved to the
+   * new deployment and admin.dev.plaspool.com stayed on its preview.
+   *
+   * DO NOT "fix" this by deleting the domain from the project instead — the
+   * next `vercel alias set` re-adds a domain it cannot find, as a production
+   * domain, putting it straight back in the auto-assign set.
+   */
   if (DEV) {
     try {
       execSync(`npx vercel alias set ${url} ${DEV_ALIAS} --scope ${SCOPE}`, { stdio: 'inherit' });
