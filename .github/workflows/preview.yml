@@ -1,0 +1,112 @@
+# Preview deploy for every pull request.
+#
+# WHY THIS IS A CLI DEPLOY AND NOT VERCEL'S GIT INTEGRATION. This repo is
+# private and owned by a GitHub organisation, and the Vercel scope is a Hobby
+# team. Vercel refuses that combination outright, which is why this project has
+# never had per-PR preview URLs or commit statuses. The restriction applies to
+# the GIT INTEGRATION only: a CLI deploy authenticated with a personal token is
+# simply the token owner deploying, exactly as from a laptop, and GitHub is only
+# where the command runs. So this is the free path, and Pro is the alternative.
+#
+# SECRETS: VERCEL_TOKEN must exist in repo secrets and must be scoped to the
+# TEAM, not just the personal account. A personal-only token fails as
+# "Not authorized", which reads like an expired login rather than a scope
+# problem — reads succeed while writes do not.
+#
+# THIS DOES NOT TOUCH admin.dev.plaspool.com. Every PR gets its own immutable
+# URL instead, because aliasing the shared dev host would mean the last PR to
+# build silently owns it. Claim it deliberately with `npm run deploy:dev`.
+name: Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# A new push to the same PR makes the previous build irrelevant.
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  VERCEL_ORG_ID: team_B4wbpcZQWPJ2KxdhcKOaRMSi
+  VERCEL_PROJECT_ID: prj_PcphVWAqTVHb1XbjWfulMbRaCqTH
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # only to post the preview URL comment
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      # HARD GATE. `tsc -b` is clean on master (verified 2026-09-05), so a
+      # failure here is genuinely the PR's, and this is the first check of any
+      # kind this repository has ever had on a pull request.
+      - name: Typecheck
+        run: npx tsc -b
+
+      # NOT A GATE, DELIBERATELY — master itself is red. Three tests fail on a
+      # clean master checkout (two in delivery-areas-routes.test.ts since
+      # migration 0480 backfilled the rows they assert are absent, plus one each
+      # in MarketingBanners and Shop). Gating on `npm test` today would fail
+      # every pull request on day one and teach everyone to ignore CI, which is
+      # worse than no CI. This reports instead. WHEN THE BASELINE IS GREEN,
+      # delete `continue-on-error` — that is the whole change.
+      #
+      # Projects run separately because a single `npm test` buffers for 20+
+      # minutes with no output, and because `ui` is the only project without a
+      # testTimeout override (5s vs server's 60s), so it is the one that reddens
+      # under CPU contention.
+      - name: Tests (reporting only — master baseline is red)
+        continue-on-error: true
+        run: |
+          npx vitest run --project shared --project client
+          npx vitest run --project server
+          npx vitest run --project ui
+
+      - name: Deploy preview
+        id: deploy
+        run: |
+          npx vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
+          npx vercel build --token="$VERCEL_TOKEN"
+          # The CLI prints a bare URL for a human and a JSON envelope when it
+          # detects a non-interactive caller. Matching the URL itself handles
+          # both without caring which dialect turned up.
+          npx vercel deploy --prebuilt --token="$VERCEL_TOKEN" | tee out.txt
+          URL=$(grep -oE 'https://[a-z0-9-]+\.vercel\.app' out.txt | tail -1)
+          test -n "$URL" || { echo "no deployment URL in CLI output"; cat out.txt; exit 1; }
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      - name: Comment the URL on the PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const url = '${{ steps.deploy.outputs.url }}';
+            const body = [
+              `**Preview:** ${url}`,
+              '',
+              'Built from `${{ github.event.pull_request.head.sha }}`.',
+              '',
+              '> Sign-in will not work on this URL. The Clerk publishable key is',
+              '> `pk_live_` and domain-locked to `plaspool.com`, so on a',
+              '> `*.vercel.app` host the sign-in card never renders — a bare logo',
+              '> on a blank page. That is Clerk working as designed, not a broken',
+              '> build. To click around signed in, claim the dev host from this',
+              '> branch with `npm run deploy:dev`.',
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const mine = (await github.rest.issues.listComments({ owner, repo, issue_number }))
+              .data.find(c => c.user.type === 'Bot' && c.body.startsWith('**Preview:**'));
+            if (mine) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+            else await github.rest.issues.createComment({ owner, repo, issue_number, body });
