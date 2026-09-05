@@ -78,12 +78,21 @@ jobs:
       # Reporting only, for the same reason as the preview workflow: master's
       # own baseline is three failing tests, so a gate here would simply block
       # every release. Remove `continue-on-error` once that baseline is green.
-      - name: Tests (reporting only — master baseline is red)
+      # One step per project — a `run: |` block runs under `bash -e`, so three
+      # commands in one block stop at the first failure and silently skip the
+      # rest. Reporting only, for the same reason as preview.yml: master's own
+      # baseline is red. Delete `continue-on-error` per project as it goes green.
+      - name: Tests — shared + client
         continue-on-error: true
-        run: |
-          npx vitest run --project shared --project client
-          npx vitest run --project server
-          npx vitest run --project ui
+        run: npx vitest run --project shared --project client
+
+      - name: Tests — server
+        continue-on-error: true
+        run: npx vitest run --project server
+
+      - name: Tests — ui
+        continue-on-error: true
+        run: npx vitest run --project ui
 
       - name: Deploy to production
         id: deploy
