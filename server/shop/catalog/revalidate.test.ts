@@ -5,7 +5,7 @@ import {
   setRevalidateTransport,
   settleRevalidations,
 } from './revalidate';
-import { STOREFRONT_REVALIDATE_URL } from './utils/revalidate-url';
+import { storefrontRevalidateUrl } from './utils/revalidate-url';
 
 /**
  * The purge transport itself.
@@ -30,7 +30,7 @@ import { STOREFRONT_REVALIDATE_URL } from './utils/revalidate-url';
  * in production, which is the only assertion about the URL worth having now that
  * it is no longer configurable.
  */
-const ENDPOINT = STOREFRONT_REVALIDATE_URL;
+const ENDPOINT = storefrontRevalidateUrl();
 
 interface Recorded {
   url: string;
@@ -231,7 +231,7 @@ describe('the endpoint', () => {
 
     expect(calls[0].url).toBe('https://plaspool.com/api/revalidate');
     // And that is what the module imports, so a typo in either fails here.
-    expect(calls[0].url).toBe(STOREFRONT_REVALIDATE_URL);
+    expect(calls[0].url).toBe(storefrontRevalidateUrl());
   });
 
   it('is NOT reached by a test process that has installed no transport', async () => {

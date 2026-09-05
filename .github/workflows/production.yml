@@ -70,20 +70,33 @@ jobs:
 
       - run: npm ci
 
-      # Hard gate. Clean on master, so a failure here is real — and this is the
-      # only thing standing between a typo and the live storefront's admin.
-      - name: Typecheck
-        run: npx tsc -b
+      # BUILD, NOT JUST TYPECHECK — `npm run build` is `tsc -b` plus both vite
+      # builds, so this keeps the typecheck gate and adds two things. It catches
+      # a build that breaks without a type error, and it produces
+      # `api-build/server.js`, which `server/entrypoint.test.ts` imports. That
+      # file is gitignored, so in CI the test failed with ERR_MODULE_NOT_FOUND
+      # against a module nobody had built — a red test that said nothing about
+      # the code. It is also the suite's only check that crosses Node's real
+      # module loader, which is exactly where a CommonJS namespace import turns
+      # into a production 500 that vitest cannot see (CLAUDE.md ss5).
+      - name: Build (typecheck + bundles)
+        run: npm run build
 
-      # Reporting only, for the same reason as the preview workflow: master's
-      # own baseline is three failing tests, so a gate here would simply block
-      # every release. Remove `continue-on-error` once that baseline is green.
-      - name: Tests (reporting only — master baseline is red)
+      # One step per project — a `run: |` block runs under `bash -e`, so three
+      # commands in one block stop at the first failure and silently skip the
+      # rest. Reporting only, for the same reason as preview.yml: master's own
+      # baseline is red. Delete `continue-on-error` per project as it goes green.
+      - name: Tests — shared + client
         continue-on-error: true
-        run: |
-          npx vitest run --project shared --project client
-          npx vitest run --project server
-          npx vitest run --project ui
+        run: npx vitest run --project shared --project client
+
+      - name: Tests — server
+        continue-on-error: true
+        run: npx vitest run --project server
+
+      - name: Tests — ui
+        continue-on-error: true
+        run: npx vitest run --project ui
 
       - name: Deploy to production
         id: deploy

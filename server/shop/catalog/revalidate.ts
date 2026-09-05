@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
-import { STOREFRONT_REVALIDATE_URL } from './utils/revalidate-url';
+import { storefrontRevalidateUrl } from './utils/revalidate-url';
 
 /**
  * Pushing cache invalidations to the storefront after a catalogue write.
@@ -119,7 +119,8 @@ function warn(event: string, detail: Record<string, unknown>): void {
  *
  * ═══════════════════════════════════════════════════════════════════════════
  * A TEST PROCESS NEVER REACHES THE REAL STOREFRONT, AND THAT GUARD IS
- * LOAD-BEARING rather than tidiness. The endpoint is a repository constant, so there is no
+ * LOAD-BEARING rather than tidiness. The endpoint defaults to a value held in
+ * the repository rather than the environment, so there is no
  * unset-by-default state to protect anything: without this, `npm test` would
  * fire real POSTs at the live Worker. `server/nul-bytes.test.ts` alone walks
  * EVERY registered route, and `routes.test.ts`, `lifecycle.test.ts`,
@@ -142,7 +143,7 @@ function warn(event: string, detail: Record<string, unknown>): void {
  */
 function endpoint(): string | null {
   if (process.env.NODE_ENV === 'test' && transport === null) return null;
-  return STOREFRONT_REVALIDATE_URL;
+  return storefrontRevalidateUrl();
 }
 
 // ----------------------------------------------------------------- transport

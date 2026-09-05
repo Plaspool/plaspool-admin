@@ -47,30 +47,42 @@ jobs:
 
       - run: npm ci
 
-      # HARD GATE. `tsc -b` is clean on master (verified 2026-09-05), so a
-      # failure here is genuinely the PR's, and this is the first check of any
-      # kind this repository has ever had on a pull request.
-      - name: Typecheck
-        run: npx tsc -b
+      # BUILD, NOT JUST TYPECHECK — `npm run build` is `tsc -b` plus both vite
+      # builds, so this keeps the typecheck gate and adds two things. It catches
+      # a build that breaks without a type error, and it produces
+      # `api-build/server.js`, which `server/entrypoint.test.ts` imports. That
+      # file is gitignored, so in CI the test failed with ERR_MODULE_NOT_FOUND
+      # against a module nobody had built — a red test that said nothing about
+      # the code. It is also the suite's only check that crosses Node's real
+      # module loader, which is exactly where a CommonJS namespace import turns
+      # into a production 500 that vitest cannot see (CLAUDE.md ss5).
+      - name: Build (typecheck + bundles)
+        run: npm run build
 
-      # NOT A GATE, DELIBERATELY — master itself is red. Three tests fail on a
-      # clean master checkout (two in delivery-areas-routes.test.ts since
-      # migration 0480 backfilled the rows they assert are absent, plus one each
-      # in MarketingBanners and Shop). Gating on `npm test` today would fail
-      # every pull request on day one and teach everyone to ignore CI, which is
-      # worse than no CI. This reports instead. WHEN THE BASELINE IS GREEN,
-      # delete `continue-on-error` — that is the whole change.
+      # ONE STEP PER PROJECT, and that is not cosmetic. A `run: |` block executes
+      # under `bash -e`, so three commands in one block stop at the first
+      # failure — the original version of this file ran only `shared`+`client`
+      # and never reached `server` or `ui` at all, while reporting as though it
+      # had tested everything. Separate steps also mean the Actions UI names
+      # which project is red instead of making you open the log.
       #
-      # Projects run separately because a single `npm test` buffers for 20+
-      # minutes with no output, and because `ui` is the only project without a
-      # testTimeout override (5s vs server's 60s), so it is the one that reddens
-      # under CPU contention.
-      - name: Tests (reporting only — master baseline is red)
+      # `continue-on-error` because master's own baseline is red; these report
+      # rather than gate. Delete it from each step, one project at a time, as
+      # that project goes green — that is the whole change.
+      - name: Tests — shared + client
         continue-on-error: true
-        run: |
-          npx vitest run --project shared --project client
-          npx vitest run --project server
-          npx vitest run --project ui
+        run: npx vitest run --project shared --project client
+
+      - name: Tests — server
+        continue-on-error: true
+        run: npx vitest run --project server
+
+      # `ui` is the only project without a testTimeout override (5s against
+      # server's 60s), so it is the one that reddens under CPU contention rather
+      # than from a real regression. Expect noise here before trusting it.
+      - name: Tests — ui
+        continue-on-error: true
+        run: npx vitest run --project ui
 
       - name: Deploy preview
         id: deploy
