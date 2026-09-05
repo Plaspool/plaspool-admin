@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { Archive, Package, Plus, Tags, Trash2 } from 'lucide-react';
+import {
+  Archive,
+  ArchiveRestore,
+  Download,
+  Package,
+  Plus,
+  Tags,
+  Trash2,
+  Upload,
+} from 'lucide-react';
 import { shopApi, type ProductStatus, type ShopProduct, type ShopTag } from '../../data/api-shop';
 import {
   shopCsvApi,
@@ -15,7 +24,13 @@ import { humanise, productTone, shortDate } from '../lib/format';
 import { AnalyticsBar, AnalyticsMenuItem, PageHeader, useAnalyticsBar, type Metric } from '../ui/Page';
 import { Badge, Banner, Button, ButtonLink, EmptyState, SplitEmpty } from '../ui/primitives';
 import { SpoolTiles } from '../ui/illustrations';
-import { DataTable, IdCell, TablePager, type Column } from '../ui/DataTable';
+import {
+  DataTable,
+  IdCell,
+  TablePager,
+  type BulkConfig,
+  type Column,
+} from '../ui/DataTable';
 import { Checkbox } from '../ui/Field';
 import { StoredImg } from '../ui/Img';
 import { MenuItem } from '../ui/Menu';
@@ -37,11 +52,21 @@ import { useToast } from '../ui/Toast';
  * mark. It lands with the in-depth product work.
  */
 
+/*
+ * TRASH IS A TAB HERE AND A VIEW EVERYWHERE ELSE. `deleted_at` is independent
+ * of `status`, so a trashed product keeps whatever status it had — which is why
+ * this list is the only way to reach one. Until this tab existed there was no
+ * route to a trashed product at all: the detail screen has had a working
+ * Restore button the whole time (`ProductDetail.tsx`) and nothing could
+ * navigate to it. The server already answered `status=trash`; only the tab was
+ * missing.
+ */
 const TABS: { value: ProductStatus | 'all'; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'active', label: 'Active' },
   { value: 'draft', label: 'Draft' },
   { value: 'archived', label: 'Archived' },
+  { value: 'trash', label: 'Trash' },
 ];
 
 export default function Products() {
@@ -71,6 +96,33 @@ export default function Products() {
   );
 
   /**
+   * HOW MANY PRODUCTS THERE ARE ALTOGETHER — for the Export action's count,
+   * and only for that.
+   *
+   * A SEPARATE REQUEST, AND NOT `all.length`. The list above is one page of 25
+   * filtered by the tab; export ships the WHOLE catalogue, every status, trash
+   * excluded. Labelling the action with what this page happens to hold would
+   * promise a number the file will not match the moment there is a second page
+   * or a tab other than All.
+   *
+   * `limit: 1` because the items are not wanted, the count is; `withTotal`
+   * makes the server pay for the COUNT its paging deliberately avoids, so this
+   * runs once on arrival and again only when the catalogue itself changed.
+   */
+  const { data: catalogue, reload: reloadCatalogue } = useAsync(
+    (signal) => shopApi.listProducts({ limit: 1, withTotal: true }, signal),
+    [],
+  );
+  const total = catalogue?.total ?? null;
+
+  /** The list AND the count — anything that can change how many products
+   *  exist has to move both, or the Export label goes stale on screen. */
+  function refresh() {
+    reload();
+    reloadCatalogue();
+  }
+
+  /**
    * Bulk lifecycle, run one product at a time — the API has no bulk route,
    * and pretending it does by hiding partial failure would be worse than the
    * sequential requests. The toast reports what actually happened.
@@ -96,7 +148,7 @@ export default function Products() {
         : `${ok} ${verb}, ${failed} refused — some products were not in a state that allows it`,
       failed === 0 ? 'default' : 'critical',
     );
-    reload();
+    refresh();
   }
 
   const all = data?.items ?? [];
@@ -165,6 +217,76 @@ export default function Products() {
     { key: 'updated', header: 'Updated', label: 'Updated', render: (p) => shortDate(p.updatedAt) },
   ];
 
+  /*
+   * Restore is the ONLY bulk action that means anything in the trash — publish,
+   * archive and "move to trash" either fail or are no-ops on a deleted row, and
+   * a control that can only refuse is worse than no control.
+   */
+  const bulkConfig: BulkConfig =
+    tab === 'trash'
+      ? {
+          pills: [
+            {
+              label: 'Restore',
+              icon: <ArchiveRestore aria-hidden="true" />,
+              onAction: (keys) =>
+                void bulkTransition(
+                  keys,
+                  (id) => shopApi.transitionProduct(id, 'restore'),
+                  'restored',
+                ),
+            },
+          ],
+        }
+      : {
+    pills: [
+      {
+        label: 'Set as draft',
+        onAction: (keys) =>
+          void bulkTransition(keys, (id) => shopApi.transitionProduct(id, 'unpublish'), 'set as draft'),
+      },
+    ],
+    menuGroups: [
+      {
+        items: [
+          {
+            label: 'Publish products',
+            onAction: (keys) =>
+              void bulkTransition(keys, (id) => shopApi.transitionProduct(id, 'publish'), 'published'),
+          },
+          {
+            label: 'Archive products',
+            icon: <Archive aria-hidden="true" />,
+            onAction: (keys) =>
+              void bulkTransition(keys, (id) => shopApi.transitionProduct(id, 'archive'), 'archived'),
+          },
+          {
+            label: 'Move to trash',
+            icon: <Trash2 aria-hidden="true" />,
+            critical: true,
+            onAction: (keys) =>
+              void bulkTransition(keys, (id) => shopApi.trashProduct(id), 'moved to the trash'),
+          },
+        ],
+      },
+      {
+        section: 'Organise',
+        items: [
+          {
+            label: 'Add tags…',
+            icon: <Tags aria-hidden="true" />,
+            onAction: (keys) => setTagAction({ mode: 'add', keys }),
+          },
+          {
+            label: 'Remove tags…',
+            icon: <Tags aria-hidden="true" />,
+            onAction: (keys) => setTagAction({ mode: 'remove', keys }),
+          },
+        ],
+      },
+    ],
+        };
+
   return (
     <div className="page">
       <PageHeader
@@ -179,21 +301,29 @@ export default function Products() {
         menu={(close) => (
           <>
             <AnalyticsMenuItem shown={shown} onToggle={toggle} close={close} />
+            {/* The count, not an ellipsis. "Export…" said only that a dialog
+                was coming; the number says how many PRODUCTS the file will
+                carry — the modal is where "one row per variant" belongs, since
+                rows are not what anyone counts their shop in. Absent rather
+                than 0 while the count is still in flight: "Export (0)" on a
+                shop that has products is a worse sentence than "Export". */}
             <MenuItem
+              icon={<Download aria-hidden="true" />}
               onSelect={() => {
                 close();
                 setExportOpen(true);
               }}
             >
-              Export…
+              {total === null ? 'Export' : `Export (${total})`}
             </MenuItem>
             <MenuItem
+              icon={<Upload aria-hidden="true" />}
               onSelect={() => {
                 close();
                 setImportOpen(true);
               }}
             >
-              Import…
+              Import
             </MenuItem>
           </>
         )}
@@ -214,54 +344,7 @@ export default function Products() {
         rowKey={(p) => p.id}
         hrefFor={(p) => `/products/${p.id}`}
         loading={loading}
-        bulk={{
-          pills: [
-            {
-              label: 'Set as draft',
-              onAction: (keys) =>
-                void bulkTransition(keys, (id) => shopApi.transitionProduct(id, 'unpublish'), 'set as draft'),
-            },
-          ],
-          menuGroups: [
-            {
-              items: [
-                {
-                  label: 'Publish products',
-                  onAction: (keys) =>
-                    void bulkTransition(keys, (id) => shopApi.transitionProduct(id, 'publish'), 'published'),
-                },
-                {
-                  label: 'Archive products',
-                  icon: <Archive aria-hidden="true" />,
-                  onAction: (keys) =>
-                    void bulkTransition(keys, (id) => shopApi.transitionProduct(id, 'archive'), 'archived'),
-                },
-                {
-                  label: 'Move to trash',
-                  icon: <Trash2 aria-hidden="true" />,
-                  critical: true,
-                  onAction: (keys) =>
-                    void bulkTransition(keys, (id) => shopApi.trashProduct(id), 'moved to the trash'),
-                },
-              ],
-            },
-            {
-              section: 'Organise',
-              items: [
-                {
-                  label: 'Add tags…',
-                  icon: <Tags aria-hidden="true" />,
-                  onAction: (keys) => setTagAction({ mode: 'add', keys }),
-                },
-                {
-                  label: 'Remove tags…',
-                  icon: <Tags aria-hidden="true" />,
-                  onAction: (keys) => setTagAction({ mode: 'remove', keys }),
-                },
-              ],
-            },
-          ],
-        }}
+        bulk={bulkConfig}
         tabs={{
           value: tab,
           tabs: TABS,
@@ -308,7 +391,10 @@ export default function Products() {
                     <Plus aria-hidden="true" />
                     Add product
                   </ButtonLink>
-                  <Button onClick={() => setImportOpen(true)}>Import</Button>
+                  <Button onClick={() => setImportOpen(true)}>
+                    <Upload aria-hidden="true" />
+                    Import
+                  </Button>
                 </>
               }
               shelf={<SpoolTiles />}
@@ -341,7 +427,7 @@ export default function Products() {
                 : `${ok} updated, ${failed} refused — reload the page and try those again`,
               failed === 0 ? 'default' : 'critical',
             );
-            reload();
+            refresh();
           }}
         />
       ) : null}
@@ -352,7 +438,7 @@ export default function Products() {
           onClose={() => setImportOpen(false)}
           onDone={() => {
             setImportOpen(false);
-            reload();
+            refresh();
           }}
         />
       ) : null}
@@ -589,6 +675,11 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
           rows are matched to products you already have (capitals and punctuation don’t matter).
           Any column you leave out is kept as it is. Prices are in naira with two decimals, and
           stock is the exact number you have, not a change to it.
+        </p>
+        <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
+          The description column keeps its styling as HTML — the tags in it are the headings, lists
+          and bold text. Leave them alone and the styling comes back unchanged. Plain words work
+          too, and become a single paragraph.
         </p>
         <label className="field">
           <span className="field__label">CSV file</span>

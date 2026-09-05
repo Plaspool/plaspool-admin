@@ -3,6 +3,7 @@ import { getEnv } from '../env';
 import type { AppEnv } from '../app-env';
 import type { Db } from '../db/client';
 import type { PointsRedemptionPort } from '../../shared/marketing/redemption';
+import type { DiscountCodePort } from '../../shared/marketing/discounts';
 import { toResponse } from '../middleware/errors';
 import {
   ProductPreconditionFailedError,
@@ -15,6 +16,7 @@ import { routes as catalog } from './catalog/routes';
 import { createReviewRoutes } from './reviews/routes';
 import { queueReviewApprovedEmail } from './orders/review-mail';
 import { catalogPort } from './catalog/port';
+import { checkoutPaymentsPort } from './payments/port';
 import { orders } from './orders/routes';
 import { drainCommerceEvents } from './orders/repo/consumer';
 import { cartShopRoutes } from './cart/routes';
@@ -22,6 +24,7 @@ import { resolveShopCustomer } from './cart/identity/customers';
 import { SHOP_CURRENCY } from './currency';
 import { shopAdminRoutes } from './admin/routes';
 import { shippingZoneRoutes } from './cart/checkout/shipping-zones-routes';
+import { deliverySettingsRoutes } from './settings/routes';
 import { ShippingZonePreconditionFailedError } from './cart/checkout/shipping-zones-repo';
 
 /**
@@ -50,11 +53,19 @@ export interface ShopAppOptions {
    * the frozen port cannot take one itself.
    */
   redemption?: (db: Db) => PointsRedemptionPort;
+  /**
+   * Discount codes, injected at `server/index.ts` (admin#100 Part B). A factory
+   * over the request's handle, for the reason `redemption` is one.
+   *
+   * Passed straight down to the cart router. The shop app decides nothing about
+   * a code; `applyDiscount` and `priceCart` do.
+   */
+  discounts?: (db: Db) => DiscountCodePort;
 }
 
 export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
   const shop = new Hono<AppEnv>();
-  const { redemption } = opts;
+  const { redemption, discounts } = opts;
 
   /**
    * Catalog's two conflict errors, rendered with the payload they carry.
@@ -234,6 +245,10 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
       catalog: catalogPort,
       storeCurrency: SHOP_CURRENCY,
       bridgeSecret: getEnv().SHOP_AUTH_BRIDGE_SECRET || undefined,
+      /* Discount codes (admin#100 Part B), when `server/index.ts` wired them.
+         Undefined turns the feature off end to end: the cart view reports
+         `discountCodesEnabled: false` and the apply route answers 501. */
+      discounts,
       /*
        * THE COMMERCE OUTBOX'S SCHEDULED BACKSTOP (admin#29), AND THIS IS THE
        * SEAM THAT MAKES IT ONE CRON INSTEAD OF TWO.
@@ -270,6 +285,38 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
        * redemption existed.
        */
       redemption,
+      /*
+       * ═══════════════════════════════════════════════════════════════════════
+       * PAYMENTS → CART, SO A FROZEN CHECKOUT CAN BE UNFROZEN.
+       *
+       * THE SECOND SEAM THIS FILE OWNS, and the same shape as the Catalog one
+       * above it: Cart declares `CheckoutPaymentsPort`
+       * (`cart/payments-port.ts`), Payments exports an object of that shape
+       * (`payments/port.ts`) without naming Cart's type, and this line is the
+       * only place in the application that knows both halves. The assignment
+       * is where the two are structurally checked against each other — a
+       * mismatch is a compile error HERE, which is where somebody wiring the
+       * seam is already looking.
+       *
+       * PAYMENTS IS MOUNTED IN `server/index.ts`, NOT HERE (see the block at
+       * the bottom of this file), and that does not matter to this line: what
+       * is injected is a port over the request's handle, not a router. The
+       * mount decides which URLs answer; this decides what Cart may ask.
+       *
+       * ═══ WITHOUT THIS LINE THE FEATURE IS OFF, LOUDLY ═══
+       *
+       * `thawCheckout` refuses with 501 when the port is absent rather than
+       * reopening a cart it cannot prove was unpaid — so forgetting this line
+       * leaves `POST /checkout/cancel` answering `not_implemented` and address
+       * edits answering the same 409 they answer today. That is the deliberate
+       * inverse of the trap admin#27 recorded, where an unwired `CheckoutPort`
+       * let the highest-severity route in the system run and quietly do
+       * nothing. `composition.test.ts` drives this through the real
+       * `createApp()` for the reason that file exists: Cart's own suites
+       * inject their own port and would stay green with this line deleted.
+       * ═══════════════════════════════════════════════════════════════════════
+       */
+      payments: checkoutPaymentsPort,
     }),
   );
 
@@ -279,6 +326,19 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
    * Catalog's `/admin/categories` and the dashboard's read surface are.
    */
   shop.route('/', shippingZoneRoutes);
+
+  /*
+   * DELIVERY SETTINGS — `/admin/delivery-settings` (migration 0760). The switch
+   * that decides whether checkout asks for a district at all, so it belongs
+   * beside the zones and areas it governs rather than in a settings router of
+   * its own. `settings` domain, guarded per route inside the router.
+   *
+   * ITS PUBLIC HALF IS NOT HERE. `GET /api/public/shop/delivery-config` is
+   * mounted in `server/index.ts` ABOVE `sessionMiddleware`, because it carries
+   * `Cache-Control: public` and must be cookieless by construction — the same
+   * split `server/shop/reviews/public.ts` makes and for the same reason.
+   */
+  shop.route('/', deliverySettingsRoutes);
 
   /*
    * THE DASHBOARD'S READ SURFACE — `/admin/stats`, `/admin/customers`,

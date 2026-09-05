@@ -241,6 +241,25 @@ export const shopAddresses = pgTable(
      *  never parsed from street text. Null = no district named = zone rate.
      *  Migration 0460 has the argument. */
     district: text('district'),
+    /**
+     * THE OPTIONAL PIN (migration 0780) — where the door actually is.
+     *
+     * MICRO-DEGREES AS `integer`, THE WAY MONEY IS MINOR UNITS. `numeric` reads
+     * back as a string from both drivers and `double precision` makes 9.05785 a
+     * value that no longer compares equal to itself across a round trip. Degrees
+     * × 1e6 is exact, identical in Neon and PGlite, and resolves to about 11cm.
+     * The WIRE is decimal degrees; `checkout/repo.ts` is the only file that
+     * knows about the scale.
+     *
+     * IT PRICES NOTHING AND CANNOT. Nothing in this system holds coordinates to
+     * measure it against — see the migration header.
+     */
+    locationLatE6: integer('location_lat_e6'),
+    locationLngE6: integer('location_lng_e6'),
+    /** Metres. Null for a `'pin'`, which has no accuracy figure to report. */
+    locationAccuracyM: integer('location_accuracy_m'),
+    locationSource: text('location_source').$type<'device' | 'pin'>(),
+    locationCapturedAt: epochMs('location_captured_at'),
   },
   (t) => [
     uniqueIndex('shop_addresses_cart_kind_uq').on(t.cartId, t.kind),
@@ -249,6 +268,35 @@ export const shopAddresses = pgTable(
     // derived from this, so a lowercase or three-letter code would silently pick
     // the fallback zone and charge the wrong tax.
     check('shop_addresses_country_ck', sql`${t.countryCode} ~ '^[A-Z]{2}$'`),
+    /* ALL OR NOTHING, so half a pin cannot exist. `accuracy_m` is exempt inside
+     * the present branch: a hand-dropped pin genuinely has none. */
+    check(
+      'shop_addresses_location_ck',
+      sql`(${t.locationLatE6} IS NULL AND ${t.locationLngE6} IS NULL
+           AND ${t.locationAccuracyM} IS NULL AND ${t.locationSource} IS NULL
+           AND ${t.locationCapturedAt} IS NULL)
+          OR (${t.locationLatE6} IS NOT NULL AND ${t.locationLngE6} IS NOT NULL
+              AND ${t.locationSource} IS NOT NULL AND ${t.locationCapturedAt} IS NOT NULL)`,
+    ),
+    /* A swapped lat/lng is the classic mistake here and it is silent: bounding
+     * latitude at 90 catches a longitude in the latitude slot for every point
+     * outside the tropics. */
+    check(
+      'shop_addresses_location_lat_ck',
+      sql`${t.locationLatE6} IS NULL OR ${t.locationLatE6} BETWEEN -90000000 AND 90000000`,
+    ),
+    check(
+      'shop_addresses_location_lng_ck',
+      sql`${t.locationLngE6} IS NULL OR ${t.locationLngE6} BETWEEN -180000000 AND 180000000`,
+    ),
+    check(
+      'shop_addresses_location_accuracy_ck',
+      sql`${t.locationAccuracyM} IS NULL OR ${t.locationAccuracyM} >= 0`,
+    ),
+    check(
+      'shop_addresses_location_source_ck',
+      sql`${t.locationSource} IS NULL OR ${t.locationSource} IN ('device', 'pin')`,
+    ),
   ],
 );
 

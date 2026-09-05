@@ -43,6 +43,22 @@ export interface Program {
   unitLabelPlural: string | null;
   minUnitsPerReturn: number | null;
   pointsPerUnit: number | null;
+  /**
+   * WHAT ONE ACCEPTED UNIT COSTS US, minor units (0920) — the reward side of
+   * the cost-per-unit figure, and deliberately NOT derived from
+   * `pointsPerUnit`. What a point is worth lives in `marketing_settings` as a
+   * redemption rate that ships as a placeholder at zero; costing the programme
+   * through it would print nothing but zeroes until somebody set it and then
+   * re-price all of history the day they did.
+   *
+   * NULL means nobody has said. The analytics screen reports that as missing
+   * rather than as a confident ₦0.
+   */
+  unitCostMinor: number | null;
+  /** What buying one NEW costs, minor units — the benchmark the saving is
+   *  measured against. Live rather than snapshotted onto returns: it is a
+   *  comparison against today's market, and the screen says so. */
+  unitMarketCostMinor: number | null;
   status: 'active' | 'paused';
   /** The reserved extension point, pinned to `{}` in v1 by the create schema
    *  simply having no such field. */
@@ -71,6 +87,10 @@ export interface ProgramDraft {
   unitLabelPlural?: string;
   minUnitsPerReturn?: number;
   pointsPerUnit?: number;
+  /** Optional at creation: a programme is complete without a money rate, it
+   *  just cannot be costed until one is set. */
+  unitCostMinor?: number;
+  unitMarketCostMinor?: number;
 }
 
 /** Contract #3's body minus `expectedRevision`. NOTE WHAT IS ABSENT: `key`,
@@ -83,6 +103,11 @@ export interface ProgramPatch {
   unitLabelPlural?: string;
   minUnitsPerReturn?: number;
   pointsPerUnit?: number;
+  /** `null` CLEARS the rate — "we have not decided what a unit costs us",
+   *  which is a different statement from "it costs nothing" and the only way
+   *  to undo a figure typed by mistake. */
+  unitCostMinor?: number | null;
+  unitMarketCostMinor?: number | null;
   status?: 'active' | 'paused';
 }
 
@@ -101,6 +126,7 @@ const PROGRAM_KEY_UQ = 'marketing_programs_key_uq';
 const PROGRAM_COLUMNS = sql.raw(
   `id, key, kind, name, points_label_singular, points_label_plural,
    unit_label_singular, unit_label_plural, min_units_per_return, points_per_unit,
+   unit_cost_minor, unit_market_cost_minor,
    status, conditions, seeded, revision, created_at, updated_at`,
 );
 
@@ -156,6 +182,9 @@ function rowToProgram(row: Record<string, unknown>): Program {
     minUnitsPerReturn:
       row.min_units_per_return == null ? null : Number(row.min_units_per_return),
     pointsPerUnit: row.points_per_unit == null ? null : Number(row.points_per_unit),
+    unitCostMinor: row.unit_cost_minor == null ? null : Number(row.unit_cost_minor),
+    unitMarketCostMinor:
+      row.unit_market_cost_minor == null ? null : Number(row.unit_market_cost_minor),
     status: row.status as Program['status'],
     conditions: (row.conditions ?? {}) as Record<string, never>,
     /*
@@ -236,11 +265,14 @@ export async function createProgram(
         INSERT INTO marketing_programs
           (id, key, kind, name, points_label_singular, points_label_plural,
            unit_label_singular, unit_label_plural, min_units_per_return, points_per_unit,
+           unit_cost_minor, unit_market_cost_minor,
            created_at, updated_at, created_by)
         VALUES (${id}, ${draft.key}, ${draft.kind}, ${draft.name},
                 ${draft.pointsLabelSingular}, ${draft.pointsLabelPlural},
                 ${draft.unitLabelSingular ?? null}, ${draft.unitLabelPlural ?? null},
                 ${draft.minUnitsPerReturn ?? null}, ${draft.pointsPerUnit ?? null},
+                ${draft.unitCostMinor ?? null}::integer,
+                ${draft.unitMarketCostMinor ?? null}::integer,
                 ${opts.now}, ${opts.now}, ${opts.actorId}::uuid)
         RETURNING ${PROGRAM_COLUMNS}
       )
@@ -281,8 +313,15 @@ const PATCHABLE = {
   unitLabelPlural: 'unit_label_plural',
   minUnitsPerReturn: 'min_units_per_return',
   pointsPerUnit: 'points_per_unit',
+  unitCostMinor: 'unit_cost_minor',
+  unitMarketCostMinor: 'unit_market_cost_minor',
   status: 'status',
 } as const satisfies Record<keyof ProgramPatch, string>;
+
+/** The two money fields, whose NULLs need an explicit cast: a bound `null` in
+ *  a SET has no target column to infer from and is SQLSTATE 42P18 at run time
+ *  rather than at build time. */
+const MONEY_FIELDS = new Set<keyof ProgramPatch>(['unitCostMinor', 'unitMarketCostMinor']);
 
 /** The four columns `marketing_programs_kind_fields_ck` ties to `kind`. */
 const UNIT_ONLY_FIELDS = [
@@ -340,7 +379,11 @@ export async function patchProgram(
    */
   const assignments = (Object.keys(PATCHABLE) as (keyof ProgramPatch)[])
     .filter((field) => patch[field] !== undefined)
-    .map((field) => sql`${sql.raw(PATCHABLE[field])} = ${patch[field]}`);
+    .map((field) =>
+      MONEY_FIELDS.has(field)
+        ? sql`${sql.raw(PATCHABLE[field])} = ${patch[field]}::integer`
+        : sql`${sql.raw(PATCHABLE[field])} = ${patch[field]}`,
+    );
   assignments.push(sql`revision = revision + 1`, sql`updated_at = ${opts.now}`);
 
   const res = await db.execute(sql`

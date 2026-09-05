@@ -10,6 +10,7 @@ import { rolePermissions } from './middleware/permissions';
 import { createAuthRoutes } from './routes/auth';
 import { createClerkRoutes } from './routes/clerk';
 import { routes as users } from './routes/users';
+import { routes as ownership } from './routes/ownership';
 import { routes as posts } from './routes/posts';
 import { routes as featured } from './routes/featured';
 import { routes as revisions } from './routes/revisions';
@@ -28,6 +29,7 @@ import { registerOrdersDefaults } from './shop/orders/ports';
 import { resendMailer } from './mail/resend';
 import { SHOP_PREFIX, shopApp } from './shop/app';
 import { createReviewPublicRoutes } from './shop/reviews/public';
+import { createDeliveryConfigRoutes } from './shop/settings/public';
 import { createPaymentRoutes, createWebhookRoutes } from './shop/payments/routes';
 import { checkoutPort } from './shop/cart/port';
 import { drainCommerceEvents } from './shop/orders/repo/consumer';
@@ -38,6 +40,7 @@ import { drainPaymentEvents } from './shop/payments/webhook';
 import { createRefund } from './shop/payments/refunds';
 import { paystackProvider } from './shop/payments/config';
 import { redemptionPort } from './marketing/redemption/port';
+import { discountPort } from './marketing/discounts/port';
 import type { Mailer } from './mail/port';
 import type { PaymentProvider } from './shop/payments/provider/types';
 import type { AppEnv } from './app-env';
@@ -221,6 +224,9 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
     /* SpoolPoints. Orders spends them at the capture and gives them back on a
      * cancellation or a refund; see the seam comment below. */
     redemption: (db) => redemptionPort(db),
+    /* Discount codes. Orders only COUNTS a use, at the capture — it never
+       decides whether a code applies; the freeze settled that (admin#100). */
+    discounts: (db) => discountPort(db),
     /*
      * THE FIFTH SEAM (task-d3): ISSUE A REFUND. `POST /admin/orders/:id/cancel`
      * calls this, through `RefundIssuer` (`shop/orders/ports.ts`), to refund a
@@ -355,7 +361,14 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
           /* The inline drain applies `payment.captured` too, so it must be able to
            * spend points — otherwise whether a debit happens would depend on
            * which drain got there first. */
-          { origin, redemption: (handle) => redemptionPort(handle) },
+          {
+            origin,
+            redemption: (handle) => redemptionPort(handle),
+            /* And the discount code's use, counted on the same event — so
+               whether a campaign's tally moves does not depend on which drain
+               reached the capture first. */
+            discounts: (handle) => discountPort(handle),
+          },
           { limit: 10, passes: 2, budgetMs: 5_000 },
         ),
     }),
@@ -461,6 +474,24 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    */
   app.route(API_PREFIX, createReviewPublicRoutes());
 
+  /*
+   * THE PUBLIC DELIVERY CONFIG — the address form as data (migration 0760),
+   * which the storefront renders its checkout address step from.
+   *
+   * Beside the three public routers above and ABOVE `sessionMiddleware` for
+   * their shared reason: the response carries `Cache-Control: public`, and
+   * mounted here `c.get('user')` is structurally `undefined`, so cookieless by
+   * construction rather than by review. Every field in it is a property of the
+   * SHOP — which questions the form asks, what the limits are, where the
+   * district list lives — and nothing per-viewer may be added to it.
+   *
+   * THE WRITE IS NOT IN IT. `PATCH /api/shop/admin/delivery-settings` lives in
+   * the shop app below, behind a session and the `settings` domain. A mutation
+   * inside a cacheable router puts "may be stored by a shared cache" and
+   * "writes a row" in one file, which is the confusion this split prevents.
+   */
+  app.route(API_PREFIX, createDeliveryConfigRoutes());
+
   app.use(`${API_PREFIX}/*`, originGuard(deps.origins));
 
   app.use(`${API_PREFIX}/*`, sessionMiddleware());
@@ -492,6 +523,13 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * throughout, and needs no mailer, so it takes no part in the factory above.
    */
   app.route(API_PREFIX, users);
+  /*
+   * OWNERSHIP TRANSFER — its own router because two of its routes are NOT
+   * admin-only: the recipient accepts or declines while still holding whatever
+   * role they had, which is very often `writer`. `routes/users.ts` promises
+   * `requireAdmin()` on every route and this would have quietly broken that.
+   */
+  app.route(API_PREFIX, ownership);
   app.route(API_PREFIX, posts);
   /*
    * CURATION — the featured rail's admin side, mounted AFTER `posts` and it does
@@ -684,7 +722,14 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
           /* The inline drain applies `payment.captured` too, so it must be able to
            * spend points — otherwise whether a debit happens would depend on
            * which drain got there first. */
-          { origin, redemption: (handle) => redemptionPort(handle) },
+          {
+            origin,
+            redemption: (handle) => redemptionPort(handle),
+            /* And the discount code's use, counted on the same event — so
+               whether a campaign's tally moves does not depend on which drain
+               reached the capture first. */
+            discounts: (handle) => discountPort(handle),
+          },
           { limit: 10, passes: 2, budgetMs: 5_000 },
         ),
     }),
@@ -707,7 +752,16 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * conflict errors with a `product` rather than a `post`, falling through to
    * `toResponse` for every other row of the §8 table.
    */
-  app.route(`${API_PREFIX}${SHOP_PREFIX}`, shopApp({ redemption: (db) => redemptionPort(db) }));
+  app.route(
+    `${API_PREFIX}${SHOP_PREFIX}`,
+    shopApp({
+      redemption: (db) => redemptionPort(db),
+      /* Discount codes (admin#100 Part B) — marketing's second port into the
+         shop, injected here for the reason the first one is: this is the only
+         file that may know both halves. */
+      discounts: (db) => discountPort(db),
+    }),
+  );
 
   return app;
 }

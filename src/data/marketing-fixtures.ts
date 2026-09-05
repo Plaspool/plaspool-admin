@@ -34,6 +34,7 @@ import {
   type LedgerEntry,
   type MarketingSettings,
   type MarketingSummary,
+  type ReturnCostAnalytics,
   type Program,
   type ProgramLabels,
   type ReturnAction,
@@ -75,6 +76,11 @@ export const capsProgram: Program = {
   unitLabelPlural: 'canisters',
   minUnitsPerReturn: 4,
   pointsPerUnit: 7,
+  /* 0920 — ₦100 a unit in reward money and ₦850 to buy one new, which is the
+   * shape of the owner's own arithmetic and what makes the design gallery's
+   * cost figures read like the real screen's. */
+  unitCostMinor: 10000,
+  unitMarketCostMinor: 85000,
   status: 'active',
   conditions: {},
   seeded: true,
@@ -109,6 +115,10 @@ export const goodwillProgram: Program = {
   id: 'prg_goodwill',
   key: 'goodwill',
   kind: 'adhoc',
+  /* No costing rate: points granted by hand count no units, so there is
+   * nothing for a per-unit cost to be about. */
+  unitCostMinor: null,
+  unitMarketCostMinor: null,
   name: 'Goodwill',
   pointsLabelSingular: 'Bottle Cap',
   pointsLabelPlural: 'Bottle Caps',
@@ -326,6 +336,12 @@ const area = (over: Partial<ServiceArea> & { id: string; name: string }): Servic
   open: 0,
   loadUnits: 0,
   oldestAgeMs: null,
+  /* No standard by default — most districts have none, and the screen has to
+   * read correctly in that state before it reads correctly with one. */
+  stdTransportMinor: null,
+  stdLocalMinor: null,
+  stdDriverMinor: null,
+  stdFeesMinor: null,
   ...over,
 });
 
@@ -336,6 +352,13 @@ export const cabbageArea = area({
   open: 5,
   loadUnits: 29,
   oldestAgeMs: 100 * HOUR,
+  /* THE ONE DISTRICT WITH A STANDARD PICKUP COST (0920), so the cost form's
+   * placeholder has something to show and Turnip Hill beside it exercises the
+   * commoner state of having none. Transport and local only: a district with a
+   * standard for every line is the rare case, and a fixture that never leaves
+   * one blank would hide the per-line fallback. */
+  stdTransportMinor: 200000,
+  stdLocalMinor: 50000,
 });
 
 /** Listed, greyed and inert — hiding it would read as "we do not serve there". */
@@ -486,12 +509,22 @@ function request(item: ReturnListItem): ReturnRequest {
     customerName: item.customerName,
     customerPhone: '+234 801 234 5678',
     pickupAddress: item.pickupAddress,
+    serviceAreaId: item.serviceArea?.id ?? null,
     qtyDeclared: item.qtyDeclared,
     qtyAccepted: item.qtyAccepted,
     qtyRejected: item.qtyRejected,
     // Frozen at creation: repricing the program cannot change this promise.
     pointsPerUnitSnapshot: 7,
     pointsAwarded: item.pointsAwarded,
+    /* 0920. The money rate is frozen the same way; the pickup's own costs are
+     * recorded only once the van has actually been, so an open return has
+     * none — which is the state the cost form opens in. */
+    unitCostMinorSnapshot: 10000,
+    costTransportMinor: closed ? 250000 : null,
+    costLocalMinor: closed ? 80000 : null,
+    costDriverMinor: null,
+    costFeesMinor: null,
+    costNote: null,
     rejectedReason: item.status === 'rejected' ? 'Not ours — different brand entirely.' : null,
     cancelReason: item.status === 'cancelled' ? 'Customer moved house before the pickup.' : null,
     source: 'admin',
@@ -530,6 +563,8 @@ function detail(item: ReturnListItem): ReturnDetail {
       status: capsProgram.status,
       pointsPerUnit: capsProgram.pointsPerUnit as number,
       minUnitsPerReturn: capsProgram.minUnitsPerReturn as number,
+      unitCostMinor: capsProgram.unitCostMinor,
+      unitMarketCostMinor: capsProgram.unitMarketCostMinor,
     },
     events: timeline(item),
     emailIntents: intents(item.status),
@@ -851,6 +886,157 @@ export const summary: MarketingSummary = {
   // Non-archived only — the server filters, the client derives each chip.
   banners: banners.filter((banner) => banner.status !== 'archived'),
   pendingEmailIntents: 1,
+};
+
+// -------------------------------------------------- what an item costs us
+
+/**
+ * The returns-cost aggregate, with the owner's own arithmetic in it.
+ *
+ * ₦100 paid an item and ₦212 to fetch them, so an item really costs ₦312 —
+ * which is the shape of the sentence that started the feature ("the headline
+ * says a hundred, but we are actually getting them for three hundred and
+ * something"). Every figure below is internally consistent: the totals divide
+ * by 1 240 kept to give `perUnit`, and the two months sum to the totals. A
+ * fixture whose numbers do not add up would let a screen that mis-divides
+ * them look correct.
+ *
+ * `coverage` HAS ONE OF EACH so the disclosure banner's three arms are all
+ * exercised — including `uncosted`, the one that means the headline is an
+ * UNDERSTATEMENT and the screen has to say so.
+ */
+export const returnCostAnalytics: ReturnCostAnalytics = {
+  generatedAt: NOW,
+  range: '90',
+  rates: { unitCostMinor: 10000, unitMarketCostMinor: 85000, currency: 'NGN' },
+  totals: {
+    returns: 96,
+    unitsKept: 1240,
+    unitsRejected: 61,
+    rewardMinor: 12400000,
+    transportMinor: 19840000,
+    localMinor: 4960000,
+    driverMinor: 1240000,
+    feesMinor: 620000,
+    collectionMinor: 26660000,
+    allInMinor: 39060000,
+  },
+  perUnit: { allIn: 31500, reward: 10000, transport: 16000, local: 4000, driver: 1000, fees: 500 },
+  byMonth: [
+    {
+      month: '2026-07',
+      unitsKept: 500,
+      rewardMinor: 5000000,
+      transportMinor: 9000000,
+      localMinor: 2000000,
+      driverMinor: 500000,
+      feesMinor: 250000,
+      allInMinor: 16750000,
+      perUnitMinor: 33500,
+    },
+    {
+      month: '2026-08',
+      unitsKept: 740,
+      rewardMinor: 7400000,
+      transportMinor: 10840000,
+      localMinor: 2960000,
+      driverMinor: 740000,
+      feesMinor: 370000,
+      allInMinor: 22310000,
+      perUnitMinor: 30149,
+    },
+  ],
+  byArea: [
+    {
+      areaId: turnipArea.id,
+      region: turnipArea.region,
+      name: turnipArea.name,
+      returns: 12,
+      unitsKept: 140,
+      rewardMinor: 1400000,
+      collectionMinor: 7000000,
+      allInMinor: 8400000,
+      perUnitMinor: 60000,
+      estimated: 4,
+    },
+    {
+      areaId: cabbageArea.id,
+      region: cabbageArea.region,
+      name: cabbageArea.name,
+      returns: 80,
+      unitsKept: 1080,
+      rewardMinor: 10800000,
+      collectionMinor: 18660000,
+      allInMinor: 29460000,
+      perUnitMinor: 27278,
+      estimated: 0,
+    },
+    /* The out-of-area group: the ABSENCE of a district, so its id is null
+     * rather than a fabricated one. The screen must name it rather than
+     * render a blank cell. */
+    {
+      areaId: null,
+      region: null,
+      name: null,
+      returns: 4,
+      unitsKept: 20,
+      rewardMinor: 200000,
+      collectionMinor: 1000000,
+      allInMinor: 1200000,
+      perUnitMinor: 60000,
+      estimated: 4,
+    },
+  ],
+  costliest: [
+    {
+      id: 'ret_tunde_1',
+      customerEmail: 'tunde@example.com',
+      customerName: 'Tunde B.',
+      areaName: turnipArea.name,
+      closedAt: NOW - 3 * DAY,
+      unitsKept: 4,
+      allInMinor: 440000,
+      perUnitMinor: 110000,
+      estimated: false,
+    },
+    {
+      id: 'ret_dara_0',
+      customerEmail: 'dara@example.com',
+      customerName: 'Dara A.',
+      areaName: null,
+      closedAt: NOW - 9 * DAY,
+      unitsKept: 6,
+      allInMinor: 360000,
+      perUnitMinor: 60000,
+      estimated: true,
+    },
+  ],
+  coverage: { recorded: 78, estimated: 14, uncosted: 4 },
+};
+
+/** The first day of the programme: nothing settled, so every per-item figure
+ *  divides by zero and the screen must say so rather than print ₦0. */
+export const emptyReturnCostAnalytics: ReturnCostAnalytics = {
+  generatedAt: NOW,
+  range: '90',
+  rates: { unitCostMinor: null, unitMarketCostMinor: null, currency: 'NGN' },
+  totals: {
+    returns: 0,
+    unitsKept: 0,
+    unitsRejected: 0,
+    rewardMinor: 0,
+    transportMinor: 0,
+    localMinor: 0,
+    driverMinor: 0,
+    feesMinor: 0,
+    collectionMinor: 0,
+    allInMinor: 0,
+  },
+  perUnit: { allIn: 0, reward: 0, transport: 0, local: 0, driver: 0, fees: 0 },
+  byMonth: [],
+  byArea: [],
+  costliest: [],
+  coverage: { recorded: 0, estimated: 0, uncosted: 0 },
 };
 
 /** A deployment on its first day: real zeros, not skeletons, and every arm of

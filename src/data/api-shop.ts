@@ -1060,10 +1060,25 @@ export const shopApi = {
       sort?: 'newest' | 'price_asc' | 'price_desc' | 'alphabetical';
       cursor?: string;
       limit?: number;
+      /**
+       * "And how many are there altogether?" — off by default because the
+       * server pays for a second scan to answer it (see `withTotal` in
+       * `server/shop/catalog/query.ts`). The products screen asks once, to
+       * put a number on the Export action.
+       */
+      withTotal?: boolean;
     } = {},
     signal?: AbortSignal,
-  ): Promise<Page<ShopProduct>> {
-    return shopFetch<Page<ShopProduct>>(`${BASE}/products`, { query: { ...query }, signal });
+  ): Promise<Page<ShopProduct> & { total?: number }> {
+    return shopFetch<Page<ShopProduct> & { total?: number }>(`${BASE}/products`, {
+      // `'1'`/`'0'`, never a boolean — the same reason spelled out on
+      // `listInventory` above: `?withTotal=false` is a truthy string.
+      query: {
+        ...query,
+        withTotal: query.withTotal === undefined ? undefined : query.withTotal ? '1' : '0',
+      },
+      signal,
+    });
   },
 
   async getProduct(id: string, signal?: AbortSignal): Promise<ShopProductDetail> {
@@ -1289,18 +1304,28 @@ export const shopApi = {
     return res.price;
   },
 
-  /** `reason` is MANDATORY server-side: an unexplained stock change is the one
-   *  you will most wish you had logged. */
+  /**
+   * `reason` is OPTIONAL since 2026-09-03 — it was mandatory server-side, on the
+   * argument that an unexplained stock change is the one you will most wish you
+   * had logged. The ledger is still kept; the field just no longer blocks a
+   * correction.
+   *
+   * OMITTED RATHER THAN SENT EMPTY, the same way `setVariantPrice` above does
+   * it: the body's schema is `.strict()` and its `reason` is still `.min(1)`
+   * INSIDE the `.optional()`, so `{ reason: '' }` is a 400 while an absent key
+   * is the blank. One rule for both fields, in one place, rather than four
+   * screens each remembering.
+   */
   async adjustInventory(
     variantId: string,
     delta: number,
-    reason: string,
+    reason?: string,
   ): Promise<{ variantId: string; onHand: number; reserved: number; available: number }> {
     const res = await shopFetch<{
       inventory: { variantId: string; onHand: number; reserved: number; available: number };
     }>(`${BASE}/inventory/${seg(variantId)}/adjust`, {
       method: 'POST',
-      body: { delta, reason },
+      body: { delta, ...(reason && reason.trim() ? { reason: reason.trim() } : {}) },
       id: variantId,
       subject: 'Variant',
     });

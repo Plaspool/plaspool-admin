@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import * as Papa from 'papaparse';
+import Papa from 'papaparse';
 import { sql } from 'drizzle-orm';
 import type { Context } from 'hono';
 import type { Db } from '../../db/client';
@@ -17,6 +17,7 @@ import type { Mailer } from '../../mail/port';
 import { renderSystem } from '../../email/system-templates';
 import { money } from '../../../shared/commerce/money';
 import { slugify } from '../../../shared/doc';
+import { docToHtml, htmlToDoc } from '../../../shared/doc-html';
 import { adminOrigin } from '../../admin-url';
 import type { AuthUser, DocNode } from '../../../shared/types';
 import { SHOP_CURRENCY } from '../currency';
@@ -34,6 +35,7 @@ import { adjustInventory, getInventory } from './inventory';
 import {
   archiveProduct,
   createProduct,
+  getProduct,
   publishProduct,
   saveProduct,
   unarchiveProduct,
@@ -41,6 +43,26 @@ import {
 } from './products';
 import type { Product, ProductPatch, VariantPatch, VariantWithPrice } from './types';
 
+/*
+ * DEFAULT IMPORT, NOT `import * as Papa` — and the difference was a 500 in
+ * production for the whole life of this feature.
+ *
+ * papaparse is a UMD CommonJS module. `vite.server.config.ts` externalises
+ * node_modules, so the deployed function resolves this specifier with NODE'S
+ * OWN ESM LOADER, and cjs-module-lexer cannot see exports assigned the way
+ * papaparse assigns them: the namespace is ['default', 'module.exports'] and
+ * nothing more. `Papa.unparse` was therefore `undefined` on every deployment
+ * — POST /api/shop/admin/products/export answered 500 {error:'internal'} —
+ * and `Papa.parse` with it, so import was equally dead.
+ *
+ * Vitest hides this completely: vite-node interops a CommonJS dependency so
+ * both forms resolve. The guard that does not lie is the `papaparse under
+ * the production module loader` test in csv.test.ts, which runs this exact
+ * import line in a real `node`.
+ *
+ * A NAMED import (`import { unparse } from 'papaparse'`) is not the fix: the
+ * same lexer blindness makes it a link-time SyntaxError under Node.
+ */
 /**
  * CSV export and import for the product catalogue (migration 0720).
  *
@@ -61,7 +83,8 @@ import type { Product, ProductPatch, VariantPatch, VariantWithPrice } from './ty
  *   Handle, Title, Status, Category, Tags, Description, Overview, SEO Title,
  *   SEO Description, Variant SKU, Variant Options, Variant Price,
  *   Variant Compare At Price, Variant Cost, Variant Stock,
- *   Variant Backorderable
+ *   Variant Backorderable, Product Image, Product Gallery, Variant Image,
+ *   Variant Color Hex, Variant Weight Grams, Variant Position, Variant Status
  *
  * - **Handle** is the product slug — this app has no separate handle column;
  *   the slug IS the URL identity. A product that has no slug yet (an untitled
@@ -73,15 +96,40 @@ import type { Product, ProductPatch, VariantPatch, VariantWithPrice } from './ty
  * - **Tags** are comma-joined inside the one cell (papaparse quotes it). A tag
  *   that itself contains a comma would split on re-import — the same known
  *   limitation Shopify's format has, accepted for the same reason.
- * - **Description** is the PLAIN TEXT of the document — the stored
- *   description_text, which is docToText output maintained on every write.
- *   The list query deliberately excludes the description document
- *   (LIST_PRODUCT_COLUMNS), so the honest source at export volume is the
- *   derived-text column, read here in one statement per page rather than one
- *   product read per row. On import the text becomes a single-paragraph
- *   document, so a rich description round-trips as its text and LOSES
- *   formatting if re-imported over itself — which is why an EMPTY Description
- *   cell never overwrites anything (see the import notes below).
+ * - **Description** is the document as HTML, via `shared/doc-html.ts`.
+ *
+ *   ⚠️ IT USED TO BE PLAIN TEXT, AND THAT DESTROYED LIVE DATA. The column
+ *   carried `description_text` — `docToText` output, block boundaries already
+ *   collapsed to single spaces — and the import wrapped it in ONE paragraph.
+ *   Export → import therefore flattened every heading, list and bold run it
+ *   touched, and on 2026-09-04 it did exactly that to two production products.
+ *   The rich copy survived only because `shop_product_revisions.description`
+ *   stores the whole document on every save;
+ *   `scripts/restore-description-revision.ts` is the repair.
+ *
+ *   HTML rather than the document's JSON because a person can read and edit
+ *   `<h2>Key Features</h2><ul><li>…` in a spreadsheet cell, and because it is
+ *   what Shopify's `Body (HTML)` column carries. A cell with NO tags is still
+ *   read as plain text and becomes one paragraph, so a hand-typed cell and a
+ *   Shopify-shaped file both still import.
+ *
+ *   The list query excludes the description document (LIST_PRODUCT_COLUMNS), so
+ *   the export reads it in one extra statement per page — the same shape the
+ *   derived-text read had, one column wider.
+ *
+ *   TWO GUARDS, because "import is authoritative" must not mean "import may
+ *   quietly delete formatting". An EMPTY cell never overwrites anything. And a
+ *   cell EQUAL TO `docToHtml(stored)` is skipped entirely, so an unedited round
+ *   trip does not even bump the revision, whatever the codec does.
+ * - **Product Image** is the cover image's id and **Product Gallery** the rest,
+ *   comma-joined. **Variant Image** is that option's photograph (migration
+ *   0009). These are IDS, not files: the CSV moves which picture is assigned,
+ *   never the pixels, and an id naming no committed image is refused per row by
+ *   the same check the admin form goes through.
+ * - **Variant Color Hex** is `#rrggbb` (migration 0010) — the swatch a shopper
+ *   picks a colour by. **Variant Weight Grams**, **Variant Position** and
+ *   **Variant Status** (active|discontinued) complete the variant, so an export
+ *   describes a variant fully enough to rebuild it.
  * - **Variant Options** is the optionValues record JSON-encoded, e.g.
  *   {"Size":"1kg","Color":"Black"}; an empty record exports as an empty cell.
  * - **Prices are MAJOR units with two decimals** ("23500.00"): CSV is for
@@ -111,6 +159,20 @@ export const CSV_COLUMNS = [
   'Variant Cost',
   'Variant Stock',
   'Variant Backorderable',
+  /*
+   * APPENDED, NOT INSERTED, and the position is the contract. A column added
+   * in the MIDDLE shifts every later one, so a file exported last week — or a
+   * script that writes these rows positionally — silently lands its prices in
+   * the stock column. Everything new goes on the end, where a shorter old file
+   * simply reads as empty cells and the import leaves those fields alone.
+   */
+  'Product Image',
+  'Product Gallery',
+  'Variant Image',
+  'Variant Color Hex',
+  'Variant Weight Grams',
+  'Variant Position',
+  'Variant Status',
 ] as const;
 
 /** Download links die after this. Enforced at read time — nothing sweeps. */
@@ -187,22 +249,32 @@ function majorToMinor(cell: string): number | null {
 }
 
 /**
- * The derived plain text per product, in one statement. description_text is
- * maintained beside the document on every write (products.ts), so it IS
- * docToText of the stored description — the list query excludes the document
- * itself on purpose, and re-deriving here from a per-product read would be a
- * round trip per row for a value the table already holds.
+ * The description DOCUMENT per product, as HTML, in one statement.
+ *
+ * IT READS `description`, NOT `description_text`, AND THAT IS THE WHOLE FIX.
+ * The derived-text column is `docToText` output — every heading, list and bold
+ * run already gone — so an export built from it could only ever describe a
+ * description, never carry one. Two live products were flattened by the round
+ * trip that resulted.
+ *
+ * `LIST_PRODUCT_COLUMNS` excludes the document on purpose, so this is one extra
+ * statement per PAGE of the walk (not per row), which is the shape the text
+ * read already had.
  */
-async function descriptionTexts(db: Db, ids: string[]): Promise<Map<string, string>> {
-  const texts = new Map<string, string>();
-  if (ids.length === 0) return texts;
+async function descriptionHtml(db: Db, ids: string[]): Promise<Map<string, string>> {
+  const html = new Map<string, string>();
+  if (ids.length === 0) return html;
   const res = await db.execute(sql`
-    SELECT id, description_text FROM shop_products
+    SELECT id, description FROM shop_products
      WHERE id = ANY(${sql.param(ids)}::text[])`);
   for (const row of res.rows) {
-    texts.set(String(row.id), row.description_text == null ? '' : String(row.description_text));
+    // Both drivers hand jsonb back parsed; the string branch is `mapping.ts`'s
+    // same tolerance, and a document read as "[object Object]" would export as
+    // a description nobody could get back.
+    const doc = typeof row.description === 'string' ? JSON.parse(row.description) : row.description;
+    html.set(String(row.id), docToHtml(doc as DocNode));
   }
-  return texts;
+  return html;
 }
 
 /**
@@ -221,18 +293,24 @@ async function onHandByVariant(db: Db, variantIds: string[]): Promise<Map<string
   return stock;
 }
 
-function productCells(product: Product, descriptionText: string): string[] {
+function productCells(product: Product, descriptionHtmlCell: string): string[] {
   return [
     product.slug ?? '',
     product.title,
     product.status,
     product.category,
     product.tags.join(', '),
-    descriptionText,
+    descriptionHtmlCell,
     product.overview ?? '',
     product.seoTitle ?? '',
     product.seoDescription ?? '',
   ];
+}
+
+/** The two product media cells, which sit after the variant block because the
+ *  new columns are appended rather than inserted (see CSV_COLUMNS). */
+function productMediaCells(product: Product): string[] {
+  return [product.coverImageId ?? '', product.imageIds.join(', ')];
 }
 
 function variantCells(variant: VariantWithPrice, onHand: number | undefined): string[] {
@@ -247,8 +325,23 @@ function variantCells(variant: VariantWithPrice, onHand: number | undefined): st
   ];
 }
 
-/** The seven empty variant cells a variantless product exports with. */
+/** The appended variant columns — media and setup, in CSV_COLUMNS order. */
+function variantExtraCells(variant: VariantWithPrice): string[] {
+  return [
+    variant.imageId ?? '',
+    variant.colorHex ?? '',
+    variant.weightGrams == null ? '' : String(variant.weightGrams),
+    String(variant.position),
+    variant.status,
+  ];
+}
+
+/** The seven empty cells a variantless product exports with, from `Variant SKU`
+ *  through `Variant Backorderable`. */
 const NO_VARIANT_CELLS = ['', '', '', '', '', '', ''];
+
+/** The five appended variant cells, empty for a variantless product. */
+const NO_VARIANT_EXTRA_CELLS = ['', '', '', '', ''];
 
 /**
  * The whole catalogue as CSV, built by walking the existing list query with
@@ -268,21 +361,29 @@ export async function buildCatalogCsv(db: Db): Promise<{ csv: string; rowCount: 
       ...(cursor === undefined ? {} : { cursor }),
     });
     const ids = page.items.map((p) => p.id);
-    const [variants, texts] = await Promise.all([
+    const [variants, descriptions] = await Promise.all([
       listVariantsForProducts(db, ids),
-      descriptionTexts(db, ids),
+      descriptionHtml(db, ids),
     ]);
     const variantIds = [...variants.values()].flat().map((v) => v.id);
     const stock = await onHandByVariant(db, variantIds);
 
     for (const product of page.items) {
-      const base = productCells(product, texts.get(product.id) ?? '');
+      const base = productCells(product, descriptions.get(product.id) ?? '');
+      const media = productMediaCells(product);
       const own = variants.get(product.id) ?? [];
       if (own.length === 0) {
-        rows.push([...base, ...NO_VARIANT_CELLS]);
+        rows.push([...base, ...NO_VARIANT_CELLS, ...media, ...NO_VARIANT_EXTRA_CELLS]);
         continue;
       }
-      for (const variant of own) rows.push([...base, ...variantCells(variant, stock.get(variant.id))]);
+      for (const variant of own) {
+        rows.push([
+          ...base,
+          ...variantCells(variant, stock.get(variant.id)),
+          ...media,
+          ...variantExtraCells(variant),
+        ]);
+      }
     }
     cursor = page.nextCursor ?? undefined;
   } while (cursor !== undefined);
@@ -368,6 +469,18 @@ interface CsvVariantInput {
   stock: number | null;
   /** null = no cell: create defaults to false, update leaves the flag. */
   backorderable: boolean | null;
+  /** '' = clear the assignment. An id naming no committed image is refused by
+   *  `checkVariantImage` and reported on this row. */
+  imageId: string;
+  /** '' = clear. Normalised to lowercase `#rrggbb` here so the row, not the
+   *  repository, is where a bad swatch is named. */
+  colorHex: string;
+  /** null = empty cell, which CLEARS the weight (export writes '' for NULL). */
+  weightGrams: number | null;
+  /** null = no cell; a variant's order is otherwise left where it is. */
+  position: number | null;
+  /** '' = no cell. `discontinued` retires a variant without deleting it. */
+  status: '' | 'active' | 'discontinued';
 }
 
 interface ImportRow {
@@ -381,6 +494,8 @@ interface ImportRow {
   overview: string;
   seoTitle: string;
   seoDescription: string;
+  coverImageId: string;
+  imageIds: string[];
   /** Present only when the row carries a Variant SKU. */
   variant: CsvVariantInput | null;
 }
@@ -395,6 +510,7 @@ interface ImportGroup {
 }
 
 const IMPORT_STATUSES = new Set(['draft', 'active', 'archived']);
+const VARIANT_STATUSES = new Set(['active', 'discontinued']);
 
 function cell(row: Record<string, unknown>, name: (typeof CSV_COLUMNS)[number]): string {
   const value = row[name];
@@ -530,6 +646,43 @@ function parseImportRows(csv: string): {
       }
     }
 
+    /*
+     * `#rrggbb`, lowercased, `#` optional on the way in — a spreadsheet author
+     * typing `d3d3d3` means the same colour, and refusing it would be pedantry.
+     * Checked HERE rather than left to `normalizeColorHex` so the complaint
+     * names the offending value on its own line instead of arriving as
+     * "refused: colorHex" with no clue which row.
+     */
+    const colorRaw = cell(raw, 'Variant Color Hex');
+    let colorHex = '';
+    if (colorRaw !== '') {
+      const hex = colorRaw.startsWith('#') ? colorRaw.toLowerCase() : `#${colorRaw.toLowerCase()}`;
+      if (!/^#[0-9a-f]{6}$/.test(hex)) problems.push(`bad Variant Color Hex "${colorRaw}"`);
+      else colorHex = hex;
+    }
+
+    /** A non-negative integer cell, or a complaint naming it. */
+    const readCount = (
+      name: 'Variant Stock' | 'Variant Weight Grams' | 'Variant Position',
+      max: number,
+    ): number | null => {
+      const value = cell(raw, name);
+      if (value === '') return null;
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < 0 || parsed > max) {
+        problems.push(`bad ${name} "${value}"`);
+        return null;
+      }
+      return parsed;
+    };
+    const weightGrams = readCount('Variant Weight Grams', 10_000_000);
+    const position = readCount('Variant Position', 100_000);
+
+    const variantStatusRaw = cell(raw, 'Variant Status').toLowerCase();
+    if (variantStatusRaw !== '' && !VARIANT_STATUSES.has(variantStatusRaw)) {
+      problems.push(`unknown Variant Status "${variantStatusRaw}" (active or discontinued)`);
+    }
+
     const backRaw = cell(raw, 'Variant Backorderable').toLowerCase();
     let backorderable: boolean | null = null;
     if (backRaw === 'true') backorderable = true;
@@ -563,6 +716,11 @@ function parseImportRows(csv: string): {
       overview: cell(raw, 'Overview'),
       seoTitle: cell(raw, 'SEO Title'),
       seoDescription: cell(raw, 'SEO Description'),
+      coverImageId: cell(raw, 'Product Image'),
+      imageIds: cell(raw, 'Product Gallery')
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean),
       variant:
         sku === ''
           ? null
@@ -574,6 +732,11 @@ function parseImportRows(csv: string): {
               costMinor,
               stock,
               backorderable,
+              imageId: cell(raw, 'Variant Image'),
+              colorHex,
+              weightGrams,
+              position,
+              status: variantStatusRaw as CsvVariantInput['status'],
             },
     });
   });
@@ -622,33 +785,65 @@ function groupRows(rows: ImportRow[], invalid: CsvProblem[]): ImportGroup[] {
  * by-slug read is the storefront's (active only), and this one exists for
  * exactly one caller.
  */
-async function existingSlugs(db: Db, slugs: string[]): Promise<Set<string>> {
-  const existing = new Set<string>();
-  if (slugs.length === 0) return existing;
+/**
+ * What each handle names TODAY: a live product, a trashed one, or nothing.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THESE TWO LOOKUPS USED TO FILTER `deleted_at IS NULL`, AND THAT MINTED TWINS.
+ *
+ * Watched happen on production 2026-09-04: export at 19:47:13, product moved
+ * to the trash at 19:47:29, the same file imported at 19:47:39. Trash is a
+ * SOFT delete — the row keeps its slug and its variants keep their SKUs — but
+ * a lookup that cannot see it reports "no such handle", so the import created
+ * a NEW product, which had to take the slug `…-2-2` because the trashed row
+ * still holds the original. Then `createVariant` was refused by
+ * `shop_variants_sku_unique`, because that same trashed row still owns the
+ * SKU. The result was a nameless duplicate that could never hold a variant,
+ * and the only hint was one line in `invalid`.
+ *
+ * `shop_products_slug_unique` is across the WHOLE table, trash included, so a
+ * handle names at most one product and this answer is never ambiguous.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+type SlugState = 'live' | 'trashed';
+
+async function slugStates(db: Db, slugs: string[]): Promise<Map<string, SlugState>> {
+  const states = new Map<string, SlugState>();
+  if (slugs.length === 0) return states;
   const res = await db.execute(sql`
-    SELECT slug FROM shop_products
-     WHERE slug = ANY(${sql.param(slugs)}::text[]) AND deleted_at IS NULL`);
-  for (const row of res.rows) if (row.slug != null) existing.add(String(row.slug));
-  return existing;
+    SELECT slug, deleted_at FROM shop_products
+     WHERE slug = ANY(${sql.param(slugs)}::text[])`);
+  for (const row of res.rows) {
+    if (row.slug == null) continue;
+    states.set(String(row.slug), row.deleted_at == null ? 'live' : 'trashed');
+  }
+  return states;
 }
 
 async function productBySlug(
   db: Db,
   slug: string,
-): Promise<{ id: string; status: string } | null> {
+): Promise<{ id: string; status: string; trashed: boolean } | null> {
   const res = await db.execute(sql`
-    SELECT id, status FROM shop_products
-     WHERE slug = ${slug} AND deleted_at IS NULL`);
+    SELECT id, status, deleted_at FROM shop_products WHERE slug = ${slug}`);
   const row = res.rows[0];
-  return row ? { id: String(row.id), status: String(row.status) } : null;
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    status: String(row.status),
+    trashed: row.deleted_at != null,
+  };
 }
 
-/** The Description cell as a document: one paragraph of the text. */
-function paragraphDoc(text: string): DocNode {
-  return {
-    type: 'doc',
-    content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
-  };
+/**
+ * ONE sentence, used by BOTH preview and apply, so the modal cannot promise
+ * something the apply then does differently. Refusing is the owner's call
+ * (2026-09-04): an import that silently un-trashed products would bring back
+ * things somebody deliberately deleted, and it would do it a thousand rows at
+ * a time.
+ */
+function trashedHandleProblem(handle: string): string {
+  return `handle "${handle}" is in the trash — restore that product first, or give this row a different Handle`;
 }
 
 /** A refusal as one line a spreadsheet author can act on. Subclasses first —
@@ -679,9 +874,24 @@ async function applyVariantCreate(
       backorderable: input.backorderable ?? false,
       compareAtMinor: input.compareAtMinor,
       costMinor: input.costMinor,
+      imageId: input.imageId || null,
+      colorHex: input.colorHex || null,
+      weightGrams: input.weightGrams,
+      // Omitted rather than passed as null: `createVariant` appends to the end
+      // of the product when it is absent, and a file that carries no position
+      // column must not pile every new variant onto index 0.
+      ...(input.position === null ? {} : { position: input.position }),
     },
     actor,
   );
+  /*
+   * Status is a SECOND write because `createVariant` always makes an active
+   * one — there is no `status` on its input, and a variant exported as
+   * discontinued must come back discontinued rather than quietly for sale.
+   */
+  if (input.status === 'discontinued') {
+    await updateVariant(db, variant.id, { status: 'discontinued' });
+  }
   if (input.priceMinor !== null) {
     await setPrice(db, variant.id, money(input.priceMinor, SHOP_CURRENCY), 'CSV import');
   }
@@ -728,6 +938,8 @@ function headPatch(head: ImportRow, present: PresentColumns): ProductPatch {
   if (present.has('SEO Title')) patch.seoTitle = head.seoTitle || null;
   if (present.has('SEO Description')) patch.seoDescription = head.seoDescription || null;
   if (present.has('Overview')) patch.overview = head.overview || null;
+  if (present.has('Product Image')) patch.coverImageId = head.coverImageId || null;
+  if (present.has('Product Gallery')) patch.imageIds = head.imageIds;
   return patch;
 }
 
@@ -753,7 +965,7 @@ async function applyCreate(
      * pins this by deep-equality against a control product created through
      * the ordinary route, not against any literal.
      */
-    ...(head.description === '' ? {} : { description: paragraphDoc(head.description) }),
+    ...(head.description === '' ? {} : { description: htmlToDoc(head.description) }),
   });
 
   for (const row of group.variants) {
@@ -781,16 +993,32 @@ async function applyUpdate(
 ): Promise<void> {
   const head = group.head;
   const patch = headPatch(head, present);
+
   /*
-   * Description ONLY when the cell is non-empty. The CSV carries plain text,
-   * so a blank cell cannot mean "clear the document" — an exported file whose
-   * description column was untouched must not flatten or wipe a rich document
-   * on the way back in. (A NON-empty cell does replace the document with a
-   * single paragraph of the text: import is authoritative, and that loss of
-   * formatting is the documented cost of editing descriptions in a
-   * spreadsheet.)
+   * DESCRIPTION: TWO GUARDS, AND BOTH EARNED THEIR PLACE THE HARD WAY.
+   *
+   * 1. An EMPTY cell never overwrites. A blank cannot honestly mean "delete
+   *    this product's copy" — a partial file simply does not carry it.
+   * 2. A cell EQUAL TO the stored document's own HTML is skipped, so the
+   *    document is never even PARSED, let alone rewritten. This is the guard
+   *    that makes export → import provably harmless for descriptions: whatever
+   *    `doc-html.ts` does or does not represent, a file nobody edited cannot
+   *    change a description, because the bytes are compared before anything is
+   *    parsed. (The product ROW is still saved — title, category and the rest
+   *    are authoritative on every import — so `revision` does advance by one.
+   *    What cannot move is the description.)
+   *
+   * The old code had neither half working: the export wrote flattened text
+   * into every row, so the non-empty test always passed, and the import then
+   * replaced a rich document with one paragraph. That is what happened to two
+   * live products on 2026-09-04.
    */
-  if (head.description !== '') patch.description = paragraphDoc(head.description);
+  if (head.description !== '') {
+    const current = await getProduct(db, existing.id);
+    if (current === null || head.description !== docToHtml(current.description)) {
+      patch.description = htmlToDoc(head.description);
+    }
+  }
 
   /*
    * No baseRevision, deliberately: an import is an authoritative overwrite by
@@ -833,6 +1061,11 @@ async function applyUpdate(
         variantPatch.compareAtMinor = input.compareAtMinor;
       }
       if (present.has('Variant Cost')) variantPatch.costMinor = input.costMinor;
+      if (present.has('Variant Image')) variantPatch.imageId = input.imageId || null;
+      if (present.has('Variant Color Hex')) variantPatch.colorHex = input.colorHex || null;
+      if (present.has('Variant Weight Grams')) variantPatch.weightGrams = input.weightGrams;
+      if (input.position !== null) variantPatch.position = input.position;
+      if (input.status !== '') variantPatch.status = input.status;
       if (input.backorderable !== null) variantPatch.backorderable = input.backorderable;
       if (Object.keys(variantPatch).length > 0) await updateVariant(db, match.id, variantPatch);
 
@@ -1004,7 +1237,7 @@ csvRoutes.post('/admin/products/import', auth, async (c) => {
   const groups = groupRows(rows, invalid);
 
   if (body.mode === 'preview') {
-    const existing = await existingSlugs(
+    const states = await slugStates(
       db,
       groups.map((group) => group.handle),
     );
@@ -1012,7 +1245,14 @@ csvRoutes.post('/admin/products/import', auth, async (c) => {
     let updates = 0;
     let skips = 0;
     for (const group of groups) {
-      if (existing.has(group.handle)) {
+      const state = states.get(group.handle);
+      if (state === 'trashed') {
+        // Counted as neither create nor update: apply refuses this row, and
+        // the preview has to say the same thing.
+        invalid.push({ line: group.line, problem: trashedHandleProblem(group.handle) });
+        continue;
+      }
+      if (state === 'live') {
         /* Preview must agree with apply: with `replace` off, an existing
          * handle is a SKIP, not an update — otherwise the modal promises
          * changes apply will not make. */
@@ -1032,6 +1272,16 @@ csvRoutes.post('/admin/products/import', auth, async (c) => {
     // apply decides against the catalogue as it stands now, not as it stood
     // when somebody previewed — and one code path cannot disagree with itself.
     const existing = await productBySlug(db, group.handle);
+    /*
+     * A TRASHED HANDLE IS REFUSED, NEVER CREATED AROUND. Falling through to
+     * the create below is what produced the `…-2-2` duplicate on production;
+     * see `slugStates`. Restoring it here instead was considered and declined
+     * by the owner — an import must not un-delete.
+     */
+    if (existing?.trashed) {
+      invalid.push({ line: group.line, problem: trashedHandleProblem(group.handle) });
+      continue;
+    }
     if (existing && !body.replace) {
       skipped += 1;
       continue;

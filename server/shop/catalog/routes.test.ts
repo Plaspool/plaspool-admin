@@ -194,6 +194,70 @@ describe('the admin write path', () => {
   });
 });
 
+describe('?withTotal — how many products there are, opt-in', () => {
+  beforeAll(login);
+
+  /**
+   * The products screen labels its Export action with this number, and Export
+   * ships the WHOLE catalogue — so a count that answered "how many on this
+   * page" or "how many after the cursor" would put a figure on screen that the
+   * downloaded file contradicts.
+   */
+  it('counts every product matching the filter, not the page', async () => {
+    for (const n of [1, 2, 3]) await createProduct(`Counted ${n}`);
+
+    const page = await http.get('/api/shop/admin/products?limit=1&withTotal=1');
+    expect(page.status).toBe(200);
+    const body = await json<{ items: unknown[]; total: number; nextCursor: string | null }>(page);
+
+    expect(body.items).toHaveLength(1);
+    expect(body.nextCursor).toBeTruthy();
+
+    // The independent reading — §5's rule about never trusting the statement
+    // that produced the number.
+    const all = await http.get('/api/shop/admin/products?limit=100');
+    const { items } = await json<{ items: unknown[] }>(all);
+    expect(body.total).toBe(items.length);
+    expect(body.total).toBeGreaterThan(1);
+  });
+
+  it('does not answer the cursor page — the count ignores where you are', async () => {
+    const first = await http.get('/api/shop/admin/products?limit=1&withTotal=1');
+    const { total, nextCursor } = await json<{ total: number; nextCursor: string }>(first);
+
+    const second = await http.get(
+      `/api/shop/admin/products?limit=1&withTotal=1&cursor=${encodeURIComponent(nextCursor)}`,
+    );
+    expect((await json<{ total: number }>(second)).total).toBe(total);
+  });
+
+  it('is OFF by default, and the field is absent rather than null', async () => {
+    // The paging pays for `size + 1` and nothing else unless asked; a `total: null`
+    // would still have cost the scan to produce.
+    const res = await http.get('/api/shop/admin/products?limit=1');
+    const body = (await json<Record<string, unknown>>(res)) as Record<string, unknown>;
+    expect('total' in body).toBe(false);
+  });
+
+  it("takes the query string's spellings and refuses anything else", async () => {
+    // `?withTotal=false` is a truthy STRING — the enum is what stops it
+    // reading as on. And the schema is .strict(), so a typo is a 400.
+    for (const [value, expected] of [
+      ['0', false],
+      ['false', false],
+      ['1', true],
+      ['true', true],
+    ] as const) {
+      const res = await http.get(`/api/shop/admin/products?limit=1&withTotal=${value}`);
+      expect([value, res.status]).toEqual([value, 200]);
+      const body = await json<Record<string, unknown>>(res);
+      expect([value, 'total' in body]).toEqual([value, expected]);
+    }
+    expect((await http.get('/api/shop/admin/products?withTotal=yes')).status).toBe(400);
+    expect((await http.get('/api/shop/admin/products?withTotals=1')).status).toBe(400);
+  });
+});
+
 describe('variants, prices and inventory over HTTP', () => {
   beforeAll(login);
 
@@ -277,7 +341,7 @@ describe('variants, prices and inventory over HTTP', () => {
     expect(res.status).toBe(400);
   });
 
-  it('adjusts inventory with a reason, and refuses one without', async () => {
+  it('adjusts inventory with a reason, without one, and refuses a blank one', async () => {
     const created = await createProduct('Adjust Route');
     const variantRes = await http.post(`/api/shop/admin/products/${created.id}/variants`, {
       sku: 'ADJUST-1',
@@ -294,12 +358,32 @@ describe('variants, prices and inventory over HTTP', () => {
       inventory: { onHand: 8, available: 8 },
     });
 
-    // `reason` is mandatory: an unexplained stock change is the thing you will
-    // most wish you had logged.
+    /*
+     * `reason` IS OPTIONAL SINCE 2026-09-03 (owner's instruction) — this
+     * assertion used to be a 400. The stock still moves and the event is still
+     * written; it just carries a null reason, which `server/shop/admin/audit.ts`
+     * has rendered since it was written.
+     */
     const noReason = await http.post(`/api/shop/admin/inventory/${variant.id}/adjust`, {
       delta: -1,
     });
-    expect(noReason.status).toBe(400);
+    expect(noReason.status).toBe(200);
+    expect(await json<{ inventory: { onHand: number } }>(noReason)).toMatchObject({
+      inventory: { onHand: 7, available: 7 },
+    });
+
+    /*
+     * A BLANK STRING IS STILL A 400, and that is the half worth keeping. The
+     * body's schema keeps `.min(1)` inside its `.optional()`: omitting the key
+     * is a person who left the box empty, sending `''` is a client that built
+     * the field and put nothing in it, and only the second is a bug.
+     */
+    const blank = await http.post(`/api/shop/admin/inventory/${variant.id}/adjust`, {
+      delta: -1,
+      reason: '',
+    });
+    expect(blank.status).toBe(400);
+    expect(await json<{ detail: string }>(blank)).toMatchObject({ detail: 'reason' });
   });
 
   it('a duplicate SKU is a 409 naming the SKU, not a 500 and not a bare 400', async () => {

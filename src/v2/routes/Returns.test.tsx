@@ -55,6 +55,7 @@ import { ToastHost } from '../ui/Toast';
 import type { ReturnDetail, ReturnListItem } from '../../data/api-marketing';
 import {
   areasView,
+  awardedRow,
   receivedRow,
   requestedOld,
   returnCounts,
@@ -240,7 +241,10 @@ describe('the returns queue', () => {
     // …and the award restates the promised snapshot rate: 4 × 7.
     expect(screen.getByText('Awards 28 Bottle Caps')).toBeTruthy();
 
-    await user.type(screen.getByLabelText('Why units were rejected'), 'Two crushed flat');
+    await user.type(
+      screen.getByLabelText('Why units were rejected (optional)'),
+      'Two crushed flat',
+    );
     await user.click(screen.getByRole('button', { name: 'Award points' }));
 
     await waitFor(() => expect(asked(inspectPath(receivedRow.id))).toBeTruthy());
@@ -380,5 +384,90 @@ describe('the returns queue', () => {
     if (schedule === undefined) throw new Error('no row action');
     await user.click(schedule);
     expect(await screen.findByLabelText('Pickup date and time')).toBeTruthy();
+  });
+});
+
+// ============================================================ what it cost ==
+
+/**
+ * The cost form, pinned on the one thing it must never do.
+ *
+ * THE DISTRICT'S STANDARD IS A PLACEHOLDER AND NEVER A VALUE. If it were
+ * pre-filled, pressing Save would write the standard onto the return, and an
+ * estimate stored that way is indistinguishable from a figure somebody
+ * measured — which would silently destroy the coverage count the analytics
+ * screen uses to say how much of its headline it trusts. So the assertion is
+ * on the input's `value` being empty while its `placeholder` carries the
+ * number, and on the body sending `null` for the boxes nobody typed in.
+ */
+describe('what a pickup cost us', () => {
+  const costsPath = (id: string): string => `${RETURNS}/${id}/costs`;
+
+  it('shows the district standard as a placeholder, never as a value, and sends null for an empty box', async () => {
+    const user = userEvent.setup();
+    withQueue([receivedRow]);
+    when(detailPath(receivedRow.id), received);
+    when(costsPath(receivedRow.id), { request: received.request });
+    mount();
+
+    await user.click(await screen.findByText('Tunde B.'));
+    await user.click(await screen.findByRole('button', { name: 'What it cost…' }));
+
+    const transport = await screen.findByLabelText('Transport in');
+    /* Cabbage Quarter's standard is ₦2,000. It is SHOWN and NOT FILLED IN. */
+    expect(transport).toHaveProperty('value', '');
+    expect(transport.getAttribute('placeholder')).toBe('₦2,000 standard');
+    /* And a line the district has no standard for offers nothing at all. */
+    expect(screen.getByLabelText('Driver').getAttribute('placeholder')).toBe('₦0');
+
+    await user.type(transport, '2600');
+    await user.click(screen.getByRole('button', { name: 'Save what it cost' }));
+
+    await waitFor(() => expect(asked(costsPath(receivedRow.id))).toBeTruthy());
+    /* KEY BY KEY. The typed line travels as minor units; the three nobody
+       touched travel as an explicit `null`, which is what CLEARS them —
+       omitting them would make a mistyped figure impossible to undo. */
+    expect(sent(costsPath(receivedRow.id), 'POST')).toEqual({
+      expectedRevision: received.request.revision,
+      transportMinor: 260000,
+      localMinor: null,
+      driverMinor: null,
+      feesMinor: null,
+      note: null,
+    });
+
+    await screen.findByText('Saved what it cost');
+  });
+
+  it('refuses to save an amount that is not a number', async () => {
+    const user = userEvent.setup();
+    withQueue([receivedRow]);
+    when(detailPath(receivedRow.id), received);
+    mount();
+
+    await user.click(await screen.findByText('Tunde B.'));
+    await user.click(await screen.findByRole('button', { name: 'What it cost…' }));
+    await user.type(await screen.findByLabelText('Loading and fees'), '-4');
+
+    expect(screen.getAllByText('Enter an amount in naira').length).toBeGreaterThan(0);
+    /* Disabled rather than 400ing at the server: the box is the only place
+       the person can see what is wrong with it. */
+    expect(screen.getByRole('button', { name: 'Save what it cost' })).toHaveProperty(
+      'disabled',
+      true,
+    );
+  });
+
+  it('is offered on a CLOSED return, because the transport invoice arrives late', async () => {
+    const user = userEvent.setup();
+    withQueue([awardedRow]);
+    when(detailPath(awardedRow.id), returnDetails.awarded);
+    mount();
+
+    await user.click(await screen.findByText('Dara A.'));
+    /* An awarded return's only `allowedAction` is `note`, and the cost button
+       is deliberately NOT one of those — it is legal in every status, so it
+       sits beside them rather than among them. */
+    expect(await screen.findByRole('button', { name: 'What it cost…' })).toBeTruthy();
   });
 });

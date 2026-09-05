@@ -1005,10 +1005,13 @@ describe('the inspection bonus — two honest sentences, one counter', () => {
     expect(Number((await balanceRow(EMAIL))?.balance)).toBe(75);
   });
 
-  it('refuses a top-up with no reason, and a reason with no top-up', async () => {
-    // Both ways, exactly as the rejection reason is: a credit nobody explained
-    // is an argument with no record; a reason stored where nothing was granted
-    // describes a payment that never happened.
+  it('takes a top-up with no reason, and refuses a reason with no top-up', async () => {
+    /*
+     * ONE DIRECTION SINCE 2026-09-03. A credit nobody explained is a record
+     * with a gap in it, which the owner has decided to allow; a reason stored
+     * where nothing was granted describes a payment that never happened, which
+     * is a record that LIES. Only the second is refused.
+     */
     const row = await returnAt('received');
     const base = {
       expectedRevision: row.revision,
@@ -1018,18 +1021,31 @@ describe('the inspection bonus — two honest sentences, one counter', () => {
       actorId: ACTOR,
       now: NOW,
     };
-    await expect(inspect(db, row.id, { ...base, bonusPoints: 25 })).rejects.toMatchObject({
-      detail: 'bonusReason',
-    });
-    await expect(inspect(db, row.id, { ...base, bonusReason: 'why' })).rejects.toMatchObject({
-      detail: 'bonusReason',
-    });
+
+    // Granted, unexplained, and stored as NULL rather than the empty string —
+    // `marketing_ledger_reason_ck` would refuse the latter with SQLSTATE 23514.
+    const unexplained = await inspect(db, row.id, { ...base, bonusPoints: 25 });
+    expect(unexplained.bonus).toEqual({ points: 25, reason: null });
+    const credits = await ledgerRows(EMAIL);
+    const topUp = credits.find((entry) => entry.kind === 'manual');
+    expect(topUp?.reason).toBeNull();
+
+    const fresh = await returnAt('received');
     await expect(
-      inspect(db, row.id, { ...base, bonusPoints: 0, bonusReason: 'why' }),
+      inspect(db, fresh.id, { ...base, expectedRevision: fresh.revision, bonusReason: 'why' }),
+    ).rejects.toMatchObject({ detail: 'bonusReason' });
+    await expect(
+      inspect(db, fresh.id, {
+        ...base,
+        expectedRevision: fresh.revision,
+        bonusPoints: 0,
+        bonusReason: 'why',
+      }),
     ).rejects.toMatchObject({ detail: 'bonusPoints' });
 
-    // Nothing was written by any of the three.
-    expect(await ledgerRows(EMAIL)).toHaveLength(0);
+    /* THE TWO REFUSALS WROTE NOTHING — the only rows here are the award and the
+     * unexplained top-up from the inspection that succeeded above. */
+    expect(await ledgerRows(EMAIL)).toHaveLength(2);
   });
 
   it('refuses a top-up on an inspection that accepted nothing', async () => {
@@ -1103,24 +1119,28 @@ describe('inspecting', () => {
     expect(String(intents[0].text)).toContain('Contaminated');
   });
 
-  it('requires a rejection reason exactly when something was rejected', async () => {
+  it('takes a rejection with no reason, and refuses a reason with no rejection', async () => {
+    /*
+     * WAS "requires a rejection reason exactly when something was rejected".
+     * The requiring half went on 2026-09-03 with every other reason field; the
+     * refusing half stayed, because it guards a record that would say 'Damaged'
+     * about goods that were all accepted.
+     */
     const row = await returnAt('received');
 
-    const missing = await rejection<BadRequestError>(
-      inspect(db, row.id, {
-        expectedRevision: row.revision,
-        qtyAccepted: 4,
-        qtyRejected: 2,
-        actorId: ACTOR,
-        now: NOW,
-      }),
-    );
-    expect(missing).toBeInstanceOf(BadRequestError);
-    expect(missing.detail).toBe('rejectedReason');
+    const unexplained = await inspect(db, row.id, {
+      expectedRevision: row.revision,
+      qtyAccepted: 4,
+      qtyRejected: 2,
+      actorId: ACTOR,
+      now: NOW,
+    });
+    expect(unexplained.row.rejectedReason).toBeNull();
 
+    const other = await returnAt('received');
     const spurious = await rejection<BadRequestError>(
-      inspect(db, row.id, {
-        expectedRevision: row.revision,
+      inspect(db, other.id, {
+        expectedRevision: other.revision,
         qtyAccepted: 6,
         qtyRejected: 0,
         rejectedReason: 'Damaged',
@@ -1131,9 +1151,8 @@ describe('inspecting', () => {
     expect(spurious).toBeInstanceOf(BadRequestError);
     expect(spurious.detail).toBe('rejectedReason');
 
-    /* Neither refusal wrote anything. */
-    expect(await ledgerRows(EMAIL)).toHaveLength(0);
-    expect((await listEvents(db, row.id))).toHaveLength(4);
+    /* The refusal wrote nothing — four events, none of them an inspection. */
+    expect(await listEvents(db, other.id)).toHaveLength(4);
   });
 
   it('refuses quantities that are not whole and not positive', async () => {

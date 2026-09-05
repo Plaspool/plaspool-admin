@@ -235,12 +235,11 @@ function AdjustCell({ row, onWrite }: { row: InventoryRow; onWrite: () => void }
       setFieldError('Enter a whole number, above or below zero — but not zero.');
       return;
     }
-    if (!reason.trim()) {
-      setFieldError('A stock change needs a reason. It is kept on record.');
-      return;
-    }
     setBusy(true);
     try {
+      /* NO REASON GUARD. It is optional since 2026-09-03 (owner's instruction);
+       * the placeholder still asks, and `adjustInventory` omits the key rather
+       * than sending an empty string. */
       const res = await shopApi.adjustInventory(row.variantId, parsed, reason.trim());
       toast.show(`${row.sku} — ${res.available} available`);
       close();
@@ -282,9 +281,10 @@ function AdjustCell({ row, onWrite }: { row: InventoryRow; onWrite: () => void }
             }}
           />
           <TextField
-            label="Reason"
+            label="Reason (optional)"
             value={reason}
             placeholder="Stock count, damage, correction…"
+            hint="Kept on record. Worth a few words if you have them."
             error={fieldError}
             onChange={(e) => {
               setReason(e.target.value);

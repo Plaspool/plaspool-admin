@@ -158,6 +158,22 @@ async function limitWrites(c: Context<ShopEnv>, cartId: string): Promise<void> {
  * looking at the page that will either finish or fail — a payment that fails
  * sends it back to `open` and they still have their basket. `converted` and
  * `abandoned` are terminal, and `currentCart` retires the cookie naming one.
+ *
+ * ═══ THAT SECOND SENTENCE WAS A LIE FOR THE WHOLE LIFE OF THIS FILE ═══
+ *
+ * Nothing sent a cart back to `open`. `converting → open` was in the
+ * transition allow-list and `setCartStatus` was never called with it outside a
+ * test, so keeping `converting` here did not preserve a basket — it PINNED a
+ * dead one. A shopper who reached Paystack and did not pay got the same
+ * unusable cart back from every `GET /cart` for ever, and every address edit
+ * answered `409 precondition_failed / update_cart`, while `converted` and
+ * `abandoned` at least cleared the cookie and gave them a fresh basket.
+ *
+ * It is true NOW: `thawCheckout` performs that transition, `POST
+ * /checkout/cancel` exposes it, and an address or shipping edit does it
+ * implicitly. Keeping `converting` live is therefore load-bearing rather than
+ * aspirational — it is what lets the shopper come back to the cart the cancel
+ * is about to reopen.
  */
 const LIVE_STATUSES: readonly Cart['status'][] = ['open', 'converting'];
 
@@ -318,6 +334,8 @@ async function view(
       shippingOptionId: current.shippingOptionId,
       taxZone: current.taxZone,
       customerId: current.customerId,
+      /* The applied code, so it survives a reload (storefront#113). */
+      discountCode: current.discountCode,
     },
     lines: quoted.map(({ line, quote }) => ({
       id: line.id,
@@ -337,6 +355,19 @@ async function view(
      * what makes the "no longer available" badge worth reading.
      */
     preview: computed.ok ? computed.totals : null,
+    /*
+     * THE CAPABILITY FLAG (storefront#113). "The field must not render until the
+     * API advertises the capability. Shipping an input that 404s is worse than
+     * shipping nothing."
+     *
+     * DERIVED FROM THE DEPENDENCY, never a constant. A hardcoded `true` would be
+     * a promise this deployment might not keep — the apply route answers 501
+     * without the port — and the storefront would render a field that fails. It
+     * is on the cart view because that is the read the checkout page already
+     * makes, so the field appears the day this deploys with no storefront
+     * deploy, which is exactly what the issue asks for.
+     */
+    discountCodesEnabled: deps.discounts !== undefined,
     changes,
   };
 }

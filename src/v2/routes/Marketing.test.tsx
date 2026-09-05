@@ -249,7 +249,10 @@ describe('the marketing screen', () => {
 
     await user.type(within(dialog).getByLabelText('Customer email'), 'dara@example.com');
     await user.type(within(dialog).getByLabelText('Points'), '-500');
-    await user.type(within(dialog).getByLabelText('Reason'), 'Fixing a double credit');
+    await user.type(
+      within(dialog).getByLabelText('Reason (optional)'),
+      'Fixing a double credit',
+    );
     await user.click(within(dialog).getByRole('button', { name: 'Save entry' }));
 
     await waitFor(() => expect(asked(ADJUSTMENTS)).toBeTruthy());
@@ -317,6 +320,11 @@ describe('the marketing screen', () => {
       unitLabelPlural: 'canisters',
       pointsPerUnit: 7,
       minUnitsPerReturn: 4,
+      // 0920's two money rates, sent on every unit-return patch — including
+      // when they are unchanged, because a PATCH that omitted them could not
+      // express "clear this rate" and a cleared rate must be undoable.
+      unitCostMinor: capsProgram.unitCostMinor,
+      unitMarketCostMinor: capsProgram.unitMarketCostMinor,
     });
     // Said twice on purpose: `toEqual` would still pass if the type ever
     // gained one of these and the fixture gained it too.

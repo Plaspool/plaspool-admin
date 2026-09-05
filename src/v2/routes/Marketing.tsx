@@ -490,6 +490,15 @@ function ProgramModal({
   const [minUnits, setMinUnits] = useState(
     program?.minUnitsPerReturn != null ? String(program.minUnitsPerReturn) : '1',
   );
+  /* Naira in the box, minor units on the wire. Empty means "we have not
+     decided", which is a different claim from zero and the only way a figure
+     typed by mistake is undone — so an empty box sends `null`. */
+  const [unitCost, setUnitCost] = useState(
+    program?.unitCostMinor != null ? String(program.unitCostMinor / 100) : '',
+  );
+  const [marketCost, setMarketCost] = useState(
+    program?.unitMarketCostMinor != null ? String(program.unitMarketCostMinor / 100) : '',
+  );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -501,6 +510,17 @@ function ProgramModal({
     const unit = kind === 'unit_return';
     const nPerUnit = Number(perUnit);
     const nMin = Number(minUnits);
+    /* `undefined` here means "not a number" and stops the save; `null` means
+       the box was cleared on purpose. */
+    const naira = (text: string): number | null | undefined => {
+      const trimmed = text.trim();
+      if (trimmed === '') return null;
+      const value = Number(trimmed);
+      if (!Number.isFinite(value) || value < 0) return undefined;
+      return Math.round(value * 100);
+    };
+    const nUnitCost = naira(unitCost);
+    const nMarketCost = naira(marketCost);
     if (unit) {
       if (!unitOne.trim() || !unitMany.trim()) {
         setError('Fill in both item words — for example “spool” and “spools”.');
@@ -512,6 +532,14 @@ function ProgramModal({
       }
       if (!Number.isInteger(nMin) || nMin < 1) {
         setError('Fewest items must be a whole number, 1 or more.');
+        return;
+      }
+      if (nUnitCost === undefined) {
+        setError('What one item costs us must be an amount in naira, or empty.');
+        return;
+      }
+      if (nMarketCost === undefined) {
+        setError('What a new one costs must be an amount in naira, or empty.');
         return;
       }
     }
@@ -537,6 +565,11 @@ function ProgramModal({
                 unitLabelPlural: unitMany.trim(),
                 pointsPerUnit: nPerUnit,
                 minUnitsPerReturn: nMin,
+                /* Omitted when the box is empty rather than sent as null: the
+                   create schema has no nullable arm, because "not decided" is
+                   already what an absent field means on a new row. */
+                ...(nUnitCost === null ? {} : { unitCostMinor: nUnitCost }),
+                ...(nMarketCost === null ? {} : { unitMarketCostMinor: nMarketCost }),
               }
             : {}),
         };
@@ -554,6 +587,10 @@ function ProgramModal({
                 unitLabelPlural: unitMany.trim(),
                 pointsPerUnit: nPerUnit,
                 minUnitsPerReturn: nMin,
+                /* Sent even when null — clearing a rate is a real edit, and
+                   `filled()` passes null through for exactly this. */
+                unitCostMinor: nUnitCost ?? null,
+                unitMarketCostMinor: nMarketCost ?? null,
               }
             : {}),
         });
@@ -654,6 +691,41 @@ function ProgramModal({
                   step={1}
                   value={minUnits}
                   onChange={(e) => setMinUnits(e.target.value)}
+                />
+              </div>
+            </div>
+            {/*
+              THE TWO MONEY NUMBERS (0920). They are not what the customer is
+              paid — that is the points rate above — they are what the business
+              counts the reward AS, so the returns analytics can answer "what
+              does an item really cost us". Owner-only, like everything else in
+              this modal, because they change what a return is worth on paper.
+            */}
+            <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
+              <div style={{ flex: 1 }}>
+                <TextField
+                  label="What one item costs us"
+                  type="number"
+                  min={0}
+                  step={1}
+                  inputMode="decimal"
+                  value={unitCost}
+                  placeholder="100"
+                  hint="In naira. What we count each accepted item as costing in rewards. Saved onto each return as it comes in, so changing it won’t change older returns."
+                  onChange={(e) => setUnitCost(e.target.value)}
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <TextField
+                  label="What a new one costs to buy"
+                  type="number"
+                  min={0}
+                  step={1}
+                  inputMode="decimal"
+                  value={marketCost}
+                  placeholder="850"
+                  hint="In naira, today. Used only to show what taking items back saves against buying new — it always uses today’s figure."
+                  onChange={(e) => setMarketCost(e.target.value)}
                 />
               </div>
             </div>
@@ -886,16 +958,18 @@ function CreditModal({
       setError('Enter a whole number of points. Use a minus sign to take points away.');
       return;
     }
-    if (!reason.trim()) {
-      setError('Enter a reason. It is saved permanently.');
-      return;
-    }
+    /* NO REASON GUARD since 2026-09-03 (owner's instruction). This is the one
+     * ledger row nothing else in the database explains, so the field is still
+     * asked for and still prefilled from the presets — it just no longer stops
+     * the entry being saved. */
     setBusy(true);
     setError(null);
     try {
       const result = await marketingApi.adjust({
         email: addr,
         delta: n,
+        /* `filled()` drops a blank before the body is built, so this sends no
+         * `reason` key rather than `''` — which the route still refuses. */
         reason: reason.trim(),
         ...(programId ? { programId } : {}),
       });
@@ -968,9 +1042,10 @@ function CreditModal({
           </div>
         </div>
         <TextField
-          label="Reason"
+          label="Reason (optional)"
           value={reason}
           placeholder="Goodwill for the late pickup"
+          hint="Saved permanently. Nothing else records why these points moved."
           onChange={(e) => {
             setReason(e.target.value);
             setError(null);

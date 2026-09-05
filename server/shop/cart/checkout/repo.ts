@@ -1,9 +1,13 @@
 import { sql } from 'drizzle-orm';
+import { toEpochMs } from '../../../db/client';
 import type { Db } from '../../../db/client';
 import { BadRequestError, NotFoundError } from '../../../repo/errors';
-import { CartPreconditionError, CartStaleWriteError } from '../errors';
+import { CartPreconditionError, CartStaleWriteError, NotImplementedError } from '../errors';
 import { newId } from '../ids';
-import { getCart, listLines, updateCartFields } from '../cart/repo';
+import { CART_TTL_MS, canTransition, getCart, listLines, updateCartFields } from '../cart/repo';
+import type { Cart } from '../cart/repo';
+import { paymentStatusRank } from '../../../../shared/commerce/ports';
+import type { CheckoutPaymentsPort } from '../payments-port';
 import { heldReservations, reserveForCheckout } from '../reservations/repo';
 import { computeTotals, parseFrozenTotals } from '../totals/compute';
 import {
@@ -14,10 +18,13 @@ import {
   zoneFor,
 } from './shipping';
 import type { ShippingZone } from './shipping';
+import { DEFAULT_DELIVERY_RULES, servesRegion } from '../../settings/repo';
+import type { DeliveryRules } from '../../settings/repo';
 import type { CatalogPort } from '../catalog-port';
 import type { Reservation, Shortfall } from '../reservations/repo';
 import type { TotalsInputLine } from '../totals/compute';
 import type {
+  AddressLocation,
   AddressSnapshot,
   CheckoutCompletedLine,
   CheckoutCompletedPayload,
@@ -27,6 +34,11 @@ import type {
   PointsRedemptionPort,
   RedemptionQuote,
 } from '../../../../shared/marketing/redemption';
+import type {
+  DiscountCodePort,
+  DiscountRejection,
+} from '../../../../shared/marketing/discounts';
+import type { CodeDiscount } from '../../../../shared/commerce/ports';
 
 /**
  * Checkout — a state machine over the cart (brief §5).
@@ -54,6 +66,18 @@ import type {
 
 export interface CheckoutConfig {
   zones: readonly ShippingZone[];
+  /**
+   * How addresses are collected and which regions are served — the
+   * `shop_delivery_settings` singleton (migration 0760), loaded per request
+   * beside the zones so a switch the owner flips reaches the next checkout
+   * call rather than the next deploy.
+   *
+   * OPTIONAL, AND ABSENT MEANS `DEFAULT_DELIVERY_RULES` — district mode, no
+   * region restriction, which is the behaviour every total in this file had
+   * before the settings row existed. That is what makes this additive: a
+   * caller that never heard of delivery settings prices exactly as it did.
+   */
+  rules?: DeliveryRules;
   storeCurrency: string;
   /**
    * SpoolPoints, if this deployment wired them (admin#2). See
@@ -62,6 +86,245 @@ export interface CheckoutConfig {
    * means no adjustment — the behaviour every total in this file had before.
    */
   redemption?: (db: Db) => PointsRedemptionPort;
+  /**
+   * Discount codes, if this deployment wired them (admin#100 Part B). A factory
+   * over the request's handle, for the reason `redemption` is one.
+   *
+   * ABSENT MEANS THE FEATURE IS OFF, and the cart view stops advertising it —
+   * `discountCodesEnabled` is derived from this and nothing else, so a
+   * storefront never renders a field whose route would 501.
+   */
+  discounts?: (db: Db) => DiscountCodePort;
+  /**
+   * PAYMENTS, read-only but for one narrow cancel — the port that lets
+   * `thawCheckout` open the freeze's one-way door. See
+   * `server/shop/cart/payments-port.ts` for why the door needed a handle and
+   * why this is the only fact Cart cannot answer for itself.
+   *
+   * ABSENT REFUSES — IT DOES NOT PRETEND, and that is the opposite of the
+   * defaults above it. `rules`, `redemption` and `discounts` all have an absent
+   * meaning that is a correct, weaker behaviour. There is no correct weaker
+   * behaviour for "unfreeze a checkout without checking whether it was paid":
+   * the choice is between refusing and risking a second charge. So a
+   * deployment that forgets to wire this keeps answering the 409 it answers
+   * today, which is a bug, rather than reopening paid carts, which is money.
+   */
+  payments?: CheckoutPaymentsPort;
+}
+
+// -------------------------------------------------------------------- thawing
+
+/**
+ * `authorized` and everything above it on the payment ladder.
+ *
+ * THE BAR IS `authorized`, NOT `captured`, and the gap between them is the
+ * whole reason this constant is named rather than inlined. `authorized` means
+ * the customer finished the payment flow and the money is committed even though
+ * the capture has not been recorded yet; reopening on that would be reopening a
+ * cart that is about to become an order. `paymentStatusRank` puts `failed` and
+ * `cancelled` BELOW `authorized` on purpose (see its comment), so both of those
+ * fall the other side of this line and do not block a shopper's recovery —
+ * which is exactly right, because "we stopped expecting money" is the state a
+ * back-out produces.
+ */
+const COMMITTED_RANK = paymentStatusRank('authorized');
+
+/** What `cancelIntent` will actually move. Anything at or above this rank is
+ *  already settled one way or another and is left alone. */
+const CANCELLABLE_BELOW_RANK = paymentStatusRank('cancelled');
+
+/**
+ * Unfreeze a checkout: `converting → open`, and give the shopper their basket
+ * back.
+ *
+ * ═══ THE HANDLE ON THE INSIDE OF THE ONE-WAY DOOR ═══
+ *
+ * `freezeCheckout`'s header calls the freeze a one-way door and means it. What
+ * it did not say is that the door had no handle: `converting → open` sat in the
+ * transition allow-list from the beginning, with a comment promising "a
+ * customer who backs out of checkout gets their basket back rather than a cart
+ * they can never edit again", and `setCartStatus` was never once called with it
+ * outside a test. `routes/cart.ts` asserted the same thing in prose — "a
+ * payment that fails sends it back to `open`" — and nothing did.
+ *
+ * The cost was total and silent. A shopper who reached the Paystack page and
+ * did not pay — closed the tab, was declined, changed their mind about the
+ * address — got `409 precondition_failed / update_cart` from every subsequent
+ * address or shipping edit, for ever, and `LIVE_STATUSES` kept handing the same
+ * dead cart back to the cookie. This function is that promised edge.
+ *
+ * ═══ WHAT IT CLEARS, AND WHY CLEARING IS NOT OPTIONAL ═══
+ *
+ * `frozenTotals()` reads `frozen_totals` with NO STATUS GUARD, and
+ * `createIntent` prices a payment from it. Flipping the status alone would
+ * leave an `open`, freely editable cart whose stale frozen total is still
+ * chargeable — a shopper could thaw, change their address into a different
+ * shipping zone, and still be billed the old number. So the freeze's OUTPUTS go
+ * with the status, in the same statement, and `frozenTotals()` then throws
+ * until a new freeze runs. That is fail-closed: the failure mode of clearing
+ * too much is "you must press Pay again", and of clearing too little is "you
+ * were charged the wrong amount".
+ *
+ * `discount_code` is deliberately KEPT. It is an INPUT the shopper typed on an
+ * open cart, like their lines and their address, not an output of the freeze —
+ * and making somebody re-enter a promo code because their card was declined is
+ * the small cruelty this whole function exists to remove.
+ *
+ * ═══ IDEMPOTENT, BECAUSE THE CALLER IS A RETRY ═══
+ *
+ * An already-open cart returns unchanged rather than raising. The storefront
+ * calls this from a "change my details" button that a shopper can press twice,
+ * and from a page that may have reloaded after the first call succeeded.
+ */
+export async function thawCheckout(
+  db: Db,
+  config: CheckoutConfig,
+  a: { cartId: string; baseRevision?: number },
+): Promise<Cart> {
+  const cart = await getCart(db, a.cartId);
+  if (!cart) throw new NotFoundError(a.cartId);
+  if (cart.status === 'open') return cart;
+
+  // `converted` and `abandoned` are terminal and the allow-list says so. A
+  // converted cart is an ORDER — reopening it would be un-selling something.
+  if (!canTransition(cart.status, 'open')) {
+    throw new CartPreconditionError('cancel_checkout', snapshotOf(cart));
+  }
+
+  /*
+   * NO PORT, NO THAW. `CheckoutConfig.payments` states the reasoning: this is
+   * the one dependency in this file whose absence must refuse rather than
+   * degrade, because the weaker behaviour would be reopening carts that were
+   * paid for. 501 rather than 500 — permanent, named, and outside the client
+   * retry policy (`cart/errors.ts`), so a misconfigured deployment is legible
+   * in a log instead of being an anonymous failure retried for thirty seconds.
+   */
+  const port = config.payments;
+  if (!port) throw new NotImplementedError('checkout_cancel');
+
+  const intents = await port.intentsFor(db, a.cartId);
+  /*
+   * MONEY MOVED — REFUSED, AND THIS IS THE GUARD THE WHOLE PORT EXISTS FOR.
+   *
+   * A capture normally drives `converting → converted` inline, so a
+   * `converting` cart is USUALLY unpaid. `completeCheckoutForIntent` documents
+   * three ways that inline completion does not happen while the capture is
+   * still recorded — an unwired port, an unknown exception, a lost race — and
+   * each leaves a PAID cart at `converting`, indistinguishable from this
+   * function's target by anything Cart can see on its own.
+   *
+   * Such a cart needs the sweep, which will complete it, not a thaw. Reopening
+   * it and re-freezing at a new total would build the order from numbers the
+   * customer was never charged.
+   */
+  if (intents.some((intent) => paymentStatusRank(intent.status) >= COMMITTED_RANK)) {
+    throw new CartPreconditionError('checkout_paid', snapshotOf(cart));
+  }
+
+  /*
+   * CANCEL FIRST, THEN REOPEN. The order matters in only one direction: a crash
+   * between the two leaves cancelled intents on a still-frozen cart, which the
+   * next attempt fixes and which charges nobody. The reverse order would leave
+   * a live payment page pointed at a cart whose total is about to move.
+   *
+   * Paystack cannot be told (`cancelIntent`: it has no endpoint that cancels an
+   * uncompleted transaction), so a shopper who kept the old tab can still pay
+   * it. That is recorded as an anomaly by the rank ladder rather than lost, and
+   * refusing to hold money we took would be the worse answer.
+   */
+  for (const intent of intents) {
+    if (paymentStatusRank(intent.status) < CANCELLABLE_BELOW_RANK) {
+      await port.cancel(db, intent.id);
+    }
+  }
+
+  const now = Date.now();
+  const base = a.baseRevision ?? cart.revision;
+  /*
+   * `status = 'converting'` IS IN THE PREDICATE, not only in the allow-list
+   * check above — same discipline as `setCartStatus`, and for the same reason:
+   * the allow-list ran against a row that has already been read, so on its own
+   * it is exactly the stale pre-check the CAS rules forbid. A NULL bind needs
+   * its cast or Postgres raises 42P18 (§5).
+   */
+  const res = await db.execute(sql`
+    UPDATE shop_carts
+       SET status = 'open',
+           frozen_totals = ${null}::jsonb,
+           frozen_lines = ${null}::jsonb,
+           frozen_at = ${null}::bigint,
+           redemption_points = ${null}::integer,
+           redemption_email = ${null}::text,
+           revision = revision + 1,
+           updated_at = ${now},
+           expires_at = ${now + CART_TTL_MS}
+     WHERE id = ${a.cartId} AND revision = ${base} AND status = 'converting'
+    RETURNING revision`);
+
+  if (res.rows.length === 0) {
+    const after = await getCart(db, a.cartId);
+    if (!after) throw new NotFoundError(a.cartId);
+    // Somebody else already thawed it — the shopper's other tab, or their
+    // second press. That is the outcome this caller wanted, not a conflict.
+    if (after.status === 'open') return after;
+    if (after.status !== 'converting') {
+      throw new CartPreconditionError('cancel_checkout', snapshotOf(after));
+    }
+    throw new CartStaleWriteError(base, after.revision, snapshotOf(after));
+  }
+
+  const after = await getCart(db, a.cartId);
+  if (!after) throw new NotFoundError(a.cartId);
+  return after;
+}
+
+/**
+ * Make the cart writable for an edit that is guarded on `status = 'open'`, and
+ * report which revision the edit must now chain off.
+ *
+ * ═══ WHY THE REVISION COMES BACK ═══
+ *
+ * The thaw is itself a write, so it bumps `revision`. The caller's
+ * `baseRevision` — the shopper's optimistic token, taken before any of this —
+ * is spent HERE, on the thaw's own CAS, and is stale by the time the address
+ * write runs. Handing it on unchanged would answer a successful recovery with
+ * `409 stale_write`, which is the same dead end this function was written to
+ * remove, one step further along. So the edit chains off the revision the thaw
+ * produced: the shopper's token is still checked exactly once, at the first
+ * write that consumes it.
+ *
+ * A cart that is already `open` returns the caller's own value untouched, so
+ * the ordinary checkout path — which is every checkout that has not been
+ * frozen — reaches `updateCartFields` with precisely what it had before this
+ * function existed, and consults Payments not at all.
+ */
+async function makeEditable(
+  db: Db,
+  config: CheckoutConfig,
+  a: { cartId: string; baseRevision?: number },
+): Promise<number | undefined> {
+  const cart = await getCart(db, a.cartId);
+  if (!cart) throw new NotFoundError(a.cartId);
+  /*
+   * ONLY `converting` IS THAWED. `converted` and `abandoned` fall through
+   * untouched so the guarded write refuses them exactly as it always has —
+   * changing what THOSE answer is a separate decision from giving an unpaid
+   * checkout its basket back, and this function is not the place to make it.
+   */
+  if (cart.status !== 'converting') return a.baseRevision;
+  const thawed = await thawCheckout(db, config, a);
+  return thawed.revision;
+}
+
+/** The four fields a 409 hands back so a client can re-render without a second
+ *  request — `CartSnapshot`, built the one way rather than inline per site. */
+function snapshotOf(cart: Cart) {
+  return {
+    id: cart.id,
+    status: cart.status,
+    revision: cart.revision,
+    currency: cart.currency,
+  };
 }
 
 // ------------------------------------------------------------------ addresses
@@ -77,6 +340,31 @@ function assertAddress(a: AddressSnapshot): void {
   if (!a.city.trim()) throw new BadRequestError('city');
 }
 
+/**
+ * MICRO-DEGREES BACK TO DEGREES (migration 0780), and this is the only place
+ * that knows the column is scaled. Divided rather than multiplied because
+ * integer/1e6 is exact for every value the column can hold, while the outbound
+ * `Math.round(x * 1e6)` is where the one rounding happens.
+ *
+ * The `location_ck` constraint pairs lat, lng, source and capturedAt, so a
+ * non-null latitude guarantees the other three — the casts below are total
+ * rather than hopeful.
+ */
+function rowToLocation(row: Record<string, unknown>): AddressLocation | null {
+  if (row.location_lat_e6 == null) return null;
+  return {
+    lat: Number(row.location_lat_e6) / 1e6,
+    lng: Number(row.location_lng_e6) / 1e6,
+    accuracyM: row.location_accuracy_m == null ? null : Number(row.location_accuracy_m),
+    source: String(row.location_source) === 'pin' ? 'pin' : 'device',
+    /* `toEpochMs` rather than `Number`, though the CHECK above already makes a
+     * null unreachable here: `Number(null)` is 0, which is finite, is a valid
+     * timestamp and renders as 1 January 1970 — so if that constraint were ever
+     * dropped the failure would be a plausible wrong date instead of a throw. */
+    capturedAt: toEpochMs(row.location_captured_at),
+  };
+}
+
 function rowToAddress(row: Record<string, unknown>): AddressSnapshot {
   return {
     name: String(row.name),
@@ -88,8 +376,13 @@ function rowToAddress(row: Record<string, unknown>): AddressSnapshot {
     countryCode: String(row.country_code),
     phone: row.phone == null ? null : String(row.phone),
     district: row.district == null ? null : String(row.district),
+    location: rowToLocation(row),
   };
 }
+
+const ADDRESS_COLUMNS = sql`name, line1, line2, city, region, postal_code, country_code,
+                            phone, district, location_lat_e6, location_lng_e6,
+                            location_accuracy_m, location_source, location_captured_at`;
 
 export async function getAddress(
   db: Db,
@@ -97,7 +390,7 @@ export async function getAddress(
   kind: AddressKind,
 ): Promise<AddressSnapshot | null> {
   const res = await db.execute(sql`
-    SELECT name, line1, line2, city, region, postal_code, country_code, phone, district
+    SELECT ${ADDRESS_COLUMNS}
       FROM shop_addresses WHERE cart_id = ${cartId} AND kind = ${kind}`);
   return res.rows[0] ? rowToAddress(res.rows[0]) : null;
 }
@@ -124,7 +417,52 @@ interface DistrictRuling {
 
 const ZONE_RATE: DistrictRuling = { refused: false, rateMinor: null };
 
-async function districtRuling(db: Db, district: string | null): Promise<DistrictRuling> {
+/** `config.rules`, or the pre-0760 behaviour for a caller that has none. */
+function rulesOf(config: CheckoutConfig): DeliveryRules {
+  return config.rules ?? DEFAULT_DELIVERY_RULES;
+}
+
+/**
+ * Is this address outside the regions the shop serves (migration 0760)?
+ *
+ * CHECKED WHEREVER THE DISTRICT REFUSAL IS CHECKED — the address, the options,
+ * the shipping choice and the freeze — because it is the same kind of fact and
+ * carries the same hazard. `putAddresses` refuses at the door where the message
+ * is cheapest, and the freeze refuses again because an owner can ADD a
+ * restriction while a cart sits at the payment step. A cart addressed before
+ * that moment would otherwise sail through to a charge for a delivery the shop
+ * has just said it will not make, and the answer after the freeze is a refund.
+ *
+ * `null` — the seeded value — serves everywhere and costs nothing.
+ */
+function outsideServiceRegion(config: CheckoutConfig, address: AddressSnapshot): boolean {
+  return !servesRegion(rulesOf(config).servedRegions, address.region);
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * SIMPLE MODE SHORT-CIRCUITS TO THE ZONE RATE — AND THAT IS THE WHOLE REASON
+ * `address_mode` TOUCHES THE MONEY PATH AT ALL.
+ *
+ * A district only ever reaches this function because it is STORED on the
+ * address row, and a stored district outlives the switch that stopped
+ * collecting it. Without this branch, a cart whose address was captured on
+ * Monday under the district form would still be priced — or REFUSED — by that
+ * district at Friday's freeze, while the shopper looks at a form that never
+ * asked. They would watch the number move after they had already seen it,
+ * which is the exact failure freezing exists to prevent, arrived at from the
+ * other side.
+ *
+ * It is checked BEFORE the query rather than after, so simple mode also costs
+ * one round trip less per checkout call than district mode does.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+async function districtRuling(
+  db: Db,
+  config: CheckoutConfig,
+  district: string | null,
+): Promise<DistrictRuling> {
+  if (rulesOf(config).addressMode === 'simple') return ZONE_RATE;
   if (district == null) return ZONE_RATE;
   const res = await db.execute(sql`
     SELECT delivers, rate_minor FROM shop_delivery_areas WHERE area_key = ${district}`);
@@ -185,15 +523,52 @@ export async function putAddresses(
   // between the two moments — but this is where the message is cheapest.)
   // Only the SHIPPING district is ruled on: a billing address is where the
   // card lives, not where the parcel goes.
-  const ruling = await districtRuling(db, a.shipping.district ?? null);
+  const ruling = await districtRuling(db, config, a.shipping.district ?? null);
   if (ruling.refused) throw new BadRequestError('outside_delivery_area');
 
+  /*
+   * AND THE REGION RESTRICTION, WHICH IS THE OTHER HALF OF SIMPLE MODE.
+   *
+   * A switched-off district is the only way this shop could previously say "we
+   * do not go there", and simple mode stops collecting the district — so
+   * without this, turning the switch on silently promises delivery anywhere
+   * the catch-all zone reaches, which is all of Nigeria. `served_regions` is
+   * how that is said instead, and it is enforced here for the same reason the
+   * district refusal is: while the form is still in front of the customer.
+   *
+   * IT APPLIES IN BOTH MODES, deliberately. It is a statement about where the
+   * shop delivers, not about which form is on screen, and a restriction that
+   * evaporated when the owner switched back to districts would be a trap.
+   * `null` — the seeded value — means no restriction and no behaviour change.
+   *
+   * ITS OWN ERROR CODE, not `outside_delivery_area`: the storefront's message
+   * for that one names a district the customer picked from a list, and there
+   * is no list here. "We don't deliver to Kano yet" and "we don't deliver to
+   * Gwarinpa" need different sentences and different next steps.
+   */
+  if (outsideServiceRegion(config, a.shipping)) {
+    throw new BadRequestError('outside_service_region');
+  }
+
   const zone = zoneFor(config.zones, a.shipping.countryCode, a.shipping.region);
+  /*
+   * A FROZEN CHECKOUT IS THAWED HERE RATHER THAN REFUSED — and the position of
+   * this line, AFTER both refusals and BEFORE any write, is the whole of what
+   * makes it safe. An address the shop will not deliver to still costs nothing
+   * and changes nothing; only an address that is going to be stored reopens the
+   * cart. `makeEditable` is a no-op for the ordinary open cart.
+   *
+   * Editing a delivery address IS backing out of payment, said in the only
+   * vocabulary a checkout form has. Refusing it — which is what happened until
+   * this line existed — told a shopper who had simply mistyped their street
+   * that their basket was permanently unusable.
+   */
+  const base = await makeEditable(db, config, a);
   // The cart write goes FIRST because it carries the CAS and the state guard: if
   // the cart is not open, or has moved on, no address is written at all.
   await updateCartFields(db, {
     cartId: a.cartId,
-    baseRevision: a.baseRevision,
+    baseRevision: base,
     fields: { taxZone: zone.id },
   });
 
@@ -202,17 +577,38 @@ export async function putAddresses(
     ['billing', a.billing],
   ] as const) {
     if (!address) continue;
+    /*
+     * THE PIN IS WRITTEN WHOLE OR NOT AT ALL, and the five columns move
+     * together on the UPDATE branch too — so re-submitting the form without
+     * sharing a location CLEARS a pin shared on the previous attempt rather
+     * than leaving a stale one attached to an address that has since changed.
+     * `shop_addresses_location_ck` would refuse a half-written pin anyway; this
+     * is what stops one ever being attempted.
+     */
+    const loc = address.location ?? null;
     await db.execute(sql`
       INSERT INTO shop_addresses (id, cart_id, kind, name, line1, line2, city, region,
-                                  postal_code, country_code, phone, district)
+                                  postal_code, country_code, phone, district,
+                                  location_lat_e6, location_lng_e6, location_accuracy_m,
+                                  location_source, location_captured_at)
       VALUES (${newId('address')}, ${a.cartId}, ${kind}, ${address.name}, ${address.line1},
               ${address.line2}, ${address.city}, ${address.region}, ${address.postalCode},
-              ${address.countryCode}, ${address.phone}, ${address.district ?? null})
+              ${address.countryCode}, ${address.phone}, ${address.district ?? null},
+              ${loc === null ? null : Math.round(loc.lat * 1e6)}::integer,
+              ${loc === null ? null : Math.round(loc.lng * 1e6)}::integer,
+              ${loc === null || loc.accuracyM === null ? null : Math.round(loc.accuracyM)}::integer,
+              ${loc === null ? null : loc.source}::text,
+              ${loc === null ? null : loc.capturedAt}::bigint)
       ON CONFLICT (cart_id, kind) DO UPDATE
         SET name = EXCLUDED.name, line1 = EXCLUDED.line1, line2 = EXCLUDED.line2,
             city = EXCLUDED.city, region = EXCLUDED.region,
             postal_code = EXCLUDED.postal_code, country_code = EXCLUDED.country_code,
-            phone = EXCLUDED.phone, district = EXCLUDED.district`);
+            phone = EXCLUDED.phone, district = EXCLUDED.district,
+            location_lat_e6 = EXCLUDED.location_lat_e6,
+            location_lng_e6 = EXCLUDED.location_lng_e6,
+            location_accuracy_m = EXCLUDED.location_accuracy_m,
+            location_source = EXCLUDED.location_source,
+            location_captured_at = EXCLUDED.location_captured_at`);
   }
 
   return { zone: zone.id };
@@ -233,8 +629,12 @@ export async function shippingOptionsForCart(
   // AND NONE TO A REFUSED DISTRICT. `putAddresses` already refuses these, but
   // the owner can switch a district off while a cart is mid-checkout; an empty
   // list is the honest answer, and the freeze backs it with a hard refusal.
-  const ruling = await districtRuling(db, address.district ?? null);
+  const ruling = await districtRuling(db, config, address.district ?? null);
   if (ruling.refused) return [];
+  // AND NONE OUTSIDE THE SERVED REGIONS, for the same reason: the restriction
+  // can be added while a cart is mid-checkout, and an empty list is the honest
+  // answer until the shopper changes the address.
+  if (outsideServiceRegion(config, address)) return [];
   return shippingOptionsFor(
     zoneFor(config.zones, address.countryCode, address.region),
     config.storeCurrency,
@@ -248,17 +648,24 @@ export async function setShipping(
 ): Promise<ShippingQuote> {
   const address = await getAddress(db, a.cartId, 'shipping');
   if (!address) throw new BadRequestError('shipping_address');
-  const ruling = await districtRuling(db, address.district ?? null);
+  const ruling = await districtRuling(db, config, address.district ?? null);
   if (ruling.refused) throw new BadRequestError('outside_delivery_area');
+  if (outsideServiceRegion(config, address)) {
+    throw new BadRequestError('outside_service_region');
+  }
   const zone = zoneFor(config.zones, address.countryCode, address.region);
   const option = shippingOptionById(zone, config.storeCurrency, a.optionId);
   // An option from ANOTHER zone is refused rather than honoured: accepting the
   // UK next-day price for a parcel to France is a real loss on every order.
   if (!option) throw new BadRequestError('shipping_option');
 
+  /* Thawed for the same reason `putAddresses` is, and in the same position —
+   * after every refusal, before the first write. Choosing a different delivery
+   * speed after seeing the payment page is backing out of it. */
+  const base = await makeEditable(db, config, a);
   await updateCartFields(db, {
     cartId: a.cartId,
-    baseRevision: a.baseRevision,
+    baseRevision: base,
     fields: { shippingOptionId: option.id },
   });
   // Re-priced on the way OUT, not on the way in: the cart stores the option ID
@@ -303,18 +710,14 @@ export async function startCheckout(
 
 // --------------------------------------------------------------------- freeze
 
-export type FreezeOutcome =
-  | { ok: true; totals: FrozenTotals }
-  | { ok: false; reason: 'empty_cart' }
-  | { ok: false; reason: 'no_shipping_address' }
-  | { ok: false; reason: 'outside_delivery_area' }
-  | { ok: false; reason: 'unresolved_lines'; variantIds: string[] }
-  | {
-      ok: false;
-      reason: 'currency_mismatch';
-      expected: string;
-      found: Array<{ where: string; currency: string }>;
-    };
+/**
+ * ONE LIST OF REFUSALS, NOT THREE. The freeze, the preview and `priceCart` all
+ * refuse for exactly the same reasons — they run the same arithmetic — and this
+ * used to restate them, which meant a new reason had to be added in three
+ * places or one caller could not report it. `PricingRefusal` is that list; each
+ * arm is documented where it is declared, on `PriceOutcome`.
+ */
+export type FreezeOutcome = { ok: true; totals: FrozenTotals } | PricingRefusal;
 
 /**
  * What the freeze decided about SpoolPoints, or null for the ordinary cart.
@@ -389,41 +792,98 @@ async function quoteRedemption(
 }
 
 /**
- * Price the cart once, store the answer, and close the door.
+ * Everything the pricing pass decided, for the caller that will store it.
+ *
+ * The failure arms are `FreezeOutcome`'s failure arms exactly, which is what
+ * lets `freezeCheckout` return one of these unchanged.
+ */
+type PriceOutcome =
+  | {
+      ok: true;
+      totals: FrozenTotals;
+      frozenLines: StoredCheckoutLine[];
+      redemption: FrozenRedemption | null;
+    }
+  | { ok: false; reason: 'empty_cart' }
+  | { ok: false; reason: 'no_shipping_address' }
+  | { ok: false; reason: 'outside_delivery_area' }
+  /** The address's region is outside `served_regions` (migration 0760). Its own
+   *  reason rather than `outside_delivery_area`: the storefront's message for
+   *  that one names a district the customer picked from a list, and in simple
+   *  mode there is no list. */
+  | { ok: false; reason: 'outside_service_region' }
+  | { ok: false; reason: 'unresolved_lines'; variantIds: string[] }
+  /**
+   * The cart's discount code no longer applies (admin#100 Part B).
+   *
+   * REFUSED RATHER THAN PRICED WITHOUT IT, and that is the whole decision. An
+   * owner can disable a campaign while a cart sits at the payment step; pricing
+   * on without the code would charge the shopper MORE than the screen showed
+   * them, silently, which is the one outcome a checkout must never produce.
+   * `discountReason` is the port's own reason, so the storefront can say "that
+   * code expired" and offer the new total rather than "something went wrong".
+   */
+  | { ok: false; reason: 'discount_rejected'; discountReason: DiscountRejection }
+  | {
+      ok: false;
+      reason: 'currency_mismatch';
+      expected: string;
+      found: Array<{ where: string; currency: string }>;
+    };
+
+/**
+ * PRICE THE CART. The arithmetic, and nothing else — no write, no clock.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ONE PRICING PATH, TWO CALLERS, AND THAT IS THE WHOLE REASON THIS FUNCTION IS
+ * SEPARATE FROM `freezeCheckout` (admin#100 Part A).
+ *
+ * `previewCheckout` shows a shopper a discount and a total; `freezeCheckout`
+ * then charges them. If those two numbers came from two pieces of arithmetic
+ * they would agree today and diverge the first time somebody edited one of
+ * them — and the shopper would find out at the payment step, having already
+ * been shown a smaller figure. Sharing this function makes that divergence
+ * unrepresentable rather than merely tested; `preview.test.ts` drives both
+ * callers against one cart and compares the whole `FrozenTotals`.
+ *
+ * WHAT IS DELIBERATELY NOT HERE: the status guard, the `UPDATE`, and the clock.
+ * They belong to the freeze alone. A preview must be able to re-price a cart
+ * that is already `converting` — a shopper reloading the payment step — and a
+ * read has no business refusing that.
  *
  * Every input to `computeTotals` is gathered HERE and passed in: this function
- * has the database and the clock, and the engine has neither. That separation is
- * the whole design — see `totals/compute.ts`.
+ * has the database, and the engine has neither it nor a clock. That separation
+ * is the whole design — see `totals/compute.ts`.
+ * ═══════════════════════════════════════════════════════════════════════════
  */
-export async function freezeCheckout(
+async function priceCart(
   db: Db,
   catalog: CatalogPort,
   config: CheckoutConfig,
-  a: { cartId: string; baseRevision?: number; redeemPoints?: number },
-): Promise<FreezeOutcome> {
-  const cart = await getCart(db, a.cartId);
-  if (!cart) throw new NotFoundError(a.cartId);
-  if (cart.status !== 'open') {
-    throw new CartPreconditionError('freeze', {
-      id: cart.id,
-      status: cart.status,
-      revision: cart.revision,
-      currency: cart.currency,
-    });
-  }
-
-  const lines = await listLines(db, a.cartId);
+  cart: Cart,
+  redeemPoints: number | undefined,
+  /* For the discount code's schedule, and nothing else — the totals engine is
+     still clockless, which is the property `compute.ts` exists to keep. */
+  now: number,
+): Promise<PriceOutcome> {
+  const lines = await listLines(db, cart.id);
   if (lines.length === 0) return { ok: false, reason: 'empty_cart' };
 
-  const address = await getAddress(db, a.cartId, 'shipping');
+  const address = await getAddress(db, cart.id, 'shipping');
   if (!address) return { ok: false, reason: 'no_shipping_address' };
 
   // RULED ON AGAIN AT THE MONEY MOMENT, not trusted from `putAddresses`: the
   // owner can switch a district off while this cart sits at the payment step,
   // and the freeze is the last instant a refusal costs nothing. After it, the
   // answer would be a refund.
-  const districts = await districtRuling(db, address.district ?? null);
+  const districts = await districtRuling(db, config, address.district ?? null);
   if (districts.refused) return { ok: false, reason: 'outside_delivery_area' };
+  // AND THE REGION RESTRICTION, ruled on again for the identical reason: an
+  // owner can add one while this cart sits at the payment step, and the freeze
+  // is the last instant a refusal costs nothing rather than a refund.
+  if (outsideServiceRegion(config, address)) {
+    return { ok: false, reason: 'outside_service_region' };
+  }
 
   const zone = zoneFor(config.zones, address.countryCode, address.region);
   const chosen = cart.shippingOptionId
@@ -486,6 +946,36 @@ export async function freezeCheckout(
   const tax = cart.taxZone ? taxRateFor(zone) : unknownZoneTaxRate();
 
   /*
+   * THE DISCOUNT CODE, RE-JUDGED HERE AND NOT TRUSTED FROM WHEN IT WAS APPLIED
+   * — the same argument the district ruling makes twenty lines up, and for the
+   * same reason: the owner can switch a campaign off while this cart sits at the
+   * payment step, and this is the last instant a refusal costs nothing.
+   *
+   * A DEAD CODE REFUSES. See `PriceOutcome`'s arm for why that beats pricing
+   * without it.
+   *
+   * NO PORT MEANS NO CODE CAN BE HONOURED. If a deployment has a code on a cart
+   * and no way to judge it, the only safe answers are "refuse" and "charge more
+   * than we showed" — so it refuses, as `not_found`, which is also what the
+   * shopper would be told if the row really had gone.
+   */
+  let discount: CodeDiscount | null = null;
+  if (cart.discountCode) {
+    if (!config.discounts) {
+      return { ok: false, reason: 'discount_rejected', discountReason: 'not_found' };
+    }
+    const judged = await config.discounts(db).validate({
+      code: cart.discountCode,
+      currency: cart.currency,
+      now,
+    });
+    if (!judged.ok) {
+      return { ok: false, reason: 'discount_rejected', discountReason: judged.reason };
+    }
+    discount = judged.discount;
+  }
+
+  /*
    * PRICED ONCE WITHOUT POINTS, THEN — IF THERE ARE ANY — ONCE MORE WITH THEM.
    *
    * `max_redeem_bps` is "how much of an ORDER may be paid for in points", so the
@@ -506,21 +996,39 @@ export async function freezeCheckout(
     // then change.
     tax,
     adjustments: [],
+    /* NO CODE IN THIS PASS, DELIBERATELY. This total exists for one purpose —
+       to be the number `max_redeem_bps` is a share of — and the owner settled
+       on 2026-09-02 that the cap measures the UNDISCOUNTED order. Feeding the
+       code in here would make a shopper's points worth less on a coded order
+       and would let each discount move the other's base, which is a cap that
+       changes depending on the order the two were applied in. */
+    discount: null,
   });
 
   const redemption = undiscounted.ok
-    ? await quoteRedemption(db, config, cart, undiscounted.totals.grandTotal.amount, a.redeemPoints)
+    ? await quoteRedemption(db, config, cart, undiscounted.totals.grandTotal.amount, redeemPoints)
     : null;
 
-  const computed = redemption
-    ? computeTotals({
-        currency: cart.currency,
-        lines: totalsLines,
-        shipping,
-        tax,
-        adjustments: [redemption.quote.adjustment],
-      })
-    : undiscounted;
+  /*
+   * THE REAL PASS: both discounts, at their own points in the pipeline. The
+   * code reduces the taxable base (step 1c of `compute.ts`); the points come
+   * off after tax, as an `Adjustment`, because they are a payment instrument
+   * rather than a reduction in what the goods cost.
+   *
+   * Skipped entirely when there is neither, so an ordinary cart is still priced
+   * exactly once — `undiscounted` is already that answer.
+   */
+  const computed =
+    redemption || discount
+      ? computeTotals({
+          currency: cart.currency,
+          lines: totalsLines,
+          shipping,
+          tax,
+          adjustments: redemption ? [redemption.quote.adjustment] : [],
+          discount,
+        })
+      : undiscounted;
 
   if (!computed.ok) {
     if (computed.reason === 'unresolved_lines') {
@@ -537,15 +1045,48 @@ export async function freezeCheckout(
     // `bad_currency` means the CART's own currency column is not ISO-4217, which
     // no ordinary path can produce — the CHECK in migration 0120 refuses it. A
     // corrupt row, then, and a 500 is the honest answer.
-    throw new Error(`cart ${a.cartId} has an unusable currency`);
+    throw new Error(`cart ${cart.id} has an unusable currency`);
   }
 
+  return { ok: true, totals: computed.totals, frozenLines, redemption };
+}
+
+/**
+ * Price the cart once, store the answer, and close the door.
+ *
+ * The arithmetic is `priceCart`'s, shared with the preview so the number a
+ * shopper was shown is the number they are charged. What is added here is the
+ * one-way part: the status guard, the clock, and the single `UPDATE`.
+ */
+export async function freezeCheckout(
+  db: Db,
+  catalog: CatalogPort,
+  config: CheckoutConfig,
+  a: { cartId: string; baseRevision?: number; redeemPoints?: number },
+): Promise<FreezeOutcome> {
+  const cart = await getCart(db, a.cartId);
+  if (!cart) throw new NotFoundError(a.cartId);
+  if (cart.status !== 'open') {
+    throw new CartPreconditionError('freeze', {
+      id: cart.id,
+      status: cart.status,
+      revision: cart.revision,
+      currency: cart.currency,
+    });
+  }
+
+  // Read once, before pricing, so the discount code's window and the row's
+  // `updated_at` are judged against the same instant.
   const now = Date.now();
+  const priced = await priceCart(db, catalog, config, cart, a.redeemPoints, now);
+  if (!priced.ok) return priced;
+  const { totals, frozenLines, redemption } = priced;
+
   const base = a.baseRevision ?? cart.revision;
   const res = await db.execute(sql`
     UPDATE shop_carts
        SET status = 'converting',
-           frozen_totals = ${JSON.stringify(computed.totals)}::jsonb,
+           frozen_totals = ${JSON.stringify(totals)}::jsonb,
            frozen_lines = ${JSON.stringify(frozenLines)}::jsonb,
            frozen_at = ${now},
            /*
@@ -578,7 +1119,221 @@ export async function freezeCheckout(
     throw new CartStaleWriteError(base, after.revision, snap);
   }
 
-  return { ok: true, totals: computed.totals };
+  return { ok: true, totals };
+}
+
+// -------------------------------------------------------------------- preview
+
+/**
+ * The refusals, named once so the preview and the freeze cannot drift apart —
+ * and exported so the two ROUTES can share one mapping onto the error table.
+ * Structurally identical to `FreezeOutcome`'s failure arms by construction.
+ */
+export type PricingRefusal = Extract<PriceOutcome, { ok: false }>;
+
+/**
+ * What a preview reports about the shopper's points.
+ *
+ * `pointsApplied` IS THE CLAMP, MADE VISIBLE (storefront#112). `quote()` already
+ * reduces a request to what the rules allow — the balance, `min_redeem_points`,
+ * and `max_redeem_bps` as a share of the order — and returning only the discount
+ * would let a storefront say "5,000,000 points spent" beside a £5 reduction. The
+ * number that was actually spent is the one the customer is owed a sight of, so
+ * it is reported separately from the money rather than inferred from it.
+ *
+ * `discountMinor` IS POSITIVE. The `Adjustment` on the wire is negative because
+ * it is summed into a total; this field is read out loud as "£5.00 off", and a
+ * storefront that has to remember to negate a field will one day forget.
+ */
+export interface PreviewRedemption {
+  /** How many points the rules actually spent — never how many were asked for. */
+  pointsApplied: number;
+  /** The discount those points bought, in minor units, as a positive number. */
+  discountMinor: number;
+  /** What the balance would be afterwards, for the widget's copy. */
+  balanceAfter: number;
+}
+
+export type PreviewOutcome =
+  | { ok: true; totals: FrozenTotals; redemption: PreviewRedemption | null }
+  | PricingRefusal;
+
+/**
+ * Price the cart AS THE FREEZE WOULD, and write nothing (admin#100 Part A).
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * WHY THIS EXISTS. `quote()` has been correct since admin#2 and unreachable
+ * over HTTP the whole time: its only caller is inside `freezeCheckout`, and
+ * freezing is the one-way step on the way to payment. So a storefront could not
+ * tell a shopper what their points were worth until after the point of no
+ * return, and the widget said so — "your discount is applied on the next
+ * screen, before you pay" was an honest workaround for a missing endpoint.
+ *
+ * THE ONLY THING IT ADDS TO `priceCart` IS A SHAPE. Every rule — the switch, the
+ * currency match, the minimum, the balance, the cap — is `quote()`'s, and the
+ * arithmetic is the freeze's own. That is the point: see `priceCart`.
+ *
+ * IT WRITES NOTHING, RESERVES NOTHING, FREEZES NOTHING. There is no `UPDATE`
+ * here and no clock, and `quote()` reserves nothing by construction (spec D9) —
+ * a preview a shopper never acts on must leave no trace, or an abandoned tab
+ * would strand a balance.
+ *
+ * NO `baseRevision`. That parameter exists to make a WRITE fail when the cart
+ * moved underneath it; a read has nothing to lose the race for. A preview of a
+ * cart that has since changed is simply a stale number, and the freeze — which
+ * does take one — is where that is caught.
+ *
+ * A NON-`open` CART IS PRICED, NOT REFUSED, which is the one place this is more
+ * permissive than the freeze. A shopper who reloads the payment step on a
+ * `converting` cart is asking a question, not trying to change anything.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+export async function previewCheckout(
+  db: Db,
+  catalog: CatalogPort,
+  config: CheckoutConfig,
+  a: { cartId: string; redeemPoints?: number },
+): Promise<PreviewOutcome> {
+  const cart = await getCart(db, a.cartId);
+  if (!cart) throw new NotFoundError(a.cartId);
+
+  const priced = await priceCart(db, catalog, config, cart, a.redeemPoints, Date.now());
+  if (!priced.ok) return priced;
+
+  const { quote } = priced.redemption ?? {};
+  return {
+    ok: true,
+    totals: priced.totals,
+    redemption: quote
+      ? {
+          pointsApplied: quote.points,
+          // The adjustment is negative; this field is read as "£5.00 off".
+          discountMinor: Math.abs(quote.adjustment.amount.amount),
+          balanceAfter: quote.balanceAfter,
+        }
+      : null,
+  };
+}
+
+// ------------------------------------------------------------------ discounts
+
+export type ApplyDiscountOutcome =
+  | { ok: true; discount: CodeDiscount }
+  | { ok: false; reason: DiscountRejection };
+
+/**
+ * Put a discount code on the cart (admin#100 Part B, storefront#113).
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * IT STORES THE ROW'S SPELLING, NOT THE SHOPPER'S. `validate()` normalises and
+ * hands back the code as the model holds it, so `welcome10` and ` WeLcOmE10 `
+ * both persist as `WELCOME10` — and the freeze's re-read therefore asks about
+ * exactly the string the model can match.
+ *
+ * IT VALIDATES BEFORE IT WRITES, so a rejected code leaves no trace. A cart
+ * carrying a code that never applied would price identically and then refuse at
+ * the freeze, which is a dead end reached one screen too late.
+ *
+ * ONLY ON AN OPEN CART. Every cart-field write in this file is guarded on
+ * `status = 'open'`; a frozen checkout's price is struck, and a code applied
+ * after it would be a discount the customer is not charged.
+ *
+ * NOTHING IS RESERVED. Two shoppers can both hold the last use of a capped
+ * code — see `discountPort`'s header for why that is the right trade for a
+ * marketing budget, and where it is settled instead.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+export async function applyDiscount(
+  db: Db,
+  config: CheckoutConfig,
+  a: { cartId: string; code: string; baseRevision?: number; now: number },
+): Promise<ApplyDiscountOutcome> {
+  const cart = await getCart(db, a.cartId);
+  if (!cart) throw new NotFoundError(a.cartId);
+  if (cart.status !== 'open') {
+    throw new CartPreconditionError('apply_discount', {
+      id: cart.id,
+      status: cart.status,
+      revision: cart.revision,
+      currency: cart.currency,
+    });
+  }
+  /* A deployment with no port cannot honour a code, and pretending otherwise
+     would put a string on the cart that the freeze then refuses. */
+  if (!config.discounts) return { ok: false, reason: 'not_found' };
+
+  const judged = await config.discounts(db).validate({
+    code: a.code,
+    currency: cart.currency,
+    now: a.now,
+  });
+  if (!judged.ok) return { ok: false, reason: judged.reason };
+
+  await writeDiscountCode(
+    db,
+    a.cartId,
+    judged.discount.code,
+    a.baseRevision ?? cart.revision,
+    a.now,
+  );
+  return { ok: true, discount: judged.discount };
+}
+
+/**
+ * Take the code off the cart.
+ *
+ * A NO-OP WHEN THERE IS NOTHING TO REMOVE, deliberately: the storefront's
+ * "clear" control must not have to know whether a code is applied, and a 409
+ * there would be a dead end on the screen whose whole job is to get a shopper
+ * out of one. Idempotent, for the reason a DELETE should be.
+ */
+export async function removeDiscount(
+  db: Db,
+  a: { cartId: string; baseRevision?: number },
+): Promise<void> {
+  const cart = await getCart(db, a.cartId);
+  if (!cart) throw new NotFoundError(a.cartId);
+  if (cart.status !== 'open') {
+    throw new CartPreconditionError('remove_discount', {
+      id: cart.id,
+      status: cart.status,
+      revision: cart.revision,
+      currency: cart.currency,
+    });
+  }
+  if (cart.discountCode === null) return;
+  await writeDiscountCode(db, a.cartId, null, a.baseRevision ?? cart.revision, Date.now());
+}
+
+/** The one statement both of the above write, so the CAS and the status guard
+ *  are stated once rather than twice with a chance of diverging. */
+async function writeDiscountCode(
+  db: Db,
+  cartId: string,
+  code: string | null,
+  base: number,
+  now: number,
+): Promise<void> {
+  const res = await db.execute(sql`
+    UPDATE shop_carts
+       -- A bare NULL bind needs an explicit cast or Postgres raises 42P18 (§5).
+       SET discount_code = ${code}::text,
+           revision = revision + 1,
+           updated_at = ${now}
+     WHERE id = ${cartId} AND revision = ${base} AND status = 'open'
+    RETURNING revision`);
+  if (res.rows.length > 0) return;
+
+  const after = await getCart(db, cartId);
+  if (!after) throw new NotFoundError(cartId);
+  const snap = {
+    id: after.id,
+    status: after.status,
+    revision: after.revision,
+    currency: after.currency,
+  };
+  if (after.status !== 'open') throw new CartPreconditionError('discount', snap);
+  throw new CartStaleWriteError(base, after.revision, snap);
 }
 
 /**
@@ -726,7 +1481,7 @@ async function buildCompletedPayload(
    * by the same statement that wrote it.
    */
   const stored = await db.execute(sql`
-    SELECT frozen_lines, redemption_points, redemption_email
+    SELECT frozen_lines, frozen_totals, redemption_points, redemption_email, discount_code
       FROM shop_carts WHERE id = ${cartId}`);
   const frozen = (stored.rows[0]?.frozen_lines ?? []) as StoredCheckoutLine[];
 
@@ -748,6 +1503,30 @@ async function buildCompletedPayload(
     points == null || redemptionEmail == null
       ? null
       : { email: String(redemptionEmail), points: Number(points) };
+
+  /*
+   * THE DISCOUNT CODE, ON THE SAME TERMS (admin#100 Part B).
+   *
+   * The AMOUNT comes off the frozen totals rather than being recomputed: it is
+   * what the customer was actually charged less, after the clamp, and it is
+   * already stored. `discountTotal` is negative there because it is a summand;
+   * it goes on the wire POSITIVE because the consumer records "what this code
+   * cost the campaign", which is not a summand of anything.
+   *
+   * A cart with a code but no parseable totals is impossible here — this runs
+   * after the freeze, which wrote both — so the fallback is 0 rather than a
+   * throw: an event that parks is worse than a reconciliation figure of zero on
+   * an order that was charged correctly.
+   */
+  const code = stored.rows[0]?.discount_code;
+  const frozenTotalsRow = parseFrozenTotals(stored.rows[0]?.frozen_totals);
+  const discount =
+    code == null
+      ? null
+      : {
+          code: String(code),
+          amountMinor: Math.abs(frozenTotalsRow?.discountTotal.amount ?? 0),
+        };
 
   /*
    * `unitAmount` AND `lineTotal`, JOINED ON `variantId` FROM THE FROZEN TOTALS.
@@ -810,6 +1589,7 @@ async function buildCompletedPayload(
     billingAddress: await getAddress(db, cartId, 'billing'),
     reservationIds: held.map((reservation) => reservation.id),
     redemption,
+    discount,
     occurredAt: 0,
   };
 }

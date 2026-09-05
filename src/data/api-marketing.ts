@@ -76,6 +76,21 @@ export interface Program {
   unitLabelPlural: string | null;
   minUnitsPerReturn: number | null;
   pointsPerUnit: number | null;
+  /**
+   * WHAT ONE ACCEPTED UNIT COSTS US, in minor units (0920) — the reward half
+   * of the cost-per-unit figure the returns analytics screen prints.
+   *
+   * DELIBERATELY NOT DERIVED FROM `pointsPerUnit`. What a point is worth is a
+   * redemption rate that ships as a placeholder at zero, so costing the
+   * programme through it would print ₦0 everywhere until somebody set it. NULL
+   * here means nobody has said, and the screen reports that as missing rather
+   * than as a confident zero.
+   */
+  unitCostMinor: number | null;
+  /** What buying one NEW costs, minor units — the benchmark the saving is
+   *  measured against. Live rather than snapshotted: it is a comparison
+   *  against today's market, and the screen's sentence says so. */
+  unitMarketCostMinor: number | null;
   status: 'active' | 'paused';
   /** Reserved extension point. Pinned to `{}` in v1 by the server's zod. */
   conditions: Record<string, never>;
@@ -102,6 +117,10 @@ export interface ProgramDraft {
   unitLabelPlural?: string;
   minUnitsPerReturn?: number;
   pointsPerUnit?: number;
+  /** Optional: a programme is complete without a money rate — it just cannot
+   *  be costed until one is set, and the analytics screen says so. */
+  unitCostMinor?: number;
+  unitMarketCostMinor?: number;
 }
 
 /** Note the absent `key`/`kind`: sending either is a 400, by design. */
@@ -114,6 +133,11 @@ export interface ProgramPatch {
   unitLabelPlural?: string;
   minUnitsPerReturn?: number;
   pointsPerUnit?: number;
+  /** OWNER-ONLY, like every other field here: changing what a return is worth
+   *  is the thing the role matrix reserves. `null` clears the rate back to
+   *  "we have not decided", which is not the same as zero. */
+  unitCostMinor?: number | null;
+  unitMarketCostMinor?: number | null;
   status?: 'active' | 'paused';
 }
 
@@ -201,6 +225,20 @@ export interface ServiceArea {
   loadUnits: number;
   /** How long the oldest OPEN return here has waited, or null when nothing is. */
   oldestAgeMs: number | null;
+  /**
+   * WHAT A PICKUP FROM THIS DISTRICT NORMALLY COSTS, minor units, per line
+   * (0920). NULL means no standard for that line here — never zero, which is
+   * a real figure meaning the leg is free.
+   *
+   * SHOWN AS PLACEHOLDER TEXT ON A RETURN'S COST FORM AND NEVER PRE-FILLED.
+   * Saving one onto a return because somebody accepted a default would make an
+   * estimate indistinguishable from a receipt, and the analytics screen's
+   * honesty line would have nothing left to count.
+   */
+  stdTransportMinor: number | null;
+  stdLocalMinor: number | null;
+  stdDriverMinor: number | null;
+  stdFeesMinor: number | null;
 }
 
 export interface AreasView {
@@ -220,6 +258,13 @@ export interface AreaPatch {
   aliases?: string[];
   active?: boolean;
   sortOrder?: number;
+  /** The district's standard pickup cost, per line. `null` CLEARS one — and
+   *  `filled()` passes null through, which is exactly why it strips only
+   *  `undefined` and `''`. */
+  stdTransportMinor?: number | null;
+  stdLocalMinor?: number | null;
+  stdDriverMinor?: number | null;
+  stdFeesMinor?: number | null;
 }
 
 /** The `?district=` value for the returns that belong to no board. A literal
@@ -329,12 +374,32 @@ export interface ReturnRequest {
   customerName: string | null;
   customerPhone: string | null;
   pickupAddress: string | null;
+  /** Which board this is on. NULL is the out-of-area footer — a legal state,
+   *  and an unrewardable one. The cost form reads it to find the district
+   *  whose standard it shows as a placeholder. */
+  serviceAreaId: string | null;
   qtyDeclared: number;
   qtyAccepted: number | null;
   qtyRejected: number | null;
   /** Frozen when the request was made, so a repricing cannot change a promise. */
   pointsPerUnitSnapshot: number;
   pointsAwarded: number | null;
+  /** The MONEY rate this return is costed at, frozen the same way (0920).
+   *  NULL on every return created before that migration; the analytics reader
+   *  falls back to the programme's current rate for those. */
+  unitCostMinorSnapshot: number | null;
+  /**
+   * WHAT THIS PICKUP COST US, minor units, four independent lines.
+   *
+   * NULL IS NOT ZERO. NULL is "nobody wrote it down" and the district's
+   * standard stands in for it on the analytics screen; 0 is a person saying
+   * the leg cost nothing because the van was going anyway.
+   */
+  costTransportMinor: number | null;
+  costLocalMinor: number | null;
+  costDriverMinor: number | null;
+  costFeesMinor: number | null;
+  costNote: string | null;
   rejectedReason: string | null;
   cancelReason: string | null;
   source: 'customer' | 'admin';
@@ -350,6 +415,131 @@ export interface ReturnRequest {
   allowedActions: ReturnAction[];
 }
 
+// -------------------------------------------------- what a unit costs us
+
+/**
+ * WHAT ONE PICKUP COST — contract #15.
+ *
+ * ABSENT AND NULL MEAN DIFFERENT THINGS AND THE FORM RELIES ON BOTH. Absent
+ * leaves a line alone, so a one-figure correction does not wipe the other
+ * three. `null` CLEARS it back to "nobody wrote it down", which is the only
+ * way a figure typed into the wrong box is undone — and the only way the
+ * analytics screen's estimate-versus-receipt count can ever be right again
+ * for that pickup.
+ *
+ * ZERO IS A THIRD, REAL VALUE: the van was going anyway.
+ */
+export interface ReturnCostsPatch {
+  expectedRevision: number;
+  transportMinor?: number | null;
+  localMinor?: number | null;
+  driverMinor?: number | null;
+  feesMinor?: number | null;
+  note?: string | null;
+}
+
+/** The ranges the returns-analytics picker offers. `all` is on it because the
+ *  owner's question is explicitly a long-run one, and the server's schema is a
+ *  `z.enum` — every value is a scan bound, so a fifth would be a 400. */
+export const RETURN_ANALYTICS_RANGES = ['30', '90', '365', 'all'] as const;
+export type ReturnAnalyticsRange = (typeof RETURN_ANALYTICS_RANGES)[number];
+export const RETURN_ANALYTICS_DEFAULT: ReturnAnalyticsRange = '90';
+
+export interface ReturnCostTotals {
+  returns: number;
+  /** Units KEPT — the divisor of every per-unit figure on the screen. */
+  unitsKept: number;
+  unitsRejected: number;
+  rewardMinor: number;
+  transportMinor: number;
+  localMinor: number;
+  driverMinor: number;
+  feesMinor: number;
+  collectionMinor: number;
+  allInMinor: number;
+}
+
+export interface ReturnCostPerUnit {
+  allIn: number;
+  reward: number;
+  transport: number;
+  local: number;
+  driver: number;
+  fees: number;
+}
+
+export interface ReturnCostMonth {
+  /** YYYY-MM in WAT. Months and not days: a district's van runs weekly at
+   *  best, so a daily axis over a return programme is mostly gaps. */
+  month: string;
+  unitsKept: number;
+  rewardMinor: number;
+  transportMinor: number;
+  localMinor: number;
+  driverMinor: number;
+  feesMinor: number;
+  allInMinor: number;
+  perUnitMinor: number;
+}
+
+export interface ReturnCostArea {
+  /** NULL for the out-of-area group — the ABSENCE of a district, which is why
+   *  it is not given a fabricated id. */
+  areaId: string | null;
+  region: string | null;
+  name: string | null;
+  returns: number;
+  unitsKept: number;
+  rewardMinor: number;
+  collectionMinor: number;
+  allInMinor: number;
+  perUnitMinor: number;
+  /** How many of this district's pickups had no typed figure at all. */
+  estimated: number;
+}
+
+export interface ReturnCostRow {
+  id: string;
+  customerEmail: string;
+  customerName: string | null;
+  areaName: string | null;
+  closedAt: number | null;
+  unitsKept: number;
+  allInMinor: number;
+  perUnitMinor: number;
+  estimated: boolean;
+}
+
+/**
+ * How much of the headline is real.
+ *
+ * `uncosted` pickups contribute NOTHING to the collection total — there is
+ * neither a typed figure nor a district standard — so they drag the average
+ * DOWN. The screen says so out loud, because a number nobody can tell apart
+ * from a receipt is a number nobody should trust.
+ */
+export interface ReturnCostCoverage {
+  recorded: number;
+  estimated: number;
+  uncosted: number;
+}
+
+export interface ReturnCostAnalytics {
+  generatedAt: number;
+  range: ReturnAnalyticsRange;
+  rates: {
+    unitCostMinor: number | null;
+    unitMarketCostMinor: number | null;
+    currency: string;
+  };
+  totals: ReturnCostTotals;
+  perUnit: ReturnCostPerUnit;
+  byMonth: ReturnCostMonth[];
+  byArea: ReturnCostArea[];
+  costliest: ReturnCostRow[];
+  coverage: ReturnCostCoverage;
+}
+
 export interface EmailIntentState {
   kind: string;
   sentAt: number | null;
@@ -363,6 +553,10 @@ export interface ReturnDetail {
     status: 'active' | 'paused';
     pointsPerUnit: number;
     minUnitsPerReturn: number;
+    /** The programme's money rates, so the panel can price this pickup with
+     *  no second request. NULL is a real answer — "nobody has said". */
+    unitCostMinor: number | null;
+    unitMarketCostMinor: number | null;
   };
   events: ReturnEvent[];
   /** So the awarded screen can say "queued" honestly instead of faking "sent". */
@@ -431,8 +625,13 @@ export interface LedgerEntry {
   delta: number;
   /** Stored at write time, so a row renders "120 → 180" without a window function. */
   balanceAfter: number;
-  /** A render-final snapshot. Display verbatim — see `ReturnEvent.data`. */
-  reason: string;
+  /** A render-final snapshot. Display verbatim — see `ReturnEvent.data`.
+   *
+   *  NULL SINCE 2026-09-03: a manual adjustment may be saved with nothing typed
+   *  (migration 0840). Every renderer needs something to show for "nobody
+   *  said" — the column's CHECK still refuses `''`, so blank is only ever
+   *  null. */
+  reason: string | null;
   programId: string | null;
   programName: string | null;
   returnRequestId: string | null;
@@ -451,7 +650,7 @@ export interface CustomerRow {
   balance: number;
   lifetimeEarned: number;
   lastEntryAt: number | null;
-  lastEntry: { kind: LedgerKind; delta: number; reason: string } | null;
+  lastEntry: { kind: LedgerKind; delta: number; reason: string | null } | null;
 }
 
 export interface CustomerSummary {
@@ -467,7 +666,9 @@ export interface AdjustmentDraft {
   email: string;
   /** Non-zero. Negative is a debit, and a debit below zero is refused. */
   delta: number;
-  reason: string;
+  /** Optional since 2026-09-03. `filled()` drops both `undefined` and `''`
+   *  before the body is built, so a blank box never reaches the wire. */
+  reason?: string;
   programId?: string;
   customerId?: string;
 }
@@ -644,7 +845,7 @@ export interface InspectResult {
    *  numbers — which is what lets the success copy say "120 + 25". */
   award: { points: number; balance: number } | null;
   /** The top-up, when there was one. */
-  bonus: { points: number; reason: string } | null;
+  bonus: { points: number; reason: string | null } | null;
 }
 
 export interface AdjustmentResult {
@@ -880,6 +1081,44 @@ export const marketingApi = {
     });
   },
 
+  /**
+   * #15. What this pickup cost us — four lines and a sentence.
+   *
+   * ANY STAFF MEMBER on the orders domain, not the owner: writing down what a
+   * van cost is warehouse work, and a figure that needs a second person is a
+   * figure that stops being recorded. What IS owner-only is the money RATE,
+   * which lives on the programme.
+   *
+   * `filled()` IS NOT USED HERE, and that is the point: it strips `''` and
+   * `undefined`, and this body's whole vocabulary is the difference between
+   * an absent field and an explicit `null`. Stripping the nulls would make
+   * clearing a mistyped figure impossible.
+   */
+  async setReturnCosts(id: string, patch: ReturnCostsPatch): Promise<ReturnRequest> {
+    const body = await apiFetch<{ request: ReturnRequest }>(
+      `${BASE}/returns/${seg(id)}/costs`,
+      { method: 'POST', body: patch, id, subject: 'Return' },
+    );
+    return body.request;
+  },
+
+  /**
+   * #16. WHAT A RETURNED UNIT ACTUALLY COSTS US.
+   *
+   * At the server's own default the `range` param is OMITTED rather than
+   * echoed — the wire carries only what differs from the default, so the
+   * route's answer is its default and never a client's copy of it.
+   */
+  async returnAnalytics(
+    range: ReturnAnalyticsRange,
+    signal?: AbortSignal,
+  ): Promise<ReturnCostAnalytics> {
+    return apiFetch<ReturnCostAnalytics>(`${BASE}/returns/analytics`, {
+      query: { range: range === RETURN_ANALYTICS_DEFAULT ? undefined : range },
+      signal,
+    });
+  },
+
   /** #7. Request + program labels + timeline + mail state, in one read. */
   async getReturn(id: string, signal?: AbortSignal): Promise<ReturnDetail> {
     return apiFetch<ReturnDetail>(`${BASE}/returns/${seg(id)}`, {
@@ -924,7 +1163,14 @@ export const marketingApi = {
 
   /** #12. Pre-receipt refusal only. Once goods are in hand the honest route is
    *  `inspect` with `qtyAccepted: 0`, so the quantities are still recorded. */
-  async reject(id: string, draft: { expectedRevision: number; reason: string }): Promise<ReturnRequest> {
+  async reject(
+    id: string,
+    /** The reason is optional since 2026-09-03. It is the one on this screen
+     *  that reaches the CUSTOMER — `renderReturnRejected` mails it — so the
+     *  form still asks for it; `filled()` drops a blank rather than sending
+     *  `''`, which the route's `.min(1)` would refuse. */
+    draft: { expectedRevision: number; reason?: string },
+  ): Promise<ReturnRequest> {
     return transition(id, 'reject', { ...draft });
   },
 

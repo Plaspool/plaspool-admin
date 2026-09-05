@@ -3,7 +3,9 @@ import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { CircleAlert, CornerDownRight, LogOut, Menu as MenuIcon, Search } from 'lucide-react';
 import { NAV, NAV_FOOT, type NavEntry } from './nav';
 import { Menu, MenuItem, MenuSeparator } from '../ui/Menu';
-import { logout } from '../../data/session';
+import { adoptUser, getSession, logout } from '../../data/session';
+import { teamApi, type OwnershipTransfer } from '../../data/api-team';
+import { Banner, Button } from '../ui/primitives';
 import { brand } from '../../brand';
 import { AlertsBell } from './Alerts';
 import { Palette } from './Palette';
@@ -87,6 +89,76 @@ function NavItem({ entry, pathname }: { entry: NavEntry; pathname: string }) {
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * "Somebody wants to hand you the store."
+ *
+ * IN THE SHELL AND NOT ON THE TEAM SCREEN, which is the whole reason this
+ * component exists rather than a block in `SettingsTeam.tsx`. The recipient
+ * holds whatever role they had when they were offered it — very often
+ * `writer` — and the team screen is admin-only, so the one person who has to
+ * act on this cannot reach the only place that would have shown it. It renders
+ * above the outlet, so it is on whatever page they happen to open.
+ *
+ * IT ASKS FOR THE TRANSFER ON EVERY MOUNT and does not poll. A handover is a
+ * thing two people arrange between themselves; the cost of hearing about it on
+ * the next navigation instead of within seconds is nil, and a timer on every
+ * screen in the admin is not nil.
+ *
+ * A FAILED READ IS SILENT. Nobody's work depends on this banner, and an error
+ * strip above every page because one background request failed would be worse
+ * than not knowing for a minute.
+ */
+function HandoverPrompt() {
+  const [offer, setOffer] = useState<OwnershipTransfer | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void teamApi
+      .ownershipTransfer(controller.signal)
+      .then(setOffer)
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, []);
+
+  const session = getSession();
+  const me = 'user' in session ? (session.user ?? null) : null;
+  /* Only the RECIPIENT is prompted. The sender sees their own waiting state on
+     the team screen, where they started it. */
+  if (!offer || !me || offer.to.id !== me.id) return null;
+
+  const act = async (accept: boolean) => {
+    setBusy(true);
+    try {
+      if (accept) {
+        /* `adoptUser` and not `setOffer(null)` alone: the caller sent this as a
+           writer and is an owner by the time it answers, so every surface the
+           shell draws from the session has to repaint. */
+        await adoptUser(await teamApi.acceptOwnership());
+      } else {
+        await teamApi.declineOwnership();
+      }
+      setOffer(null);
+    } catch {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Banner tone="warn">
+      <strong>{offer.from.displayName || offer.from.email}</strong> wants to hand you the store.
+      Accepting makes you the owner — full access to everything, including the destructive parts —
+      and makes them a developer.{' '}
+      <Button tone="primary" busy={busy} onClick={() => void act(true)}>
+        Take over as owner
+      </Button>{' '}
+      <Button tone="plain" onClick={() => void act(false)}>
+        No thanks
+      </Button>
+    </Banner>
   );
 }
 
@@ -275,6 +347,7 @@ export function Shell({ storeName, userName }: { storeName: string; userName: st
         </nav>
 
         <main className="main" ref={mainRef}>
+          <HandoverPrompt />
           <Outlet />
         </main>
       </div>

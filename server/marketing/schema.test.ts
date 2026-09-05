@@ -274,7 +274,7 @@ const discount = (id: string, code: string, kind = 'percent'): SQL => sql`
 // ------------------------------------------------------------ shape of the DDL
 
 describe('migration 0011 is applied', () => {
-  it('creates all ten tables — nine from 0011, service areas from 0012', async () => {
+  it('creates all eleven tables — nine from 0011, 0012 and 0820 one each', async () => {
     const res = await db.execute(sql`
       SELECT table_name FROM information_schema.tables
        WHERE table_schema = 'public' AND table_name LIKE 'marketing_%'`);
@@ -282,6 +282,9 @@ describe('migration 0011 is applied', () => {
       'marketing_balances',
       'marketing_banners',
       'marketing_discount_codes',
+      /* Migration 0820 — one row per order that spent a code, and the thing
+         that makes `redeemed_count` idempotent under a replayed webhook. */
+      'marketing_discount_redemptions',
       'marketing_email_intents',
       'marketing_ledger',
       'marketing_programs',
@@ -429,6 +432,12 @@ describe('migration 0011 is applied', () => {
           "CHECK (((kind = 'unit_return'::text) = ((unit_label_singular IS NOT NULL) AND (unit_label_plural IS NOT NULL) AND (min_units_per_return IS NOT NULL) AND (points_per_unit IS NOT NULL))))",
         marketing_programs_status_ck:
           "CHECK ((status = ANY (ARRAY['active'::text, 'paused'::text])))",
+        /* 0920. `>= 0` and not `> 0`, unlike the points rate: a programme that
+         * pays nothing in money is a real arrangement. */
+        marketing_programs_unit_cost_ck:
+          'CHECK (((unit_cost_minor IS NULL) OR (unit_cost_minor >= 0)))',
+        marketing_programs_unit_market_cost_ck:
+          'CHECK (((unit_market_cost_minor IS NULL) OR (unit_market_cost_minor >= 0)))',
         marketing_programs_revision_ck: 'CHECK ((revision > 0))',
       },
       marketing_settings: {
@@ -456,6 +465,9 @@ describe('migration 0011 is applied', () => {
         marketing_service_areas_aliases_ck:
           "CHECK ((((aliases)::text = lower((aliases)::text)) AND (array_position(aliases, ''::text) IS NULL) AND (array_position(aliases, NULL::text) IS NULL)))",
         marketing_service_areas_sort_order_ck: 'CHECK ((sort_order >= 0))',
+        /* 0920 — the district's standard pickup cost, per line. */
+        marketing_service_areas_std_costs_ck:
+          'CHECK ((((std_transport_minor IS NULL) OR (std_transport_minor >= 0)) AND ((std_local_minor IS NULL) OR (std_local_minor >= 0)) AND ((std_driver_minor IS NULL) OR (std_driver_minor >= 0)) AND ((std_fees_minor IS NULL) OR (std_fees_minor >= 0))))',
         marketing_service_areas_revision_ck: 'CHECK ((revision > 0))',
       },
       marketing_return_requests: {
@@ -479,11 +491,21 @@ describe('migration 0011 is applied', () => {
           "CHECK ((status = ANY (ARRAY['requested'::text, 'scheduled'::text, 'collected'::text, 'received'::text, 'awarded'::text, 'rejected'::text, 'cancelled'::text])))",
         marketing_return_requests_award_ck:
           "CHECK (((status <> 'awarded'::text) OR ((qty_accepted >= 1) AND (qty_rejected IS NOT NULL) AND (points_awarded = (qty_accepted * points_per_unit_snapshot)))))",
+        /* 0920 — the costing rate this return was priced at, and the four
+         * lines of what its pickup cost. All nullable: NULL is "nobody wrote
+         * it down" and zero is "this leg cost nothing", and the analytics
+         * screen counts the difference. */
+        marketing_return_requests_unit_cost_ck:
+          'CHECK (((unit_cost_minor_snapshot IS NULL) OR (unit_cost_minor_snapshot >= 0)))',
+        marketing_return_requests_costs_ck:
+          'CHECK ((((cost_transport_minor IS NULL) OR (cost_transport_minor >= 0)) AND ((cost_local_minor IS NULL) OR (cost_local_minor >= 0)) AND ((cost_driver_minor IS NULL) OR (cost_driver_minor >= 0)) AND ((cost_fees_minor IS NULL) OR (cost_fees_minor >= 0))))',
+        marketing_return_requests_cost_note_ck:
+          "CHECK (((cost_note IS NULL) OR (cost_note <> ''::text)))",
         marketing_return_requests_revision_ck: 'CHECK ((revision > 0))',
       },
       marketing_return_events: {
         marketing_return_events_type_ck:
-          "CHECK ((type = ANY (ARRAY['requested'::text, 'scheduled'::text, 'collected'::text, 'received'::text, 'inspected'::text, 'rejected'::text, 'cancelled'::text, 'note'::text])))",
+          "CHECK ((type = ANY (ARRAY['requested'::text, 'scheduled'::text, 'collected'::text, 'received'::text, 'inspected'::text, 'rejected'::text, 'cancelled'::text, 'note'::text, 'costed'::text])))",
         marketing_return_events_actor_ck:
           "CHECK ((actor_type = ANY (ARRAY['admin'::text, 'customer'::text, 'system'::text])))",
       },

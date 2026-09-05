@@ -77,7 +77,7 @@ const LEDGER_LIMIT = 25;
 const FIELD_MESSAGE: Record<string, string> = {
   email: 'That doesn’t look like an email address.',
   delta: 'How many, as a whole number above zero.',
-  reason: 'Say why. It is written into the row and can never be edited.',
+  reason: 'That reason wasn’t accepted — it may be too long.',
   programId: 'That program wasn’t accepted.',
   customerId: 'That customer id wasn’t accepted.',
 };
@@ -604,8 +604,13 @@ function Directory({ points }: { points: ProgramLabels | null }) {
                                   {Math.abs(row.lastEntry.delta).toLocaleString()}
                                 </span>
                                 {/* Verbatim, like every other rendering of a
-                                    stored reason on this screen. */}
-                                <span className="mkttable__sub">{row.lastEntry.reason}</span>
+                                    stored reason on this screen — and NULL is a
+                                    real state since 2026-09-03, so it is named
+                                    rather than left as a blank line nobody can
+                                    tell from a rendering bug. */}
+                                <span className="mkttable__sub">
+                                  {row.lastEntry.reason ?? 'No reason given'}
+                                </span>
                               </>
                             )}
                           </td>
@@ -1063,7 +1068,7 @@ function LedgerRow({
             written, in the labels of that day; re-rendering it through today's
             wording would rewrite history every time somebody renames a program.
           */}
-          <span className="mktaudit__why">{entry.reason}</span>
+          <span className="mktaudit__why">{entry.reason ?? 'No reason given'}</span>
         </span>
         <time className="mktaudit__when" dateTime={isoAttr(entry.createdAt)}>
           {safeFormat(WHEN, entry.createdAt)}
@@ -1131,11 +1136,10 @@ function AdjustBalance({
     setProblem(null);
     if (size === null || size < 1)
       return setProblem({ field: 'delta', message: fieldMessage('delta') });
+    /* NO REASON GUARD since 2026-09-03 (owner's instruction). `filled()` in
+       `api-marketing.ts` drops a blank before the body is built, so this posts
+       no `reason` key rather than an empty string the route would refuse. */
     const said = reason.trim();
-    /* The server requires it (#18: reason nonempty) and so does this form. Not
-       to save a request — to put the message under the box rather than in a
-       toast, which is what the catalogue asks for a 400. */
-    if (said === '') return setProblem({ field: 'reason', message: fieldMessage('reason') });
 
     setBusy(true);
     try {
@@ -1301,7 +1305,7 @@ function AdjustBalance({
 
         <div className="mktform__field">
           <label className="label" htmlFor={`${uid}-reason`}>
-            What it says on the ledger
+            What it says on the ledger (optional)
           </label>
           <textarea
             id={`${uid}-reason`}

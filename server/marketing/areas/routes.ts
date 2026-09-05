@@ -50,6 +50,17 @@ const REGION = str().trim().min(1).max(120);
  */
 const ALIASES = z.array(str().trim().max(120)).max(40);
 
+/**
+ * One line of what a pickup from this district normally costs, MINOR UNITS
+ * (0920).
+ *
+ * `.nullable()` AND `.optional()` BOTH DO WORK: absent leaves the standard
+ * alone, `null` clears it back to "we have no standard here" — which is a
+ * different claim from "it is free", and the only way to undo a figure typed
+ * into the wrong box. Zero is allowed and means free.
+ */
+const STANDARD = z.number().int().min(0).max(2_147_483_647).nullable().optional();
+
 const AreasQuery = z
   .object({
     /**
@@ -84,6 +95,14 @@ const PatchBody = z
     aliases: ALIASES.optional(),
     active: z.boolean().optional(),
     sortOrder: z.number().int().min(0).max(100_000).optional(),
+    /* The district's standard pickup cost. It is EDITED HERE and never on a
+     * return: the return records what a pickup actually cost, this records
+     * what one normally does, and the analytics screen leans on the second
+     * only where the first is silent. */
+    stdTransportMinor: STANDARD,
+    stdLocalMinor: STANDARD,
+    stdDriverMinor: STANDARD,
+    stdFeesMinor: STANDARD,
   })
   .strict();
 

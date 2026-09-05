@@ -167,18 +167,51 @@ export interface TotalsLine {
   effectiveUnit: Money;
   /** `effectiveUnit × qty`, exact: both are integers, so no rounding here. */
   lineTotal: Money;
+  /**
+   * This line's share of the cart's discount code (admin#100 Part B), SIGNED
+   * NEGATIVE, or zero when no code applies.
+   *
+   * NEGATIVE, LIKE AN `Adjustment`, because it is a summand: `lineTotal +
+   * codeDiscount` is the taxable base, and one sign convention for "money that
+   * moves a total" is one fewer thing to get backwards. The storefront-facing
+   * `discountMinor` on the preview is positive for the opposite reason — it is
+   * read aloud as money off rather than added to anything.
+   *
+   * IT IS A PER-LINE FIELD BECAUSE IT REDUCES A PER-LINE TAX. A cart-level
+   * discount that did not land on the lines could only be applied after tax,
+   * which is what `adjustments` does and what CLAUDE.md §6 forbids a coupon
+   * from reusing.
+   */
+  codeDiscount: Money;
   /** Whether this line was taxed at all. False makes `taxAmount` zero. */
   taxable: boolean;
   /**
    * Rounded ONCE, on this line, before any summing (brief §5).
    *
-   * COMPUTED ON THE DISCOUNTED `lineTotal`, which is the entire reason bulk
-   * pricing is a unit reduction rather than an `Adjustment`: adjustments apply
-   * after tax, so a discount expressed as one would charge VAT on money the
-   * customer never spent. See the header of `0600_bulk_discount_tiers.sql`.
+   * COMPUTED ON `lineTotal + codeDiscount` — the line after BOTH the bulk
+   * ladder and the cart's discount code. That is the entire reason neither of
+   * them is an `Adjustment`: adjustments apply after tax, so a discount
+   * expressed as one would charge VAT on money the customer never spent. See
+   * the header of `0600_bulk_discount_tiers.sql` and CLAUDE.md §6.
    */
   taxAmount: Money;
 }
+
+/**
+ * The discount code applied to a cart, as the totals engine needs it
+ * (admin#100 Part B). The MODEL lives in `marketing_discount_codes`; this is
+ * the part the arithmetic reads, and it is frozen into `FrozenTotals` so a
+ * receipt can name what was applied years later.
+ *
+ * TWO KINDS, TWO SHAPES OF PROBLEM. A `percent` is already per line — every
+ * line is scaled by the same rate and the rounded parts are summed, exactly as
+ * tax is. A `fixed_amount` is genuinely cart-level and has to be ALLOCATED
+ * across the lines, remainder and all; `code-discount.test.ts` pins that the
+ * parts sum to the target rather than to the target minus a kobo.
+ */
+export type CodeDiscount =
+  | { code: string; label: string; kind: 'percent'; percentBps: number }
+  | { code: string; label: string; kind: 'fixed_amount'; amount: Money };
 
 /** A chosen delivery method and what it costs. Priced by Cart, not by Catalog. */
 export interface ShippingQuote {
@@ -237,15 +270,24 @@ export interface FrozenTotals {
   shipping: ShippingQuote | null;
   tax: TaxRate;
   adjustments: Adjustment[];
-  /** Σ lineTotal. */
+  /**
+   * The discount code that was applied, or null (admin#100 Part B). Stored
+   * beside the money it moved, for the reason this whole object carries its own
+   * derivation: "why is it ₦9,067.50?" is unanswerable a year later if all that
+   * survives is the number.
+   */
+  discount: CodeDiscount | null;
+  /** Σ lineTotal, BEFORE any code discount — the list value of the goods. */
   subtotal: Money;
-  /** Σ adjustment amounts. Negative for a discount. Zero in v1. */
+  /** Σ codeDiscount. Negative, or zero when no code applies. */
+  discountTotal: Money;
+  /** Σ adjustment amounts. Negative for a discount. Points, in practice. */
   adjustmentTotal: Money;
   /** The shipping amount, or zero when nothing is chosen yet. */
   shippingTotal: Money;
   /** Σ per-line tax + shipping tax. Rounded per line, THEN summed. */
   taxTotal: Money;
-  /** subtotal + adjustmentTotal + shippingTotal + taxTotal. */
+  /** subtotal + discountTotal + adjustmentTotal + shippingTotal + taxTotal. */
   grandTotal: Money;
   rounding: RoundingMode;
 }

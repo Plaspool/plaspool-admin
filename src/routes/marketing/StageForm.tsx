@@ -122,7 +122,7 @@ export type StageSubmission =
   | { action: 'schedule'; body: { expectedRevision: number; pickupAt: number; driverName?: string; driverPhone?: string; pickupAddress?: string; note?: string } }
   | { action: 'collect'; body: { expectedRevision: number; note?: string } }
   | { action: 'receive'; body: { expectedRevision: number; note?: string } }
-  | { action: 'reject'; body: { expectedRevision: number; reason: string } }
+  | { action: 'reject'; body: { expectedRevision: number; reason?: string } }
   | { action: 'cancel'; body: { expectedRevision: number; reason?: string } };
 
 /**
@@ -298,12 +298,11 @@ export function StageForm({
     }
 
     if (action === 'reject') {
-      const why = reason.trim();
-      if (why === '') {
-        setLocal({ field: 'reason', message: 'Say why it was refused — the customer is told.' });
-        return;
-      }
-      onSubmit({ action: 'reject', body: { expectedRevision, reason: why } });
+      /* THE REASON IS OPTIONAL since 2026-09-03 (owner's instruction), and is
+       * omitted rather than sent blank — the same shape 'cancel' below has
+       * always used, and the one the route's `.min(1)` inside `.optional()`
+       * expects. The label still says the customer is told. */
+      onSubmit({ action: 'reject', body: { expectedRevision, reason: reason.trim() || undefined } });
       return;
     }
 
@@ -415,7 +414,7 @@ export function StageForm({
       {danger && (
         <div className="mktform__field">
           <label className="label" htmlFor={`${uid}-reason`}>
-            {action === 'reject' ? 'Why it was refused' : 'Why it was called off'}
+            {action === 'reject' ? 'Why it was refused (optional)' : 'Why it was called off'}
           </label>
           <textarea
             id={`${uid}-reason`}
@@ -423,7 +422,9 @@ export function StageForm({
             rows={3}
             value={reason}
             maxLength={2000}
-            placeholder={action === 'reject' ? 'Kept with the request and told to the customer' : 'Optional'}
+            placeholder={
+              action === 'reject' ? 'Told to the customer, if you give one' : 'Optional'
+            }
             onChange={(e) => setReason(e.target.value)}
           />
           {errorFor('reason') && <p className="mktform__error">{errorFor('reason')}</p>}

@@ -146,9 +146,12 @@ const REJECT_REASONS = ['Damaged', 'Not ours', 'Contaminated', 'Other'];
  * "Nothing picked yet" is an OPTION rather than an empty value, because Radix
  * treats `''` as "no selection" and refuses it as an item's value outright — so
  * the unchosen state needs a value of its own or the control comes up blank with
- * nothing to name it. It is also the honest shape: a reason is required once
- * anything has been refused, and a picker that opened on "Damaged" would let an
- * inspection assert damage nobody looked for.
+ * nothing to name it. It is also the honest shape: a picker that opened on
+ * "Damaged" would let an inspection assert damage nobody looked for.
+ *
+ * SINCE 2026-09-03 IT IS ALSO A LEGAL FINAL STATE. Reasons are optional
+ * everywhere (owner's instruction), so leaving this on "Pick a reason…" posts
+ * no `rejectedReason` at all rather than being refused — see `runInspect`.
  */
 const UNCHOSEN = 'unchosen';
 
@@ -454,7 +457,7 @@ export function ReturnDetail({ id }: { id: string }) {
     bonus === null || labels === null
       ? null
       : bonusApplies
-        ? `+ ${fmtPoints(bonus.points, labels)} bonus — ${bonus.reason}`
+        ? `+ ${fmtPoints(bonus.points, labels)} bonus${bonus.reason === null ? '' : ` — ${bonus.reason}`}`
         : `The ${fmtPoints(bonus.points, labels)} bonus needs at least one accepted to attach to, so it will not be recorded.`;
   const inspectLabel =
     counting.accepted > 0 && labels !== null
@@ -562,9 +565,15 @@ export function ReturnDetail({ id }: { id: string }) {
       qtyAccepted: counting.accepted,
       // Derived, never typed — see the header note and spec D5.
       qtyRejected: rejected,
-      rejectedReason: rejected > 0 ? rejectionText(counting) : undefined,
+      /* `undefined` FOR BOTH "nothing was rejected" AND "nobody picked a
+       * reason". `filled()` drops it before the body is built, and the
+       * repository still REFUSES a reason sent when nothing was rejected — the
+       * one direction of that rule that survived, because it guards against a
+       * record that lies rather than against one with a gap. */
+      rejectedReason:
+        rejected > 0 && counting.reason !== UNCHOSEN ? rejectionText(counting) : undefined,
       bonusPoints: bonusApplies && bonus !== null ? bonus.points : undefined,
-      bonusReason: bonusApplies && bonus !== null ? bonus.reason : undefined,
+      bonusReason: bonusApplies && bonus !== null ? (bonus.reason ?? undefined) : undefined,
       note: counting.note.trim() || undefined,
     };
     const said = sentence;
@@ -607,13 +616,6 @@ export function ReturnDetail({ id }: { id: string }) {
     // The live refusal is already under the box; a confirmation on top of it
     // would be a dialog about numbers the form has said it will not take.
     if (localProblem !== null) return;
-    if (rejected > 0 && counting.reason === UNCHOSEN) {
-      setStageProblem({
-        field: 'rejectedReason',
-        message: 'Pick a reason for the ones being refused.',
-      });
-      return;
-    }
     setStageProblem(null);
     setConfirming((prev) => ({ open: true, seq: (prev?.seq ?? 0) + 1 }));
   }
@@ -1226,7 +1228,7 @@ function InspectionForm({
 
       {rejected > 0 && (
         <div className="mktform__field">
-          <span className="label">Why they were rejected</span>
+          <span className="label">Why they were rejected (optional)</span>
           <Select
             label="Why they were rejected"
             value={value.reason}

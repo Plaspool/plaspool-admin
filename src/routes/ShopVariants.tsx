@@ -1046,6 +1046,8 @@ function VariantCard({
   const adjustStock = () =>
     run(
       async () => {
+        /* A blank is omitted from the body by `adjustInventory`, not sent as
+         * an empty string — the route still refuses `''`. */
         await shopApi.adjustInventory(variant.id, deltaValue, stockReason.trim());
       },
       `Stock ${deltaValue > 0 ? 'up' : 'down'} ${Math.abs(deltaValue)}`,
@@ -1350,7 +1352,7 @@ function VariantCard({
           reason={priceReason}
           onReason={setPriceReason}
           presets={PRICE_REASONS}
-          question="Why did the price change?"
+          question="Why did the price change? (optional)"
           note={
             priceError ? (
               <p className="panel__note">{priceError}</p>
@@ -1398,7 +1400,11 @@ function VariantCard({
             )
           }
           confirmLabel="Set price"
-          confirmDisabled={!priceChanged || priceReason.trim() === ''}
+          /* The price reason has been OPTIONAL ON THE WIRE since migration
+           * 0009 — every price written before it has none — and this form was
+           * the only thing still demanding one. Aligned 2026-09-03 with the
+           * owner's instruction to make every reason field optional. */
+          confirmDisabled={!priceChanged}
           busy={busy}
           onConfirm={() => void savePrice()}
           onCancel={leave}
@@ -1425,7 +1431,7 @@ function VariantCard({
           reason={stockReason}
           onReason={setStockReason}
           presets={STOCK_REASONS}
-          question="Why did the stock change?"
+          question="Why did the stock change? (optional)"
           note={
             belowZero ? (
               <p className="panel__note">
@@ -1436,17 +1442,20 @@ function VariantCard({
                 was={`${variant.available} available`}
                 now={`${variant.available + deltaValue}`}
                 tone={deltaValue > 0 ? 'good' : 'bad'}
-                note={`${deltaValue > 0 ? `${deltaValue} in` : `${Math.abs(deltaValue)} out`} · recorded with who made it and why`}
+                note={`${deltaValue > 0 ? `${deltaValue} in` : `${Math.abs(deltaValue)} out`} · recorded with who made it`}
               />
             ) : (
               <p className="panel__note">
                 Plus for stock arriving, minus for stock leaving. Every change is
-                recorded with who made it and why.
+                recorded with who made it, and with a reason if you give one.
               </p>
             )
           }
           confirmLabel="Adjust stock"
-          confirmDisabled={!deltaOk || stockReason.trim() === ''}
+          /* THE REASON NO LONGER GATES THE BUTTON (owner's instruction,
+           * 2026-09-03). Only the number does, because a delta of zero or of
+           * nonsense is a change the server cannot make at all. */
+          confirmDisabled={!deltaOk}
           busy={busy}
           onConfirm={() => void adjustStock()}
           onCancel={leave}

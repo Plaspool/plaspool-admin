@@ -169,6 +169,11 @@ describe('GET /programs', () => {
       unitLabelPlural: 'canisters',
       minUnitsPerReturn: 4,
       pointsPerUnit: 7,
+      /* 0920's money rates. NULL on a fresh programme and not 0: nobody has
+       * said what a unit costs us, and a zero would be the analytics screen
+       * asserting it is free. */
+      unitCostMinor: null,
+      unitMarketCostMinor: null,
       status: 'active',
       conditions: {},
       /*

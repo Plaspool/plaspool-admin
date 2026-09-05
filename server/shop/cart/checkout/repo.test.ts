@@ -23,10 +23,12 @@ import {
   setShipping,
   shippingOptionsForCart,
   startCheckout,
+  thawCheckout,
 } from './repo';
 import { saveDeliveryArea } from './delivery-areas-repo';
 import { CartPreconditionError, CartStaleWriteError } from '../errors';
-import { NotFoundError } from '../../../repo/errors';
+import { BadRequestError, NotFoundError } from '../../../repo/errors';
+import type { PaymentStatus } from '../../../../shared/commerce/ports';
 import { checkoutPort } from '../port';
 import { parseCheckoutCompleted } from '../../orders/inbound';
 import type { CartFakeCatalog } from '../test/fake-catalog';
@@ -211,13 +213,56 @@ describe('addresses', () => {
     ).rejects.toThrow(/country/i);
   });
 
-  it('cannot be changed once the cart is converting', async () => {
+  /**
+   * ═══ THIS TEST'S MEANING CHANGED, AND THE CHANGE IS THE POINT ═══
+   *
+   * It used to read "cannot be changed once the cart is converting" and assert
+   * a bare `CartPreconditionError`. That was the invariant for as long as the
+   * freeze had no way back — and the cost of it was that a shopper who reached
+   * the payment page and did not pay could never edit their own checkout again.
+   *
+   * The invariant NOW is narrower and truer: an address may not be changed
+   * once a total has been frozen from it AND THAT TOTAL MIGHT BE CHARGED. When
+   * nothing was ever paid, editing the address thaws the checkout instead —
+   * see the `thawCheckout` suite, which owns that path.
+   *
+   * What survives here is the refusal when the thaw cannot be PROVEN safe: no
+   * payments port means nothing can answer "was this paid", and absence
+   * refuses rather than guessing.
+   */
+  it('cannot be changed once converting, when nothing can prove it was unpaid', async () => {
     const cart = await readyCart();
     await freezeCheckout(db, catalog, CONFIG, { cartId: cart.id });
 
+    // `CONFIG` carries no `payments` port — the deployment cannot tell a stuck
+    // cart from a paid one, so it refuses. 501, permanent, and named.
     await expect(
       putAddresses(db, CONFIG, { cartId: cart.id, shipping: { ...UK, city: 'Hull' }, billing: null }),
+    ).rejects.toMatchObject({ name: 'NotImplementedError', feature: 'checkout_cancel' });
+
+    expect((await getCart(db, cart.id))?.status).toBe('converting');
+    const stored = await db.execute(sql`
+      SELECT city FROM shop_addresses WHERE cart_id = ${cart.id} AND kind = 'shipping'`);
+    expect(stored.rows[0]?.city).toBe('London');
+  });
+
+  it('cannot be changed once converting AND PAID, even with the port wired', async () => {
+    // The refusal that actually protects money, as opposed to the one above
+    // that protects against not knowing.
+    const cart = await readyCart();
+    await freezeCheckout(db, catalog, CONFIG, { cartId: cart.id });
+    const config = {
+      ...CONFIG,
+      payments: {
+        intentsFor: async () => [{ id: 'pi_1', status: 'captured' as PaymentStatus }],
+        cancel: async () => {},
+      },
+    };
+
+    await expect(
+      putAddresses(db, config, { cartId: cart.id, shipping: { ...UK, city: 'Hull' }, billing: null }),
     ).rejects.toBeInstanceOf(CartPreconditionError);
+    expect((await getCart(db, cart.id))?.status).toBe('converting');
   });
 });
 
@@ -374,6 +419,10 @@ describe('freezeCheckout', () => {
         bulkPercentBps: 0,
         effectiveUnit: { amount: 1999, currency: CURRENCY },
         lineTotal: { amount: 3998, currency: CURRENCY },
+        /* Migration 0820, and the same story one feature later: no code is
+           applied to this cart, so the line's share of one is zero — which is
+           what every frozen total looked like before discount codes existed. */
+        codeDiscount: { amount: 0, currency: CURRENCY },
         taxable: true,
         taxAmount: { amount: 800, currency: CURRENCY },
       },
@@ -632,7 +681,9 @@ describe('checkout.completed', () => {
     // The address is a COPY. `shop_addresses` is Cart's table under R3, so an
     // event carrying only an id would force the callback brief §7 forbids.
     // `district` rides along since 0460 — null here, because UK names none.
-    expect(payload.shippingAddress).toEqual({ ...UK, district: null });
+    // `location` rides along since 0780 — null here, and null on almost every
+    // order: the pin is optional and the prompt ships switched off.
+    expect(payload.shippingAddress).toEqual({ ...UK, district: null, location: null });
 
     // The holds, so whoever commits stock on capture knows which ones.
     expect(payload.reservationIds).toEqual([]);
@@ -704,5 +755,267 @@ describe('CheckoutPort.complete', () => {
     const cart = await readyCart();
     expect(await port.complete(db, cart.id)).toBe('unavailable');
     expect(await port.complete(db, 'crt_does_not_exist')).toBe('unavailable');
+  });
+});
+
+/**
+ * THAWING — the handle on the inside of the freeze's one-way door.
+ *
+ * `converting → open` sat in the transition allow-list from the beginning with
+ * a comment promising a shopper their basket back, and NOTHING in the
+ * application ever performed it. Every test below is about a cart that a real
+ * customer would otherwise never be able to edit again.
+ */
+describe('thawCheckout', () => {
+  /**
+   * A stand-in for `CheckoutPaymentsPort` that RECORDS what it was asked.
+   *
+   * Its `cancel` never throws, which is what the real adapter promises: the
+   * refusals `cancelIntent` raises for an already-settled intent are races the
+   * thaw has already ruled on, and turning one into a 500 would fail a shopper's
+   * recovery for a cart that by then is in the state they wanted.
+   */
+  function fakePayments(intents: Array<{ id: string; status: PaymentStatus }> = []) {
+    const cancelled: string[] = [];
+    return {
+      cancelled,
+      port: {
+        intentsFor: async () => intents,
+        cancel: async (_db: Db, id: string) => {
+          cancelled.push(id);
+        },
+      },
+    };
+  }
+
+  /** A cart taken all the way to `converting`, as a shopper on the payment page. */
+  async function frozenCart() {
+    const cart = await readyCart();
+    const frozen = await freezeCheckout(db, catalog, CONFIG, { cartId: cart.id });
+    expect(frozen.ok).toBe(true);
+    return (await getCart(db, cart.id))!;
+  }
+
+  it('reopens the cart, CLEARS THE FROZEN TOTALS, and cancels the pending intent', async () => {
+    const cart = await frozenCart();
+    expect(cart.status).toBe('converting');
+    const payments = fakePayments([{ id: 'pi_1', status: 'requires_payment' }]);
+
+    const after = await thawCheckout(db, { ...CONFIG, payments: payments.port }, {
+      cartId: cart.id,
+    });
+
+    expect(after.status).toBe('open');
+    expect(after.revision).toBeGreaterThan(cart.revision);
+    expect(payments.cancelled).toEqual(['pi_1']);
+
+    /*
+     * THE LOAD-BEARING HALF. `frozenTotals` has no status guard and
+     * `createIntent` prices a payment from whatever it returns, so a thaw that
+     * flipped the status alone would leave a freely editable cart carrying a
+     * stale, still-chargeable total. It must now refuse.
+     */
+    await expect(frozenTotals(db, cart.id)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('REFUSES a checkout whose payment was authorized, and writes nothing', async () => {
+    /*
+     * The bar is `authorized`, not `captured`. A capture normally drives
+     * `converting → converted` inline, but `completeCheckoutForIntent` records
+     * three ways that does not happen while the money is still taken — and each
+     * leaves a PAID cart sitting at `converting`, which is indistinguishable
+     * from this function's target by anything Cart can see on its own.
+     */
+    const cart = await frozenCart();
+    const payments = fakePayments([{ id: 'pi_1', status: 'authorized' }]);
+
+    await expect(
+      thawCheckout(db, { ...CONFIG, payments: payments.port }, { cartId: cart.id }),
+    ).rejects.toMatchObject({ name: 'CartPreconditionError', operation: 'checkout_paid' });
+
+    expect((await getCart(db, cart.id))?.status).toBe('converting');
+    expect(payments.cancelled).toEqual([]);
+    // And the total is still there to charge, because the order is still coming.
+    await expect(frozenTotals(db, cart.id)).resolves.toBeTruthy();
+  });
+
+  it('REFUSES a captured checkout for the same reason', async () => {
+    const cart = await frozenCart();
+    const payments = fakePayments([{ id: 'pi_1', status: 'captured' }]);
+    await expect(
+      thawCheckout(db, { ...CONFIG, payments: payments.port }, { cartId: cart.id }),
+    ).rejects.toMatchObject({ operation: 'checkout_paid' });
+    expect((await getCart(db, cart.id))?.status).toBe('converting');
+  });
+
+  it('a FAILED or CANCELLED intent does not block the shopper — that IS the back-out', async () => {
+    /*
+     * `paymentStatusRank` puts both below `authorized` on purpose: they are
+     * terminal only in the sense that we stopped expecting money. A declined
+     * card is the single most likely reason somebody is here.
+     */
+    const cart = await frozenCart();
+    const payments = fakePayments([
+      { id: 'pi_dead', status: 'failed' },
+      { id: 'pi_gone', status: 'cancelled' },
+    ]);
+
+    const after = await thawCheckout(db, { ...CONFIG, payments: payments.port }, {
+      cartId: cart.id,
+    });
+
+    expect(after.status).toBe('open');
+    // Neither is cancelled again — both already outrank what `cancelIntent` moves.
+    expect(payments.cancelled).toEqual([]);
+  });
+
+  it('is IDEMPOTENT on an open cart, and does not consult Payments at all', async () => {
+    // The storefront fires this from a back button, a link and a `beforeunload`
+    // without tracking which of them ran.
+    const cart = await readyCart();
+    let asked = false;
+    const port = {
+      intentsFor: async () => {
+        asked = true;
+        return [];
+      },
+      cancel: async () => {},
+    };
+
+    const after = await thawCheckout(db, { ...CONFIG, payments: port }, { cartId: cart.id });
+
+    expect(after.status).toBe('open');
+    expect(after.revision).toBe(cart.revision);
+    expect(asked).toBe(false);
+  });
+
+  it('refuses a CONVERTED cart — that is an order, and reopening it would un-sell it', async () => {
+    const cart = await frozenCart();
+    await completeCheckout(db, { cartId: cart.id });
+    const payments = fakePayments();
+
+    await expect(
+      thawCheckout(db, { ...CONFIG, payments: payments.port }, { cartId: cart.id }),
+    ).rejects.toMatchObject({ operation: 'cancel_checkout' });
+    expect((await getCart(db, cart.id))?.status).toBe('converted');
+  });
+
+  it('refuses with 501 when no payments port is wired, rather than guessing', async () => {
+    /*
+     * The deliberate inverse of admin#27, where an unwired `CheckoutPort` let
+     * the highest-severity route in the system run and quietly do nothing.
+     * There is no correct weaker behaviour for "unfreeze without checking
+     * whether it was paid", so absence refuses.
+     */
+    const cart = await frozenCart();
+    await expect(thawCheckout(db, CONFIG, { cartId: cart.id })).rejects.toMatchObject({
+      name: 'NotImplementedError',
+      feature: 'checkout_cancel',
+    });
+    expect((await getCart(db, cart.id))?.status).toBe('converting');
+  });
+
+  it('MUTATION: neutralising `status = converting` lets a CONVERTED cart be reopened', async () => {
+    /*
+     * The allow-list check runs against a row that has already been read, so on
+     * its own it is exactly the stale pre-check the CAS rules forbid. This
+     * proves the predicate in the statement is what actually refuses.
+     */
+    const cart = await frozenCart();
+    await completeCheckout(db, { cartId: cart.id });
+    const payments = fakePayments();
+    const mutant = mutating(db, GUARDS.cartConverting, 'true');
+
+    // The JS allow-list still refuses on the real handle...
+    await expect(
+      thawCheckout(db, { ...CONFIG, payments: payments.port }, { cartId: cart.id }),
+    ).rejects.toMatchObject({ operation: 'cancel_checkout' });
+    // ...and under the mutant the statement would have matched, which is the
+    // whole reason the predicate is not left to the JavaScript check.
+    const res = await mutant.execute(sql`
+      UPDATE shop_carts SET status = 'open', revision = revision + 1
+       WHERE id = ${cart.id} AND status = 'converting' RETURNING id`);
+    expect(res.rows).toHaveLength(1);
+  });
+
+  it('an address edit on a FROZEN cart thaws it instead of answering 409', async () => {
+    /*
+     * ═══ THE BUG THIS WHOLE FEATURE IS ABOUT ═══
+     *
+     * A shopper reached the payment page, did not pay, and came back to fix
+     * their street. Every such request answered
+     * `409 precondition_failed / update_cart`, for ever, and `LIVE_STATUSES`
+     * kept handing the same dead cart back to the cookie.
+     */
+    const cart = await frozenCart();
+    const payments = fakePayments([{ id: 'pi_1', status: 'requires_payment' }]);
+
+    const { zone } = await putAddresses(
+      db,
+      { ...CONFIG, payments: payments.port },
+      {
+        cartId: cart.id,
+        shipping: { ...UK, line1: '2 High Street' },
+        billing: null,
+        /*
+         * THE SHOPPER'S OWN TOKEN, taken before the thaw — the exact value a
+         * storefront holds after a freeze. The thaw is itself a write and bumps
+         * the revision, so passing this straight on to the address write would
+         * answer a successful recovery with `409 stale_write`: the same dead
+         * end, one step further along.
+         */
+        baseRevision: cart.revision,
+      },
+    );
+
+    expect(zone).toBe('domestic');
+    expect((await getCart(db, cart.id))?.status).toBe('open');
+    expect(payments.cancelled).toEqual(['pi_1']);
+    const stored = await db.execute(sql`
+      SELECT line1 FROM shop_addresses WHERE cart_id = ${cart.id} AND kind = 'shipping'`);
+    expect(stored.rows[0]?.line1).toBe('2 High Street');
+  });
+
+  it('an address edit REFUSED by the delivery rules thaws nothing', async () => {
+    /*
+     * Position, not just presence: `makeEditable` runs AFTER both refusals and
+     * before the first write. An address the shop will not deliver to must
+     * leave the frozen checkout exactly as it found it — otherwise a typo in a
+     * country code would cancel somebody's payment.
+     */
+    const cart = await frozenCart();
+    const payments = fakePayments([{ id: 'pi_1', status: 'requires_payment' }]);
+
+    await expect(
+      putAddresses(
+        db,
+        { ...CONFIG, payments: payments.port },
+        { cartId: cart.id, shipping: { ...UK, countryCode: 'not-a-code' }, billing: null },
+      ),
+    ).rejects.toBeInstanceOf(BadRequestError);
+
+    expect((await getCart(db, cart.id))?.status).toBe('converting');
+    expect(payments.cancelled).toEqual([]);
+  });
+
+  it('a thawed cart can be re-frozen, and the NEW address is what gets priced', async () => {
+    // The round trip the shopper actually makes: pay page → back → change the
+    // country → pay page. The second freeze must price the second address.
+    const cart = await frozenCart();
+    const config = { ...CONFIG, payments: fakePayments().port };
+
+    await putAddresses(db, config, {
+      cartId: cart.id,
+      shipping: { ...UK, city: 'Dublin', postalCode: 'D02', countryCode: 'IE' },
+      billing: null,
+    });
+    await setShipping(db, config, { cartId: cart.id, optionId: 'standard' });
+    const refrozen = await freezeCheckout(db, catalog, config, { cartId: cart.id });
+
+    expect(refrozen.ok).toBe(true);
+    if (!refrozen.ok) return;
+    // The EU zone: 999 shipping, no VAT — not the UK's 399 and 20%.
+    expect(refrozen.totals.shippingTotal.amount).toBe(999);
+    expect(refrozen.totals.taxTotal.amount).toBe(0);
   });
 });

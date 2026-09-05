@@ -63,6 +63,19 @@ export const GUARDS = {
   /** `status = 'open'` — the "you may still edit this cart" precondition. */
   cartOpen: /status = 'open'/,
   /**
+   * `status = 'converting'` — the THAW's precondition, and the only guard that
+   * stands between "give the shopper their basket back" and reopening a cart
+   * that has already become an order.
+   *
+   * Note that `thawCheckout`'s statement also SETS `status = 'open'`, so
+   * `cartOpen` matches it too and would rewrite the assignment rather than a
+   * predicate. Nothing collides today — a thaw runs only on a converting cart
+   * and the `cartOpen` mutation tests all drive open ones — but a future test
+   * that mutates `cartOpen` across a thaw is mutating the wrong clause and will
+   * be measuring nothing.
+   */
+  cartConverting: /status = 'converting'/,
+  /**
    * `state = 'held'` — the reservation transition guard, both directions.
    *
    * The optional `r.` qualifier is not cosmetic. The sweeper's SELECT gained a

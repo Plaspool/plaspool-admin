@@ -89,9 +89,11 @@ const LedgerQuery = z
  * becomes a 500 the client retries five times. Named in the schema it is an
  * inline error under the amount input, which is where the fix is.
  *
- * `reason` IS REQUIRED, and it is the only reason this row will ever have. An
- * award points at the return it paid for; this points at somebody's judgement.
- * The UI's preset Select prefills it and still cannot submit it empty.
+ * `reason` IS OPTIONAL SINCE 2026-09-03 (owner's instruction) and is still the
+ * only reason this row will ever have. An award points at the return it paid
+ * for; this points at somebody's judgement, and nothing else in the database
+ * records it. The UI's preset Select still prefills it — it simply no longer
+ * refuses to submit without one. Blank is stored as NULL (migration 0840).
  */
 const AdjustBody = z
   .object({
@@ -102,7 +104,7 @@ const AdjustBody = z
       .min(-INT4_MAX)
       .max(INT4_MAX)
       .refine((value) => value !== 0, 'zero'),
-    reason: str().trim().min(1).max(500),
+    reason: str().trim().min(1).max(500).optional(),
     /** Optional: a manual adjustment belongs to no program unless the admin says
      *  it does (`marketing_ledger_award_sign_ck` only demands one for an award). */
     programId: str().min(1).max(200).optional(),

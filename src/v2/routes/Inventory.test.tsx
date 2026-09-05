@@ -160,7 +160,7 @@ const listQueries = (): URLSearchParams[] =>
 // ============================================================================
 
 describe('the inventory screen', () => {
-  it('refuses an adjustment without a reason, then sends delta and reason together', async () => {
+  it('sends delta and reason together', async () => {
     const user = userEvent.setup();
     withRows();
     when(ADJUST, { inventory: { variantId: 'var_1', onHand: 15, reserved: 2, available: 13 } });
@@ -169,17 +169,8 @@ describe('the inventory screen', () => {
     await user.click(await screen.findByRole('button', { name: 'Adjust stock of SPL-RED' }));
     const panel = screen.getByRole('dialog', { name: 'Adjust stock of SPL-RED' });
 
-    // A delta alone is not enough: the commit is refused with the audit
-    // trail's own sentence, and NOTHING crosses the wire.
     await user.type(within(panel).getByLabelText('Adjust by'), '3');
-    await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
-
-    expect(
-      await within(panel).findByText('A stock change needs a reason. It is kept on record.'),
-    ).toBeTruthy();
-    expect(sentNothing(ADJUST)).toBe(true);
-
-    await user.type(within(panel).getByLabelText('Reason'), 'Stocktake');
+    await user.type(within(panel).getByLabelText('Reason (optional)'), 'Stocktake');
     await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
 
     // Key by key: the delta as a number and the reason, nothing else.
@@ -187,6 +178,53 @@ describe('the inventory screen', () => {
     // The receipt names the row and the SERVER'S new available figure, not a
     // locally recomputed one.
     expect(await screen.findByText('SPL-RED — 13 available')).toBeTruthy();
+  });
+
+  /*
+   * THE REASON IS OPTIONAL SINCE 2026-09-03 (owner’s instruction). The test
+   * above used to open by asserting that a delta alone was refused.
+   *
+   * THE BODY IS THE ASSERTION, not the 200. A screen that sent
+   * `{ delta: 3, reason: '' }` would look identical here and be a 400 in
+   * production: the route keeps `.min(1)` inside its `.optional()`, so the key
+   * has to be ABSENT rather than empty. `toEqual` is what pins that — a
+   * `toMatchObject` would pass with the empty string still on the wire.
+   */
+  it('sends no reason key at all when the box is left empty', async () => {
+    const user = userEvent.setup();
+    withRows();
+    when(ADJUST, { inventory: { variantId: 'var_1', onHand: 13, reserved: 2, available: 11 } });
+    mount();
+
+    await user.click(await screen.findByRole('button', { name: 'Adjust stock of SPL-RED' }));
+    const panel = screen.getByRole('dialog', { name: 'Adjust stock of SPL-RED' });
+
+    await user.type(within(panel).getByLabelText('Adjust by'), '3');
+    await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
+
+    await waitFor(() => expect(sent(ADJUST, 'POST')).toEqual({ delta: 3 }));
+    expect(await screen.findByText('SPL-RED — 11 available')).toBeTruthy();
+  });
+
+  /* The number still gates it: zero is a change the server cannot make, and a
+   * blank box is not a delta at all. */
+  it('still refuses a delta of zero, sending nothing', async () => {
+    const user = userEvent.setup();
+    withRows();
+    mount();
+
+    await user.click(await screen.findByRole('button', { name: 'Adjust stock of SPL-RED' }));
+    const panel = screen.getByRole('dialog', { name: 'Adjust stock of SPL-RED' });
+
+    await user.type(within(panel).getByLabelText('Adjust by'), '0');
+    await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
+
+    expect(
+      await within(panel).findByText(
+        'Enter a whole number, above or below zero — but not zero.',
+      ),
+    ).toBeTruthy();
+    expect(sentNothing(ADJUST)).toBe(true);
   });
 
   it('puts belowOnly on the wire as the string 1 for Low stock, absent for All, 0 for an explicit false', async () => {
