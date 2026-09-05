@@ -1154,8 +1154,13 @@ csvRoutes.post('/admin/products/export', auth, async (c) => {
    * app, which is precisely why it could sit wrong indefinitely: the day an
    * alias is retired, exports already emailed break. `server/admin-url.ts`
    * carries the account of how the invite link learned this the hard way.
+   *
+   * THE `Origin` IS PASSED AS A KEY INTO THAT FILE'S PINNED PAIR, never as the
+   * value. An export requested on `admin.dev.plaspool.com` is served by the
+   * preview deployment and its row is in the DEV database, so a production link
+   * to it is a 404 with a valid-looking token on the end.
    */
-  const url = `${adminOrigin()}/api/shop/admin/products/exports/${id}/download?token=${encodeURIComponent(token)}`;
+  const url = `${adminOrigin(c.req.header('Origin'))}/api/shop/admin/products/exports/${id}/download?token=${encodeURIComponent(token)}`;
 
   const emailed = await deliverExport(c, db, user.email, url, rowCount);
 
