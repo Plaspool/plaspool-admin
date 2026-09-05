@@ -443,8 +443,8 @@ export function createAuthRoutes(deps: AuthRouteDeps = {}): Hono<AppEnv> {
     });
 
     /*
-     * `adminOrigin()`, NOT `c.get('origins')[0]` and certainly not the request's
-     * `Host` header.
+     * `adminOrigin()` KEYED BY THE REQUEST'S `Origin`, never `c.get('origins')[0]`
+     * and never the request's `Host` header.
      *
      * Not the header, because it is attacker-controlled on any deployment that
      * does not pin it, and an invite URL built from one points a teammate at a
@@ -456,8 +456,15 @@ export function createAuthRoutes(deps: AuthRouteDeps = {}): Hono<AppEnv> {
      * Clerk's production key refuses to load — so the invitation rendered a
      * blank page for the one person who could not diagnose it.
      * `server/admin-url.ts` carries the full account.
+     *
+     * THE `Origin` IS PASSED, AND IT IS NOT A THIRD ATTEMPT AT THE SAME MISTAKE.
+     * It is a KEY into the two hostnames that file pins, not the value: an
+     * origin outside that pair is discarded and production stands. What it buys
+     * is the other half of the bug — an invite minted on `admin.dev.plaspool.com`
+     * used to mail a production link, and the row it names lives only in the dev
+     * database, so the invitee signs in and is told they are not on the team.
      */
-    const url = `${adminOrigin()}${INVITE_PATH}`;
+    const url = `${adminOrigin(c.req.header('Origin'))}${INVITE_PATH}`;
 
     const emailed = await deliverInvite(c, address, url, inviter.displayName);
 
