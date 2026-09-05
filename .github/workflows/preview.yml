@@ -65,12 +65,30 @@ jobs:
       # minutes with no output, and because `ui` is the only project without a
       # testTimeout override (5s vs server's 60s), so it is the one that reddens
       # under CPU contention.
-      - name: Tests (reporting only — master baseline is red)
+      # ONE STEP PER PROJECT, and that is not cosmetic. A `run: |` block executes
+      # under `bash -e`, so three commands in one block stop at the first
+      # failure — the original version of this file ran only `shared`+`client`
+      # and never reached `server` or `ui` at all, while reporting as though it
+      # had tested everything. Separate steps also mean the Actions UI names
+      # which project is red instead of making you open the log.
+      #
+      # `continue-on-error` because master's own baseline is red; these report
+      # rather than gate. Delete it from each step, one project at a time, as
+      # that project goes green — that is the whole change.
+      - name: Tests — shared + client
         continue-on-error: true
-        run: |
-          npx vitest run --project shared --project client
-          npx vitest run --project server
-          npx vitest run --project ui
+        run: npx vitest run --project shared --project client
+
+      - name: Tests — server
+        continue-on-error: true
+        run: npx vitest run --project server
+
+      # `ui` is the only project without a testTimeout override (5s against
+      # server's 60s), so it is the one that reddens under CPU contention rather
+      # than from a real regression. Expect noise here before trusting it.
+      - name: Tests — ui
+        continue-on-error: true
+        run: npx vitest run --project ui
 
       - name: Deploy preview
         id: deploy
