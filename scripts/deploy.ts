@@ -55,10 +55,19 @@ const SCOPE = 'nattys-projects-05ebc986';
  *  worth making someone type out by hand. */
 const PROD_BRANCH = 'master';
 
-/** Where `--dev` points its preview. Absent from DNS as of this writing; when
- *  the alias fails the deploy itself still succeeded, so we warn and print the
- *  raw URL rather than failing the run. */
-const DEV_ALIAS = 'dev.plaspool.com';
+/** Where `--dev` points its preview.
+ *
+ *  TWO LEVELS DEEP ON PURPOSE, AND THAT HAS A COST: Cloudflare's Universal SSL
+ *  covers `plaspool.com` and `*.plaspool.com` — ONE level — so it has no
+ *  certificate for this host. The record must therefore be DNS-only (grey
+ *  cloud) so Vercel terminates TLS and issues its own cert. Left proxied
+ *  (orange), Cloudflare aborts the handshake outright and the request never
+ *  reaches Vercel at all: curl reports SEC_E_ILLEGAL_MESSAGE and http_code 000,
+ *  which looks like the deploy failed rather than like a DNS toggle.
+ *
+ *  When the alias fails the deploy itself still succeeded, so we warn and print
+ *  the raw URL rather than failing the run. */
+const DEV_ALIAS = 'admin.dev.plaspool.com';
 
 const argv = process.argv.slice(2);
 const CHECK = argv.includes('--check');
@@ -178,33 +187,99 @@ try {
   /* Rule 3: --scope, always. The cwd here is never the linked root. */
   const flags = PROD ? '--prod --yes' : '--yes';
   console.log('  deploying...\n');
-  const stdout = capture(`npx vercel deploy ${flags} --scope ${SCOPE}`, workdir);
 
-  const url = stdout
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith('https://'))
-    .pop();
-  if (!url) die(`Could not find a deployment URL in the CLI output:\n${stdout}`);
+  /* A NON-ZERO EXIT DOES NOT MEAN THE DEPLOYMENT DID NOT HAPPEN. Measured
+     2026-09-05: three runs in a row built cleanly, printed `Deploying
+     outputs... Completing…`, then died on `{"reason":"deploy_failed",
+     "message":"fetch failed"}` — the CLI's own final status poll losing the
+     connection. All three deployments were live and `● Ready` in `vercel ls`
+     seconds later. Treating that exit code as the answer would abandon a
+     finished deployment and, worse, invite a retry that deploys it twice.
+     So the exit code is a hint; the deployment's own status is the fact. */
+  let stdout: string;
+  try {
+    stdout = capture(`npx vercel deploy ${flags} --scope ${SCOPE}`, workdir);
+  } catch (err) {
+    stdout = String((err as { stdout?: string }).stdout ?? '');
+    console.log('\n  note      the CLI exited non-zero; checking whether the');
+    console.log('            deployment landed anyway before believing it.');
+  }
+
+  /* THE CLI SPEAKS TWO DIALECTS AND YOU GET A DIFFERENT ONE THAN A HUMAN DOES.
+     `--non-interactive` is implied "when an agent is detected" (its own --help
+     says so), and in that mode a successful deploy prints a JSON envelope whose
+     URL lives at `.deployment.url`. Run from a terminal it prints the bare URL
+     on its own line instead. Scanning only for a line starting with https://
+     therefore works when you run it and fails when CI or an agent does — which
+     is the worst possible split, because it passes exactly where it is tested.
+     Parse the JSON when it is there, fall back to the line, then to any URL. */
+  const found = (() => {
+    const brace = stdout.indexOf('{');
+    if (brace !== -1) {
+      try {
+        const d = JSON.parse(stdout.slice(brace))?.deployment ?? {};
+        if (typeof d.url === 'string') {
+          return { url: d.url, state: d.readyState ?? null, target: d.target ?? null };
+        }
+      } catch {
+        /* not JSON after all — fall through */
+      }
+    }
+    const line = stdout.split('\n').map((l) => l.trim()).find((l) => l.startsWith('https://'));
+    const any = /https:\/\/[a-z0-9-]+\.vercel\.app/.exec(stdout)?.[0];
+    return { url: line ?? any ?? null, state: null, target: null };
+  })();
+
+  const url = found.url;
+  if (!url) die(`No deployment URL in the CLI output, so nothing was created:\n${stdout}`);
   if (!SAFE_URL.test(url)) die(`Refusing to shell out with an unexpected deployment URL: ${url}`);
 
   /* Rule 4: the whole reason this is a script and not a shell alias. A --prod
      deploy that quietly landed in Preview reports success in every other way,
-     so the only honest check is reading `target` back off the deployment. */
-  const inspected = execSync(`npx vercel inspect ${url} --scope ${SCOPE}`, {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  const actual = /^\s*target\s+(\S+)\s*$/m.exec(inspected)?.[1] ?? null;
+     so the only honest check is reading `target` back off the deployment.
+     The JSON dialect already carries target and readyState; the text one does
+     not, so ask `inspect` only when we actually need to. */
+  let actual = found.target;
+  let state = found.state;
+  if (state === null) {
+    const inspected = execSync(`npx vercel inspect ${url} --scope ${SCOPE}`, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    actual = /^\s*target\s+(\S+)\s*$/m.exec(inspected)?.[1] ?? null;
+    state = /^\s*status\s+\S*\s*(\S+)\s*$/m.exec(inspected)?.[1] ?? null;
+  }
+
+  /* "READY" from the JSON, "Ready" from inspect. Same fact, two spellings. */
+  if (String(state).toUpperCase() !== 'READY') {
+    die(`Deployment ${url} is "${state ?? 'unknown'}", not Ready. Check:\n      npx vercel inspect ${url} --scope ${SCOPE}`);
+  }
 
   console.log(`\n  url       ${url}`);
-  console.log(`  target    ${actual ?? '(none reported)'}`);
+  /* A preview reports `target: null`, not "preview" — the same null CLAUDE.md
+     warns about when a --prod deploy silently lands in Preview. Spell it out
+     rather than printing "(none)", which reads like something went wrong. */
+  console.log(`  target    ${actual ?? 'null (preview)'}`);
 
   if (PROD && actual !== 'production') {
     console.error(`\n  x Asked for production and got "${actual}". The build is fine — it`);
     console.error('    landed in the wrong environment. Promote it without rebuilding:\n');
     console.error(`      npx vercel promote ${url} --yes --scope ${SCOPE}\n`);
     process.exit(1);
+  }
+
+  if (PROD) {
+    /* "Auto-assign Custom Production Domains" is enabled on this project, and
+       it covers CLI deploys carrying --prod. Every custom domain on the project
+       is therefore re-pointed at THIS deployment — including the dev host, which
+       is on the list only because a Vercel project with no Git integration has
+       no preview slot to put a domain in. So a production deploy silently steals
+       the dev URL, and it then serves production under a name that production's
+       own APP_ORIGINS does not list, which surfaces as CORS failures on a screen
+       that looks otherwise fine. Self-healing on the next deploy:dev — but only
+       if you know to run it. */
+    console.log(`\n  ! ${DEV_ALIAS} has just been re-assigned to THIS production`);
+    console.log('    deployment by auto-assign. Run `npm run deploy:dev` to take it back.');
   }
 
   if (DEV) {
@@ -224,5 +299,15 @@ try {
   const probe = PROD ? 'https://admin.plaspool.com' : url;
   console.log(`    curl -s -H 'Cache-Control: no-cache' ${probe} | grep -o 'index-[^.]*\\.js'\n`);
 } finally {
-  rmSync(workdir, { recursive: true, force: true });
+  /* Cleanup must NEVER be what fails the run. On Windows a just-exited child
+     (npx/vercel) can still hold a handle on the clone, and git leaves pack
+     files read-only, so rmSync throws EPERM — from inside `finally`, which
+     REPLACES whatever error the deploy itself raised. That is how a real build
+     failure came back as an unrelated filesystem trace. Retry, then give up
+     loudly but harmlessly. */
+  try {
+    rmSync(workdir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  } catch {
+    console.log(`\n  note      could not remove ${workdir} — delete it by hand.`);
+  }
 }
