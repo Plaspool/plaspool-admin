@@ -1,0 +1,126 @@
+# Production deploy — MANUAL ON PURPOSE.
+#
+# WHY THIS IS NOT TRIGGERED BY A MERGE TO master. Migrations in this project are
+# hand-written and hand-applied, and a merged migration reaches production
+# BEFORE the code that reads it, never after. A workflow that deployed on merge
+# would ship a schema-dependent feature the instant its PR landed, against a
+# database the migration had not yet touched — which is precisely the outage
+# already in this repository's history, where order reads answered
+# `42703 undefined_column` in production. Automating that would only make it
+# happen faster and more reliably.
+#
+# So the button is the feature. `migrations_applied` has no default: somebody
+# has to state that the schema is ready, in the same breath as asking for the
+# deploy.
+#
+# SECRETS: VERCEL_TOKEN, scoped to the TEAM rather than the personal account.
+# A personal-only token fails as "Not authorized", which reads like an expired
+# session — reads succeed while writes do not.
+name: Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or commit to deploy'
+        required: true
+        default: master
+      migrations_applied:
+        description: 'Migrations for this commit are already applied to the production database'
+        required: true
+        type: choice
+        options: ['no', 'yes']
+
+concurrency:
+  group: production
+  cancel-in-progress: false # never interrupt a production deploy mid-flight
+
+env:
+  VERCEL_ORG_ID: team_B4wbpcZQWPJ2KxdhcKOaRMSi
+  VERCEL_PROJECT_ID: prj_PcphVWAqTVHb1XbjWfulMbRaCqTH
+
+jobs:
+  production:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Refuse unless the schema is ready
+        if: inputs.migrations_applied != 'yes'
+        run: |
+          echo "migrations_applied is '${{ inputs.migrations_applied }}'."
+          echo
+          echo "Apply this commit's migrations first, then re-run with 'yes':"
+          echo "  APP_ORIGINS=\"https://migration.invalid\" \\"
+          echo "    npx tsx --env-file=.prod.env server/db/migrate.ts"
+          echo
+          echo "Then VERIFY against information_schema and pg_constraint rather"
+          echo "than trusting the exit code — the production ledger is mixed"
+          echo "LF/CRLF and db:migrate throws even when the DDL applied fine."
+          exit 1
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      # Hard gate. Clean on master, so a failure here is real — and this is the
+      # only thing standing between a typo and the live storefront's admin.
+      - name: Typecheck
+        run: npx tsc -b
+
+      # Reporting only, for the same reason as the preview workflow: master's
+      # own baseline is three failing tests, so a gate here would simply block
+      # every release. Remove `continue-on-error` once that baseline is green.
+      - name: Tests (reporting only — master baseline is red)
+        continue-on-error: true
+        run: |
+          npx vitest run --project shared --project client
+          npx vitest run --project server
+          npx vitest run --project ui
+
+      - name: Deploy to production
+        id: deploy
+        run: |
+          npx vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          npx vercel build --prod --token="$VERCEL_TOKEN"
+          npx vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN" | tee out.txt
+          URL=$(grep -oE 'https://[a-z0-9-]+\.vercel\.app' out.txt | tail -1)
+          test -n "$URL" || { echo "no deployment URL in CLI output"; cat out.txt; exit 1; }
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      # THE EXIT CODE IS NOT THE ANSWER. `vercel deploy --prod` has reported
+      # READY, exited 0, and silently produced a PREVIEW (`target: null`) while
+      # production went on serving the old bundle; nothing in the success output
+      # says so. Read `target` back off the finished deployment instead — the
+      # same check `scripts/deploy.ts` makes for exactly this reason.
+      - name: Confirm it really landed in production
+        run: |
+          npx vercel inspect "${{ steps.deploy.outputs.url }}" --token="$VERCEL_TOKEN" 2>&1 | tee ins.txt
+          grep -qE '^[[:space:]]*target[[:space:]]+production$' ins.txt || {
+            echo
+            echo "Asked for production and did not get it. The build is fine — it"
+            echo "landed in the wrong environment. Promote it without rebuilding:"
+            echo "  npx vercel promote ${{ steps.deploy.outputs.url }} --yes"
+            exit 1
+          }
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      # The dashboard is not proof. Asset hashes change per build, so an
+      # unchanged hash after a deploy means the deploy did not reach production
+      # — unless the commit was identical, which is the one case this cannot
+      # distinguish. HTML is served with X-Vercel-Cache: HIT, hence no-cache.
+      - name: Report the live bundle
+        run: |
+          echo "Live asset on admin.plaspool.com:"
+          curl -s -H 'Cache-Control: no-cache' https://admin.plaspool.com \
+            | grep -o 'index-[A-Za-z0-9_-]*\.js' | head -1
