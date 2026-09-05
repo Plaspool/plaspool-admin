@@ -75,6 +75,12 @@ export const SYSTEM_TEMPLATE_STAGES: Record<string, string> = {
      a stale label precisely so this map cannot outlive the message. */
   'return.awarded': 'Return inspected — points awarded',
   'return.rejected': 'Return inspected — nothing accepted',
+  'review.invite': 'Review — invited after delivery',
+  'review.approved': 'Review — published',
+  /* Staff-facing, unlike everything above it, and the label says so because the
+     list gives the operator no other way to tell: a template that emails US
+     reads exactly like one that emails a customer. */
+  'catalog.export': 'Staff — product export ready',
 };
 
 /** True for a template the application itself sends from. */
