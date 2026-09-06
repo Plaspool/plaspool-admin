@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { readJson, readJsonOrEmpty, str } from '../../../middleware/errors';
+import { pathParam, readJson, readJsonOrEmpty, str } from '../../../middleware/errors';
 import { requireAuth } from '../../../middleware/session';
 import { NotFoundError } from '../../../repo/errors';
 import { getCart } from '../cart/repo';
@@ -16,6 +16,7 @@ import {
   startCheckout,
   thawCheckout,
 } from '../checkout/repo';
+import { setAddOnChoice } from '../checkout/add-ons';
 import { loadShippingZonesForCheckout } from '../checkout/shipping-zones-repo';
 import { loadDeliveryRules } from '../../settings/repo';
 import { ADDRESS_MAX_LENGTHS } from '../../settings/config';
@@ -85,6 +86,9 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
       /* Payments, for the one question a thaw has to ask before it reopens a
        * frozen checkout. Absent refuses — see `ShopCartDeps.payments`. */
       payments: deps.payments,
+      /* Checkout add-ons (spec 2026-09-06). Absent means no add-ons anywhere —
+       * see `ShopCartDeps.addOns`. */
+      addOns: deps.addOns,
     };
   }
 
@@ -297,7 +301,7 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     });
     if (!result.ok) return refusePricing(c, result);
 
-    return c.json({ totals: result.totals, redemption: result.redemption });
+    return c.json({ totals: result.totals, redemption: result.redemption, addOns: result.addOns });
   });
 
   /**
@@ -350,6 +354,33 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     const cart = await requireCart(c, db);
     await removeDiscount(db, { cartId: cart.id, baseRevision: body.baseRevision });
     return c.body(null, 204);
+  });
+
+  /**
+   * Record the shopper's answer to an ask add-on (spec §6). Open cart only,
+   * CAS like every edit. One 409 code for "not an ask offer right now" AND
+   * "no such add-on": the storefront's remedy is the same silent re-read, and
+   * a 404 gone here would be read by its client as a lost cart.
+   */
+  routes.put('/checkout/add-ons/:addOnId', async (c) => {
+    if (!deps.addOns) return c.json({ error: 'not_implemented' }, 501);
+    const db = shopDb(c);
+    const addOnId = pathParam(c, 'addOnId');
+    const body = await readJson(c, AddOnChoiceBody);
+    const cart = await requireCart(c, db);
+    const config = await loadConfig(db);
+    const result = await setAddOnChoice(db, deps.catalog, config, {
+      cartId: cart.id,
+      addOnId,
+      choice: body.choice,
+      baseRevision: body.baseRevision,
+      now: Date.now(),
+    });
+    if (!result.ok) return c.json({ error: 'add_on_not_offered' }, 409);
+    return c.json({
+      cart: { id: result.cart.id, status: result.cart.status, revision: result.cart.revision, currency: result.cart.currency },
+      addOns: result.offers,
+    });
   });
 
   /** The frozen totals, for a client re-rendering the payment step. */
@@ -694,6 +725,9 @@ const PreviewBody = z
 const DiscountBody = z
   .object({ code: str().trim().min(1).max(64), baseRevision: Base })
   .strict();
+
+/** The add-on choice route's body: an ask answer, and the CAS token every edit takes. */
+const AddOnChoiceBody = z.object({ choice: z.enum(['accepted', 'declined']), baseRevision: Base }).strict();
 
 const SweepBody = z
   .object({ limit: z.number().int().min(1).max(1000).optional() })
