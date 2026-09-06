@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Globe, Lock, MoreHorizontal, Plus, Settings as SettingsIcon, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Globe, Info, Lock, MoreHorizontal, Plus, Settings as SettingsIcon, Trash2 } from 'lucide-react';
 import {
   moneyRefusalMessage,
   parseMajor,
@@ -13,6 +13,7 @@ import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, EmptyState } from '../ui/primitives';
 import { DataTable, IdCell, type Column } from '../ui/DataTable';
 import { AffixField, Checkbox, TextField } from '../ui/Field';
+import { Float } from '../ui/Float';
 import { Menu, MenuItem, MenuSeparator } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
 import { TagInput } from '../ui/TagInput';
@@ -118,11 +119,7 @@ export default function SettingsShipping() {
         <IdCell
           thumb={<Globe aria-hidden="true" />}
           title={z.label}
-          meta={
-            z.regions.length
-              ? z.regions.join(', ')
-              : 'Anywhere not covered by another zone'
-          }
+          meta={<ZoneStates zone={z} />}
         />
       ),
     },
@@ -307,6 +304,101 @@ export default function SettingsShipping() {
         </Modal>
       ) : null}
     </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════ ZONE STATES ══ */
+
+/** How many of a zone's states the row names. The rest sit behind "+N". */
+const NAMED_STATES = 3;
+
+/**
+ * A zone's states in the row: the first three by name, then "+N" for the
+ * rest. Rest of Nigeria names 35 states, and joined on one line they made
+ * the zone column wider than the screen — the row scrolled off past its own
+ * ⋯ menu (the owner's screenshot, 2026-09-06).
+ *
+ * The "+N" is a real, always-visible button, not a hover reveal: a touch
+ * screen has no hover (CLAUDE.md §5). It opens on hover for a mouse, on focus
+ * for a keyboard, and a click PINS it — so a tap works, and so a mouse user
+ * can cross into the panel to read it. A hover-opened panel closes once the
+ * pointer has left both the button and the panel. It rides `Float` like every
+ * other popover: inside `.tscroll` an absolute panel would be clipped.
+ */
+function ZoneStates({ zone }: { zone: ShopShippingZone }) {
+  const named = zone.regions.slice(0, NAMED_STATES);
+  const rest = zone.regions.slice(NAMED_STATES);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const [mode, setMode] = useState<'closed' | 'hover' | 'pinned'>('closed');
+  const leaving = useRef<number | null>(null);
+
+  const cancelLeave = useCallback(() => {
+    if (leaving.current === null) return;
+    window.clearTimeout(leaving.current);
+    leaving.current = null;
+  }, []);
+  /* A short grace, so the pointer can cross the gap into the panel. Only a
+     hover-opened panel closes this way; a pinned one waits for a click
+     outside, Escape or a scroll (Float's own dismissals). */
+  const scheduleLeave = useCallback(() => {
+    cancelLeave();
+    leaving.current = window.setTimeout(() => {
+      leaving.current = null;
+      setMode((was) => (was === 'hover' ? 'closed' : was));
+    }, 200);
+  }, [cancelLeave]);
+  useEffect(() => cancelLeave, [cancelLeave]);
+
+  if (zone.regions.length === 0) return <>Anywhere not covered by another zone</>;
+  if (rest.length === 0) return <>{named.join(', ')}</>;
+
+  const open = mode !== 'closed';
+  const noun = rest.length === 1 ? 'state' : 'states';
+  return (
+    <span className="zstates">
+      <span>{named.join(', ')}</span>
+      <button
+        ref={trigger}
+        type="button"
+        className="zstates__more"
+        aria-label={`Show the other ${rest.length} ${noun}`}
+        aria-expanded={open}
+        onMouseEnter={() => {
+          cancelLeave();
+          setMode((was) => (was === 'closed' ? 'hover' : was));
+        }}
+        onMouseLeave={scheduleLeave}
+        onFocus={() => setMode((was) => (was === 'closed' ? 'hover' : was))}
+        onBlur={() => setMode((was) => (was === 'hover' ? 'closed' : was))}
+        onClick={(event) => {
+          /* The row opens its delivery options on click; this click is ours. */
+          event.stopPropagation();
+          cancelLeave();
+          setMode((was) => (was === 'pinned' ? 'closed' : 'pinned'));
+        }}
+      >
+        +{rest.length}
+        <Info aria-hidden="true" />
+      </button>
+      <Float
+        open={open}
+        anchor={trigger}
+        align="left"
+        className="zstates__panel"
+        role="tooltip"
+        onClose={(opts) => {
+          setMode('closed');
+          if (opts?.refocus) trigger.current?.focus();
+        }}
+      >
+        <div onMouseEnter={cancelLeave} onMouseLeave={scheduleLeave}>
+          <p className="zstates__panel-title">
+            {rest.length} more {noun} in {zone.label}
+          </p>
+          <p className="zstates__panel-list">{rest.join(', ')}</p>
+        </div>
+      </Float>
+    </span>
   );
 }
 

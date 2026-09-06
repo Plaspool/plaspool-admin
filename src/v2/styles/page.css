@@ -704,6 +704,75 @@ a.idcell__title:hover {
   text-overflow: ellipsis;
 }
 
+/* A zone's states (SettingsShipping): the first three by name, then "+N" as a
+   button whose panel lists the rest. Rest of Nigeria names 35 states, and
+   joined on one line they made the zone column wider than the screen — the
+   row scrolled off past its own ⋯ (the owner's screenshot, 2026-09-06). The
+   button is always visible, never hover-revealed: a touch screen has no hover. */
+.zstates {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--s1);
+  min-width: 0;
+}
+
+/* The meta clips its overflow, which would take the 4px focus ring off the
+   button; this is the one meta that holds a control. */
+.idcell__meta:has(> .zstates) {
+  overflow: visible;
+}
+
+.zstates__more {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 var(--s1);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  font: inherit;
+  font-weight: var(--w-medium);
+  color: var(--ink-sub);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.zstates__more:hover,
+.zstates__more[aria-expanded='true'] {
+  color: var(--ink-strong);
+  background: var(--surface-active);
+}
+
+.zstates__more > svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* The panel rides Float (fixed, portaled, clamped to the viewport). As wide
+   as its names need, up to a reading measure; they wrap inside it. */
+.zstates__panel {
+  width: max-content;
+  max-width: min(24rem, calc(100vw - var(--s4)));
+  padding: var(--s3) var(--s4);
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  font-size: var(--t-sm);
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.zstates__panel-title {
+  margin: 0 0 var(--s1);
+  font-weight: var(--w-semi);
+  color: var(--ink-strong);
+}
+
+.zstates__panel-list {
+  margin: 0;
+  color: var(--ink-sub);
+}
+
 /* The footer under the rows: pagination, and a count that is only ever shown
    when the server gave us one. */
 .tfoot {
