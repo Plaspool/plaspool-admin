@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Image as ImageIcon, ImagePlus, Star, Trash2, Upload } from 'lucide-react';
 import { acquireImageURL, releaseImageURL, storeImageFile, ImageError } from '../../data/images';
-import { Button, Spinner } from './primitives';
+import { Spinner } from './primitives';
 import { useToast } from './Toast';
 
 /**
@@ -258,77 +258,6 @@ function Tile({
           </button>
         </span>
       )}
-    </div>
-  );
-}
-
-/**
- * One picture, for a row that has exactly one (an add-on). Uploads through
- * `storeImageFile` like the product media card; nothing lands in `value`
- * until the server committed the object.
- */
-export function SingleImage({
-  value,
-  onChange,
-  alt = '',
-  disabled = false,
-}: {
-  value: string | null;
-  onChange: (next: string | null) => void;
-  alt?: string;
-  disabled?: boolean;
-}) {
-  const toast = useToast();
-  const fileInput = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
-
-  async function pick(file: File | undefined) {
-    if (!file || disabled) return;
-    setUploading(true);
-    try {
-      const stored = await storeImageFile(file);
-      onChange(stored.id);
-    } catch (err) {
-      toast.show(err instanceof ImageError ? err.message : 'That image could not be added.', 'critical');
-    } finally {
-      setUploading(false);
-      if (fileInput.current) fileInput.current.value = '';
-    }
-  }
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s2)', alignItems: 'flex-start' }}>
-      {value ? (
-        <div
-          style={{
-            width: '6rem',
-            height: '6rem',
-            overflow: 'hidden',
-            borderRadius: 'var(--r-md)',
-            background: 'var(--surface-sunken)',
-          }}
-        >
-          <StoredImg id={value} alt={alt} />
-        </div>
-      ) : null}
-      <div style={{ display: 'flex', gap: 'var(--s2)' }}>
-        <Button onClick={() => fileInput.current?.click()} disabled={disabled || uploading} busy={uploading}>
-          {value ? 'Replace picture' : 'Add picture'}
-        </Button>
-        {value ? (
-          <Button tone="plain" onClick={() => onChange(null)} disabled={disabled}>
-            Remove
-          </Button>
-        ) : null}
-      </div>
-      <input
-        ref={fileInput}
-        type="file"
-        accept="image/*"
-        className="sr"
-        aria-label="Picture"
-        onChange={(e) => void pick(e.target.files?.[0])}
-      />
     </div>
   );
 }

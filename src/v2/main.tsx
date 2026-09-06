@@ -5,6 +5,7 @@ import './styles/tokens.css';
 import './styles/base.css';
 import './styles/ui.css';
 import './styles/page.css';
+import './styles/add-ons.css';
 import './styles/shell.css';
 
 import { getSession, initSession, startSessionWatch, subscribe } from '../data/session';
