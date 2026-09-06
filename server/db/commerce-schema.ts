@@ -107,6 +107,7 @@ export const shopOrders = pgTable(
     shippingTotal: integer('shipping_total').notNull(),
     taxTotal: integer('tax_total').notNull(),
     grandTotal: integer('grand_total').notNull(),
+    addOnTotal: integer('add_on_total').notNull().default(0),
     /**
      * Cumulative refunded minor units, accumulated from `payment.refunded`.
      *
@@ -170,6 +171,7 @@ export const shopOrders = pgTable(
     check('shop_orders_currency_ck', sql`${t.currency} ~ '^[A-Z]{3}$'`),
     check('shop_orders_revision_ck', sql`${t.revision} > 0`),
     check('shop_orders_refunded_ck', sql`${t.refundedTotal} >= 0`),
+    check('shop_orders_add_on_total_ck', sql`${t.addOnTotal} >= 0`),
     check('shop_orders_email_ck', sql`length(${t.email}) > 0`),
     index('shop_orders_customer_idx').on(t.customerId, t.placedAt.desc(), t.id),
     index('shop_orders_status_idx').on(t.status, t.placedAt.desc(), t.id),
@@ -238,6 +240,32 @@ export const shopOrderLines = pgTable(
     index('shop_order_lines_order_idx').on(t.orderId, t.lineNo),
   ],
 );
+
+/** The add-ons an order carried (migration 0940). A snapshot: no FK to shop_add_ons. */
+export const shopOrderAddOns = pgTable(
+  'shop_order_add_ons',
+  {
+    id: text('id').primaryKey(),
+    orderId: text('order_id')
+      .notNull()
+      .references(() => shopOrders.id, { onDelete: 'cascade' }),
+    position: integer('position').notNull(),
+    addOnId: text('add_on_id').notNull(),
+    title: text('title').notNull(),
+    mode: text('mode').$type<'chosen' | 'included'>().notNull(),
+    amount: integer('amount').notNull(),
+    listPrice: integer('list_price').notNull(),
+    currency: text('currency').notNull(),
+  },
+  (t) => [
+    uniqueIndex('shop_order_add_ons_position_uq').on(t.orderId, t.position),
+    index('shop_order_add_ons_add_on_idx').on(t.addOnId),
+    check('shop_order_add_ons_mode_ck', sql`${t.mode} IN ('chosen','included')`),
+    check('shop_order_add_ons_amount_ck', sql`${t.amount} >= 0 AND ${t.listPrice} >= 0`),
+    check('shop_order_add_ons_currency_ck', sql`${t.currency} ~ '^[A-Z]{3}$'`),
+  ],
+);
+export type DbShopOrderAddOn = typeof shopOrderAddOns.$inferSelect;
 
 /** Partial fulfilment is real (brief §2): an order can have several. */
 export const shopFulfillments = pgTable(

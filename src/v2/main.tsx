@@ -21,6 +21,8 @@ import Inventory from './routes/Inventory';
 import Reviews from './routes/Reviews';
 import DeliveryAreas from './routes/DeliveryAreas';
 import Categories from './routes/Categories';
+import AddOns from './routes/AddOns';
+import AddOnDetail from './routes/AddOnDetail';
 import Customers from './routes/Customers';
 import Featured from './routes/Featured';
 import Banners from './routes/Banners';
@@ -159,6 +161,9 @@ const router = createHashRouter([
       { path: '/products/categories', element: <Categories /> },
       { path: '/products/inventory', element: <Inventory /> },
       { path: '/products/reviews', element: <Reviews /> },
+      { path: '/products/add-ons', element: <AddOns /> },
+      { path: '/products/add-ons/new', element: <AddOnDetail create /> },
+      { path: '/products/add-ons/:id', element: <AddOnDetail /> },
       /* Static beats dynamic in the router's ranking, but the create route is
          listed first anyway so nobody has to know that. */
       { path: '/products/new', element: <ProductDetail create /> },

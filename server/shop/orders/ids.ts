@@ -34,4 +34,6 @@ export const ID = {
   /** A row of `commerce_events` — the outbox. */
   event: 'evt_',
   emailIntent: 'eml_',
+  /** A row of `shop_order_add_ons` — the add-on snapshot beside a line (migration 0940). */
+  orderAddOn: 'oao_',
 } as const;

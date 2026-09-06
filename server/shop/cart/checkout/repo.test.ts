@@ -33,6 +33,7 @@ import { checkoutPort } from '../port';
 import { parseCheckoutCompleted } from '../../orders/inbound';
 import type { CartFakeCatalog } from '../test/fake-catalog';
 import type { Db } from '../../../db/client';
+import type { AddOnPort } from '../../../../shared/commerce/add-ons';
 
 let db: Db;
 let close: () => Promise<void>;
@@ -687,6 +688,34 @@ describe('checkout.completed', () => {
 
     // The holds, so whoever commits stock on capture knows which ones.
     expect(payload.reservationIds).toEqual([]);
+  });
+
+  it('carries the add-ons through the event and Orders reads them back, including a free one', async () => {
+    const port: AddOnPort<Db> = {
+      async offers() {
+        return [
+          { id: 'ado_box', title: 'Gift box', description: null, imageUrl: null, price: { amount: 1500, currency: CURRENCY }, amount: { amount: 1500, currency: CURRENCY }, mode: 'include', choice: null },
+          { id: 'ado_note', title: 'Note', description: null, imageUrl: null, price: { amount: 500, currency: CURRENCY }, amount: { amount: 0, currency: CURRENCY }, mode: 'include', choice: null },
+        ];
+      },
+    };
+    const cart = await readyCart();
+    const frozen = await freezeCheckout(db, catalog, { ...CONFIG, addOns: port }, { cartId: cart.id });
+    if (!frozen.ok) throw new Error('expected totals');
+    await setCheckoutContact(db, { cartId: cart.id, email: 'buyer@example.test' });
+
+    await completeCheckout(db, { cartId: cart.id });
+
+    const rows = await db.execute(sql`SELECT payload FROM commerce_events`);
+    const payload = rows.rows[0].payload as Record<string, unknown>;
+    const parsed = parseCheckoutCompleted(payload, cart.id);
+    if (!parsed.ok) throw new Error(parsed.detail);
+    expect(parsed.value.addOnTotal).toBe(1500);
+    expect(parsed.value.addOns).toEqual([
+      { id: 'ado_box', title: 'Gift box', mode: 'included', amount: 1500, listPrice: 1500 },
+      { id: 'ado_note', title: 'Note', mode: 'included', amount: 0, listPrice: 500 },
+    ]);
+    expect(parsed.value.grandTotal).toBe(frozen.totals.grandTotal.amount);
   });
 
   it('carries the reservation ids taken at checkout start', async () => {

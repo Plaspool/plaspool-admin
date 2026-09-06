@@ -42,6 +42,8 @@ import { paymentPort } from './payments/port';
 import { storeEvent } from './payments/webhook';
 import { applyRefundEvent } from './payments/refunds';
 import { FakeProvider } from './payments/provider/fake';
+import { createAddOn } from './catalog/add-ons/repo';
+import { SHOP_CURRENCY } from './currency';
 
 let ctx: TestCtx;
 let client: HttpClient;
@@ -1623,5 +1625,28 @@ describe('task-d4: a refund accepted by the provider later fails, after the orde
     expect([...kinds].sort()).toEqual(
       ['placed', 'confirmation', 'cancellation', 'refund_failed'].sort(),
     );
+  });
+});
+
+describe('the add-on port, as the deployment registers it', () => {
+  /*
+   * `server/shop/app.ts` hands Catalog's REAL `addOnPort` to Cart, and it is
+   * the only place that does. Cart's own suites inject a fake through
+   * `standaloneShop` — see `routes/add-ons.test.ts` — so every one of them
+   * would stay green with the wiring in `app.ts` deleted. This is the test
+   * that would not: it drives the real `createApp()` end to end, exactly as
+   * CLAUDE.md §2 requires for anything money-adjacent.
+   */
+  it('offers an active add-on through the real app, so an unwired port cannot hide', async () => {
+    await ctx.db.execute(sql`DELETE FROM shop_add_ons`);
+    await createAddOn(
+      ctx.db,
+      { title: 'Gift box', priceMinor: 150_000, currency: SHOP_CURRENCY, status: 'active', rules: [{ when: [], then: 'ask' }] },
+      Date.now(),
+    );
+    const created = await client.post('/api/shop/cart', {});
+    expect(created.status).toBe(201);
+    const view = await json<{ addOns?: Array<{ id: string; mode: string }> }>(created);
+    expect(view.addOns?.map((o) => o.mode)).toEqual(['ask']);
   });
 });

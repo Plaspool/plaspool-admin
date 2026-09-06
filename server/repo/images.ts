@@ -658,6 +658,18 @@ const REFERENCE_SET = sql`
     SELECT DISTINCT regexp_replace(image_id, '^(asset|idb):', '')
       FROM shop_variants
      WHERE image_id IS NOT NULL AND image_id <> ''
+    UNION
+    -- THE ADD-ON'S PICTURE (migration 0940), for the reason the variant image
+    -- is here: an image referenced only from shop_add_ons.image_id would be
+    -- unreferenced by definition the moment it was committed. No status
+    -- filter: a draft add-on is one somebody can switch on.
+    SELECT DISTINCT image_id AS id
+      FROM shop_add_ons
+     WHERE image_id IS NOT NULL AND image_id <> ''
+    UNION
+    SELECT DISTINCT regexp_replace(image_id, '^(asset|idb):', '')
+      FROM shop_add_ons
+     WHERE image_id IS NOT NULL AND image_id <> ''
   ), referenced AS (
     SELECT id FROM scheme_refs WHERE id IS NOT NULL
     UNION

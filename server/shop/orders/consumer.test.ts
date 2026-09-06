@@ -26,6 +26,7 @@ import { migratedDb, resetOrderTables } from './test/harness';
 import type { RawCtx } from './test/harness';
 import {
   CHECKOUT,
+  CURRENCY,
   CUSTOMER_A,
   T0,
   checkoutCompleted,
@@ -176,6 +177,26 @@ describe('checkout.completed creates the order', () => {
       taxTotal: 1,
       grandTotal: 5400,
     });
+  });
+
+  it('lands the add-ons on the order and in shop_order_add_ons, in order', async () => {
+    await drive([
+      checkoutCompleted({
+        totals: {
+          subtotal: 4500, shippingTotal: 500, taxTotal: 400, grandTotal: 5550, addOnTotal: 150,
+          addOns: [
+            { id: 'ado_box', title: 'Gift box', mode: 'chosen', amount: 150, listPrice: 150 },
+            { id: 'ado_note', title: 'Note', mode: 'included', amount: 0, listPrice: 50 },
+          ],
+        },
+      }),
+    ]);
+    const read = await readOrderByCheckout(ctx.db, CHECKOUT);
+    expect(read?.order.addOnTotal).toBe(150);
+    expect(read?.addOns.map((a) => [a.position, a.addOnId, a.mode, a.amount, a.listPrice, a.currency])).toEqual([
+      [0, 'ado_box', 'chosen', 150, 150, CURRENCY],
+      [1, 'ado_note', 'included', 0, 50, CURRENCY],
+    ]);
   });
 });
 

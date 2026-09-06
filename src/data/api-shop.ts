@@ -19,6 +19,7 @@
 import { apiFetch, type RequestOptions } from './api';
 import type { AnalyticsMoney } from './api-shop-analytics';
 import { UNRENDERABLE } from './when';
+import type { AddOnRule, AddOnStatus } from '../../shared/commerce/add-ons';
 
 /**
  * `apiFetch` with the one method the blog's own API never uses.
@@ -528,6 +529,37 @@ export interface BulkTierSet {
   effective: BulkTier[];
 }
 
+// ============================================================================
+// ADD-ONS (spec 2026-09-06)
+// ============================================================================
+export type { AddOnCondition, AddOnRule, AddOnStatus } from '../../shared/commerce/add-ons';
+
+export interface ShopAddOn {
+  id: string;
+  title: string;
+  description: string | null;
+  imageId: string | null;
+  priceMinor: number;
+  currency: string;
+  status: AddOnStatus;
+  rules: AddOnRule[];
+  position: number;
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ShopAddOnInput {
+  title: string;
+  description?: string | null;
+  imageId?: string | null;
+  priceMinor: number;
+  status?: AddOnStatus;
+  rules: AddOnRule[];
+  position?: number;
+}
+export type ShopAddOnPatch = Partial<ShopAddOnInput>;
+
 export interface Page<T> {
   items: T[];
   nextCursor: string | null;
@@ -559,6 +591,8 @@ export interface ShopOrder {
   shippingTotal: number;
   taxTotal: number;
   grandTotal: number;
+  /** Σ add-on amounts, frozen. 0 for orders placed before add-ons. */
+  addOnTotal: number;
   refundedTotal: number;
   status: OrderStatus;
   shippingAddress: Record<string, unknown>;
@@ -703,6 +737,17 @@ export interface ShopOrderRow {
   lines: ShopOrderLine[];
 }
 
+export interface ShopOrderAddOn {
+  id: string;
+  position: number;
+  addOnId: string;
+  title: string;
+  mode: 'chosen' | 'included';
+  amount: number;
+  listPrice: number;
+  currency: string;
+}
+
 export interface ShopOrderDetail {
   order: ShopOrder;
   lines: ShopOrderLine[];
@@ -711,6 +756,8 @@ export interface ShopOrderDetail {
   emails: ShopEmailIntent[];
   /** `null` until Payments is wired at the composition root (§1.9). */
   payment: ShopPayment | null;
+  /** Absent on a response from before add-ons shipped. */
+  addOns?: ShopOrderAddOn[];
 }
 
 /**
@@ -1129,6 +1176,28 @@ export const shopApi = {
       body: { tiers },
       subject: 'Bulk tiers',
     });
+  },
+
+  // -------------------------------------------------------------- add-ons
+  async listAddOns(signal?: AbortSignal): Promise<ShopAddOn[]> {
+    return (await shopFetch<{ items: ShopAddOn[] }>(`${BASE}/add-ons`, { subject: 'Add-ons', signal })).items;
+  },
+  async getAddOn(id: string, signal?: AbortSignal): Promise<ShopAddOn> {
+    return (await shopFetch<{ addOn: ShopAddOn }>(`${BASE}/add-ons/${seg(id)}`, { id, subject: 'Add-on', signal })).addOn;
+  },
+  async createAddOn(input: ShopAddOnInput): Promise<ShopAddOn> {
+    return (await shopFetch<{ addOn: ShopAddOn }>(`${BASE}/add-ons`, { method: 'POST', body: input, subject: 'Add-on' })).addOn;
+  },
+  /** CAS: a 409 `stale_write` carries `addOn`, the current row. */
+  async updateAddOn(id: string, patch: ShopAddOnPatch, baseRevision: number): Promise<ShopAddOn> {
+    return (
+      await shopFetch<{ addOn: ShopAddOn }>(`${BASE}/add-ons/${seg(id)}`, {
+        method: 'PATCH',
+        body: { baseRevision, patch },
+        id,
+        subject: 'Add-on',
+      })
+    ).addOn;
   },
 
   async createProduct(patch: ShopProductPatch = {}): Promise<ShopProduct> {

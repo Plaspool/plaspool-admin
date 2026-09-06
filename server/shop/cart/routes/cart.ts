@@ -7,6 +7,8 @@ import { adoptCartForCustomer } from '../cart/merge';
 import { runCartMaintenance } from '../events/consumer';
 import { computeTotals } from '../totals/compute';
 import { unknownZoneTaxRate } from '../checkout/shipping';
+import { getAddress } from '../checkout/repo';
+import { evaluateCartAddOns } from '../checkout/add-ons';
 import { cartCookie, clearCartCookie, setCartCookie } from '../identity/cookies';
 import { currentCustomer, shopClientIp, shopDb, shopLimit } from '../shop-env';
 import {
@@ -20,6 +22,7 @@ import type { ShopCartDeps } from './deps';
 import type { ShopEnv } from '../shop-env';
 import type { Context } from 'hono';
 import type { Db } from '../../../db/client';
+import type { AddOnOffer } from '../../../../shared/commerce/add-ons';
 
 /**
  * The cart surface (brief §6).
@@ -308,20 +311,52 @@ async function view(
     lines.map(async (line) => ({ line, quote: await deps.catalog.quote(db, line.variantId) })),
   );
 
+  const lineInputs = quoted.map(({ line, quote }) => ({
+    variantId: line.variantId,
+    // See the note in `checkout/repo.ts`: variantId, never ''.
+    productId: quote?.productId ?? line.variantId,
+    qty: line.qty,
+    unit: quote ? quote.price : null,
+    bulkTiers: quote?.bulkTiers ?? [],
+  }));
+
   const computed = computeTotals({
     currency: current.currency,
-    lines: quoted.map(({ line, quote }) => ({
-      variantId: line.variantId,
-      // See the note in `checkout/repo.ts`: variantId, never ''.
-      productId: quote?.productId ?? line.variantId,
-      qty: line.qty,
-      unit: quote ? quote.price : null,
-      bulkTiers: quote?.bulkTiers ?? [],
-    })),
+    lines: lineInputs,
     shipping: null,
     tax: unknownZoneTaxRate(),
     adjustments: [],
   });
+
+  /*
+   * THE ADD-ONS (spec §6): offers for the drawer, and any applied one inside
+   * the preview total so the basket and the checkout agree. Only when the
+   * deployment wired the port — absent, the key is absent, which the
+   * storefront reads as "no add-ons".
+   */
+  let preview = computed.ok ? computed.totals : null;
+  let addOns: AddOnOffer[] | undefined;
+  if (deps.addOns) {
+    const address = await getAddress(db, current.id, 'shipping');
+    const evaluated = await evaluateCartAddOns(db, deps.addOns, {
+      cart: current,
+      quotes: quoted,
+      address,
+      subtotalMinor: computed.ok ? computed.totals.subtotal.amount : 0,
+    });
+    addOns = evaluated.offers;
+    if (computed.ok && evaluated.applied.length > 0) {
+      const charged = computeTotals({
+        currency: current.currency,
+        lines: lineInputs,
+        shipping: null,
+        tax: unknownZoneTaxRate(),
+        adjustments: [],
+        addOns: evaluated.applied,
+      });
+      preview = charged.ok ? charged.totals : null;
+    }
+  }
 
   return {
     cart: {
@@ -354,7 +389,7 @@ async function view(
      * is a number that will change; showing none is the honest state and it is
      * what makes the "no longer available" badge worth reading.
      */
-    preview: computed.ok ? computed.totals : null,
+    preview,
     /*
      * THE CAPABILITY FLAG (storefront#113). "The field must not render until the
      * API advertises the capability. Shipping an input that 404s is worse than
@@ -368,6 +403,7 @@ async function view(
      * deploy, which is exactly what the issue asks for.
      */
     discountCodesEnabled: deps.discounts !== undefined,
+    ...(addOns === undefined ? {} : { addOns }),
     changes,
   };
 }

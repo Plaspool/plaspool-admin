@@ -201,6 +201,31 @@ describe('customer A cannot read customer B’s order', () => {
     expect(await json(res)).toMatchObject({ error: 'gone' });
   });
 
+  it('the customer detail carries the add-ons', async () => {
+    await insertEvents(ctx.db, [
+      checkoutCompleted({
+        totals: {
+          subtotal: 4500, shippingTotal: 500, taxTotal: 400, grandTotal: 5550, addOnTotal: 150,
+          addOns: [
+            { id: 'ado_box', title: 'Gift box', mode: 'chosen', amount: 150, listPrice: 150 },
+          ],
+        },
+      }),
+    ]);
+    await sweepCommerceEvents(ctx.db, DEPS, NOW);
+    const read = (await readOrderByCheckout(ctx.db, CHECKOUT))!;
+
+    const c = client();
+    c.asCustomer({ id: CUSTOMER_A });
+    const res = await c.get(`/api/shop/orders/${read.order.orderNumber}`);
+    expect(res.status).toBe(200);
+    const body = await json<{ order: { addOnTotal: number }; addOns: unknown[] }>(res);
+    expect(body.order.addOnTotal).toBe(150);
+    expect(body.addOns).toEqual([
+      expect.objectContaining({ addOnId: 'ado_box', title: 'Gift box', mode: 'chosen', amount: 150 }),
+    ]);
+  });
+
   it('by the events route either', async () => {
     await paidOrder(CUSTOMER_A);
     const theirs = await secondOrder(CUSTOMER_B);
@@ -564,6 +589,28 @@ describe('the admin surface', () => {
     for (const email of body.emails) expect(email.sentAt).toBeNull();
     // No `PaymentPort` injected, so no panel — rather than a fabricated status.
     expect(body.payment).toBeNull();
+  });
+
+  it('the admin detail carries the add-ons', async () => {
+    await insertEvents(ctx.db, [
+      checkoutCompleted({
+        totals: {
+          subtotal: 4500, shippingTotal: 500, taxTotal: 400, grandTotal: 5550, addOnTotal: 150,
+          addOns: [
+            { id: 'ado_box', title: 'Gift box', mode: 'chosen', amount: 150, listPrice: 150 },
+          ],
+        },
+      }),
+    ]);
+    await sweepCommerceEvents(ctx.db, DEPS, NOW);
+    const read = (await readOrderByCheckout(ctx.db, CHECKOUT))!;
+    const owner = await login(ctx.users.owner);
+
+    const body = await json<{ order: { addOnTotal: number }; addOns: unknown[] }>(
+      await owner.get(`/api/shop/admin/orders/${read.order.id}`),
+    );
+    expect(body.addOns).toHaveLength(1);
+    expect(body.order.addOnTotal).toBe(150);
   });
 
   it('renders the payment panel from an injected PaymentPort and nothing else', async () => {

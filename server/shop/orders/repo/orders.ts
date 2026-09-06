@@ -82,6 +82,8 @@ export interface Order {
   shippingTotal: number;
   taxTotal: number;
   grandTotal: number;
+  /** Σ add-on amounts, frozen. 0 for every order placed before add-ons. */
+  addOnTotal: number;
   refundedTotal: number;
   status: OrderStatus;
   shippingAddress: Record<string, unknown>;
@@ -132,6 +134,31 @@ export interface OrderLine {
   imageId: string | null;
 }
 
+/** One add-on the order carried (migration 0940). A snapshot, like a line. */
+export interface OrderAddOn {
+  id: string;
+  position: number;
+  addOnId: string;
+  title: string;
+  mode: 'chosen' | 'included';
+  amount: number;
+  listPrice: number;
+  currency: string;
+}
+
+function rowToAddOn(row: Record<string, unknown>): OrderAddOn {
+  return {
+    id: String(row.id),
+    position: Number(row.position),
+    addOnId: String(row.add_on_id),
+    title: String(row.title),
+    mode: row.mode === 'included' ? 'included' : 'chosen',
+    amount: Number(row.amount),
+    listPrice: Number(row.list_price),
+    currency: String(row.currency),
+  };
+}
+
 export interface OrderTimelineEntry {
   id: string;
   type: string;
@@ -150,6 +177,7 @@ const ORDER_COLUMNS = [
   'shipping_total',
   'tax_total',
   'grand_total',
+  'add_on_total',
   'refunded_total',
   'status',
   'shipping_address',
@@ -177,6 +205,7 @@ function rowToOrder(row: Record<string, unknown>): Order {
     shippingTotal: Number(row.shipping_total),
     taxTotal: Number(row.tax_total),
     grandTotal: Number(row.grand_total),
+    addOnTotal: Number(row.add_on_total),
     refundedTotal: Number(row.refunded_total),
     status: row.status as OrderStatus,
     shippingAddress: row.shipping_address as Record<string, unknown>,
@@ -238,6 +267,7 @@ export function lineRefs(lines: readonly OrderLine[]): OrderLineRef[] {
 export interface OrderRead {
   order: Order;
   lines: OrderLine[];
+  addOns: OrderAddOn[];
   generation: number;
 }
 
@@ -283,18 +313,25 @@ const LINE_AGG = sql`
       FROM shop_order_lines l WHERE l.order_id = o.id
   ), '[]'::json) AS lines`;
 
+const ADD_ON_AGG = sql`
+  COALESCE((
+    SELECT json_agg(to_jsonb(a) ORDER BY a.position)
+      FROM shop_order_add_ons a WHERE a.order_id = o.id
+  ), '[]'::json) AS add_ons`;
+
 function rowToRead(row: Record<string, unknown>): OrderRead {
   const lines = (row.lines as Record<string, unknown>[]) ?? [];
   return {
     order: rowToOrder(row),
     lines: lines.map(rowToLine),
+    addOns: ((row.add_ons as Record<string, unknown>[]) ?? []).map(rowToAddOn),
     generation: Number(row.lifecycle_generation),
   };
 }
 
 async function readByColumn(db: Db, column: SQL, value: string): Promise<OrderRead | null> {
   const res = await db.execute(sql`
-    SELECT ${sql.raw(orderColumns('o'))}, o.lifecycle_generation, ${DELIVERED_AT}, ${LINE_AGG}
+    SELECT ${sql.raw(orderColumns('o'))}, o.lifecycle_generation, ${DELIVERED_AT}, ${LINE_AGG}, ${ADD_ON_AGG}
       FROM shop_orders o
      WHERE ${column} = ${value}`);
   const row = res.rows[0];
@@ -361,7 +398,7 @@ export async function getOrderForCustomer(
 ): Promise<OrderRead | null> {
   if (customerId.length === 0) throw new BadRequestError('customerId');
   const res = await db.execute(sql`
-    SELECT ${sql.raw(orderColumns('o'))}, o.lifecycle_generation, ${DELIVERED_AT}, ${LINE_AGG}
+    SELECT ${sql.raw(orderColumns('o'))}, o.lifecycle_generation, ${DELIVERED_AT}, ${LINE_AGG}, ${ADD_ON_AGG}
       FROM shop_orders o
      WHERE o.order_number = ${orderNumber} AND o.customer_id = ${customerId}`);
   const row = res.rows[0];
@@ -385,7 +422,7 @@ export async function getOrderForGuest(
 ): Promise<OrderRead | null> {
   if (email.length === 0) throw new BadRequestError('email');
   const res = await db.execute(sql`
-    SELECT ${sql.raw(orderColumns('o'))}, o.lifecycle_generation, ${DELIVERED_AT}, ${LINE_AGG}
+    SELECT ${sql.raw(orderColumns('o'))}, o.lifecycle_generation, ${DELIVERED_AT}, ${LINE_AGG}, ${ADD_ON_AGG}
       FROM shop_orders o
      WHERE o.order_number = ${orderNumber} AND lower(o.email) = lower(${email})`);
   const row = res.rows[0];
@@ -442,7 +479,7 @@ async function listOrders(db: Db, scope: SQL, q: ListQuery): Promise<OrderPage> 
   }
 
   const res = await db.execute(sql`
-    SELECT ${sql.raw(orderColumns('o'))}, o.lifecycle_generation, ${DELIVERED_AT}, ${LINE_AGG}
+    SELECT ${sql.raw(orderColumns('o'))}, o.lifecycle_generation, ${DELIVERED_AT}, ${LINE_AGG}, ${ADD_ON_AGG}
       FROM shop_orders o
      WHERE ${sql.join(where, sql` AND `)}
      ORDER BY o.placed_at DESC, o.id ASC
@@ -631,6 +668,7 @@ export async function createOrderFromCheckout(
           qty: line.qty,
           lineTotal: line.lineTotal,
         })),
+        addOns: input.addOns.map((a) => ({ title: a.title, amount: a.amount, mode: a.mode })),
       },
       origin === null
         ? null
@@ -650,19 +688,30 @@ export async function createOrderFromCheckout(
       line_total: line.lineTotal,
     }));
 
+    const addOns = input.addOns.map((addOn, index) => ({
+      id: newId(ID.orderAddOn),
+      position: index,
+      add_on_id: addOn.id,
+      title: addOn.title,
+      mode: addOn.mode,
+      amount: addOn.amount,
+      list_price: addOn.listPrice,
+      currency: input.currency,
+    }));
+
     try {
       const res = await db.execute(sql`
         WITH ord AS (
           INSERT INTO shop_orders (
             id, order_number, customer_id, email, currency,
-            subtotal, shipping_total, tax_total, grand_total,
+            subtotal, shipping_total, tax_total, grand_total, add_on_total,
             status, shipping_address, billing_address, placed_at,
             revision, source_event_id, checkout_id,
             redemption_points, redemption_email,
             discount_code, discount_amount_minor)
           VALUES (
             ${orderId}, ${orderNumber}, ${input.customerId}, ${input.email}, ${input.currency},
-            ${input.subtotal}, ${input.shippingTotal}, ${input.taxTotal}, ${input.grandTotal},
+            ${input.subtotal}, ${input.shippingTotal}, ${input.taxTotal}, ${input.grandTotal}, ${input.addOnTotal},
             'pending', ${jsonb(input.shippingAddress)}, ${jsonb(input.billingAddress)},
             ${event.occurredAt}, 1, ${event.id}, ${input.checkoutId},
             ${input.redemption?.points ?? null}::integer,
@@ -700,6 +749,15 @@ export async function createOrderFromCheckout(
             LEFT JOIN shop_variants v ON v.id = l.variant_id
           RETURNING id, line_no, variant_id, sku, title, option_values, qty,
                     unit_amount, line_total, fulfilled_qty, image_id
+        ), ins_add_ons AS (
+          /* The add-ons (migration 0940), a snapshot beside the lines. An
+             empty array yields no rows and no error. */
+          INSERT INTO shop_order_add_ons (id, order_id, position, add_on_id, title, mode, amount, list_price, currency)
+          SELECT a.id, ord.id, a.position, a.add_on_id, a.title, a.mode, a.amount, a.list_price, a.currency
+            FROM ord, jsonb_to_recordset(${jsonb(addOns)}) AS a(
+                   id text, position integer, add_on_id text, title text, mode text,
+                   amount integer, list_price integer, currency text)
+          RETURNING 1
         ), timeline AS (
           INSERT INTO shop_order_events (id, order_id, type, message, occurred_at, actor_id)
           SELECT ${newId(ID.timeline)}, ord.id, 'placed',
@@ -1232,6 +1290,7 @@ function mailView(read: OrderRead) {
       lineTotal: line.lineTotal,
       imageId: line.imageId,
     })),
+    addOns: read.addOns.map((a) => ({ title: a.title, amount: a.amount, mode: a.mode })),
   };
 }
 

@@ -73,6 +73,10 @@ export interface CheckoutPayload {
   lines: unknown[];
   /** SpoolPoints spent at the freeze (admin#2). Absent on every legacy event. */
   redemption?: { email: string; points: number } | null;
+  /** Tolerance 3 (see `inbound.ts`): totals nested under `totals`, add-ons included
+   * (spec 2026-09-06). A `Record` rather than a typed shape: this is a fixture
+   * override, not a re-declaration of `inbound.ts`'s own schema. */
+  totals?: Record<string, unknown>;
 }
 
 function basePayload(): CheckoutPayload {

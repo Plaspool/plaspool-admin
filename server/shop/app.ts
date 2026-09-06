@@ -7,6 +7,7 @@ import type { DiscountCodePort } from '../../shared/marketing/discounts';
 import { toResponse } from '../middleware/errors';
 import {
   ProductPreconditionFailedError,
+  StaleAddOnWriteError,
   StaleProductWriteError,
   VariantPreconditionFailedError,
 } from './catalog/errors';
@@ -16,6 +17,7 @@ import { routes as catalog } from './catalog/routes';
 import { createReviewRoutes } from './reviews/routes';
 import { queueReviewApprovedEmail } from './orders/review-mail';
 import { catalogPort } from './catalog/port';
+import { addOnPort } from './catalog/add-ons/port';
 import { checkoutPaymentsPort } from './payments/port';
 import { orders } from './orders/routes';
 import { drainCommerceEvents } from './orders/repo/consumer';
@@ -98,7 +100,9 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
             actual: err.actual,
             product: err.product,
           }
-        : err instanceof ProductPreconditionFailedError
+        : err instanceof StaleAddOnWriteError
+          ? { error: 'stale_write', expected: err.expected, actual: err.actual, addOn: err.addOn }
+          : err instanceof ProductPreconditionFailedError
           ? {
               error: 'precondition_failed',
               operation: err.operation,
@@ -249,6 +253,9 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
          Undefined turns the feature off end to end: the cart view reports
          `discountCodesEnabled: false` and the apply route answers 501. */
       discounts,
+      /* Checkout add-ons (spec 2026-09-06): Catalog's port, handed to Cart here
+         and nowhere else. The one seam that decides whether the shop offers any. */
+      addOns: addOnPort,
       /*
        * THE COMMERCE OUTBOX'S SCHEDULED BACKSTOP (admin#29), AND THIS IS THE
        * SEAM THAT MAKES IT ONE CRON INSTEAD OF TWO.

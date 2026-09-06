@@ -52,7 +52,7 @@ import type {
  * Time-prefixed in base 36 so ids sort roughly by creation, which is what makes
  * `ORDER BY id` a usable tiebreak in the keyset cursor.
  */
-export function newCatalogId(prefix: 'prd_' | 'var_' | 'prc_' | 'prv_' | 'cat_'): string {
+export function newCatalogId(prefix: 'prd_' | 'var_' | 'prc_' | 'prv_' | 'cat_' | 'ado_'): string {
   return `${prefix}${Date.now().toString(36)}${randomUUID().replace(/-/g, '').slice(0, 16)}`;
 }
 

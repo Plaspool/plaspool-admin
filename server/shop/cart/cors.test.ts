@@ -72,6 +72,17 @@ describe('the preflight', () => {
     expect(res.headers.get('access-control-allow-origin')).toBe(TEST_ORIGIN);
   });
 
+  it('covers the add-on choice route with credentials', async () => {
+    const res = await http.request('/api/shop/checkout/add-ons/ado_x', {
+      method: 'OPTIONS',
+      headers: { Origin: TEST_ORIGIN, 'Access-Control-Request-Method': 'PUT', 'Access-Control-Request-Headers': 'content-type' },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe(TEST_ORIGIN);
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    expect(res.headers.get('access-control-allow-methods')).toContain('PUT');
+  });
+
   /* Not a 403 — a 204 with no permission headers. The browser does the refusing,
    * and there is nothing useful to say in a body no page will read. */
   it('grants nothing to an origin outside the allow-list', async () => {

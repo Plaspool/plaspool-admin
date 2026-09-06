@@ -387,6 +387,25 @@ export default function OrderDetail() {
             </div>
           </section>
 
+          {/* ── add-ons ───────────────────────────────────────────────── */}
+          {(data.addOns ?? []).length > 0 ? (
+            <Card title="Add-ons">
+              <ul style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s2)' }}>
+                {(data.addOns ?? []).map((a) => (
+                  <li
+                    key={a.id}
+                    style={{ display: 'flex', justifyContent: 'space-between', gap: 'var(--s3)' }}
+                  >
+                    <span>{a.title}</span>
+                    <span className="num">
+                      {a.mode === 'included' && a.amount === 0 ? 'Included' : money(a.amount, a.currency)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          ) : null}
+
           {/* ── fulfilments ───────────────────────────────────────────── */}
           <Card title="Parcels">
             {fulfillments.length === 0 ? (
@@ -465,6 +484,9 @@ export default function OrderDetail() {
                   value: <span className="num">{money(order.subtotal, currency)}</span>,
                 },
                 { label: 'Delivery', value: <span className="num">{money(order.shippingTotal, currency)}</span> },
+                ...((order.addOnTotal ?? 0) > 0
+                  ? [{ label: 'Add-ons', value: <span className="num">{money(order.addOnTotal, currency)}</span> } satisfies DefRow]
+                  : []),
                 { label: 'Tax', value: <span className="num">{money(order.taxTotal, currency)}</span> },
                 {
                   label: 'Total',

@@ -5,6 +5,7 @@ import type {
   Adjustment,
   BulkTier,
   CodeDiscount,
+  FrozenAddOn,
   FrozenTotals,
   ShippingQuote,
   TaxRate,
@@ -40,7 +41,7 @@ import type {
  *   3. subtotal     = Σ line totals
  *   4. shipping tax = round(shipping × rate)            (if the zone taxes it)
  *   5. tax total    = Σ line taxes + shipping tax       (sum of ROUNDED parts)
- *   6. grand total  = subtotal + adjustments + shipping + tax
+ *   6. grand total  = subtotal + adjustments + add-ons + shipping + tax
  *
  * ROUND PER LINE, THEN SUM — never sum then round. Three lines at 333p with 20%
  * VAT are 67 + 67 + 67 = 201, where rounding the total gives 200. The two differ
@@ -173,6 +174,12 @@ export interface TotalsInput {
    * migration wearing an input's clothes.
    */
   discount?: CodeDiscount | null;
+  /**
+   * The add-ons to charge (spec 2026-09-06). OPTIONAL, and absent prices
+   * exactly as before — `add-ons.test.ts` pins the untouched grand total.
+   * Already resolved by Cart: an unanswered ask is simply not in this list.
+   */
+  addOns?: readonly FrozenAddOn[];
 }
 
 export type TotalsResult =
@@ -257,6 +264,11 @@ export function computeTotals(input: TotalsInput): TotalsResult {
       where: `discount:${input.discount.code}`,
       currency: input.discount.amount.currency,
     });
+  }
+  for (const addOn of input.addOns ?? []) {
+    if (addOn.amount.currency !== currency) {
+      found.push({ where: `add_on:${addOn.id}`, currency: addOn.amount.currency });
+    }
   }
   if (found.length > 0) return { ok: false, reason: 'currency_mismatch', expected: currency, found };
 
@@ -403,6 +415,18 @@ export function computeTotals(input: TotalsInput): TotalsResult {
   );
 
   /*
+   * THE ADD-ONS: a flat summand, after tax and outside every discount. Not
+   * taxed (owner's decision, 2026-09-06), not a line (Orders would snapshot a
+   * variant), not an Adjustment (those are payment instruments). Points
+   * come off the whole bill, so they can still pay for one.
+   */
+  const addOns = [...(input.addOns ?? [])];
+  const addOnTotal = sum(
+    addOns.map((addOn) => addOn.amount),
+    currency,
+  );
+
+  /*
    * 6 — ADJUSTMENTS ARE STILL APPLIED AFTER TAX, and that is now a narrow
    * statement rather than a general one.
    *
@@ -419,7 +443,7 @@ export function computeTotals(input: TotalsInput): TotalsResult {
    * gift card is a payment instrument and belongs where the points are.
    */
   const grandTotal = add(
-    add(add(add(subtotal, discountTotal), adjustmentTotal), shippingTotal),
+    add(add(add(add(subtotal, discountTotal), adjustmentTotal), addOnTotal), shippingTotal),
     taxTotal,
   );
 
@@ -432,6 +456,8 @@ export function computeTotals(input: TotalsInput): TotalsResult {
       tax: input.tax,
       adjustments: [...input.adjustments],
       discount,
+      addOns,
+      addOnTotal,
       subtotal,
       discountTotal,
       adjustmentTotal,
@@ -550,6 +576,22 @@ export function parseFrozenTotals(value: unknown): FrozenTotals | null {
        * no code was applied. Rebuilt through `m()` on the `fixed_amount` arm so
        * a corrupted amount is refused at this boundary like every other. */
       discount: rebuildDiscount(raw.discount, m),
+      /* THE SAME SEAM, ONE FEATURE LATER (spec 2026-09-06). Absent on every
+         payload frozen before add-ons existed, and "no add-ons" is what those
+         meant. Each amount goes back through m() so a corrupt row is refused. */
+      addOns: Array.isArray(raw.addOns)
+        ? (raw.addOns as unknown[]).map((entry) => {
+            const addOn = entry as Record<string, unknown>;
+            return {
+              id: String(addOn.id),
+              title: String(addOn.title),
+              mode: addOn.mode === 'included' ? 'included' : 'chosen',
+              listPrice: m(addOn.listPrice),
+              amount: m(addOn.amount),
+            } satisfies FrozenAddOn;
+          })
+        : [],
+      addOnTotal: raw.addOnTotal === undefined ? zero(currency) : m(raw.addOnTotal),
       subtotal: m(raw.subtotal),
       discountTotal: raw.discountTotal === undefined ? zero(currency) : m(raw.discountTotal),
       adjustmentTotal: m(raw.adjustmentTotal),

@@ -152,6 +152,8 @@ export interface OrderMailView {
      * message, whose view is built from the checkout event. */
     imageId?: string | null;
   }[];
+  /** The add-ons, after the goods. Optional so every fulfilment view compiles; absent renders nothing. */
+  addOns?: { title: string; amount: number; mode: 'chosen' | 'included' }[];
   /** When the order was placed, epoch-ms. Optional so existing callers compile;
    * absent renders as an empty date rather than as "Invalid Date". */
   placedAt?: number | null;
@@ -393,6 +395,13 @@ function baseValues(
     amount: formatAmount(l.lineTotal, view.currency),
     imageUrl: imageUrlFor(l.imageId),
   }));
+  const addOnRows = (view.addOns ?? []).map((a) => ({
+    title: a.title,
+    sku: a.mode === 'included' ? 'Included' : 'Add-on',
+    qty: 1,
+    amount: a.mode === 'included' && a.amount === 0 ? 'Included' : formatAmount(a.amount, view.currency),
+    imageUrl: null,
+  }));
   const total = formatAmount(view.grandTotal, view.currency);
   const steps = stepsFor(kind);
 
@@ -407,8 +416,8 @@ function baseValues(
     },
     blocks: {
       order_lines: {
-        html: lineTable(rows, [{ label: 'Total', amount: total, strong: true }]),
-        text: textLines(rows),
+        html: lineTable([...rows, ...addOnRows], [{ label: 'Total', amount: total, strong: true }]),
+        text: textLines([...rows, ...addOnRows]),
       },
       order_timeline: {
         html: timeline(steps),

@@ -18,6 +18,7 @@ import {
 } from './inbound';
 import {
   CHECKOUT,
+  CURRENCY,
   checkoutCompleted,
   checkoutCurrencyMismatch,
   checkoutMalformed,
@@ -141,6 +142,28 @@ describe('checkout.completed', () => {
     const event = checkoutCompleted();
     const withExtra = { ...(event.payload as object), giftMessage: 'happy birthday' };
     expect(parseCheckoutCompleted(withExtra, event.subjectId).ok).toBe(true);
+  });
+
+  it('reads add-ons nested under totals, defaulting to none, and refuses a foreign currency on one', () => {
+    const withAddOns = checkoutCompleted({
+      totals: {
+        subtotal: 4500, shippingTotal: 500, taxTotal: 400, grandTotal: 5550,
+        addOns: [{ id: 'ado_box', title: 'Gift box', mode: 'chosen', amount: { amount: 150, currency: CURRENCY }, listPrice: { amount: 150, currency: CURRENCY } }],
+        addOnTotal: { amount: 150, currency: CURRENCY },
+      },
+    });
+    const parsed = parseCheckoutCompleted(withAddOns.payload, CHECKOUT);
+    expect(parsed.ok && parsed.value.addOnTotal).toBe(150);
+    expect(parsed.ok && parsed.value.addOns).toEqual([{ id: 'ado_box', title: 'Gift box', mode: 'chosen', amount: 150, listPrice: 150 }]);
+
+    const legacy = parseCheckoutCompleted(checkoutCompleted().payload, CHECKOUT);
+    expect(legacy.ok && legacy.value.addOns).toEqual([]);
+    expect(legacy.ok && legacy.value.addOnTotal).toBe(0);
+
+    const foreign = checkoutCompleted({
+      totals: { subtotal: 1, shippingTotal: 1, taxTotal: 1, grandTotal: 1, addOns: [{ id: 'ado_box', title: 'Box', mode: 'included', amount: { amount: 0, currency: 'EUR' }, listPrice: 1 }] },
+    });
+    expect(parseCheckoutCompleted(foreign.payload, CHECKOUT)).toEqual({ ok: false, detail: 'totals.addOns.0.amount.currency' });
   });
 });
 
