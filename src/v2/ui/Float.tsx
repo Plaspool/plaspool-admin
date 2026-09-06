@@ -14,7 +14,9 @@ import { createPortal } from 'react-dom';
  *   · measured off the anchor on open, `position: fixed`, PORTALED to
  *     <body> — outside every clip and every sticky paint order;
  *   · flips above the anchor when the viewport floor would cut it, and the
- *     grow-corner (`transform-origin`) flips with it;
+ *     grow-corner (`transform-origin`) flips with it; slides back inside a
+ *     side edge that would cut it (`max-width` stays the panel's own job —
+ *     this only moves it);
  *   · reports the anchor's width as `--float-anchor-w`, so a panel that
  *     wants to match its trigger (a select) states that in its own CSS
  *     instead of relying on `min-width: 100%`, which a fixed element would
@@ -88,9 +90,13 @@ export function Float({
     );
   }, [open, align, anchor]);
 
-  /* If the panel would run off the bottom, sit it above the trigger instead —
-     measured after the panel exists (its height is its content's), still
-     before paint, once per open. */
+  /* If the panel would run off the bottom, sit it above the trigger instead;
+     if it would run off a side, slide it back until it fits — measured after
+     the panel exists (its size is its content's), still before paint, once
+     per open. The side clamp is what the alerts popover lacked when its
+     title landed at x = -28 on a 375px phone (CLAUDE.md §5): a left-hung
+     panel wider than the room to its right, or a right-hung one wider than
+     the room to its left, would otherwise run off exactly the same way. */
   const adjusted = useRef(false);
   useLayoutEffect(() => {
     if (!open) {
@@ -100,14 +106,26 @@ export function Float({
     if (adjusted.current || pos === null || !panel.current || !anchor.current) return;
     adjusted.current = true;
     const panelRect = panel.current.getBoundingClientRect();
-    if (panelRect.bottom > window.innerHeight - 8) {
-      const anchorRect = anchor.current.getBoundingClientRect();
-      const above = Math.max(8, anchorRect.top - 8 - panelRect.height);
-      setPos((was) =>
-        was ? { ...was, top: above, origin: was.origin.replace('top', 'bottom') } : was,
-      );
-    }
-  }, [open, pos]);
+    const anchorRect = anchor.current.getBoundingClientRect();
+    const floor = window.innerHeight - 8;
+    const edge = window.innerWidth - 8;
+    setPos((was) => {
+      if (!was) return was;
+      let next = was;
+      if (panelRect.bottom > floor) {
+        const above = Math.max(8, anchorRect.top - 8 - panelRect.height);
+        next = { ...next, top: above, origin: next.origin.replace('top', 'bottom') };
+      }
+      if (next.left !== undefined && panelRect.right > edge) {
+        next = { ...next, left: Math.max(8, next.left - (panelRect.right - edge)) };
+      }
+      if (next.right !== undefined && panelRect.left < 8) {
+        next = { ...next, right: Math.max(8, next.right - (8 - panelRect.left)) };
+      }
+      /* Unchanged is the same object, so React skips the re-render. */
+      return next;
+    });
+  }, [open, pos, anchor]);
 
   /* The dismissals. `onClose` rides a ref so the listeners subscribe once
      per open rather than churning with every parent render. */

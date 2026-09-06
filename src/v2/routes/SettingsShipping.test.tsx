@@ -20,6 +20,11 @@ vi.setConfig({ testTimeout: 20_000 });
  *    stores basis points; the person types a percent. A stored 750 must read
  *    as 7.5, and a typed 12.5 must travel as 1250 — each direction wrong by
  *    a factor of 100 is the failure that ships quietly.
+ *  - **A zone names three states in its row and keeps the rest behind "+N".**
+ *    Rest of Nigeria carries 35, and joined on one line they made the zone
+ *    column wider than the screen. The "+N" lists the rest on hover, PINS on
+ *    click (touch has no hover), and is its own click rather than the row's —
+ *    the row would otherwise open its delivery-options modal.
  *
  * `fetch` IS STUBBED, NOT `../../data/api-shop`, for the reason the rewards
  * suite gives: the path, the method and the body are the three things most
@@ -164,8 +169,30 @@ const restZone: ShopShippingZone = {
   ],
 };
 
-function withZones(): void {
-  when(ZONES, { items: [namedZone, restZone] });
+/* Rest of Nigeria as production has it: every state the two named zones do
+   not — 35 names. Three show; the other 32 sit behind the "+32". */
+const wideZone: ShopShippingZone = {
+  id: 'zone_rest_ng',
+  label: 'Rest of Nigeria',
+  countries: ['NG'],
+  regions: [
+    'Kaduna', 'Abia', 'Borno', 'Adamawa', 'Akwa Ibom', 'Anambra', 'Bauchi', 'Bayelsa', 'Benue',
+    'Cross River', 'Delta', 'Ebonyi', 'Edo', 'Ekiti', 'Enugu', 'Gombe', 'Imo', 'Jigawa', 'Kano',
+    'Katsina', 'Kebbi', 'Kogi', 'Kwara', 'Nasarawa', 'Niger', 'Ogun', 'Ondo', 'Osun', 'Oyo',
+    'Plateau', 'Rivers', 'Sokoto', 'Taraba', 'Yobe', 'Zamfara',
+  ],
+  taxRateBps: 750,
+  taxLabel: 'VAT',
+  shippingTaxable: false,
+  isFallback: false,
+  position: 2,
+  options: [
+    { id: 'opt_rest_ng', zoneId: 'zone_rest_ng', label: 'Standard', amountMinor: 1_000_000, estimate: '3–5 days', position: 0 },
+  ],
+};
+
+function withZones(extra: ShopShippingZone[] = []): void {
+  when(ZONES, { items: [namedZone, restZone, ...extra] });
 }
 
 function mount() {
@@ -290,5 +317,56 @@ describe('the zones screen', () => {
       shippingTaxable: false,
       isFallback: false,
     });
+  });
+
+  it('names three states in the row and keeps the rest behind +N', async () => {
+    const user = userEvent.setup();
+    withZones([wideZone]);
+    mount();
+
+    const title = await screen.findByText('Rest of Nigeria');
+    const row = title.closest('tr');
+    if (row === null) throw new Error('no row for Rest of Nigeria');
+
+    /* Three by name, then the count — never the whole list, which is what
+       stretched the table past the screen. */
+    expect(row.textContent).toContain('Kaduna, Abia, Borno');
+    expect(row.textContent).not.toContain('Adamawa');
+    const more = within(row as HTMLElement).getByRole('button', { name: 'Show the other 32 states' });
+    expect(more.textContent).toBe('+32');
+    expect(screen.queryByRole('tooltip')).toBeNull();
+
+    // A zone that fits needs no button, and the catch-all keeps its sentence.
+    const lagos = (await screen.findByText('Lagos deliveries')).closest('tr') as HTMLElement;
+    expect(within(lagos).queryByRole('button', { name: /Show the other/ })).toBeNull();
+    expect(screen.getByText('Anywhere not covered by another zone')).toBeTruthy();
+
+    // Hover lists the rest — the hidden 32, and none of the three already shown.
+    await user.hover(more);
+    const tip = await screen.findByRole('tooltip');
+    expect(tip.textContent).toContain('32 more states in Rest of Nigeria');
+    expect(tip.textContent).toContain('Adamawa');
+    expect(tip.textContent).toContain('Zamfara');
+    expect(tip.textContent).not.toContain('Kaduna');
+    expect(more.getAttribute('aria-expanded')).toBe('true');
+
+    // …and leaving takes it away again.
+    await user.unhover(more);
+    await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull());
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+
+    /* A click PINS it — touch has no hover — and is the button's click, not
+       the row's: the row would otherwise open its delivery-options modal. */
+    await user.click(more);
+    expect(await screen.findByRole('tooltip')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await user.unhover(more);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(screen.getByRole('tooltip')).toBeTruthy();
+
+    // Escape closes it and hands focus back to the button.
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull());
+    expect(document.activeElement).toBe(more);
   });
 });
