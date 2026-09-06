@@ -16,7 +16,8 @@ import { DataTable, IdCell, type Column } from '../ui/DataTable';
 import { Segmented } from '../ui/Field';
 
 /**
- * WHAT ITEMS COST US, BY DISTRICT — `/orders/returns/analytics/areas`.
+ * WHAT ITEMS COST US, BY DISTRICT — `/spools/analytics/areas`
+ * (`/orders/returns/analytics/areas` until 2026-09-06, which redirects here).
  *
  * The table half of the split the shop's analytics already set: the charts
  * live on the parent page, and this is the whole list, DEAREST FIRST.
@@ -43,7 +44,7 @@ const RANGES: { value: ReturnAnalyticsRange; label: string }[] = [
 
 const CURRENCY = 'NGN';
 
-export default function ReturnsAnalyticsAreas() {
+export default function SpoolsAnalyticsAreas() {
   const session = getSession();
   const viewer = 'user' in session ? session.user : null;
   /* The ORDERS domain, matching the API's own gate — see the parent screen. */
@@ -60,7 +61,7 @@ export default function ReturnsAnalyticsAreas() {
         <PageHeader
           icon={<Lock />}
           title="By district"
-          backTo="/orders/returns/analytics"
+          backTo="/spools/analytics"
           backLabel="What items cost us"
         />
         <div className="card">
@@ -164,7 +165,7 @@ export default function ReturnsAnalyticsAreas() {
     <div className="page">
       <PageHeader
         icon={<BarChart3 />}
-        backTo="/orders/returns/analytics"
+        backTo="/spools/analytics"
         backLabel="What items cost us"
         title="By district"
         subtitle="Everything we spent getting items in, district by district, dearest first."

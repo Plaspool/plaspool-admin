@@ -42,6 +42,8 @@ describe('the settings index', () => {
     expect(hrefOf(/Writing/)).toBe('/settings/writing');
     // The fourth door opens the EXISTING screen under Orders — one room, two doors.
     expect(hrefOf(/Delivery areas/)).toBe('/orders/delivery');
+    // The fifth does the same for the Spools section's map of districts.
+    expect(hrefOf(/Where we collect/)).toBe('/spools/areas');
 
     // Each door says what is behind it, not just its name.
     expect(

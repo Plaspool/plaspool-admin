@@ -54,8 +54,8 @@ import {
   emptyReturnCostAnalytics,
   returnCostAnalytics,
 } from '../../data/marketing-fixtures';
-import ReturnsAnalytics from './ReturnsAnalytics';
-import ReturnsAnalyticsAreas from './ReturnsAnalyticsAreas';
+import SpoolsAnalytics from './SpoolsAnalytics';
+import SpoolsAnalyticsAreas from './SpoolsAnalyticsAreas';
 
 /* jsdom gaps the v2 chrome touches. `ResizeObserver` is load-bearing:
    `TableScroll` observes its own scroller on mount, so the district table
@@ -113,8 +113,8 @@ afterEach(() => {
 const mount = () =>
   render(
     <ToastHost>
-      <MemoryRouter initialEntries={['/orders/returns/analytics']}>
-        <ReturnsAnalytics />
+      <MemoryRouter initialEntries={['/spools/analytics']}>
+        <SpoolsAnalytics />
       </MemoryRouter>
     </ToastHost>,
   );
@@ -122,8 +122,8 @@ const mount = () =>
 const mountAreas = () =>
   render(
     <ToastHost>
-      <MemoryRouter initialEntries={['/orders/returns/analytics/areas']}>
-        <ReturnsAnalyticsAreas />
+      <MemoryRouter initialEntries={['/spools/analytics/areas']}>
+        <SpoolsAnalyticsAreas />
       </MemoryRouter>
     </ToastHost>,
   );

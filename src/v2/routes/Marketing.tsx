@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { BadgePercent, Coins, Megaphone, MoreHorizontal, Plus } from 'lucide-react';
 import {
-  labelsOf,
   marketingApi,
   settingsLabels,
   type AdjustmentResult,
@@ -9,7 +8,6 @@ import {
   type LedgerEntry,
   type MarketingSettings,
   type Program,
-  type ProgramDraft,
 } from '../../data/api-marketing';
 import { ApiError } from '../../data/errors';
 import { getSession } from '../../data/session';
@@ -23,19 +21,28 @@ import {
   useRevealPanel,
   type Metric,
 } from '../ui/Page';
-import { Badge, Banner, Button, EmptyState } from '../ui/primitives';
+import { Badge, Banner, Button, ButtonLink, EmptyState } from '../ui/primitives';
 import { Card } from '../ui/Card';
 import { DataTable, IdCell, type Column } from '../ui/DataTable';
 import { Defs } from '../ui/Defs';
-import { AffixField, Checkbox, Segmented, SelectField, TextField } from '../ui/Field';
+import { AffixField, Checkbox, SelectField, TextField } from '../ui/Field';
 import { Menu, MenuItem } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
 import { hasDomain } from '../../../shared/roles';
+import { ProgramModal } from './ProgramModal';
 
 /**
- * MARKETING — `/marketing`. The points machine: programmes, the redemption
- * settings, and the owner's credit pen.
+ * MARKETING — `/marketing`. The points machine's MARKETING half: manual
+ * points programmes, what a point is worth at checkout, and the credit pen.
+ *
+ * THE PER-ITEM PROGRAMME IS NOT HERE ANY MORE (2026-09-06). What customers
+ * earn for each item they send back, what that costs us, and which programme
+ * a storefront request joins all live under Spools → Points and costs, beside
+ * the pickups they govern. This screen still LOADS every programme — the
+ * credit modal's programme select needs them — but its table lists only the
+ * `adhoc` kind, and its create form makes only that kind. The banner below the
+ * header points at the new home, because the owner learned this screen first.
  *
  * A PROGRAMME'S `key` IS IMMUTABLE AND NEVER PATCHED — the ledger's rows
  * point at it, so renaming moves the words and never the identity. Ledger
@@ -45,10 +52,6 @@ import { hasDomain } from '../../../shared/roles';
  * through history) is not built — crediting shows the live balance and the
  * latest activity list covers the rest for now.
  */
-
-function pluralise(n: number, one: string, other: string): string {
-  return `${n} ${n === 1 ? one : other}`;
-}
 
 export default function Marketing() {
   const toast = useToast();
@@ -111,6 +114,11 @@ export default function Marketing() {
     }
   }
 
+  /* Only the programmes this screen owns. The per-item ones are listed and
+     edited under Spools → Points and costs; every row here is the same type,
+     so there is no Type column and no rate to show. */
+  const manual = (programs ?? []).filter((p) => p.kind === 'adhoc');
+
   const columns: Column<Program>[] = [
     {
       key: 'program',
@@ -130,45 +138,11 @@ export default function Marketing() {
       ),
     },
     {
-      key: 'kind',
-      header: 'Type',
-      label: 'Type',
-      tight: true,
-      render: (p) => <Badge>{p.kind === 'unit_return' ? 'Per item returned' : 'Manual points'}</Badge>,
-    },
-    {
-      key: 'rate',
-      header: 'Rate',
-      label: 'Rate',
-      render: (p) => {
-        const labels = labelsOf(p);
-        if (p.kind !== 'unit_return' || p.pointsPerUnit === null) {
-          return <span className="muted">Manual points only</span>;
-        }
-        return (
-          <span>
-            {pluralise(p.pointsPerUnit, labels.points.one, labels.points.other)} per{' '}
-            {labels.unit?.one ?? 'unit'}
-            {p.minUnitsPerReturn && p.minUnitsPerReturn > 1 ? (
-              <span className="muted"> · min {p.minUnitsPerReturn}</span>
-            ) : null}
-          </span>
-        );
-      },
-    },
-    {
-      key: 'open',
-      header: 'Open returns',
-      label: 'Open returns',
-      numeric: true,
-      render: (p) => <span className="num">{p.openReturns}</span>,
-    },
-    {
       key: 'awarded',
-      header: 'Awarded',
-      label: 'Awarded',
+      header: 'Points given out',
+      label: 'Points given out',
       numeric: true,
-      render: (p) => <span className="num">{p.awardedTotal}</span>,
+      render: (p) => <span className="num">{p.awardedTotal.toLocaleString()}</span>,
     },
     {
       key: 'status', mobile: 'keep',
@@ -229,18 +203,14 @@ export default function Marketing() {
      these are standings, not a window, and a fabricated sparkline under a
      real number is the thing the bar must never do. */
   const metrics: Metric[] = [
-    { label: 'Programmes', value: String((programs ?? []).length) },
+    { label: 'Programmes', value: String(manual.length) },
     {
       label: 'Active',
-      value: String((programs ?? []).filter((p) => p.status === 'active').length),
+      value: String(manual.filter((p) => p.status === 'active').length),
     },
     {
-      label: 'Open returns',
-      value: String((programs ?? []).reduce((n, p) => n + p.openReturns, 0)),
-    },
-    {
-      label: 'Points awarded',
-      value: (programs ?? []).reduce((n, p) => n + p.awardedTotal, 0).toLocaleString(),
+      label: 'Points given out',
+      value: manual.reduce((n, p) => n + p.awardedTotal, 0).toLocaleString(),
     },
     ...(settings && settings.redemptionEnabled
       ? [
@@ -257,7 +227,7 @@ export default function Marketing() {
       <PageHeader
         icon={<Megaphone />}
         title="Marketing"
-        subtitle="Your points programmes, what they pay out, and what a point is worth at checkout."
+        subtitle="Points you give out by hand, and what a point is worth at checkout."
         menu={(close) => (
           <>
             <AnalyticsMenuItem shown={barShown} onToggle={toggleBar} close={close} />
@@ -287,20 +257,29 @@ export default function Marketing() {
         </Banner>
       ) : null}
 
+      <Banner
+        tone="info"
+        title="Looking for the programme that pays for items sent back?"
+        action={<ButtonLink to="/spools/rates">Open Points and costs</ButtonLink>}
+      >
+        It moved to the Spools section, next to the pickups it pays for — along with what each
+        item costs us and what a pickup costs in each district.
+      </Banner>
+
       <div className="form2">
         <div className="form2__main">
           <DataTable
-            caption="Programmes"
+            caption="Manual points programmes"
             columns={columns}
-            rows={programs ?? []}
+            rows={manual}
             rowKey={(p) => p.id}
             onRowClick={isOwner ? setEditing : undefined}
             loading={programs === null && !loadError}
             empty={
               <EmptyState
                 icon={<BadgePercent />}
-                title="No programmes"
-                body="A programme sets what customers earn and what you pay for each item they send back."
+                title="No manual points programmes"
+                body="A manual points programme lets you add points to a customer by hand — goodwill, a prize, a thank-you."
               />
             }
             footer={null}
@@ -314,7 +293,8 @@ export default function Marketing() {
               </p>
             ) : latest.length === 0 ? (
               <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
-                No points given out yet. Awards show up here once you check returns.
+                No points given out yet. Points show up here once a pickup is checked and paid
+                out, or you add some by hand.
               </p>
             ) : (
               <div className="stack stack--tight">
@@ -389,13 +369,6 @@ export default function Marketing() {
                       label: 'Order limit',
                       value: `${(settings.maxRedeemBps / 100).toFixed(settings.maxRedeemBps % 100 === 0 ? 0 : 2)}% of the order`,
                     },
-                    {
-                      label: 'Default programme',
-                      value:
-                        (programs ?? []).find((p) => p.id === settings.defaultReturnProgramId)?.name ?? (
-                          <span className="muted">None</span>
-                        ),
-                    },
                   ]}
                 />
                 <span className="field__hint">
@@ -427,6 +400,7 @@ export default function Marketing() {
 
       {editing !== 'closed' && isOwner ? (
         <ProgramModal
+          kind="adhoc"
           program={editing === 'new' ? null : editing}
           onClose={() => setEditing('closed')}
           onDone={() => {
@@ -439,7 +413,6 @@ export default function Marketing() {
       {settingsOpen && settings ? (
         <SettingsModal
           settings={settings}
-          programs={programs ?? []}
           onClose={() => setSettingsOpen(false)}
           onDone={(next) => {
             setSettingsOpen(false);
@@ -464,293 +437,20 @@ export default function Marketing() {
   );
 }
 
-/* ═══════════════════════════════════════════════════════ PROGRAM MODAL ══ */
-
-function ProgramModal({
-  program,
-  onClose,
-  onDone,
-}: {
-  program: Program | null;
-  onClose: () => void;
-  onDone: () => void;
-}) {
-  const toast = useToast();
-  const creating = program === null;
-  const [kind, setKind] = useState<'unit_return' | 'adhoc'>(program?.kind ?? 'unit_return');
-  const [key, setKey] = useState(program?.key ?? '');
-  const [name, setName] = useState(program?.name ?? '');
-  const [pointsOne, setPointsOne] = useState(program?.pointsLabelSingular ?? 'point');
-  const [pointsMany, setPointsMany] = useState(program?.pointsLabelPlural ?? 'points');
-  const [unitOne, setUnitOne] = useState(program?.unitLabelSingular ?? '');
-  const [unitMany, setUnitMany] = useState(program?.unitLabelPlural ?? '');
-  const [perUnit, setPerUnit] = useState(
-    program?.pointsPerUnit != null ? String(program.pointsPerUnit) : '',
-  );
-  const [minUnits, setMinUnits] = useState(
-    program?.minUnitsPerReturn != null ? String(program.minUnitsPerReturn) : '1',
-  );
-  /* Naira in the box, minor units on the wire. Empty means "we have not
-     decided", which is a different claim from zero and the only way a figure
-     typed by mistake is undone — so an empty box sends `null`. */
-  const [unitCost, setUnitCost] = useState(
-    program?.unitCostMinor != null ? String(program.unitCostMinor / 100) : '',
-  );
-  const [marketCost, setMarketCost] = useState(
-    program?.unitMarketCostMinor != null ? String(program.unitMarketCostMinor / 100) : '',
-  );
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  async function commit() {
-    if (!name.trim() || !pointsOne.trim() || !pointsMany.trim()) {
-      setError('Fill in the name and both point words.');
-      return;
-    }
-    const unit = kind === 'unit_return';
-    const nPerUnit = Number(perUnit);
-    const nMin = Number(minUnits);
-    /* `undefined` here means "not a number" and stops the save; `null` means
-       the box was cleared on purpose. */
-    const naira = (text: string): number | null | undefined => {
-      const trimmed = text.trim();
-      if (trimmed === '') return null;
-      const value = Number(trimmed);
-      if (!Number.isFinite(value) || value < 0) return undefined;
-      return Math.round(value * 100);
-    };
-    const nUnitCost = naira(unitCost);
-    const nMarketCost = naira(marketCost);
-    if (unit) {
-      if (!unitOne.trim() || !unitMany.trim()) {
-        setError('Fill in both item words — for example “spool” and “spools”.');
-        return;
-      }
-      if (!Number.isInteger(nPerUnit) || nPerUnit < 1) {
-        setError('Points per item must be a whole number, 1 or more.');
-        return;
-      }
-      if (!Number.isInteger(nMin) || nMin < 1) {
-        setError('Fewest items must be a whole number, 1 or more.');
-        return;
-      }
-      if (nUnitCost === undefined) {
-        setError('What one item costs us must be an amount in naira, or empty.');
-        return;
-      }
-      if (nMarketCost === undefined) {
-        setError('What a new one costs must be an amount in naira, or empty.');
-        return;
-      }
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      if (creating) {
-        const machineKey = key.trim().toLowerCase();
-        if (!/^[a-z0-9][a-z0-9_-]{2,31}$/.test(machineKey)) {
-          setError('The ID code needs 3–32 characters: lowercase letters, numbers, - or _.');
-          setBusy(false);
-          return;
-        }
-        const draft: ProgramDraft = {
-          key: machineKey,
-          kind,
-          name: name.trim(),
-          pointsLabelSingular: pointsOne.trim(),
-          pointsLabelPlural: pointsMany.trim(),
-          ...(unit
-            ? {
-                unitLabelSingular: unitOne.trim(),
-                unitLabelPlural: unitMany.trim(),
-                pointsPerUnit: nPerUnit,
-                minUnitsPerReturn: nMin,
-                /* Omitted when the box is empty rather than sent as null: the
-                   create schema has no nullable arm, because "not decided" is
-                   already what an absent field means on a new row. */
-                ...(nUnitCost === null ? {} : { unitCostMinor: nUnitCost }),
-                ...(nMarketCost === null ? {} : { unitMarketCostMinor: nMarketCost }),
-              }
-            : {}),
-        };
-        const created = await marketingApi.createProgram(draft);
-        toast.show(`${created.name} created`);
-      } else {
-        await marketingApi.patchProgram(program.id, {
-          expectedRevision: program.revision,
-          name: name.trim(),
-          pointsLabelSingular: pointsOne.trim(),
-          pointsLabelPlural: pointsMany.trim(),
-          ...(unit
-            ? {
-                unitLabelSingular: unitOne.trim(),
-                unitLabelPlural: unitMany.trim(),
-                pointsPerUnit: nPerUnit,
-                minUnitsPerReturn: nMin,
-                /* Sent even when null — clearing a rate is a real edit, and
-                   `filled()` passes null through for exactly this. */
-                unitCostMinor: nUnitCost ?? null,
-                unitMarketCostMinor: nMarketCost ?? null,
-              }
-            : {}),
-        });
-        toast.show(`${name.trim()} saved`);
-      }
-      onDone();
-    } catch (cause) {
-      setError(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Modal
-      title={creating ? 'New programme' : `Edit ${program.name}`}
-      onClose={onClose}
-      wide
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button tone="primary" busy={busy} onClick={() => void commit()}>
-            {creating ? 'Create programme' : 'Save programme'}
-          </Button>
-        </>
-      }
-    >
-      <div className="stack">
-        {creating ? (
-          <Segmented
-            label="Type"
-            value={kind}
-            onChange={setKind}
-            options={[
-              { value: 'unit_return', label: 'Per item returned' },
-              { value: 'adhoc', label: 'Manual points' },
-            ]}
-            hint="Per item returned pays points for each item you accept back. Manual points lets you add points yourself."
-          />
-        ) : (
-          <span className="field__hint">
-            The type and ID code can’t be changed. Customers’ past points are linked to them.{' '}
-            <span className="mono">{program.key}</span>
-          </span>
-        )}
-        <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
-          {creating ? (
-            <div style={{ flex: 0.8 }}>
-              <TextField
-                label="ID code"
-                value={key}
-                className="input mono"
-                placeholder="spool-return"
-                spellCheck={false}
-                hint="You can’t change this later."
-                onChange={(e) => setKey(e.target.value)}
-              />
-            </div>
-          ) : null}
-          <div style={{ flex: 1.2 }}>
-            <TextField label="Name" value={name} placeholder="Spool returns" onChange={(e) => setName(e.target.value)} />
-          </div>
-        </div>
-        <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
-          <div style={{ flex: 1 }}>
-            <TextField label="Word for one point" value={pointsOne} onChange={(e) => setPointsOne(e.target.value)} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <TextField label="Word for many points" value={pointsMany} onChange={(e) => setPointsMany(e.target.value)} />
-          </div>
-        </div>
-        {kind === 'unit_return' ? (
-          <>
-            <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
-              <div style={{ flex: 1 }}>
-                <TextField label="Word for one item" value={unitOne} placeholder="spool" onChange={(e) => setUnitOne(e.target.value)} />
-              </div>
-              <div style={{ flex: 1 }}>
-                <TextField label="Word for many items" value={unitMany} placeholder="spools" onChange={(e) => setUnitMany(e.target.value)} />
-              </div>
-            </div>
-            <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
-              <div style={{ flex: 1 }}>
-                <TextField
-                  label="Points per item"
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={perUnit}
-                  hint="Saved onto each return as it comes in. Changing this won’t change older returns."
-                  onChange={(e) => setPerUnit(e.target.value)}
-                />
-              </div>
-              <div style={{ flex: 1 }}>
-                <TextField
-                  label="Fewest items per return"
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={minUnits}
-                  onChange={(e) => setMinUnits(e.target.value)}
-                />
-              </div>
-            </div>
-            {/*
-              THE TWO MONEY NUMBERS (0920). They are not what the customer is
-              paid — that is the points rate above — they are what the business
-              counts the reward AS, so the returns analytics can answer "what
-              does an item really cost us". Owner-only, like everything else in
-              this modal, because they change what a return is worth on paper.
-            */}
-            <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
-              <div style={{ flex: 1 }}>
-                <TextField
-                  label="What one item costs us"
-                  type="number"
-                  min={0}
-                  step={1}
-                  inputMode="decimal"
-                  value={unitCost}
-                  placeholder="100"
-                  hint="In naira. What we count each accepted item as costing in rewards. Saved onto each return as it comes in, so changing it won’t change older returns."
-                  onChange={(e) => setUnitCost(e.target.value)}
-                />
-              </div>
-              <div style={{ flex: 1 }}>
-                <TextField
-                  label="What a new one costs to buy"
-                  type="number"
-                  min={0}
-                  step={1}
-                  inputMode="decimal"
-                  value={marketCost}
-                  placeholder="850"
-                  hint="In naira, today. Used only to show what taking items back saves against buying new — it always uses today’s figure."
-                  onChange={(e) => setMarketCost(e.target.value)}
-                />
-              </div>
-            </div>
-          </>
-        ) : null}
-        {error ? (
-          <span className="field__error" role="alert">
-            {error}
-          </span>
-        ) : null}
-      </div>
-    </Modal>
-  );
-}
-
 /* ═══════════════════════════════════════════════════ SETTINGS + CREDIT ══ */
 
+/**
+ * NOTE WHAT IS ABSENT: `defaultReturnProgramId`. Which programme a storefront
+ * request joins is decided under Spools → Points and costs, beside the
+ * programmes it chooses between; a PATCH from here leaves it alone by simply
+ * not carrying the key.
+ */
 function SettingsModal({
   settings,
-  programs,
   onClose,
   onDone,
 }: {
   settings: MarketingSettings;
-  programs: Program[];
   onClose: () => void;
   onDone: (next: MarketingSettings) => void;
 }) {
@@ -763,7 +463,6 @@ function SettingsModal({
   const [capPercent, setCapPercent] = useState(String(settings.maxRedeemBps / 100));
   const [labelOne, setLabelOne] = useState(settings.pointsLabelSingular);
   const [labelMany, setLabelMany] = useState(settings.pointsLabelPlural);
-  const [defaultProgram, setDefaultProgram] = useState(settings.defaultReturnProgramId ?? '');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -804,15 +503,10 @@ function SettingsModal({
         maxRedeemBps: Math.round(pct * 100),
         pointsLabelSingular: labelOne.trim(),
         pointsLabelPlural: labelMany.trim(),
-        defaultReturnProgramId: defaultProgram || null,
       });
       onDone(next);
     } catch (cause) {
-      if (cause instanceof ApiError && cause.detail === 'defaultReturnProgramId') {
-        setError('That programme no longer exists. Pick another one.');
-      } else {
-        setError(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
-      }
+      setError(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
       setBusy(false);
     }
   }
@@ -897,19 +591,6 @@ function SettingsModal({
             <TextField label="Word for many points" value={labelMany} onChange={(e) => setLabelMany(e.target.value)} />
           </div>
         </div>
-        <SelectField
-          label="Default returns programme"
-          value={defaultProgram}
-          hint="New returns use this programme unless you pick another."
-          onChange={(e) => setDefaultProgram(e.target.value)}
-        >
-          <option value="">None</option>
-          {programs.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </SelectField>
         {error ? (
           <span className="field__error" role="alert">
             {error}

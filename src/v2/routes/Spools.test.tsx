@@ -61,7 +61,7 @@ import {
   returnCounts,
   returnDetails,
 } from '../../data/marketing-fixtures';
-import Returns from './Returns';
+import Spools from './Spools';
 
 /**
  * What jsdom does not implement and the v2 chrome touches — the same four
@@ -179,8 +179,8 @@ function detailSequence(first: ReturnDetail, later: ReturnDetail): Responder {
 function mount() {
   return render(
     <ToastHost>
-      <MemoryRouter initialEntries={['/orders/returns']}>
-        <Returns />
+      <MemoryRouter initialEntries={['/spools']}>
+        <Spools />
       </MemoryRouter>
     </ToastHost>,
   );

@@ -19,10 +19,12 @@ vi.setConfig({ testTimeout: 20_000 });
  *    ledger's column refuses a debit below zero with a 409; the refusal has to
  *    arrive where the number was typed, with the typed number still in the box,
  *    because the fix is to type a smaller one.
- *  - **A programme's `key` exists at create and never again.** The ledger's
- *    rows point at it, so the create modal offers the field, the edit modal
- *    shows it read-only, and the PATCH body structurally cannot carry `key` or
- *    `kind` — a rename moves the words and never the identity.
+ *  - **Only MANUAL points programmes live here (2026-09-06).** The per-item
+ *    programme moved to Spools → Points and costs, so this table must not list
+ *    it, the create form must not offer a type, and the body it POSTs must say
+ *    `kind: 'adhoc'` without anybody having chosen it. (The key-at-create-only
+ *    rule that used to be pinned here is pinned in `SpoolsRates.test.tsx` now,
+ *    against the shared `ProgramModal`.)
  *
  * `fetch` IS STUBBED, NOT `../../data/api-marketing`: the path, the method and
  * the body are the three things most likely to be silently wrong against a
@@ -49,7 +51,7 @@ vi.mock('../../data/session', () => ({
 }));
 
 import { ToastHost } from '../ui/Toast';
-import { capsProgram, programs, settings } from '../../data/marketing-fixtures';
+import { goodwillProgram, programs, settings } from '../../data/marketing-fixtures';
 import Marketing from './Marketing';
 
 /**
@@ -223,8 +225,11 @@ describe('the marketing screen', () => {
       maxRedeemBps: 5000,
       pointsLabelSingular: 'Bottle Cap',
       pointsLabelPlural: 'Bottle Caps',
-      defaultReturnProgramId: capsProgram.id,
     });
+    /* Which programme a storefront request joins is Spools → Points and costs'
+       decision now; a settings save from here must leave it alone, which on
+       the wire means NOT carrying the key — `null` would clear it. */
+    expect(sent(SETTINGS, 'PATCH')).not.toHaveProperty('defaultReturnProgramId');
 
     // The server's echo closes the loop: reopened, the stored 75000 minor
     // units render back as the same naira that was typed.
@@ -280,57 +285,51 @@ describe('the marketing screen', () => {
     expect(within(dialog).getByLabelText('Points')).toHaveProperty('value', '-500');
   });
 
-  it('offers the programme key only at create; the edit modal shows it read-only and the patch never carries it', async () => {
+  it('lists only manual points programmes, and creates one without offering a type', async () => {
     const user = userEvent.setup();
-    withPrograms();
-    withSettings();
-    when(`${PROGRAMS}/${capsProgram.id}`, {
-      program: { ...capsProgram, name: 'Deposit Scheme', revision: 2 },
+    /* The GET carries every kind — the credit modal's programme select needs
+       them all — and the POST answers with the row the server would mint. */
+    when(PROGRAMS, (_url, init) => {
+      if ((init.method ?? 'GET') === 'GET') return { body: { programs } };
+      const body = JSON.parse(String(init.body)) as { key: string; name: string };
+      return {
+        status: 201,
+        body: { program: { ...goodwillProgram, id: 'prg_new', key: body.key, name: body.name } },
+      };
     });
+    withSettings();
     mount();
     const grid = await table();
 
-    // CREATE: the two things that can never change later exist only here.
+    // The per-item programmes are under Spools now; only the manual one is here.
+    expect(within(grid).getByText('Goodwill')).toBeTruthy();
+    expect(within(grid).queryByText('Canister Returns')).toBeNull();
+    expect(within(grid).queryByText('Canister Returns (trial)')).toBeNull();
+    // And the columns that only made sense for per-item programmes are gone.
+    expect(screen.queryByText('Open returns')).toBeNull();
+    expect(screen.queryByText('Rate')).toBeNull();
+
     await user.click(screen.getByRole('button', { name: 'New programme' }));
     const create = await screen.findByRole('dialog', { name: 'New programme' });
-    expect(within(create).getByLabelText('ID code')).toBeTruthy();
-    expect(within(create).getByRole('group', { name: 'Type' })).toBeTruthy();
-    await user.click(within(create).getByRole('button', { name: 'Cancel' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    // No type to choose and no item fields: this screen only makes manual ones.
+    expect(within(create).queryByRole('group', { name: 'Type' })).toBeNull();
+    expect(within(create).queryByLabelText('Word for one item')).toBeNull();
+    expect(within(create).queryByLabelText('Points per item')).toBeNull();
+    await user.type(within(create).getByLabelText('ID code'), 'thank-you');
+    await user.type(within(create).getByLabelText('Name'), 'Thank you');
+    await user.click(within(create).getByRole('button', { name: 'Create programme' }));
 
-    // EDIT: no key box, no kind switch — the handle is read-only prose.
-    await user.click(within(grid).getByText('Canister Returns'));
-    const edit = await screen.findByRole('dialog', { name: 'Edit Canister Returns' });
-    expect(within(edit).queryByLabelText('ID code')).toBeNull();
-    expect(within(edit).queryByRole('group', { name: 'Type' })).toBeNull();
-    expect(within(edit).getByText(capsProgram.key)).toBeTruthy();
-    expect(within(edit).getByText(/The type and ID code can’t be changed/)).toBeTruthy();
-
-    await retype(user, within(edit).getByLabelText('Name'), 'Deposit Scheme');
-    await user.click(within(edit).getByRole('button', { name: 'Save programme' }));
-
-    await waitFor(() => expect(asked(`${PROGRAMS}/${capsProgram.id}`)).toBeTruthy());
-    const body = sent(`${PROGRAMS}/${capsProgram.id}`, 'PATCH');
-    expect(body).toEqual({
-      expectedRevision: capsProgram.revision,
-      name: 'Deposit Scheme',
-      pointsLabelSingular: 'Bottle Cap',
-      pointsLabelPlural: 'Bottle Caps',
-      unitLabelSingular: 'canister',
-      unitLabelPlural: 'canisters',
-      pointsPerUnit: 7,
-      minUnitsPerReturn: 4,
-      // 0920's two money rates, sent on every unit-return patch — including
-      // when they are unchanged, because a PATCH that omitted them could not
-      // express "clear this rate" and a cleared rate must be undoable.
-      unitCostMinor: capsProgram.unitCostMinor,
-      unitMarketCostMinor: capsProgram.unitMarketCostMinor,
+    await waitFor(() => sent(PROGRAMS, 'POST'));
+    // KEY BY KEY: the kind is fixed by the screen, never by the person, and
+    // nothing per-item rides along on a manual programme.
+    expect(sent(PROGRAMS, 'POST')).toEqual({
+      key: 'thank-you',
+      kind: 'adhoc',
+      name: 'Thank you',
+      pointsLabelSingular: 'point',
+      pointsLabelPlural: 'points',
     });
-    // Said twice on purpose: `toEqual` would still pass if the type ever
-    // gained one of these and the fixture gained it too.
-    expect(body).not.toHaveProperty('key');
-    expect(body).not.toHaveProperty('kind');
 
-    await screen.findByText('Deposit Scheme saved');
+    await screen.findByText('Thank you created');
   });
 });
