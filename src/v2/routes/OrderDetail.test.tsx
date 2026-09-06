@@ -229,8 +229,19 @@ function parcel(status: 'pending' | 'shipped' | 'delivered' | 'cancelled') {
   };
 }
 
-function withOrder(fulfillments: unknown[] = []): void {
-  when(ORDER, { order, lines: [line], fulfillments, timeline: [], emails: [], payment });
+function withOrder(
+  fulfillments: unknown[] = [],
+  overrides: { addOns?: unknown[]; addOnTotal?: number } = {},
+): void {
+  when(ORDER, {
+    order: overrides.addOnTotal === undefined ? order : { ...order, addOnTotal: overrides.addOnTotal },
+    lines: [line],
+    fulfillments,
+    timeline: [],
+    emails: [],
+    payment,
+    ...(overrides.addOns === undefined ? {} : { addOns: overrides.addOns }),
+  });
 }
 
 function mount() {
@@ -565,5 +576,43 @@ describe('the next-step menu item', () => {
     expect(
       await screen.findByRole('menuitem', { name: 'Waiting for payment — nothing to do yet' }),
     ).toBeTruthy();
+  });
+});
+
+// ============================================================================
+
+describe('add-ons on the order', () => {
+  it('lists each add-on, marks the included one Included, and totals them under Payment', async () => {
+    withOrder([], {
+      addOns: [
+        { id: 'oao_1', position: 0, addOnId: 'ado_box', title: 'Gift box', mode: 'chosen', amount: 150000, listPrice: 150000, currency: 'NGN' },
+        { id: 'oao_2', position: 1, addOnId: 'ado_note', title: 'Gift note', mode: 'included', amount: 0, listPrice: 50000, currency: 'NGN' },
+      ],
+      addOnTotal: 150000,
+    });
+    mount();
+    await loaded();
+
+    expect(await screen.findByText('Gift box')).toBeTruthy();
+    expect(screen.getByText('Included')).toBeTruthy();
+    // "Add-ons" renders twice once the total is positive: the card
+    // heading and the Payment row label both carry it, so a plain
+    // getByText would throw on the very success this test is proving.
+    expect(screen.getAllByText('Add-ons').length).toBeGreaterThan(0);
+    // The rendered amount is locale-dependent (the naira sign under some
+    // ICU builds, the bare ISO code under this one); getByText also
+    // collapses the non-breaking space to a plain one, so that pairing
+    // is what this literal has to spell. Two occurrences are expected:
+    // the add-on row and the Payment total.
+    expect(screen.getAllByText('NGN 1,500.00').length).toBeGreaterThan(0);
+  });
+
+  it('renders an order with no add-ons exactly as before', async () => {
+    withOrder([], { addOnTotal: 0 });
+    mount();
+    await loaded();
+
+    expect(screen.queryByText('Add-ons')).toBeNull();
+    expect(await screen.findByText('Recycled Spool')).toBeTruthy();
   });
 });
