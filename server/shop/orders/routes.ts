@@ -35,6 +35,7 @@ import {
   readOrder,
   settleOrderFulfilled,
   type Order,
+  type OrderAddOn,
   type OrderLine,
   type OrderRead,
 } from './repo/orders';
@@ -274,7 +275,12 @@ function refundPercentOf(grandTotal: number, percent: 75 | 100): number {
  * key is genuinely absent there rather than `[]`, so a storefront cannot read
  * an empty array as "nothing shipped".
  */
-function customerView(order: Order, lines: OrderLine[], fulfillments?: Fulfillment[]) {
+function customerView(
+  order: Order,
+  lines: OrderLine[],
+  fulfillments?: Fulfillment[],
+  addOns?: OrderAddOn[],
+) {
   const { checkoutId: _checkout, paymentIntentId: _intent, ...rest } = order;
   return {
     order: rest,
@@ -282,6 +288,7 @@ function customerView(order: Order, lines: OrderLine[], fulfillments?: Fulfillme
     ...(fulfillments === undefined
       ? {}
       : { fulfillments: fulfillments.flatMap(customerFulfillmentView) }),
+    ...(addOns === undefined ? {} : { addOns }),
   };
 }
 
@@ -369,7 +376,7 @@ function registerCustomerRoutes(routes: Hono<AppEnv>, deps: Deps): void {
      * here through the same check, so both get the same body.
      */
     const fulfillments = await listFulfillments(currentDb(c), read.order.id);
-    return c.json(customerView(read.order, read.lines, fulfillments));
+    return c.json(customerView(read.order, read.lines, fulfillments, read.addOns));
   });
 
   routes.get('/orders/:orderNumber/events', async (c) => {
@@ -1073,6 +1080,7 @@ async function orderDetail(db: Db, read: OrderRead, deps: ResolvedDeps) {
   return {
     order: read.order,
     lines: read.lines,
+    addOns: read.addOns,
     fulfillments: await listFulfillments(db, read.order.id),
     timeline: await listTimeline(db, read.order.id),
     /*

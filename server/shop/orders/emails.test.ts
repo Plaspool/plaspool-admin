@@ -342,6 +342,25 @@ describe('what the customer would read', () => {
     expect(confirmation.body).toContain('Enamel Mug');
   });
 
+  it('lists the add-ons under the goods, and says Included for a free one', async () => {
+    await insertEvents(ctx.db, [
+      checkoutCompleted({
+        totals: {
+          subtotal: 4500, shippingTotal: 500, taxTotal: 400, grandTotal: 5550, addOnTotal: 150,
+          addOns: [
+            { id: 'ado_box', title: 'Gift box', mode: 'chosen', amount: 150, listPrice: 150 },
+            { id: 'ado_note', title: 'Note', mode: 'included', amount: 0, listPrice: 50 },
+          ],
+        },
+      }),
+    ]);
+    await sweepCommerceEvents(ctx.db, { origin: null }, NOW);
+    const read = await readOrderByCheckout(ctx.db, CHECKOUT);
+    const [placed] = (await listIntents(ctx.db, read!.order.id)).filter((i) => i.kind === 'placed');
+    expect(placed?.body).toContain('1 × Gift box (Add-on) — 1.50 USD');
+    expect(placed?.body).toContain('1 × Note (Included) — Included');
+  });
+
   it('carries a guest access link whose token opens THAT order and no other', async () => {
     const read = await paidOrderWithLink();
     const mailer = new LoggingMailer();
