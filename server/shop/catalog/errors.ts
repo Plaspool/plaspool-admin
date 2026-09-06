@@ -108,3 +108,16 @@ export class VariantPreconditionFailedError extends PreconditionFailedError {
     this.variant = variant;
   }
 }
+
+import type { AddOn } from './add-ons/repo';
+
+/** A stale add-on save, carrying the current row so the editor can offer "load theirs". */
+export class StaleAddOnWriteError extends StaleWriteError {
+  readonly addOn: AddOn | null;
+
+  constructor(expected: number, actual: number, addOn: AddOn | null) {
+    super(expected, actual, null as Post | null);
+    this.name = 'StaleAddOnWriteError';
+    this.addOn = addOn;
+  }
+}
