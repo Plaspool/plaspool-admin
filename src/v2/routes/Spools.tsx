@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { BarChart3, PackageOpen, Plus, Truck } from 'lucide-react';
+import { PackageOpen, Plus, Truck } from 'lucide-react';
 import {
   labelsOf,
   marketingApi,
@@ -21,7 +21,7 @@ import { getSession } from '../../data/session';
 import { useAsync } from '../lib/useAsync';
 import { dateTime, humanise, money, shortDate } from '../lib/format';
 import { PageHeader } from '../ui/Page';
-import { Badge, Banner, Button, ButtonLink, EmptyState, type BadgeTone } from '../ui/primitives';
+import { Badge, Banner, Button, EmptyState, type BadgeTone } from '../ui/primitives';
 import { DataTable, IdCell, TablePager, type Column } from '../ui/DataTable';
 import { Defs } from '../ui/Defs';
 import { SelectField, TextArea, TextField } from '../ui/Field';
@@ -32,8 +32,9 @@ import { useToast } from '../ui/Toast';
 import { isAdminRole } from '../../../shared/roles';
 
 /**
- * RETURNS — `/orders/returns`. The pickup queue: request → schedule → collect
- * → receive → inspect → award.
+ * SPOOLS — `/spools`, the root of the section. The pickup queue: request →
+ * schedule → collect → receive → inspect → award. Lived at `/orders/returns`
+ * until 2026-09-06; the old path redirects here.
  *
  * THE QUEUE'S ONE-BUTTON RULE, from the API contract: `allowedActions` is
  * ORDERED, pipeline-advancing action first, and each row renders exactly one
@@ -95,7 +96,7 @@ function points(n: number, program: EmbeddedProgram): string {
   return `${n} ${n === 1 ? labels.points.one : labels.points.other}`;
 }
 
-export default function Returns() {
+export default function Spools() {
   const toast = useToast();
   const [view, setView] = useState<ReturnsView>('needs_action');
   /** '' means every board at once — the desk. */
@@ -243,7 +244,7 @@ export default function Returns() {
     <div className="page">
       <PageHeader
         icon={<Truck />}
-        title="Returns"
+        title="Spools"
         subtitle="Customers ask, you book a pickup, collect, check the items, then pay out points."
         actions={
           <>
@@ -261,10 +262,10 @@ export default function Returns() {
                 options={boardOptions}
               />
             ) : null}
-            <ButtonLink to="/orders/returns/analytics">
-              <BarChart3 aria-hidden="true" />
-              What items cost us
-            </ButtonLink>
+            {/* No "What items cost us" button here any more: Analytics is a
+                child of this section in the rail, one click away on every
+                Spools screen, and a second door beside the primary action was
+                chrome without a reason. */}
             <Button tone="primary" size="lg" onClick={() => setIntake(true)}>
               <Plus aria-hidden="true" />
               New return

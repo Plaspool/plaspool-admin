@@ -213,6 +213,11 @@ describe('the delivery areas board', () => {
     // SAVE ONE — the delivers flip. The override key must not ride along.
     const toggle = await screen.findByRole('switch', { name: 'Delivers to Ikeja' });
     expect(toggle).toHaveProperty('checked', true);
+    /* Deliveries only: the two collection facts this table used to carry — the
+       returns-board badge and the pickup-cost popover — live under Spools now,
+       and a column that came back here would be a claim about parcels again. */
+    expect(screen.queryByText('Returns board')).toBeNull();
+    expect(screen.queryByRole('button', { name: /costs us/ })).toBeNull();
     await user.click(toggle);
 
     await waitFor(() => expect(bodiesOf(`${DELIVERY}/ikeja`, 'PUT')).toHaveLength(1));

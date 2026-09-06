@@ -24,9 +24,11 @@ import Categories from './routes/Categories';
 import Customers from './routes/Customers';
 import Featured from './routes/Featured';
 import Banners from './routes/Banners';
-import Returns from './routes/Returns';
-import ReturnsAnalytics from './routes/ReturnsAnalytics';
-import ReturnsAnalyticsAreas from './routes/ReturnsAnalyticsAreas';
+import Spools from './routes/Spools';
+import SpoolsAnalytics from './routes/SpoolsAnalytics';
+import SpoolsAnalyticsAreas from './routes/SpoolsAnalyticsAreas';
+import SpoolsAreas from './routes/SpoolsAreas';
+import SpoolsRates from './routes/SpoolsRates';
 import Marketing from './routes/Marketing';
 import Settings from './routes/Settings';
 import SettingsShipping from './routes/SettingsShipping';
@@ -130,12 +132,27 @@ const router = createHashRouter([
       /* ── orders ──────────────────────────────────────────────────────── */
       { path: '/orders', element: <Orders /> },
       { path: '/orders/:id', element: <OrderDetail /> },
-      { path: '/orders/returns', element: <Returns /> },
-      /* What a returned item really costs us — the charts, and the district
-         table as its own subpage. The same split `/analytics` uses. */
-      { path: '/orders/returns/analytics', element: <ReturnsAnalytics /> },
-      { path: '/orders/returns/analytics/areas', element: <ReturnsAnalyticsAreas /> },
       { path: '/orders/delivery', element: <DeliveryAreas /> },
+
+      /* ── spools ──────────────────────────────────────────────────────── */
+      /* Returned items, as a section of their own: the pickup queue at the
+         root, then what they cost us (charts, and the district table as its
+         own subpage — the same split `/analytics` uses), the programme's
+         points and money, and the map of districts a driver collects from. */
+      { path: '/spools', element: <Spools /> },
+      { path: '/spools/analytics', element: <SpoolsAnalytics /> },
+      { path: '/spools/analytics/areas', element: <SpoolsAnalyticsAreas /> },
+      { path: '/spools/rates', element: <SpoolsRates /> },
+      { path: '/spools/areas', element: <SpoolsAreas /> },
+      /* Where these screens lived until 2026-09-06. Bookmarks and mailed
+         links keep working; `replace`, so Back does not bounce through the
+         old address. */
+      { path: '/orders/returns', element: <Navigate to="/spools" replace /> },
+      { path: '/orders/returns/analytics', element: <Navigate to="/spools/analytics" replace /> },
+      {
+        path: '/orders/returns/analytics/areas',
+        element: <Navigate to="/spools/analytics/areas" replace />,
+      },
 
       /* ── products ────────────────────────────────────────────────────── */
       { path: '/products', element: <Products /> },

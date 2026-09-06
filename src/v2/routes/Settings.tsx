@@ -1,6 +1,14 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronRight, MapPinned, PenLine, Settings as SettingsIcon, Truck, Users } from 'lucide-react';
+import {
+  ChevronRight,
+  MapPin,
+  MapPinned,
+  PenLine,
+  Settings as SettingsIcon,
+  Truck,
+  Users,
+} from 'lucide-react';
 import { PageHeader } from '../ui/Page';
 import { Card } from '../ui/Card';
 
@@ -50,6 +58,15 @@ const DOORS: SettingsDoor[] = [
     icon: <MapPinned />,
     title: 'Delivery areas',
     body: 'Charge a different delivery price for particular districts.',
+  },
+  /* The same arrangement as Delivery areas: the screen lives under Spools,
+     where the people who switch a state on actually work, and this is a
+     second door to it. */
+  {
+    to: '/spools/areas',
+    icon: <MapPin />,
+    title: 'Where we collect',
+    body: 'Which districts you collect returned items from.',
   },
 ];
 

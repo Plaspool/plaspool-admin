@@ -17,7 +17,8 @@ import { Segmented } from '../ui/Field';
 import { EChart } from '../ui/EChart';
 
 /**
- * WHAT ITEMS COST US — `/orders/returns/analytics`.
+ * WHAT ITEMS COST US — `/spools/analytics` (the Spools section's Analytics
+ * child; `/orders/returns/analytics` until 2026-09-06, which redirects here).
  *
  * The one question this screen exists to answer, in the owner's own words: the
  * headline rate says a hundred naira an item, but a van has to fetch them, so
@@ -111,7 +112,7 @@ function useOrdersAccess(): boolean {
   return viewer !== null && hasDomain(viewer.role, 'orders');
 }
 
-export default function ReturnsAnalytics() {
+export default function SpoolsAnalytics() {
   const allowed = useOrdersAccess();
   const [range, setRange] = useState<ReturnAnalyticsRange>(RETURN_ANALYTICS_DEFAULT);
   const { data, error, loading, reload } = useAsync(
@@ -230,8 +231,8 @@ export default function ReturnsAnalytics() {
         <PageHeader
           icon={<Lock />}
           title="What items cost us"
-          backTo="/orders/returns"
-          backLabel="Returns"
+          backTo="/spools"
+          backLabel="Spools"
         />
         <div className="card">
           <EmptyState
@@ -292,8 +293,8 @@ export default function ReturnsAnalytics() {
       <PageHeader
         icon={<BarChart3 />}
         title="What items cost us"
-        backTo="/orders/returns"
-        backLabel="Returns"
+        backTo="/spools"
+        backLabel="Spools"
         subtitle="What we pay customers, plus what it costs to get their items to the workshop, over the items we actually kept."
         actions={
           <Segmented
@@ -424,7 +425,7 @@ export default function ReturnsAnalytics() {
 
             <Card
               title="The dearest pickups"
-              action={<ButtonLink to="/orders/returns/analytics/areas">By district</ButtonLink>}
+              action={<ButtonLink to="/spools/analytics/areas">By district</ButtonLink>}
             >
               {showSkeletons ? (
                 <span

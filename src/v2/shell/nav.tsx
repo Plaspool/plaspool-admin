@@ -6,6 +6,7 @@ import {
   Mail,
   Megaphone,
   Package,
+  Recycle,
   Settings,
   ShoppingBag,
   TicketPercent,
@@ -48,9 +49,19 @@ export const NAV: NavEntry[] = [
     to: '/orders',
     label: 'Orders',
     icon: <ShoppingBag />,
+    children: [{ to: '/orders/delivery', label: 'Delivery areas' }],
+  },
+  /* Returned items are their own section, not a corner of Orders: the queue is
+     the root, and the three children are the analytics, the money, and the map
+     of where a driver collects. Beside Orders because that is who works it. */
+  {
+    to: '/spools',
+    label: 'Spools',
+    icon: <Recycle />,
     children: [
-      { to: '/orders/returns', label: 'Returns' },
-      { to: '/orders/delivery', label: 'Delivery areas' },
+      { to: '/spools/analytics', label: 'Analytics' },
+      { to: '/spools/rates', label: 'Points and costs' },
+      { to: '/spools/areas', label: 'Where we collect' },
     ],
   },
   {
