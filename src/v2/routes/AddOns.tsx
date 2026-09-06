@@ -7,13 +7,19 @@ import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, ButtonLink, EmptyState } from '../ui/primitives';
 import { DataTable, IdCell, type Column } from '../ui/DataTable';
 import { StoredImg } from '../ui/Img';
-import { describeRules } from './add-on-copy';
+import { InfoTip } from '../ui/InfoTip';
+import { describeRule, summariseRules } from './add-on-copy';
 
 /**
  * ADD-ONS — `/products/add-ons`. Extras offered at checkout: a picture, a
  * name, a price, and rules that say when the shopper is asked or when it is
- * simply included. The list shows the rules as one sentence so the owner can
- * read the shop's behaviour without opening each row.
+ * simply included.
+ *
+ * The columns, in the order a scan wants them (the owner's second round,
+ * 2026-09-06): the add-on, its STATUS right beside it — draft or active is
+ * the first thing to know — the price, and a few words on when it is
+ * offered, with the full sentences behind an (i). The first cut spelled every
+ * rule out in the row and pushed Status off the right edge of the screen.
  */
 const TABS: { value: AddOnStatus | 'all'; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -21,6 +27,26 @@ const TABS: { value: AddOnStatus | 'all'; label: string }[] = [
   { value: 'draft', label: 'Draft' },
   { value: 'archived', label: 'Archived' },
 ];
+
+/** "Ask · 1–4 items  +1 more (i)" — the lead, the count, the long form. */
+function Offered({ addOn }: { addOn: ShopAddOn }) {
+  const { lead, more } = summariseRules(addOn.rules, addOn.priceMinor, addOn.currency);
+  return (
+    <span className="offered">
+      <span>{lead}</span>
+      {more > 0 ? <span className="muted">+{more} more</span> : null}
+      {addOn.rules.length > 0 ? (
+        <InfoTip label={`How ${addOn.title} is offered, in full`}>
+          <ul className="itip__list">
+            {addOn.rules.map((rule, i) => (
+              <li key={i}>{describeRule(rule, addOn.priceMinor, addOn.currency)}</li>
+            ))}
+          </ul>
+        </InfoTip>
+      ) : null}
+    </span>
+  );
+}
 
 export default function AddOns() {
   const [tab, setTab] = useState<AddOnStatus | 'all'>('all');
@@ -42,13 +68,29 @@ export default function AddOns() {
         <IdCell
           thumb={a.imageId ? <StoredImg id={a.imageId} alt="" /> : <Gift aria-hidden="true" />}
           title={a.title}
-          meta={a.description ?? <span className="muted">No description</span>}
+          meta={
+            a.description ? (
+              // One line, clipped — a long description must not make its
+              // row taller than its neighbours, or set the column's width.
+              <span className="addons__desc" title={a.description}>
+                {a.description}
+              </span>
+            ) : (
+              <span className="muted">No description</span>
+            )
+          }
         />
       ),
     },
+    {
+      key: 'status',
+      header: 'Status',
+      tight: true,
+      mobile: 'keep',
+      render: (a) => <Badge tone={productTone(a.status)}>{humanise(a.status)}</Badge>,
+    },
     { key: 'price', header: 'Price', numeric: true, render: (a) => <span className="num">{money(a.priceMinor, a.currency)}</span> },
-    { key: 'rules', header: "When it's offered", render: (a) => describeRules(a.rules, a.priceMinor, a.currency) },
-    { key: 'status', header: 'Status', tight: true, render: (a) => <Badge tone={productTone(a.status)}>{humanise(a.status)}</Badge> },
+    { key: 'rules', header: "When it's offered", render: (a) => <Offered addOn={a} /> },
   ];
 
   return (

@@ -288,3 +288,24 @@
   width: 16px;
   height: 16px;
 }
+
+/* ── the list ───────────────────────────────────────────────────────── */
+
+/* The description under the name: one line, clipped, and capped so a long
+   one can neither raise its row above its neighbours nor widen the column
+   (the table lays itself out by content; an uncapped nowrap line would set
+   the column to its full length and push everything else off the edge). */
+.addons__desc {
+  display: block;
+  max-width: min(28rem, 40vw);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* "Ask · 1–4 items  +1 more (i)" */
+.offered {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+}

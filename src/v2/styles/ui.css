@@ -2067,3 +2067,57 @@
 .stars > svg.is-off {
   color: var(--ink-disabled);
 }
+
+/* ── info tip (i) ──────────────────────────────────────────────────────
+   The long form of a short cell, on hover or focus. The panel rides Float
+   (`.vfloat` carries fixed positioning, elevation and the grow-in); this is
+   its skin. */
+.itip {
+  display: inline-grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: help;
+  vertical-align: middle;
+}
+
+.itip svg {
+  width: 14px;
+  height: 14px;
+}
+
+.itip:hover,
+.itip[aria-expanded='true'] {
+  color: var(--ink-strong);
+  background: var(--surface-sunken);
+}
+
+.itip:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.itip__panel {
+  max-width: 24rem;
+  padding: var(--s3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--ink);
+  font-size: var(--t-sm);
+  line-height: 1.5;
+  white-space: normal;
+}
+
+.itip__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--s1);
+}

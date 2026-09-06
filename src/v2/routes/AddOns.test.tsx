@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -41,14 +41,34 @@ function mount() {
 }
 
 describe('Add-ons', () => {
-  it('lists each add-on with its price, status and when it is offered', async () => {
+  it('lists each add-on with its status beside the name, its price, and a few words on when it is offered', async () => {
     items = [box, { ...box, id: 'ado_note', title: 'Gift note', status: 'draft', priceMinor: 0, rules: [] }];
     mount();
     expect(await screen.findByText('Gift box')).toBeTruthy();
-    expect(screen.getByText('Ask when Items in cart is between 1 and 4 · Included free when Items in cart is at least 5')).toBeTruthy();
+    // Status is the second column: draft or active is the first thing to know.
+    const headers = screen.getAllByRole('columnheader').map((h) => h.textContent);
+    expect(headers.slice(0, 4)).toEqual(['Add-on', 'Status', 'Price', "When it's offered"]);
     expect(screen.getAllByText('Active').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Draft').length).toBeGreaterThan(0);
+    // The short form leads with the first rule and counts the rest.
+    expect(screen.getByText('Ask · 1–4 items')).toBeTruthy();
+    expect(screen.getByText('+1 more')).toBeTruthy();
+    expect(screen.getByText('Never offered')).toBeTruthy();
     expect(screen.getByRole('link', { name: /New add-on/ })).toBeTruthy();
+  });
+
+  it('the (i) shows every rule in full on hover and puts it away on leaving', async () => {
+    const user = userEvent.setup();
+    items = [box];
+    mount();
+    await screen.findByText('Gift box');
+    const tip = screen.getByRole('button', { name: 'How Gift box is offered, in full' });
+    expect(screen.queryByText('Ask when Items in cart is between 1 and 4')).toBeNull();
+    await user.hover(tip);
+    expect(await screen.findByText('Ask when Items in cart is between 1 and 4')).toBeTruthy();
+    expect(screen.getByText('Included free when Items in cart is at least 5')).toBeTruthy();
+    await user.unhover(tip);
+    await waitFor(() => expect(screen.queryByText('Ask when Items in cart is between 1 and 4')).toBeNull());
   });
 
   it('the tabs filter by status', async () => {
