@@ -70,6 +70,7 @@ export const NAV: NavEntry[] = [
     icon: <Package />,
     children: [
       { to: '/products/categories', label: 'Categories' },
+      { to: '/products/add-ons', label: 'Add-ons' },
       { to: '/products/inventory', label: 'Inventory' },
       { to: '/products/reviews', label: 'Reviews' },
     ],
