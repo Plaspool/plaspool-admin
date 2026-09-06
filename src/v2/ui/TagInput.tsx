@@ -3,6 +3,16 @@ import { X } from 'lucide-react';
 import { Float } from './Float';
 
 /**
+ * Comma, newline, carriage return and tab.
+ *
+ * Comma because that is how a person writes a list; the other three because
+ * that is what a spreadsheet column and a table cell put on the clipboard, and
+ * a list of Nigerian states is far likelier to be copied than typed.
+ */
+const SEPARATOR = /[,\n\r\t]/;
+const SEPARATOR_RUN = /[,\n\r\t]+/;
+
+/**
  * The tag field: chips in the box, the caret after the last chip, and the
  * store's own vocabulary offered underneath while you type — so a spelling is
  * REUSED rather than re-invented. A typed name that case-matches an existing
@@ -56,6 +66,40 @@ export function TagInput({
     setHot(0);
   }
 
+  /**
+   * Commit a whole list at once — a pasted "Abuja, Lagos, Kano", or a column
+   * of states copied out of a spreadsheet.
+   *
+   * NOT `add()` IN A LOOP, and that is the whole reason this exists: `add`
+   * closes over `value` and appends ONE tag to it, so a second call in the
+   * same render would start from the same stale array and every name but the
+   * last would be silently dropped. One `onChange` carries the whole batch.
+   *
+   * Duplicates fold away twice over: against what is already chosen, and
+   * against earlier names in the same paste.
+   */
+  function addMany(raw: string) {
+    const parts = raw
+      .split(SEPARATOR_RUN)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (parts.length === 0) {
+      setDraft('');
+      return;
+    }
+    const seen = new Set(chosen);
+    const added: string[] = [];
+    for (const part of parts) {
+      const folded = part.toLowerCase();
+      if (seen.has(folded)) continue;
+      seen.add(folded);
+      added.push(suggestions.find((s) => s.name.toLowerCase() === folded)?.name ?? part);
+    }
+    setDraft('');
+    setHot(0);
+    if (added.length > 0) onChange([...value, ...added]);
+  }
+
   function remove(tag: string) {
     onChange(value.filter((t) => t !== tag));
   }
@@ -105,13 +149,40 @@ export function TagInput({
               setFocused(false);
               if (draft.trim()) add(draft);
             }}
+            onPaste={(e) => {
+              /* A pasted list becomes chips. Handled here rather than in
+                 `onChange` because a paste is the one case where the LAST
+                 segment is finished too: mid-typing, "Abuja, La" must leave
+                 "La" behind the caret, and a paste must not. */
+              const text = e.clipboardData.getData('text');
+              if (!SEPARATOR.test(text)) return;
+              e.preventDefault();
+              addMany(draft + text);
+            }}
             onChange={(e) => {
               const next = e.target.value;
-              if (next.endsWith(',')) add(next);
-              else {
+              /* A separator is an Enter: it commits everything BEFORE it and
+                 keeps whatever follows as the draft.
+
+                 `endsWith(',')` was true exactly once — when the comma was
+                 the last character typed — so anything that arrived with
+                 text after it became one tag with commas inside, which then
+                 had to match a delivery address exactly. */
+              let cut = -1;
+              for (let i = next.length - 1; i >= 0; i -= 1) {
+                if (SEPARATOR.test(next[i]!)) {
+                  cut = i;
+                  break;
+                }
+              }
+              if (cut === -1) {
                 setDraft(next);
                 setHot(0);
+                return;
               }
+              addMany(next.slice(0, cut + 1));
+              const rest = next.slice(cut + 1);
+              if (rest.trim()) setDraft(rest);
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {

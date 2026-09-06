@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 
 /**
@@ -23,7 +23,9 @@ import { createPortal } from 'react-dom';
  *     resolve against the viewport;
  *   · closes on outside pointerdown, on Escape (capture phase, stopping
  *     there — so inside a modal, Escape peels the panel and NOT the modal),
- *     on resize, and on any scroll outside the panel itself — a
+ *     on a resize that changes the viewport WIDTH (a height-only change is
+ *     an on-screen keyboard, and re-places the panel rather than dismissing
+ *     the input it contains), and on any scroll outside the panel itself — a
  *     viewport-pinned panel must not drift from the anchor that summoned
  *     it, and closing is honest where chasing is jitter;
  *   · clicks inside stop propagating through the REACT tree, because a
@@ -70,12 +72,10 @@ export function Float({
     origin: string;
   } | null>(null);
 
-  /* Measure on open, before paint — the panel must never flash unplaced. */
-  useLayoutEffect(() => {
-    if (!open) {
-      setPos(null);
-      return;
-    }
+  /* One measurement off the anchor. Extracted from the open-time effect
+     because a viewport that changes HEIGHT under an on-screen keyboard has
+     to re-run it — see `onResize` below, where closing on that was the bug. */
+  const place = useCallback(() => {
     const rect = anchor.current?.getBoundingClientRect();
     if (!rect) return;
     setPos(
@@ -88,7 +88,16 @@ export function Float({
             origin: 'top right',
           },
     );
-  }, [open, align, anchor]);
+  }, [align, anchor]);
+
+  /* Measure on open, before paint — the panel must never flash unplaced. */
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null);
+      return;
+    }
+    place();
+  }, [open, place]);
 
   /* If the panel would run off the bottom, sit it above the trigger instead;
      if it would run off a side, slide it back until it fits — measured after
@@ -153,8 +162,27 @@ export function Float({
       if (event.target instanceof Node && panel.current?.contains(event.target)) return;
       closeRef.current();
     }
+    /* THE ON-SCREEN KEYBOARD IS A RESIZE, AND CLOSING ON IT MADE THIS PANEL
+       UNUSABLE ON A PHONE. Tapping the search box inside a SearchSelect
+       focuses an input; the keyboard opens; Android/Chrome shrinks the
+       layout viewport; this fired; the panel that owned the input dismissed
+       itself before a character could be typed — reported as "it opens and
+       closes immediately, my keyboard opens".
+
+       A real resize moves the WIDTH: a window drag, a rotation. A keyboard
+       only ever changes the height. So width decides, and a height-only
+       change RE-PLACES the panel against its anchor instead — which is also
+       the honest answer, the anchor having moved with the layout. */
+    const widthAtOpen = window.innerWidth;
     function onResize() {
-      closeRef.current();
+      if (window.innerWidth !== widthAtOpen) {
+        closeRef.current();
+        return;
+      }
+      /* Re-run the flip and the side clamp against the new viewport, not
+         just the base measurement. */
+      adjusted.current = false;
+      place();
     }
     document.addEventListener('pointerdown', onDown);
     document.addEventListener('keydown', onKey, true);
@@ -168,7 +196,7 @@ export function Float({
       document.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('resize', onResize);
     };
-  }, [open, anchor]);
+  }, [open, anchor, place]);
 
   if (!open || pos === null) return null;
 
