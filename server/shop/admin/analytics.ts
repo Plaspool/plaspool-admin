@@ -114,27 +114,43 @@ const WAT_DAY = sql.raw(
   `to_char(to_timestamp((o.paid_at + 3600000) / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD')`,
 );
 
-/** The money split, as aggregate columns over shop_orders o. One fragment
- * for the day series and the window total, so the two cannot disagree about
- * what a discount is. */
-const MONEY_COLUMNS = sql.raw(`
-  COALESCE(sum(o.subtotal), 0)::bigint AS sales,
-  COALESCE(sum(o.grand_total - o.subtotal - o.shipping_total - o.tax_total), 0)::bigint AS discounts,
-  COALESCE(sum(o.shipping_total), 0)::bigint AS delivery,
-  COALESCE(sum(o.tax_total), 0)::bigint AS tax,
-  COALESCE(sum(o.grand_total), 0)::bigint AS charged,
-  COALESCE(sum(o.refunded_total), 0)::bigint AS refunded,
-  COALESCE(sum(o.grand_total - o.refunded_total), 0)::bigint AS net`);
+/**
+ * The money split as SQL over shop_orders o — field name to expression. ONE
+ * map for this file's day series and window total AND for `shopStats`'s
+ * revenue windows (the Home tiles), so no two screens can disagree about
+ * what "sales" or "a discount" is.
+ */
+export const MONEY_EXPRESSIONS = {
+  sales: 'o.subtotal',
+  discounts: 'o.grand_total - o.subtotal - o.shipping_total - o.tax_total',
+  delivery: 'o.shipping_total',
+  tax: 'o.tax_total',
+  charged: 'o.grand_total',
+  refunded: 'o.refunded_total',
+  net: 'o.grand_total - o.refunded_total',
+} as const satisfies Record<keyof AnalyticsMoney, string>;
 
-function readMoney(row: Record<string, unknown>): AnalyticsMoney {
+export const MONEY_FIELDS = Object.keys(MONEY_EXPRESSIONS) as (keyof AnalyticsMoney)[];
+
+/** Every field summed over the rows in scope, named as itself. */
+const MONEY_COLUMNS = sql.raw(
+  MONEY_FIELDS.map((f) => `COALESCE(sum(${MONEY_EXPRESSIONS[f]}), 0)::bigint AS ${f}`).join(
+    ',\n             ',
+  ),
+);
+
+/** Read the split off a row; `suffix` selects a window when one row carries
+ * several (`sales_7d`, `net_24h`, …). */
+export function readMoney(row: Record<string, unknown>, suffix = ''): AnalyticsMoney {
+  const num = (f: keyof AnalyticsMoney) => Number(row[f + suffix] ?? 0);
   return {
-    sales: Number(row.sales ?? 0),
-    discounts: Number(row.discounts ?? 0),
-    delivery: Number(row.delivery ?? 0),
-    tax: Number(row.tax ?? 0),
-    charged: Number(row.charged ?? 0),
-    refunded: Number(row.refunded ?? 0),
-    net: Number(row.net ?? 0),
+    sales: num('sales'),
+    discounts: num('discounts'),
+    delivery: num('delivery'),
+    tax: num('tax'),
+    charged: num('charged'),
+    refunded: num('refunded'),
+    net: num('net'),
   };
 }
 

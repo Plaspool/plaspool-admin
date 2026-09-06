@@ -171,11 +171,11 @@ function Figures({ stats }: { stats: ShopStats }) {
               {/* "24 hours" and not "today": the window is measured back from
                   `generatedAt`, so at 9 a.m. it includes most of yesterday. */}
               <span className="stat__value">
-                {safeFormatMinor(window.last24h, window.currency)}
+                {safeFormatMinor(window.last24h.net, window.currency)}
               </span>
               <span className="stat__note">
-                {safeFormatMinor(window.last7d, window.currency)} over 7 days ·{' '}
-                {safeFormatMinor(window.last30d, window.currency)} over 30. Net of refunds.
+                {safeFormatMinor(window.last7d.net, window.currency)} over 7 days ·{' '}
+                {safeFormatMinor(window.last30d.net, window.currency)} over 30. Net of refunds.
               </span>
             </div>
           ))

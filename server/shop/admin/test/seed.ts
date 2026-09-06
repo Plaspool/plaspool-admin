@@ -53,6 +53,13 @@ export interface SeedOrderOptions {
   currency?: string;
   /** Minor units. */
   grandTotal?: number;
+  /** The split under the grand total. Defaults: no delivery, no tax, and the
+   *  subtotal carrying whatever is left — so an order seeded with only a
+   *  grand total is all item prices, and one seeded with a subtotal that
+   *  does not add up to the grand total carries a discount of the gap. */
+  subtotal?: number;
+  shippingTotal?: number;
+  taxTotal?: number;
   refundedTotal?: number;
   placedAt?: number;
   /** Null for an order that was never paid — which is what excludes it from revenue. */
@@ -69,10 +76,10 @@ export interface SeededOrder {
 /**
  * One order row, with the totals and both clocks under the caller's control.
  *
- * `subtotal` CARRIES THE WHOLE OF `grandTotal` and shipping and tax are zero.
- * Nothing in this directory reads the three component totals — only
- * `grand_total` and `refunded_total` — and inventing a split would suggest the
- * aggregates depend on one.
+ * BY DEFAULT `subtotal` carries the whole of `grandTotal` and shipping and
+ * tax are zero. Since 2026-09-06 the aggregates DO read the split (sales are
+ * item prices; delivery, VAT and discounts are named separately), so a test
+ * about that split passes the three components explicitly.
  */
 export async function seedOrder(db: Db, o: SeedOrderOptions = {}): Promise<SeededOrder> {
   sequence += 1;
@@ -81,6 +88,9 @@ export async function seedOrder(db: Db, o: SeedOrderOptions = {}): Promise<Seede
   const email = o.email ?? 'buyer@example.test';
   const placedAt = o.placedAt ?? S0;
   const grandTotal = o.grandTotal ?? 5000;
+  const shippingTotal = o.shippingTotal ?? 0;
+  const taxTotal = o.taxTotal ?? 0;
+  const subtotal = o.subtotal ?? grandTotal - shippingTotal - taxTotal;
 
   await db.execute(sql`
     INSERT INTO shop_orders (
@@ -90,7 +100,7 @@ export async function seedOrder(db: Db, o: SeedOrderOptions = {}): Promise<Seede
       placed_at, paid_at, revision, source_event_id, checkout_id)
     VALUES (
       ${id}, ${orderNumber}, ${o.customerId ?? null}, ${email}, ${o.currency ?? 'GBP'},
-      ${grandTotal}, 0, 0, ${grandTotal}, ${o.refundedTotal ?? 0},
+      ${subtotal}, ${shippingTotal}, ${taxTotal}, ${grandTotal}, ${o.refundedTotal ?? 0},
       ${o.status ?? 'paid'}, '{}'::jsonb, '{}'::jsonb,
       ${placedAt}, ${o.paidAt === undefined ? placedAt : o.paidAt}, 1,
       ${`evt_seed_${id}`}, ${`chk_seed_${id}`})`);

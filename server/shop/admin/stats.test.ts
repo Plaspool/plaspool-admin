@@ -8,6 +8,19 @@ import { reserve } from '../catalog/inventory';
 import { trashProduct } from '../catalog/products';
 import { LOW_STOCK_PREVIEW, shopStats } from './stats';
 import { S0, seedEmailIntent, seedOrder } from './test/seed';
+import type { AnalyticsMoney } from './analytics';
+
+/** A window's money split from its parts — charged and net derived the way
+ *  the server derives them, so an assertion states only what was seeded. */
+function mon(p: Partial<Pick<AnalyticsMoney, 'sales' | 'discounts' | 'delivery' | 'tax' | 'refunded'>>): AnalyticsMoney {
+  const sales = p.sales ?? 0;
+  const discounts = p.discounts ?? 0;
+  const delivery = p.delivery ?? 0;
+  const tax = p.tax ?? 0;
+  const refunded = p.refunded ?? 0;
+  const charged = sales + discounts + delivery + tax;
+  return { sales, discounts, delivery, tax, charged, refunded, net: charged - refunded };
+}
 
 /**
  * The dashboard's arithmetic (HANDOFF §2 A4).
@@ -91,7 +104,7 @@ describe('orders by status', () => {
     });
     const { ordersByStatus, revenue } = await stats();
     expect(ordersByStatus[0].total).toBe(5000);
-    expect(revenue[0].last24h).toBe(3500);
+    expect(revenue[0].last24h.net).toBe(3500);
   });
 });
 
@@ -105,7 +118,58 @@ describe('revenue windows', () => {
 
     const { revenue, generatedAt } = await stats();
     expect(generatedAt).toBe(NOW);
-    expect(revenue).toEqual([{ currency: 'GBP', last24h: 100, last7d: 300, last30d: 700 }]);
+    expect(revenue).toEqual([
+      {
+        currency: 'GBP',
+        last24h: mon({ sales: 100 }),
+        last7d: mon({ sales: 300 }),
+        last30d: mon({ sales: 700 }),
+      },
+    ]);
+  });
+
+  it('splits item prices from delivery, VAT and discounts, and nets refunds only at the bottom line', async () => {
+    /* The owner's 2026-09-06 order: 28,000 of product + 3,000 Abuja delivery,
+     * which the Home tile printed as 31,000 of "Revenue". */
+    await seedOrder(ctx.db, {
+      grandTotal: 3_100_000,
+      subtotal: 2_800_000,
+      shippingTotal: 300_000,
+      paidAt: NOW - HOUR,
+    });
+    /* A code took 500 off 4,500 of items with 200 of VAT, then 1,000 came back. */
+    await seedOrder(ctx.db, {
+      grandTotal: 4_200,
+      subtotal: 4_500,
+      taxTotal: 200,
+      refundedTotal: 1_000,
+      status: 'partially_refunded',
+      paidAt: NOW - 3 * DAY,
+    });
+
+    const { revenue } = await stats();
+    expect(revenue).toEqual([
+      {
+        currency: 'GBP',
+        last24h: mon({ sales: 2_800_000, delivery: 300_000 }),
+        last7d: mon({
+          sales: 2_804_500,
+          delivery: 300_000,
+          tax: 200,
+          discounts: -500,
+          refunded: 1_000,
+        }),
+        last30d: mon({
+          sales: 2_804_500,
+          delivery: 300_000,
+          tax: 200,
+          discounts: -500,
+          refunded: 1_000,
+        }),
+      },
+    ]);
+    expect(revenue[0].last7d.charged).toBe(3_104_200);
+    expect(revenue[0].last7d.net).toBe(3_103_200);
   });
 
   it('an order that was never paid is not revenue, however recent', async () => {
@@ -130,8 +194,10 @@ describe('revenue windows', () => {
     await seedOrder(ctx.db, { grandTotal: 1000, paidAt: NOW - HOUR });
 
     const { revenue, ordersByStatus } = await stats();
-    // Net revenue is the unrefunded order alone...
-    expect(revenue).toEqual([{ currency: 'GBP', last24h: 1000, last7d: 1000, last30d: 1000 }]);
+    // Net revenue is the unrefunded order alone; sales still count both...
+    const both = mon({ sales: 6000, refunded: 5000 });
+    expect(both.net).toBe(1000);
+    expect(revenue).toEqual([{ currency: 'GBP', last24h: both, last7d: both, last30d: both }]);
     // ...and the refunded order is still visible as an order.
     expect(ordersByStatus).toContainEqual({
       status: 'refunded',
@@ -145,7 +211,7 @@ describe('revenue windows', () => {
     await seedOrder(ctx.db, { currency: 'GBP', grandTotal: 1000, paidAt: NOW - HOUR });
     await seedOrder(ctx.db, { currency: 'USD', grandTotal: 2000, paidAt: NOW - HOUR });
     const { revenue } = await stats();
-    expect(revenue.map((row) => [row.currency, row.last30d])).toEqual([
+    expect(revenue.map((row) => [row.currency, row.last30d.net])).toEqual([
       ['GBP', 1000],
       ['USD', 2000],
     ]);

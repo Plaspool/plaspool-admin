@@ -17,6 +17,7 @@
  * is a plain fetch into component state.
  */
 import { apiFetch, type RequestOptions } from './api';
+import type { AnalyticsMoney } from './api-shop-analytics';
 import { UNRENDERABLE } from './when';
 
 /**
@@ -736,10 +737,14 @@ export interface OrderStatusTotal {
 
 export interface RevenueWindow {
   currency: string;
-  /** MINOR UNITS, net of refunds, over paid orders. Windows from `generatedAt`. */
-  last24h: number;
-  last7d: number;
-  last30d: number;
+  /**
+   * Each window is the full money split over orders paid in it — `sales` is
+   * ITEM PRICES, with delivery, tax, discounts, charged, refunded and net
+   * named beside it (the analytics screen's shape). Windows from `generatedAt`.
+   */
+  last24h: AnalyticsMoney;
+  last7d: AnalyticsMoney;
+  last30d: AnalyticsMoney;
 }
 
 export interface EmailBacklog {

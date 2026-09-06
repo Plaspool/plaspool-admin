@@ -193,7 +193,30 @@ const STATS = {
     { status: 'pending', currency: 'GBP', count: 2, total: 4000 },
     { status: 'paid', currency: 'GBP', count: 5, total: 25050 },
   ],
-  revenue: [{ currency: 'GBP', last24h: 1990, last7d: 418250, last30d: 900000 }],
+  revenue: [
+    {
+      currency: 'GBP',
+      last24h: { sales: 1990, discounts: 0, delivery: 0, tax: 0, charged: 1990, refunded: 0, net: 1990 },
+      last7d: {
+        sales: 418250,
+        discounts: 0,
+        delivery: 0,
+        tax: 0,
+        charged: 418250,
+        refunded: 0,
+        net: 418250,
+      },
+      last30d: {
+        sales: 900000,
+        discounts: 0,
+        delivery: 0,
+        tax: 0,
+        charged: 900000,
+        refunded: 0,
+        net: 900000,
+      },
+    },
+  ],
   lowStockThreshold: 5,
   lowStock: [
     {

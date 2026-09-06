@@ -3,6 +3,7 @@ import { toEpochMs } from '../../db/client';
 import type { Db } from '../../db/client';
 import { EMAIL_ATTEMPT_LIMIT } from '../orders/repo/emails';
 import type { OrderStatus } from '../orders/repo/orders';
+import { MONEY_EXPRESSIONS, MONEY_FIELDS, readMoney, type AnalyticsMoney } from './analytics';
 import {
   DEFAULT_LOW_STOCK_THRESHOLD,
   listInventory,
@@ -63,10 +64,17 @@ export interface OrderStatusTotal {
 
 export interface RevenueWindow {
   currency: string;
-  /** All three are MINOR UNITS, net of refunds, over orders that were paid. */
-  last24h: number;
-  last7d: number;
-  last30d: number;
+  /**
+   * Each window is the full money split (minor units, over orders paid in the
+   * window): `sales` is ITEM PRICES — the subtotals — and delivery, VAT,
+   * discounts, what was charged, what was refunded and the net all have their
+   * own name. These used to be one `number` each, the net, and the Home tile
+   * printed that as "Revenue" — so a 28,000 order with 3,000 delivery read as
+   * 31,000 of sales (owner, 2026-09-06). Same shape as the analytics screen.
+   */
+  last24h: AnalyticsMoney;
+  last7d: AnalyticsMoney;
+  last30d: AnalyticsMoney;
 }
 
 export interface EmailBacklog {
@@ -160,26 +168,41 @@ async function ordersByStatus(db: Db): Promise<OrderStatusTotal[]> {
  * nets to zero rather than disappearing, which is what makes a refunded day's
  * revenue go DOWN instead of the order silently leaving the count.
  *
+ * EVERY FIELD OF THE SPLIT, PER WINDOW, from the one `MONEY_EXPRESSIONS` map
+ * the analytics screen sums with — 7 fields × 3 windows, each a `FILTER`ed
+ * aggregate over the same 30-day scan. A refund is order-level money and
+ * nets only `net`; `sales` stays what the items sold for.
+ *
  * ONE PASS OVER THE 30-DAY SET, WITH `FILTER` NARROWING IT TWICE. The `WHERE`
  * bounds the scan to the widest window; the two narrower ones are aggregate
  * filters over the same rows rather than two more queries.
  */
 async function revenue(db: Db, now: number): Promise<RevenueWindow[]> {
-  const net = sql.raw('sum(o.grand_total - o.refunded_total)');
+  const windows = [
+    { suffix: '_24h', since: now - DAY_MS },
+    { suffix: '_7d', since: now - 7 * DAY_MS },
+    { suffix: '_30d', since: now - 30 * DAY_MS },
+  ];
+  const columns = sql.join(
+    windows.flatMap((w) =>
+      MONEY_FIELDS.map(
+        (f) =>
+          sql`COALESCE(sum(${sql.raw(MONEY_EXPRESSIONS[f])}) FILTER (WHERE o.paid_at >= ${w.since}), 0)::bigint AS ${sql.raw(f + w.suffix)}`,
+      ),
+    ),
+    sql.raw(', '),
+  );
   const res = await db.execute(sql`
-    SELECT o.currency AS currency,
-           COALESCE(${net} FILTER (WHERE o.paid_at >= ${now - DAY_MS}), 0)::bigint      AS last24h,
-           COALESCE(${net} FILTER (WHERE o.paid_at >= ${now - 7 * DAY_MS}), 0)::bigint  AS last7d,
-           COALESCE(${net}, 0)::bigint                                                  AS last30d
+    SELECT o.currency AS currency, ${columns}
       FROM shop_orders o
      WHERE o.paid_at IS NOT NULL AND o.paid_at >= ${now - 30 * DAY_MS}
      GROUP BY o.currency
      ORDER BY o.currency ASC`);
   return res.rows.map((row) => ({
     currency: String(row.currency),
-    last24h: Number(row.last24h),
-    last7d: Number(row.last7d),
-    last30d: Number(row.last30d),
+    last24h: readMoney(row, '_24h'),
+    last7d: readMoney(row, '_7d'),
+    last30d: readMoney(row, '_30d'),
   }));
 }
 
