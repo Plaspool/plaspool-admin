@@ -400,6 +400,13 @@
                         "when":  1786600004900,
                         "tag":  "0920_return_costs",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  57,
+                        "version":  "7",
+                        "when":  1786600005000,
+                        "tag":  "0940_add_ons",
+                        "breakpoints":  true
                     }
                 ]
 }

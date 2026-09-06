@@ -19,6 +19,7 @@ import {
 } from '../../../shared/commerce/ports';
 import type { HoldState, ProductStatus, VariantStatus } from '../../../shared/commerce/ports';
 import type { DocNode } from '../../../shared/types';
+import type { AddOnRule, AddOnStatus } from '../../../shared/commerce/add-ons';
 
 /**
  * Catalog's five tables (contract §4), declared in a file **Catalog owns
@@ -537,6 +538,39 @@ export const shopBulkTiers = pgTable(
     index('shop_bulk_tiers_product_idx').on(t.productId),
   ],
 );
+
+/**
+ * Checkout add-ons (migration 0940). The model only; the shopper's answers live
+ * on shop_carts and the snapshot on shop_order_add_ons.
+ */
+export const shopAddOns = pgTable(
+  'shop_add_ons',
+  {
+    id: text('id').primaryKey(),
+    title: text('title').notNull(),
+    description: text('description'),
+    imageId: text('image_id'),
+    priceMinor: integer('price_minor').notNull(),
+    currency: text('currency').notNull(),
+    status: text('status').$type<AddOnStatus>().notNull(),
+    rules: jsonb('rules').$type<AddOnRule[]>().notNull(),
+    position: integer('position').notNull().default(0),
+    revision: integer('revision').notNull().default(1),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
+  },
+  (t) => [
+    check('shop_add_ons_title_ck', sql`${t.title} <> ''`),
+    check('shop_add_ons_description_ck', sql`${t.description} IS NULL OR ${t.description} <> ''`),
+    check('shop_add_ons_price_ck', sql`${t.priceMinor} >= 0`),
+    check('shop_add_ons_currency_ck', sql`${t.currency} ~ '^[A-Z]{3}$'`),
+    check('shop_add_ons_status_ck', sql`${t.status} IN ('draft','active','archived')`),
+    check('shop_add_ons_rules_ck', sql`jsonb_typeof(${t.rules}) = 'array'`),
+    check('shop_add_ons_revision_ck', sql`${t.revision} > 0`),
+    index('shop_add_ons_active_idx').on(t.position).where(sql`${t.status} = 'active'`),
+  ],
+);
+export type DbAddOn = typeof shopAddOns.$inferSelect;
 
 export type DbProduct = typeof shopProducts.$inferSelect;
 export type DbBulkTier = typeof shopBulkTiers.$inferSelect;

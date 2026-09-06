@@ -5,6 +5,7 @@ import type { PgTable } from 'drizzle-orm/pg-core';
 import { migratedDb } from '../../test/harness';
 import type { Db } from '../../db/client';
 import {
+  shopAddOns,
   shopBulkTiers,
   shopInventory,
   shopInventoryHolds,
@@ -63,6 +64,9 @@ const TABLES: [string, PgTable][] = [
   ['shop_prices', shopPrices],
   ['shop_inventory', shopInventory],
   ['shop_inventory_holds', shopInventoryHolds],
+  /* Migration 0940. The add-on model — see the same note above about what an
+     unregistered table quietly loses. */
+  ['shop_add_ons', shopAddOns],
 ];
 
 /**

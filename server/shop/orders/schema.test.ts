@@ -41,6 +41,7 @@ const OWNED_TABLES = [
   'shop_order_events',
   'shop_order_email_intents',
   'shop_order_event_consumptions',
+  'shop_order_add_ons',
 ];
 
 async function columns(table: string): Promise<Map<string, { type: string; nullable: boolean }>> {
