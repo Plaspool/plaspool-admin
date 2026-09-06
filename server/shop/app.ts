@@ -7,6 +7,7 @@ import type { DiscountCodePort } from '../../shared/marketing/discounts';
 import { toResponse } from '../middleware/errors';
 import {
   ProductPreconditionFailedError,
+  StaleAddOnWriteError,
   StaleProductWriteError,
   VariantPreconditionFailedError,
 } from './catalog/errors';
@@ -98,7 +99,9 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
             actual: err.actual,
             product: err.product,
           }
-        : err instanceof ProductPreconditionFailedError
+        : err instanceof StaleAddOnWriteError
+          ? { error: 'stale_write', expected: err.expected, actual: err.actual, addOn: err.addOn }
+          : err instanceof ProductPreconditionFailedError
           ? {
               error: 'precondition_failed',
               operation: err.operation,

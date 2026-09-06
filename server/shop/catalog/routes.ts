@@ -52,6 +52,7 @@ import {
 import type { ShopCategoryPatch } from './categories';
 import type { ProductPatch } from './types';
 import { csvRoutes } from './csv';
+import { addOnRoutes } from './add-ons/routes';
 
 /**
  * Catalog's HTTP surface (brief §6).
@@ -918,3 +919,12 @@ routes.put('/admin/products/:id/bulk-tiers', auth, async (c) => {
  * pattern in method or segment count.
  */
 routes.route('/', csvRoutes);
+
+// ----------------------------------------------------------------- add-ons
+
+/**
+ * Checkout add-ons (migration 0940) — `/admin/add-ons`, mounted the same way
+ * as `csvRoutes` above: a subsystem of its own file, registered here so the
+ * composition root stays a one-line mount per subsystem.
+ */
+routes.route('/', addOnRoutes);

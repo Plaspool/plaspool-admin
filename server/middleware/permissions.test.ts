@@ -39,6 +39,7 @@ async function login(user: AuthUser): Promise<HttpClient> {
  * gate" and a 403 means the gate refused. Every path here is a real mount. */
 const PROBES: Record<string, string> = {
   products: '/api/shop/admin/products',
+  addOns: '/api/shop/admin/add-ons',
   orders: '/api/shop/admin/orders',
   outbox: '/api/shop/admin/emails',
   customers: '/api/shop/admin/customers',
@@ -58,6 +59,7 @@ describe('the domain gate', () => {
   it('a content writer holds products and the blog, and nothing money-adjacent', async () => {
     const c = await login(ctx.users.writer);
     expect(await probe(c, PROBES.products)).toBe(200);
+    expect(await probe(c, PROBES.addOns)).toBe(200);
     expect(await probe(c, PROBES.content)).toBe(200);
     expect(await probe(c, PROBES.orders)).toBe(403);
     expect(await probe(c, PROBES.outbox)).toBe(403);
@@ -86,6 +88,7 @@ describe('the domain gate', () => {
     expect(await probe(c, PROBES.customers)).toBe(200);
     expect(await probe(c, PROBES.analytics)).toBe(200);
     expect(await probe(c, PROBES.products)).toBe(403);
+    expect(await probe(c, PROBES.addOns)).toBe(403);
     expect(await probe(c, PROBES.marketing)).toBe(403);
     expect(await probe(c, PROBES.content)).toBe(403);
   });

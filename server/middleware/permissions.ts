@@ -58,6 +58,7 @@ const RULES: readonly Rule[] = [
   { prefix: '/api/shop/admin/variants', domain: 'products' },
   { prefix: '/api/shop/admin/inventory', domain: 'products' },
   { prefix: '/api/shop/admin/categories', domain: 'products' },
+  { prefix: '/api/shop/admin/add-ons', domain: 'products' },
   { prefix: '/api/shop/admin/bulk-tiers', domain: 'products' },
   { prefix: '/api/shop/admin/tags', domain: 'products' },
   /*
