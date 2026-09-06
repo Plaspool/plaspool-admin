@@ -467,6 +467,7 @@ export default function Analytics() {
         subtitle={`The last ${days} days, taken straight from real orders.`}
         actions={
           <Segmented
+            collapse
             label="Range"
             value={String(days) as (typeof RANGES)[number]['value']}
             options={RANGES}
@@ -486,37 +487,16 @@ export default function Analytics() {
       ) : (
         <>
           {/* ── tiles ─────────────────────────────────────────────────── */}
-          <div className="bento" style={{ gap: 'var(--s3)' }}>
+          <div className="stats">
             {tiles.map((tile) => (
-              <div
-                key={tile.label}
-                className="card"
-                style={{ gridColumn: 'span 3', padding: 'var(--s4)', minWidth: 0 }}
-              >
-                <div
-                  className="muted"
-                  style={{ fontSize: 'var(--t-sm)', fontWeight: 'var(--w-medium)' }}
-                >
-                  {tile.label}
-                </div>
+              <div key={tile.label} className="card stats__tile">
+                <div className="muted stats__label">{tile.label}</div>
                 {showSkeletons || tile.value === null ? (
                   <span className="skel" style={{ width: '5rem', height: '1rem', marginTop: 6 }} />
                 ) : (
-                  <div
-                    className="num"
-                    style={{
-                      fontSize: 'var(--t-2xl)',
-                      fontWeight: 'var(--w-bold)',
-                      letterSpacing: '-0.02em',
-                      marginTop: 2,
-                    }}
-                  >
-                    {tile.value}
-                  </div>
+                  <div className="num stats__num">{tile.value}</div>
                 )}
-                <div className="muted" style={{ fontSize: 'var(--t-xs)', marginTop: 2 }}>
-                  {tile.hint}
-                </div>
+                <div className="muted stats__hint">{tile.hint}</div>
               </div>
             ))}
           </div>

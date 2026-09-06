@@ -171,6 +171,7 @@ export default function SpoolsAnalyticsAreas() {
         subtitle="Everything we spent getting items in, district by district, dearest first."
         actions={
           <Segmented
+            collapse
             label="Range"
             value={range}
             options={RANGES}

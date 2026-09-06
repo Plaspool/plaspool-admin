@@ -1,4 +1,14 @@
-import { useId, useRef, type ReactNode, type InputHTMLAttributes, type SelectHTMLAttributes } from 'react';
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+  type InputHTMLAttributes,
+  type SelectHTMLAttributes,
+} from 'react';
+import { Check, ChevronsUpDown } from 'lucide-react';
+import { Float } from './Float';
 
 /**
  * Form controls, wired so the label, the hint and the error are all associated
@@ -229,15 +239,57 @@ export function TextArea({
   );
 }
 
+/**
+ * Below this, a segmented control is a wrapped mess rather than a row.
+ *
+ * 34rem is the phone breakpoint `page.css` already uses. Four range options
+ * (30d / 90d / 1y / All time) wrapped onto two lines at 375px, which is what
+ * the owner photographed.
+ */
+const COLLAPSE = '(max-width: 34rem)';
+
+/**
+ * Is the viewport narrow enough to collapse a segmented control?
+ *
+ * The `Sidebar` idiom, and for its reasons: the FIRST render has to commit a
+ * shape before any effect runs, so the initial value is read straight off
+ * `innerWidth`, and `matchMedia` only keeps it correct as the window is
+ * dragged. The guard is not optional — this repo's jsdom has no `matchMedia`,
+ * and an unguarded call inside a passive effect takes the whole route to the
+ * router's error page. `innerWidth` is already a correct answer without it,
+ * and in jsdom it reads 1024, so the suites see the button row they assert on.
+ */
+function useCollapsed(enabled: boolean): boolean {
+  const [narrow, setNarrow] = useState(
+    () => enabled && typeof window !== 'undefined' && window.innerWidth <= 544,
+  );
+  useEffect(() => {
+    if (!enabled) return;
+    if (typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia(COLLAPSE);
+    const onChange = () => setNarrow(mq.matches);
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, [enabled]);
+  return enabled && narrow;
+}
+
 /** The two-option switch used for Discount code / Automatic discount. A pair of
  *  buttons rather than a `<select>`: both options are worth showing at once,
- *  and there are exactly two of them. */
+ *  and there are exactly two of them.
+ *
+ *  `collapse` opts a LONGER control into becoming a dropdown on a phone — the
+ *  range pickers over the analytics screens, where four options never fit a
+ *  375px row. It is opt-in rather than automatic because the two-option switch
+ *  above is the case the component was built for, and it still fits. */
 export function Segmented<T extends string>({
   label,
   value,
   options,
   onChange,
   hint,
+  collapse = false,
 }: {
   label: string;
   value: T;
@@ -248,7 +300,71 @@ export function Segmented<T extends string>({
   options: { value: T; label: string; disabled?: boolean; title?: string }[];
   onChange: (next: T) => void;
   hint?: ReactNode;
+  /** Render as a dropdown below 34rem instead of a row of buttons. */
+  collapse?: boolean;
 }) {
+  const collapsed = useCollapsed(collapse);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const current = options.find((o) => o.value === value);
+
+  if (collapsed) {
+    return (
+      <div className="field field--block">
+        <span className="field__label">{label}</span>
+        <div className="sselect">
+          <button
+            ref={trigger}
+            type="button"
+            className="statuspick__trigger"
+            aria-haspopup="listbox"
+            aria-expanded={open}
+            aria-label={label}
+            onClick={() => setOpen((v) => !v)}
+          >
+            {current?.label ?? value}
+            <ChevronsUpDown aria-hidden="true" />
+          </button>
+          <Float
+            open={open}
+            anchor={trigger}
+            align="right"
+            className="sselect__panel"
+            onClose={(opts) => {
+              setOpen(false);
+              if (opts?.refocus) trigger.current?.focus();
+            }}
+          >
+            <div className="sselect__list" role="listbox" aria-label={label}>
+              {options.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  role="option"
+                  aria-selected={opt.value === value}
+                  className="sselect__opt"
+                  disabled={opt.disabled}
+                  title={opt.title}
+                  onClick={() => {
+                    if (opt.disabled) return;
+                    onChange(opt.value);
+                    setOpen(false);
+                  }}
+                >
+                  <span className="sselect__check" aria-hidden="true">
+                    {opt.value === value ? <Check /> : null}
+                  </span>
+                  <span className="sselect__label">{opt.label}</span>
+                </button>
+              ))}
+            </div>
+          </Float>
+        </div>
+        {hint ? <span className="field__hint">{hint}</span> : null}
+      </div>
+    );
+  }
+
   return (
     <div className="field">
       <span className="field__label">{label}</span>

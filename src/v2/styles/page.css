@@ -1187,6 +1187,96 @@ a.idcell__title:hover {
   color: var(--ink-sub);
 }
 
+/* ═══ STAT TILES ═══ The KPI row over the analytics screens.
+
+   These were the `.bento` grid with an INLINE `grid-column: span 3`, and that
+   is exactly why they stayed FOUR ACROSS on a 375px phone: `.bento`'s own
+   media queries only name Home's `--a`…`--f` cards, so nothing overrode the
+   inline span. Each tile got about eighty pixels — one word per line, the
+   figure wrapping mid-number, the hint a column of single characters. The
+   owner photographed it.
+
+   An inline style cannot be reached by a media query, so the sizes live here
+   now rather than in the JSX. That is the actual fix; two-up on a phone is
+   just what it buys. */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--s3);
+}
+
+.stats__tile {
+  padding: var(--s4);
+  /* Without this a long unbroken figure widens its own track and drags the
+     row past the viewport — grid items floor at min-content otherwise. */
+  min-width: 0;
+}
+
+/* A tile carrying a wider figure (a money total beside four counts). */
+.stats__tile--big {
+  grid-column: span 2;
+}
+
+.stats__label {
+  font-size: var(--t-sm);
+  font-weight: var(--w-medium);
+}
+
+.stats__num {
+  margin-top: 2px;
+  font-size: var(--t-2xl);
+  font-weight: var(--w-bold);
+  letter-spacing: -0.02em;
+}
+
+/* The wide tile's figure gets the extra step up it had inline. */
+.stats__num--big {
+  font-size: var(--t-3xl);
+}
+
+.stats__hint {
+  margin-top: 2px;
+  font-size: var(--t-xs);
+}
+
+/* Tablet: four tiles of a quarter each are already too narrow for a figure
+   with a currency sign on it. */
+@media (max-width: 60rem) {
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .stats__tile--big {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Phone: still two-up — one-up would push the chart below three screens of
+   scrolling — but with the padding and the figure sized for the column they
+   actually get, and the hint allowed to be quiet. */
+@media (max-width: 34rem) {
+  .stats {
+    gap: var(--s2);
+  }
+
+  .stats__tile {
+    padding: var(--s3);
+  }
+
+  .stats__num {
+    font-size: var(--t-xl);
+  }
+
+  .stats__num--big {
+    font-size: var(--t-2xl);
+  }
+
+  .stats__hint {
+    font-size: var(--t-xs);
+    line-height: 1.35;
+  }
+}
+
 .bento {
   display: grid;
   grid-template-columns: repeat(12, 1fr);

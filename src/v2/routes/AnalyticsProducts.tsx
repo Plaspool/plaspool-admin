@@ -128,6 +128,7 @@ export default function AnalyticsProducts() {
         subtitle={`Every product that sold in the last ${days} days, best first.`}
         actions={
           <Segmented
+            collapse
             label="Range"
             value={String(days) as (typeof RANGES)[number]['value']}
             options={RANGES}

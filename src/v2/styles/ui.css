@@ -2140,3 +2140,20 @@
   display: grid;
   gap: var(--s1);
 }
+
+/* A segmented control that has collapsed to a dropdown is the primary control
+   on that screen, and shrink-wrapping put a 67px tap target in the far corner
+   of a 375px phone — measured. It takes the width the header is already
+   holding for it instead. Only on a phone: at desktop widths the button row
+   is back and sizes itself. */
+@media (max-width: 34rem) {
+  .field--block {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .field--block .sselect,
+  .field--block .statuspick__trigger {
+    width: 100%;
+  }
+}
