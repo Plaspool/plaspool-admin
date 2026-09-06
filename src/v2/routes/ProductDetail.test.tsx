@@ -633,7 +633,7 @@ describe('the search engine listing card', () => {
        the reference draws the line. Digits and code asserted apart, because
        the symbol between them is the locale's ("₦" or "NGN"). */
     const price = within(card).getByText(/23,000\.00/);
-    expect(price.textContent).toMatch(/NGN/);
+    expect(price.textContent).toMatch(/₦|NGN/);
     /* Collapsed means collapsed: no editors until the pencil. */
     expect(within(card).queryByLabelText('Page title')).toBeNull();
     expect(within(card).queryByLabelText('Search description')).toBeNull();
