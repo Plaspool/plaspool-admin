@@ -298,6 +298,7 @@ export default function SpoolsAnalytics() {
         subtitle="What we pay customers, plus what it costs to get their items to the workshop, over the items we actually kept."
         actions={
           <Segmented
+            collapse
             label="Range"
             value={range}
             options={RANGES}
@@ -323,41 +324,21 @@ export default function SpoolsAnalytics() {
             </Banner>
           ) : null}
 
-          <div className="bento" style={{ gap: 'var(--s3)' }}>
+          <div className="stats">
             {tiles.map((tile) => (
               <div
                 key={tile.label}
-                className="card"
-                style={{
-                  gridColumn: tile.big ? 'span 6' : 'span 3',
-                  padding: 'var(--s4)',
-                  minWidth: 0,
-                }}
+                className={tile.big ? 'card stats__tile stats__tile--big' : 'card stats__tile'}
               >
-                <div
-                  className="muted"
-                  style={{ fontSize: 'var(--t-sm)', fontWeight: 'var(--w-medium)' }}
-                >
-                  {tile.label}
-                </div>
+                <div className="muted stats__label">{tile.label}</div>
                 {showSkeletons || tile.value === null ? (
                   <span className="skel" style={{ width: '6rem', height: '1rem', marginTop: 6 }} />
                 ) : (
-                  <div
-                    className="num"
-                    style={{
-                      fontSize: tile.big ? 'var(--t-3xl)' : 'var(--t-2xl)',
-                      fontWeight: 'var(--w-bold)',
-                      letterSpacing: '-0.02em',
-                      marginTop: 2,
-                    }}
-                  >
+                  <div className={tile.big ? 'num stats__num stats__num--big' : 'num stats__num'}>
                     {tile.value}
                   </div>
                 )}
-                <div className="muted" style={{ fontSize: 'var(--t-xs)', marginTop: 2 }}>
-                  {tile.hint}
-                </div>
+                <div className="muted stats__hint">{tile.hint}</div>
               </div>
             ))}
           </div>
