@@ -55,13 +55,17 @@ export default function Orders() {
   const metrics = useMemo<Metric[]>(() => {
     const paid = rows.filter((r) => r.order.paidAt !== null);
     const currency = rows[0]?.order.currency ?? 'NGN';
-    const gross = paid.reduce((sum, r) => sum + r.order.grandTotal - r.order.refundedTotal, 0);
+    /* Item prices only — the frozen subtotal — never the grand total, which
+       carries delivery and VAT; those are their own tile (owner, 2026-09-06). */
+    const sales = paid.reduce((sum, r) => sum + r.order.subtotal, 0);
+    const extras = paid.reduce((sum, r) => sum + r.order.shippingTotal + r.order.taxTotal, 0);
     const items = rows.reduce((sum, r) => sum + r.lines.reduce((n, l) => n + l.qty, 0), 0);
     const refunded = rows.reduce((sum, r) => sum + r.order.refundedTotal, 0);
     return [
       { label: 'Orders', value: String(rows.length) },
       { label: 'Items ordered', value: String(items) },
-      { label: 'Sales after refunds', value: money(gross, currency) },
+      { label: 'Product sales', value: money(sales, currency) },
+      { label: 'Delivery & VAT', value: money(extras, currency) },
       { label: 'Refunded', value: money(refunded, currency) },
       { label: 'Sent out', value: String(rows.filter((r) => r.order.fulfilledAt !== null).length) },
     ];

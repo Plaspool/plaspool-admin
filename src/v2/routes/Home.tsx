@@ -52,14 +52,23 @@ export default function Home() {
     const orderCount = data.ordersByStatus.reduce((n, r) => n + r.count, 0);
     const paid = data.ordersByStatus.find((r) => r.status === 'paid')?.count ?? 0;
     const pending = data.ordersByStatus.find((r) => r.status === 'pending')?.count ?? 0;
+    /* SALES ARE ITEM PRICES. These two tiles used to print the net of the
+       grand total as "Revenue", so delivery and VAT read as sales (owner,
+       2026-09-06). The extras get their own tile rather than vanishing. */
     return [
-      { label: 'Revenue · 24h', value: rev ? money(rev.last24h, rev.currency) : '—' },
+      { label: 'Product sales · 24h', value: rev ? money(rev.last24h.sales, rev.currency) : '—' },
       {
-        label: 'Revenue · 7d',
-        value: rev ? money(rev.last7d, rev.currency) : '—',
+        label: 'Product sales · 7d',
+        value: rev ? money(rev.last7d.sales, rev.currency) : '—',
         /* Three real points, oldest first — the three windows the endpoint
            actually answers. Not a daily series; not invented. */
-        series: rev ? [rev.last30d / 30, rev.last7d / 7, rev.last24h] : undefined,
+        series: rev
+          ? [rev.last30d.sales / 30, rev.last7d.sales / 7, rev.last24h.sales]
+          : undefined,
+      },
+      {
+        label: 'Delivery & VAT · 7d',
+        value: rev ? money(rev.last7d.delivery + rev.last7d.tax, rev.currency) : '—',
       },
       { label: 'Orders all time', value: String(orderCount) },
       { label: 'Waiting for payment', value: String(pending) },
