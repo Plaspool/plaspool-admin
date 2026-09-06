@@ -4,6 +4,7 @@ import {
   analyticsApi,
   ANALYTICS_CURRENCY,
   ANALYTICS_DEFAULT_DAYS,
+  type AnalyticsDay,
   type AnalyticsDays,
   type ShopAnalytics,
 } from '../../data/api-shop-analytics';
@@ -14,6 +15,7 @@ import { humanise, money } from '../lib/format';
 import { PageHeader } from '../ui/Page';
 import { Banner, Button, ButtonLink, EmptyState } from '../ui/primitives';
 import { Card } from '../ui/Card';
+import { Defs, type DefRow } from '../ui/Defs';
 import { Segmented } from '../ui/Field';
 import { EChart } from '../ui/EChart';
 
@@ -39,6 +41,16 @@ import { EChart } from '../ui/EChart';
  * interactive library so I can do interactions a salesperson would need") —
  * drag/pinch to zoom the date range, crosshair tooltips reading net and order
  * count together, legend toggles isolating a status, save-as-image.
+ *
+ * SALES MEANS ITEM PRICES (owner, 2026-09-06). The headline tile used to print
+ * the CHARGED total net of refunds, so a 28,000 order with 3,000 delivery
+ * read as 31,000 of sales. Now the tile, the average and the solid bars are
+ * the server's `sales` — subtotals, nothing else — and every other kind of
+ * money has its own named place: the delivery and VAT bars stack on top in
+ * lighter shades (legend toggles them off), and the "Where the money went"
+ * card reads like a receipt from item prices down to what was collected.
+ * Refunds come off a whole order and cannot be split between items and
+ * delivery honestly, so they appear on that receipt and nowhere else.
  */
 
 /** Mirrors `ANALYTICS_RANGES` server-side — the route's `z.enum`. */
@@ -67,15 +79,38 @@ function watDay(epochMs: number): string {
  * window `[now - days·24h, now]` touches days + 1 calendar days (both ends
  * partial), and all of them get an axis slot so no server bucket is dropped.
  */
-function fillCalendar(a: ShopAnalytics): { day: string; net: number; orders: number }[] {
+function fillCalendar(a: ShopAnalytics): AnalyticsDay[] {
   const byDay = new Map(a.revenueByDay.map((d) => [d.day, d]));
-  const out: { day: string; net: number; orders: number }[] = [];
+  const out: AnalyticsDay[] = [];
   for (let i = a.days; i >= 0; i--) {
     const day = watDay(a.generatedAt - i * DAY_MS);
-    const hit = byDay.get(day);
-    out.push({ day, net: hit?.net ?? 0, orders: hit?.orders ?? 0 });
+    out.push(byDay.get(day) ?? { day, ...NO_MONEY, orders: 0 });
   }
   return out;
+}
+
+/** A quiet day: every kind of money at zero. */
+const NO_MONEY = {
+  sales: 0,
+  discounts: 0,
+  delivery: 0,
+  tax: 0,
+  charged: 0,
+  refunded: 0,
+  net: 0,
+} as const;
+
+/** A money figure that is taken OFF — a discount, a refund — printed with a
+ *  leading minus the way the order screen prints one, and never as a bare
+ *  negative from the formatter. Zero prints as zero. */
+function deduction(minor: number): string {
+  return minor === 0 ? money(0, ANALYTICS_CURRENCY) : `−${money(Math.abs(minor), ANALYTICS_CURRENCY)}`;
+}
+
+/** One line of the daily tooltip: label left, amount right. */
+function tooltipRow(label: string, amount: string, strong = false): string {
+  const weight = strong ? 'font-weight:600' : '';
+  return `<div style="display:flex;justify-content:space-between;gap:16px;${weight}"><span>${esc(label)}</span><span>${esc(amount)}</span></div>`;
 }
 
 /**
@@ -109,13 +144,33 @@ function dayLabel(day: string): string {
  * colour, i.e. nothing. So the token is read off the root element at render
  * time and passed as a literal, with the token's own value as the fallback
  * for anywhere `getComputedStyle` has no answer (jsdom).
+ *
+ * READ, NEVER HARDCODED AS A TINT OF THE ACCENT: the accent is a theme value
+ * (`#2e2a6b` in light, the pale lavender `#9b93d4` under a dark preference —
+ * which is what the owner's own screenshots show), so a literal "lighter
+ * purple" for the delivery bars sat on top of that lavender and was
+ * indistinguishable from it, and the accent's own tints inverted the
+ * emphasis (pale products, dark extras). Measured 2026-09-06. So the
+ * EXTRAS ARE NEUTRAL: the brand colour means "ours", grey means "passed
+ * through" — delivery and VAT — in either theme.
  */
-function accentColour(): string {
+function cssColour(token: string, fallback: string): string {
   const read =
     typeof window === 'undefined'
       ? ''
-      : window.getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
-  return read || '#2e2a6b';
+      : window.getComputedStyle(document.documentElement).getPropertyValue(token).trim();
+  return read || fallback;
+}
+
+/** The stacked series' colours, in the order they stack: product sales in
+ *  the accent, delivery in the mid neutral, VAT in the light neutral with a
+ *  hairline so a thin 7.5% slice still shows against the card. */
+function seriesColours(): { sales: string; delivery: string; tax: string } {
+  return {
+    sales: cssColour('--accent', '#2e2a6b'),
+    delivery: cssColour('--ink-disabled', '#b5b5b5'),
+    tax: cssColour('--border', '#e3e3e3'),
+  };
 }
 
 /**
@@ -171,14 +226,18 @@ export default function Analytics() {
   if (!allowed) return <NoAnalytics title="Analytics" />;
 
   const calendar = useMemo(() => (data ? fillCalendar(data) : []), [data]);
-  const accent = accentColour();
+  const colours = seriesColours();
+  const accent = colours.sales;
 
   /* ── the daily bars ─────────────────────────────────────────────────────
-     Y is MAJOR units (minor / 100) so the axis reads as naira; the tooltip
-     formats the exact minor amount through the shared money formatter and
-     names the day's order count beside it — the two numbers a salesperson
-     reads together. dataZoom inside + slider is the drag/pinch zoom; the
-     toolbox is save-as-image. */
+     Y is MAJOR units (minor / 100) so the axis reads as naira. THREE series
+     STACKED: product sales solid in the accent, delivery and VAT in lighter
+     steps above it — the bar's solid part is what the products sold for, its
+     full height is what customers were charged before discounts, and the
+     legend drops either extra out. Every point carries its whole day, so the
+     tooltip prints the receipt for that day through the shared money
+     formatter and names the order count beside it. dataZoom inside + slider
+     is the drag/pinch zoom; the toolbox is save-as-image. */
   const revenueOption = useMemo(
     () => ({
       tooltip: {
@@ -187,23 +246,33 @@ export default function Analytics() {
         formatter: (params: unknown) => {
           const first = (Array.isArray(params) ? params[0] : params) as {
             name?: string;
-            data?: { netMinor?: number; orders?: number };
+            data?: { day?: AnalyticsDay };
           };
-          const netMinor = first?.data?.netMinor ?? 0;
-          const orders = first?.data?.orders ?? 0;
-          return `${dayLabel(String(first?.name ?? ''))}<br/>${money(netMinor, ANALYTICS_CURRENCY)} · ${orders} ${
-            orders === 1 ? 'order' : 'orders'
-          }`;
+          const d = first?.data?.day ?? { day: '', ...NO_MONEY, orders: 0 };
+          const fmt = (minor: number) => money(minor, ANALYTICS_CURRENCY);
+          const rows = [
+            tooltipRow('Product sales', fmt(d.sales), true),
+            d.discounts !== 0 ? tooltipRow('Discounts', deduction(d.discounts)) : '',
+            tooltipRow('Delivery', fmt(d.delivery)),
+            tooltipRow('VAT', fmt(d.tax)),
+            tooltipRow('Charged', fmt(d.charged), true),
+            d.refunded !== 0 ? tooltipRow('Refunded', deduction(d.refunded)) : '',
+            d.refunded !== 0 ? tooltipRow('Collected', fmt(d.net), true) : '',
+          ].join('');
+          return `<div style="font-weight:600;margin-bottom:4px">${esc(dayLabel(String(first?.name ?? '')))} · ${d.orders} ${
+            d.orders === 1 ? 'order' : 'orders'
+          }</div>${rows}`;
         },
       },
+      legend: { top: 0, left: 0, icon: 'circle', itemGap: 16 },
       toolbox: {
         feature: {
-          saveAsImage: { title: 'Save chart', name: `net-revenue-by-day-${days}d` },
+          saveAsImage: { title: 'Save chart', name: `sales-by-day-${days}d` },
         },
         right: 8,
         top: 0,
       },
-      grid: { left: 8, right: 8, top: 32, bottom: 56, containLabel: true },
+      grid: { left: 8, right: 8, top: 40, bottom: 56, containLabel: true },
       xAxis: {
         type: 'category',
         data: calendar.map((d) => d.day),
@@ -218,19 +287,32 @@ export default function Analytics() {
       dataZoom: [{ type: 'inside' }, { type: 'slider', height: 18, bottom: 8 }],
       series: [
         {
-          name: 'Sales after refunds',
+          name: 'Product sales',
           type: 'bar',
+          stack: 'charged',
           barMaxWidth: 26,
-          itemStyle: { color: accent, borderRadius: [3, 3, 0, 0] },
-          data: calendar.map((d) => ({
-            value: d.net / 100,
-            netMinor: d.net,
-            orders: d.orders,
-          })),
+          itemStyle: { color: accent },
+          data: calendar.map((d) => ({ value: d.sales / 100, day: d })),
+        },
+        {
+          name: 'Delivery',
+          type: 'bar',
+          stack: 'charged',
+          barMaxWidth: 26,
+          itemStyle: { color: colours.delivery },
+          data: calendar.map((d) => ({ value: d.delivery / 100, day: d })),
+        },
+        {
+          name: 'VAT',
+          type: 'bar',
+          stack: 'charged',
+          barMaxWidth: 26,
+          itemStyle: { color: colours.tax, borderColor: colours.delivery, borderWidth: 1 },
+          data: calendar.map((d) => ({ value: d.tax / 100, day: d })),
         },
       ],
     }),
-    [calendar, accent, days],
+    [calendar, colours.sales, colours.delivery, colours.tax, days],
   );
 
   /* ── the status donut ─────────────────────────────────────────────────── */
@@ -317,9 +399,9 @@ export default function Analytics() {
   const totals = data?.totals ?? null;
   const tiles = [
     {
-      label: 'Sales after refunds',
-      value: totals === null ? null : money(totals.net, ANALYTICS_CURRENCY),
-      hint: 'Paid orders, after refunds',
+      label: 'Product sales',
+      value: totals === null ? null : money(totals.sales, ANALYTICS_CURRENCY),
+      hint: 'Item prices only. Delivery, VAT and refunds are below.',
     },
     {
       label: 'Paid orders',
@@ -334,7 +416,7 @@ export default function Analytics() {
           : totals.orders > 0
             ? money(totals.averageOrder, ANALYTICS_CURRENCY)
             : '—',
-      hint: 'Paid orders, after refunds',
+      hint: 'Product sales per paid order',
     },
     {
       label: 'Items sold',
@@ -344,6 +426,38 @@ export default function Analytics() {
   ] as const;
 
   const showSkeletons = loading || data === null;
+
+  /* ── the receipt ────────────────────────────────────────────────────────
+     Top to bottom the way an order prints: item prices, what came off, what
+     was added, what was charged, what went back, what was kept. The two
+     ruled rows are the two sums a reader actually wants. */
+  const receipt: DefRow[] =
+    totals === null
+      ? []
+      : [
+          { label: 'Product sales', value: <span className="num">{money(totals.sales, ANALYTICS_CURRENCY)}</span> },
+          { label: 'Discounts', value: <span className="num">{deduction(totals.discounts)}</span> },
+          { label: 'Delivery', value: <span className="num">{money(totals.delivery, ANALYTICS_CURRENCY)}</span> },
+          { label: 'VAT', value: <span className="num">{money(totals.tax, ANALYTICS_CURRENCY)}</span> },
+          {
+            label: 'Charged to customers',
+            value: <span className="num">{money(totals.charged, ANALYTICS_CURRENCY)}</span>,
+            total: true,
+          },
+          {
+            label: 'Refunded',
+            value: (
+              <span className="num" style={totals.refunded > 0 ? { color: 'var(--critical)' } : undefined}>
+                {deduction(totals.refunded)}
+              </span>
+            ),
+          },
+          {
+            label: 'Collected after refunds',
+            value: <span className="num">{money(totals.net, ANALYTICS_CURRENCY)}</span>,
+            total: true,
+          },
+        ];
 
   return (
     <div className="page">
@@ -407,7 +521,7 @@ export default function Analytics() {
             ))}
           </div>
 
-          {/* ── net revenue by day ────────────────────────────────────── */}
+          {/* ── sales by day: product bars, extras stacked above ──────── */}
           <Card title="Sales by day">
             {showSkeletons ? (
               <span className="skel" style={{ width: '100%', height: '20rem' }} aria-hidden="true" />
@@ -415,12 +529,12 @@ export default function Analytics() {
               <EChart
                 option={revenueOption}
                 height="22rem"
-                ariaLabel={`Bar chart of sales after refunds per day over the last ${days} days, in naira. Drag to zoom the date range; each day's tooltip names its sales and order count.`}
+                ariaLabel={`Stacked bar chart of product sales, delivery and VAT per day over the last ${days} days, in naira. The solid bar is item prices; delivery and VAT stack above it and the legend hides either. Drag to zoom the date range; each day's tooltip prints its receipt and order count.`}
               />
             )}
           </Card>
 
-          {/* ── status donut and best-sellers teaser, side by side ────── */}
+          {/* ── the receipt, the status donut and the best-sellers teaser ── */}
           <div
             style={{
               display: 'grid',
@@ -429,6 +543,24 @@ export default function Analytics() {
               alignItems: 'stretch',
             }}
           >
+            <Card title="Where the money went">
+              {showSkeletons ? (
+                <span
+                  className="skel"
+                  style={{ width: '100%', height: '16rem' }}
+                  aria-hidden="true"
+                />
+              ) : (
+                <>
+                  <Defs rows={receipt} />
+                  <p className="muted" style={{ fontSize: 'var(--t-xs)', marginTop: 'var(--s3)' }}>
+                    Product sales are item prices after bulk discounts. A refund comes off the
+                    whole order, so it only lowers what was collected.
+                  </p>
+                </>
+              )}
+            </Card>
+
             <Card title="Orders by status">
               {showSkeletons ? (
                 <span

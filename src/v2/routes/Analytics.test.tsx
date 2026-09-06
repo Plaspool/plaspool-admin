@@ -131,13 +131,46 @@ const NOW = 1_756_224_000_000;
 const watDay = (epochMs: number): string =>
   new Date(epochMs + 3_600_000).toISOString().slice(0, 10);
 
+/* The money split adds up the way the server sums it: sales + discounts +
+ * delivery + tax = charged, charged - refunded = net. */
 const BODY: ShopAnalytics = {
   generatedAt: NOW,
   days: 30,
-  totals: { net: 12_345_600, orders: 4, items: 9, averageOrder: 3_086_400 },
+  totals: {
+    sales: 10_000_000,
+    discounts: -200_000,
+    delivery: 1_500_000,
+    tax: 1_045_600,
+    charged: 12_345_600,
+    refunded: 300_000,
+    net: 12_045_600,
+    orders: 4,
+    items: 9,
+    averageOrder: 2_500_000,
+  },
   revenueByDay: [
-    { day: watDay(NOW - 2 * DAY), net: 9_345_600, orders: 3 },
-    { day: watDay(NOW), net: 3_000_000, orders: 1 },
+    {
+      day: watDay(NOW - 2 * DAY),
+      sales: 7_500_000,
+      discounts: -200_000,
+      delivery: 1_200_000,
+      tax: 845_600,
+      charged: 9_345_600,
+      refunded: 300_000,
+      net: 9_045_600,
+      orders: 3,
+    },
+    {
+      day: watDay(NOW),
+      sales: 2_500_000,
+      discounts: 0,
+      delivery: 300_000,
+      tax: 200_000,
+      charged: 3_000_000,
+      refunded: 0,
+      net: 3_000_000,
+      orders: 1,
+    },
   ],
   ordersByStatus: [
     { status: 'paid', count: 3 },
@@ -170,11 +203,30 @@ const queries = (): URLSearchParams[] =>
  */
 const norm = (s: string): string => s.replace(/\s+/g, ' ');
 
-/** The tile card around a label — where its value and its basis sentence live. */
+/** The tile card around a label — where its value and its basis sentence live.
+ *  "Product sales" is ALSO the first line of the receipt card, so the tile is
+ *  the match whose card carries no definition list. */
 function tile(label: string): HTMLElement {
-  const found = screen.getByText(label).closest('.card');
-  if (found === null) throw new Error(`no tile labelled ${label}`);
+  const found = screen
+    .getAllByText(label)
+    .map((el) => el.closest('.card'))
+    .find((card) => card !== null && card.querySelector('.defs') === null);
+  if (!found) throw new Error(`no tile labelled ${label}`);
   return found as HTMLElement;
+}
+
+/** The receipt card: the money split, top to bottom. */
+function receipt(): HTMLElement {
+  const found = screen.getByText('Where the money went').closest('.card');
+  if (found === null) throw new Error('no receipt card');
+  return found as HTMLElement;
+}
+
+/** A Defs row's value, by its label, inside `root`. */
+function rowValue(root: HTMLElement, label: string): string {
+  const row = within(root).getByText(label).closest('.defs__row');
+  if (row === null) throw new Error(`no row labelled ${label}`);
+  return norm(row.querySelector('.defs__value')?.textContent ?? '');
 }
 
 function mount() {
@@ -198,18 +250,37 @@ describe('the analytics screen', () => {
     expect(document.querySelectorAll('.skel').length).toBeGreaterThan(0);
 
     /* Then each tile carries the aggregate's number through the shared money
-       formatter — net, count, net-over-orders, items. */
+       formatter — ITEM PRICES (not the charged total), count, sales-over-
+       orders, items. */
+    expect(await screen.findByText('Where the money went')).toBeTruthy();
     expect(
-      await within(tile('Sales after refunds')).findByText(norm(money(12_345_600, 'NGN'))),
+      within(tile('Product sales')).getByText(norm(money(10_000_000, 'NGN'))),
     ).toBeTruthy();
     expect(within(tile('Paid orders')).getByText('4')).toBeTruthy();
     expect(
-      within(tile('Average order')).getByText(norm(money(3_086_400, 'NGN'))),
+      within(tile('Average order')).getByText(norm(money(2_500_000, 'NGN'))),
     ).toBeTruthy();
     expect(within(tile('Items sold')).getByText('9')).toBeTruthy();
+    /* The charged total is nowhere on a tile — that was the bug. */
+    expect(screen.queryByText('Sales after refunds')).toBeNull();
 
     /* And nothing is still pretending to load. */
     expect(document.querySelectorAll('.skel')).toHaveLength(0);
+  });
+
+  it('reads the money split as a receipt: sales, discounts, delivery, VAT, charged, refunded, collected', async () => {
+    withAnalytics();
+    mount();
+    await screen.findByText('Where the money went');
+    const card = receipt();
+
+    expect(rowValue(card, 'Product sales')).toBe(norm(money(10_000_000, 'NGN')));
+    expect(rowValue(card, 'Discounts')).toBe(norm(`−${money(200_000, 'NGN')}`));
+    expect(rowValue(card, 'Delivery')).toBe(norm(money(1_500_000, 'NGN')));
+    expect(rowValue(card, 'VAT')).toBe(norm(money(1_045_600, 'NGN')));
+    expect(rowValue(card, 'Charged to customers')).toBe(norm(money(12_345_600, 'NGN')));
+    expect(rowValue(card, 'Refunded')).toBe(norm(`−${money(300_000, 'NGN')}`));
+    expect(rowValue(card, 'Collected after refunds')).toBe(norm(money(12_045_600, 'NGN')));
   });
 
   it('asks with no days param by default, and refetches with ?days=90 when the picker moves', async () => {
@@ -238,7 +309,9 @@ describe('the analytics screen', () => {
     /* Three charts, no more: the daily bars, the status donut, the teaser. */
     expect(screen.getAllByTestId('echart')).toHaveLength(3);
     expect(
-      screen.getByRole('img', { name: /sales after refunds per day over the last 30 days/i }),
+      screen.getByRole('img', {
+        name: /product sales, delivery and VAT per day over the last 30 days/i,
+      }),
     ).toBeTruthy();
     expect(
       screen.getByRole('img', { name: /orders by status over the last 30 days/i }),

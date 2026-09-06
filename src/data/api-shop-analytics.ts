@@ -29,12 +29,32 @@ export type AnalyticsDays = 7 | 30 | 90 | 365;
 /** The server's default window, `Number(q.days ?? '30')` in the route. */
 export const ANALYTICS_DEFAULT_DAYS: AnalyticsDays = 30;
 
-export interface AnalyticsDay {
+/**
+ * The money split every window and every day carries, minor units, over paid
+ * orders. SALES ARE ITEM PRICES: the screen used to print the grand total
+ * under "Sales", so delivery and VAT read as product revenue (owner,
+ * 2026-09-06). Now `sales + discounts + delivery + tax = charged`, and
+ * `charged - refunded = net`, exactly as the server sums them.
+ */
+export interface AnalyticsMoney {
+  /** Item prices only — the order subtotals, after bulk discounts. */
+  sales: number;
+  /** Codes and points, zero or negative. */
+  discounts: number;
+  delivery: number;
+  tax: number;
+  /** What customers actually paid: the grand totals. */
+  charged: number;
+  /** Order-level, so it nets ONLY `net` — never `sales`. */
+  refunded: number;
+  /** `charged - refunded`: collected after refunds. */
+  net: number;
+}
+
+export interface AnalyticsDay extends AnalyticsMoney {
   /** YYYY-MM-DD in WAT (UTC+1, fixed — the server's own bucketing). Days with
    *  no paid order are ABSENT; a client drawing a calendar fills the gaps. */
   day: string;
-  /** Minor units, net of refunds, over paid orders. */
-  net: number;
   orders: number;
 }
 
@@ -58,12 +78,10 @@ export interface ShopAnalytics {
   /** The one instant every window below was measured from. */
   generatedAt: number;
   days: number;
-  totals: {
-    /** Minor units, `grand_total - refunded_total` over paid orders. */
-    net: number;
+  totals: AnalyticsMoney & {
     orders: number;
     items: number;
-    /** Net over orders, minor units, 0 when there were none. */
+    /** `sales` over orders, minor units, 0 when there were none. */
     averageOrder: number;
   };
   revenueByDay: AnalyticsDay[];
