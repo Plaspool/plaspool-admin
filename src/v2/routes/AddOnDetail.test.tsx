@@ -134,4 +134,82 @@ describe('AddOnDetail', () => {
     await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText(/Someone else saved this add-on/)).toBeTruthy();
   });
+
+  it('removing a rule does not leave the survivor showing a different rule’s Charge', async () => {
+    // The debt ledger's exact repro: [A: no amount, B: ₦2,000] — remove A, and
+    // an index-keyed card would keep showing A's empty Charge over B's data.
+    const user = userEvent.setup();
+    const twoRules = {
+      ...box,
+      rules: [
+        { when: [], then: 'ask' },
+        { when: [], then: 'include', amountMinor: 200_000 },
+      ],
+    };
+    when(ONE, (init) => ((init.method ?? 'GET') === 'GET'
+      ? { body: { addOn: twoRules } }
+      : { body: { addOn: { ...twoRules, ...(JSON.parse(String(init.body)) as { patch: object }).patch, revision: 4 } } }));
+    mount('/products/add-ons/ado_box');
+    await screen.findByDisplayValue('Gift box');
+    expect(screen.getByTestId('rule-0')).toBeTruthy();
+    expect(screen.getByTestId('rule-1')).toBeTruthy();
+
+    await user.click(within(screen.getByTestId('rule-0')).getByRole('button', { name: 'Remove rule' }));
+    expect(screen.queryByTestId('rule-1')).toBeNull();
+
+    const survivor = screen.getByTestId('rule-0');
+    const charge = within(survivor).getByLabelText('Charge') as HTMLInputElement;
+    expect(charge.value).toBe('2000.00');
+    // The placeholder falls back to the add-on's own price (₦1,500, untouched
+    // in this test) and reads it through `formatMinor` — locale-dependent, so
+    // matched on digits with the grouping comma optional, same as
+    // `SpoolsAnalytics.test.tsx`.
+    expect(charge.placeholder).toMatch(/1,?500\.00/);
+
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(bodiesOf(ONE, 'PATCH').length).toBe(1));
+    expect(bodiesOf(ONE, 'PATCH')[0].patch).toMatchObject({
+      rules: [{ when: [], then: 'include', amountMinor: 200_000 }],
+    });
+  });
+
+  it('discarding after typing a Charge shows the saved value again', async () => {
+    const user = userEvent.setup();
+    when(ONE, () => ({ body: { addOn: box } }));
+    mount('/products/add-ons/ado_box');
+    await screen.findByDisplayValue('Gift box');
+
+    const rule = screen.getByTestId('rule-0');
+    const charge = within(rule).getByLabelText('Charge') as HTMLInputElement;
+    await user.type(charge, '500');
+    // Blur commits the typed amount to state (only then does the save bar
+    // appear) — the same tab-away a person does before reaching for Discard.
+    await user.tab();
+    await user.click(await screen.findByRole('button', { name: 'Discard' }));
+
+    const survivor = screen.getByTestId('rule-0');
+    expect((within(survivor).getByLabelText('Charge') as HTMLInputElement).value).toBe('');
+  });
+
+  it('picks a product by its title through the search-select, not by typing its id', async () => {
+    const user = userEvent.setup();
+    when(ONE, (init) => ((init.method ?? 'GET') === 'GET'
+      ? { body: { addOn: box } }
+      : { body: { addOn: { ...box, ...(JSON.parse(String(init.body)) as { patch: object }).patch, revision: 4 } } }));
+    when('/api/shop/admin/products', () => ({ body: { items: [{ id: 'prd_1', title: 'PLA Silk' }, { id: 'prd_2', title: 'PLA Basic' }], nextCursor: null } }));
+    mount('/products/add-ons/ado_box');
+    await screen.findByDisplayValue('Gift box');
+
+    const rule = screen.getByTestId('rule-0');
+    await user.selectOptions(within(rule).getByLabelText('Attribute'), 'product');
+    await user.click(within(rule).getByRole('button', { name: 'Add a product' }));
+    await user.click(await screen.findByRole('option', { name: 'PLA Silk' }));
+    expect(within(rule).getByText('PLA Silk')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(bodiesOf(ONE, 'PATCH').length).toBe(1));
+    expect(bodiesOf(ONE, 'PATCH')[0].patch).toMatchObject({
+      rules: [{ when: [{ attribute: 'product', op: 'any_in', values: ['prd_1'] }] }],
+    });
+  });
 });

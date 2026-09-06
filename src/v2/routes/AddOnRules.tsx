@@ -1,10 +1,11 @@
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2, X } from 'lucide-react';
 import { attributesOfKind } from '../../../shared/commerce/add-ons';
 import type { AddOnAttribute, AddOnCondition, AddOnRule, NumberAttribute } from '../../../shared/commerce/add-ons';
 import { formatMinor, parseMajor, plainMajor } from '../../data/api-shop';
 import { Card } from '../ui/Card';
 import { AffixField, SelectField, TextField } from '../ui/Field';
 import { Button } from '../ui/primitives';
+import { SearchSelect } from '../ui/SearchSelect';
 import { TagInput } from '../ui/TagInput';
 import { ATTRIBUTE_LABELS, NUMBER_OPS, SET_OPS, kindOf } from './add-on-copy';
 
@@ -21,15 +22,35 @@ const ATTRIBUTES = [
   ...attributesOfKind(['flag']),
 ] as AddOnAttribute[];
 
+/**
+ * Client-only identity for a draft rule or condition — never sent to the
+ * server (`AddOnDetail.tsx`'s `plain()` strips it before every save and every
+ * dirty check). Keying a rule card or a condition row on its array INDEX
+ * meant that removing an earlier row shifted every later one's uncontrolled
+ * inputs (Charge, the money From/To/Value fields) onto the wrong data — the
+ * DOM node stayed where it was, and an uncontrolled input's `defaultValue`
+ * only applies at mount, so it kept showing whatever it showed before. A
+ * stable id fixes that: React unmounts exactly the removed row and leaves
+ * every surviving row's inputs keyed to itself, wherever it now sits.
+ */
+let uidSeq = 0;
+export function nextUid(): string {
+  uidSeq += 1;
+  return `u${uidSeq}`;
+}
+
+export type EditableCondition = AddOnCondition & { uid: string };
+export type EditableRule = Omit<AddOnRule, 'when'> & { uid: string; when: EditableCondition[] };
+
 /** A fresh condition for an attribute, in that attribute's shape. */
-export function blankCondition(attribute: AddOnAttribute): AddOnCondition {
+export function blankCondition(attribute: AddOnAttribute): EditableCondition {
   switch (kindOf(attribute)) {
     case 'set':
-      return { attribute: attribute as never, op: 'any_in', values: [] };
+      return { attribute: attribute as never, op: 'any_in', values: [], uid: nextUid() };
     case 'flag':
-      return { attribute: attribute as never, op: 'is', value: true };
+      return { attribute: attribute as never, op: 'is', value: true, uid: nextUid() };
     default:
-      return { attribute: attribute as never, op: 'gte', value: 1 };
+      return { attribute: attribute as never, op: 'gte', value: 1, uid: nextUid() };
   }
 }
 
@@ -92,23 +113,82 @@ function NumberValue({
  * same registry.
  */
 type NumberCondition =
-  | { attribute: NumberAttribute; op: 'eq' | 'gte' | 'lte'; value: number }
-  | { attribute: NumberAttribute; op: 'between'; min: number; max: number };
+  | { attribute: NumberAttribute; op: 'eq' | 'gte' | 'lte'; value: number; uid: string }
+  | { attribute: NumberAttribute; op: 'between'; min: number; max: number; uid: string };
+
+/**
+ * The Product condition picks by TITLE, not by typing a raw id: a SearchSelect
+ * adds one product at a time to `condition.values`, and the chosen ids render
+ * underneath as a chip list, each resolved back to its title (falling back to
+ * the bare id for one this page's product list does not carry — a deleted
+ * product, or one past the first page). `describeCondition` in `add-on-copy.ts`
+ * still prints the stored ids in the rule's summary sentence: that sentence
+ * has no product list to resolve against, and that is a controller ruling,
+ * not an oversight.
+ */
+function ProductValues({
+  values,
+  products,
+  onChange,
+}: {
+  values: string[];
+  products: { id: string; title: string }[];
+  onChange: (next: string[]) => void;
+}) {
+  const titleOf = (id: string) => products.find((p) => p.id === id)?.title ?? id;
+  const available = products.filter((p) => !values.includes(p.id));
+  return (
+    <div className="field">
+      <span className="field__label">Values</span>
+      <SearchSelect
+        label="Add a product"
+        value=""
+        options={available.map((p) => ({ value: p.id, label: p.title }))}
+        onChange={(id) => {
+          if (!id || values.includes(id)) return;
+          onChange([...values, id]);
+        }}
+        placeholder="Search products…"
+        emptyText="No product matches that."
+      />
+      {values.length > 0 ? (
+        <div className="tagin__box" style={{ marginTop: 'var(--s2)', cursor: 'default' }}>
+          {values.map((id) => (
+            <span key={id} className="tagin__chip">
+              {titleOf(id)}
+              <button
+                type="button"
+                className="tagin__x"
+                aria-label={`Remove ${titleOf(id)}`}
+                onClick={() => onChange(values.filter((v) => v !== id))}
+              >
+                <X aria-hidden="true" />
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <span className="field__hint">Joined by OR.</span>
+    </div>
+  );
+}
 
 function ConditionRow({
   condition,
   currency,
+  products,
   onChange,
   onRemove,
 }: {
-  condition: AddOnCondition;
+  condition: EditableCondition;
   currency: string;
-  onChange: (next: AddOnCondition) => void;
+  products: { id: string; title: string }[];
+  onChange: (next: EditableCondition) => void;
   onRemove: () => void;
 }) {
   const kind = kindOf(condition.attribute);
   return (
-    <div className="rule__condition" style={{ display: 'flex', gap: 'var(--s2)', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+    <div style={{ display: 'flex', gap: 'var(--s2)', alignItems: 'flex-end', flexWrap: 'wrap' }}>
       <SelectField
         label="Attribute"
         value={condition.attribute}
@@ -134,8 +214,8 @@ function ConditionRow({
                   const current = 'value' in nc ? nc.value : nc.min;
                   onChange(
                     op === 'between'
-                      ? { attribute: nc.attribute, op, min: current, max: current }
-                      : { attribute: nc.attribute, op, value: current },
+                      ? { attribute: nc.attribute, op, min: current, max: current, uid: nc.uid }
+                      : { attribute: nc.attribute, op, value: current, uid: nc.uid },
                   );
                 }}
               >
@@ -167,7 +247,11 @@ function ConditionRow({
               </option>
             ))}
           </SelectField>
-          <TagInput label="Values" value={condition.values} onChange={(values) => onChange({ ...condition, values })} placeholder="Type one and press Enter" hint="Joined by OR." />
+          {condition.attribute === 'product' ? (
+            <ProductValues values={condition.values} products={products} onChange={(values) => onChange({ ...condition, values })} />
+          ) : (
+            <TagInput label="Values" value={condition.values} onChange={(values) => onChange({ ...condition, values })} placeholder="Type one and press Enter" hint="Joined by OR." />
+          )}
         </>
       ) : null}
 
@@ -189,19 +273,21 @@ export function AddOnRules({
   rules,
   priceMinor,
   currency,
+  products,
   onChange,
 }: {
-  rules: AddOnRule[];
+  rules: EditableRule[];
   priceMinor: number;
   currency: string;
-  onChange: (next: AddOnRule[]) => void;
+  products: { id: string; title: string }[];
+  onChange: (next: EditableRule[]) => void;
 }) {
-  const update = (i: number, next: AddOnRule) => onChange(rules.map((r, j) => (j === i ? next : r)));
+  const update = (i: number, next: EditableRule) => onChange(rules.map((r, j) => (j === i ? next : r)));
   return (
     <Card title="When to offer it">
       <p className="muted">Rules are read top to bottom. The first one that fits decides.</p>
       {rules.map((rule, i) => (
-        <div key={i} className="card" data-testid={`rule-${i}`} style={{ marginTop: 'var(--s3)', padding: 'var(--s3)' }}>
+        <div key={rule.uid} className="card" data-testid={`rule-${i}`} style={{ marginTop: 'var(--s3)', padding: 'var(--s3)' }}>
           <div className="segmented" role="group" aria-label={`Rule ${i + 1}`}>
             <button type="button" className="segmented__opt" aria-pressed={rule.then === 'ask'} onClick={() => update(i, { ...rule, then: 'ask' })}>
               Ask the customer
@@ -226,9 +312,10 @@ export function AddOnRules({
           />
           {rule.when.map((condition, c) => (
             <ConditionRow
-              key={c}
+              key={condition.uid}
               condition={condition}
               currency={currency}
+              products={products}
               onChange={(next) => update(i, { ...rule, when: rule.when.map((x, k) => (k === c ? next : x)) })}
               onRemove={() => update(i, { ...rule, when: rule.when.filter((_, k) => k !== c) })}
             />
@@ -248,7 +335,7 @@ export function AddOnRules({
         </div>
       ))}
       <div style={{ marginTop: 'var(--s3)' }}>
-        <Button onClick={() => onChange([...rules, { when: [], then: 'ask' }])}>
+        <Button onClick={() => onChange([...rules, { uid: nextUid(), when: [], then: 'ask', amountMinor: null }])}>
           <Plus aria-hidden="true" />
           Add rule
         </Button>

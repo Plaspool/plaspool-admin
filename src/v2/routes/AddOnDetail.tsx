@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Gift } from 'lucide-react';
-import { moneyRefusalMessage, parseMajor, plainMajor, shopApi, type AddOnRule, type AddOnStatus, type ShopAddOn } from '../../data/api-shop';
+import { moneyRefusalMessage, parseMajor, plainMajor, shopApi, type AddOnStatus, type ShopAddOn } from '../../data/api-shop';
 import { ApiError } from '../../data/errors';
 import { humanise, productTone } from '../lib/format';
+import { useAsync } from '../lib/useAsync';
 import { PageHeader } from '../ui/Page';
 import { Badge, Banner } from '../ui/primitives';
 import { Card } from '../ui/Card';
@@ -11,7 +12,7 @@ import { AffixField, Segmented, TextArea, TextField } from '../ui/Field';
 import { SingleImage } from '../ui/Img';
 import { SaveBar } from '../ui/SaveBar';
 import { useToast } from '../ui/Toast';
-import { AddOnRules } from './AddOnRules';
+import { AddOnRules, nextUid, type EditableRule } from './AddOnRules';
 
 /**
  * ADD-ON EDITOR — `/products/add-ons/new` and `/products/add-ons/:id`.
@@ -19,7 +20,6 @@ import { AddOnRules } from './AddOnRules';
  * offer it. Saves the whole row under the loaded revision; a 409 stale_write
  * shows a banner rather than a "Saved" it cannot honour.
  */
-const CURRENCY = 'NGN';
 const STATUSES: { value: AddOnStatus; label: string }[] = [
   { value: 'draft', label: 'Draft' },
   { value: 'active', label: 'Active' },
@@ -33,10 +33,18 @@ interface Draft {
   priceText: string;
   status: AddOnStatus;
   position: number;
-  rules: AddOnRule[];
+  rules: EditableRule[];
 }
 
-const fresh = (): Draft => ({ title: '', description: '', imageId: null, priceText: '', status: 'draft', position: 0, rules: [{ when: [], then: 'ask' }] });
+const fresh = (): Draft => ({
+  title: '',
+  description: '',
+  imageId: null,
+  priceText: '',
+  status: 'draft',
+  position: 0,
+  rules: [{ uid: nextUid(), when: [], then: 'ask', amountMinor: null }],
+});
 const fromRow = (a: ShopAddOn): Draft => ({
   title: a.title,
   description: a.description ?? '',
@@ -44,8 +52,48 @@ const fromRow = (a: ShopAddOn): Draft => ({
   priceText: plainMajor(a.priceMinor, a.currency),
   status: a.status,
   position: a.position,
-  rules: a.rules,
+  rules: a.rules.map((r) => ({
+    ...r,
+    uid: nextUid(),
+    // A loaded rule with no `amountMinor` key at all, and one blurred back to
+    // empty (which writes an explicit `null`), have to compare equal —
+    // otherwise opening a saved add-on and tapping straight out of an
+    // already-empty Charge box flips the save bar on having changed nothing.
+    amountMinor: r.amountMinor ?? null,
+    when: r.when.map((c) => ({ ...c, uid: nextUid() })),
+  })),
 });
+
+/**
+ * Fresh client-only ids for every rule and condition in a draft — used on
+ * Discard so React remounts every rule card rather than reusing the ones on
+ * screen. Reusing them would leave an uncontrolled Charge (or a money
+ * From/To/Value field) still showing whatever was typed: `defaultValue` only
+ * applies at mount, so a same-keyed element that survives a state reset never
+ * re-reads it.
+ */
+const withUids = (d: Draft): Draft => ({
+  ...d,
+  rules: d.rules.map((r) => ({
+    ...r,
+    uid: nextUid(),
+    when: r.when.map((c) => ({ ...c, uid: nextUid() })),
+  })),
+});
+
+/**
+ * `draft`/`saved` with every uid stripped — the shape that actually goes over
+ * the wire, and the shape `dirty` compares. Without this, two loads of the
+ * SAME row (`fromRow` mints a fresh uid every time) would never compare
+ * equal, and Discard's freshly-reminted uids would look like a change that
+ * never happened.
+ */
+function plain(d: Draft) {
+  return {
+    ...d,
+    rules: d.rules.map(({ uid, when, ...r }) => ({ ...r, when: when.map(({ uid: _c, ...c }) => c) })),
+  };
+}
 
 export default function AddOnDetail({ create = false }: { create?: boolean }) {
   const { id } = useParams<{ id: string }>();
@@ -57,6 +105,13 @@ export default function AddOnDetail({ create = false }: { create?: boolean }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
+
+  // The Product condition picks by title (spec: no raw ids typed by hand).
+  // One page is enough for the picker, same as the command palette's own
+  // product pool (`Palette.tsx`); empty while it loads costs nothing here,
+  // since a rule with no product condition never reads this at all.
+  const productsAsync = useAsync((signal) => shopApi.listProducts({ limit: 50 }, signal), []);
+  const products = (productsAsync.data?.items ?? []).map((p) => ({ id: p.id, title: p.title }));
 
   useEffect(() => {
     if (create || !id) return;
@@ -75,20 +130,27 @@ export default function AddOnDetail({ create = false }: { create?: boolean }) {
     return () => controller.abort();
   }, [create, id]);
 
-  const price = parseMajor(draft.priceText, CURRENCY);
-  const priceError = draft.priceText.trim() === '' ? 'A price is needed. 0 is fine.' : price.ok ? null : moneyRefusalMessage(price.reason, CURRENCY);
-  const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
+  // The loaded row's own currency, never a hard-coded one — `fromRow` already
+  // formats the price with `a.currency`, and a fresh add-on (no row yet)
+  // falls back to the store's single currency until multi-currency ships.
+  const currency = row?.currency ?? 'NGN';
+  const price = parseMajor(draft.priceText, currency);
+  const priceError = draft.priceText.trim() === '' ? 'A price is needed. 0 is fine.' : price.ok ? null : moneyRefusalMessage(price.reason, currency);
+  const dirty = JSON.stringify(plain(draft)) !== JSON.stringify(plain(saved));
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }));
 
-  const body = () => ({
-    title: draft.title.trim(),
-    description: draft.description.trim() === '' ? null : draft.description.trim(),
-    imageId: draft.imageId,
-    priceMinor: price.ok ? price.minor : 0,
-    status: draft.status,
-    position: draft.position,
-    rules: draft.rules,
-  });
+  const body = () => {
+    const p = plain(draft);
+    return {
+      title: p.title.trim(),
+      description: p.description.trim() === '' ? null : p.description.trim(),
+      imageId: p.imageId,
+      priceMinor: price.ok ? price.minor : 0,
+      status: p.status,
+      position: p.position,
+      rules: p.rules,
+    };
+  };
 
   async function save() {
     if (saving || priceError || draft.title.trim() === '') return;
@@ -130,7 +192,7 @@ export default function AddOnDetail({ create = false }: { create?: boolean }) {
         label={create ? 'Unsaved add-on' : 'Unsaved changes'}
         saving={saving}
         disabled={draft.title.trim() === '' || priceError !== null}
-        onDiscard={() => (create ? navigate('/products/add-ons') : setDraft(saved))}
+        onDiscard={() => (create ? navigate('/products/add-ons') : setDraft(withUids(saved)))}
         onSave={() => void save()}
       />
       <PageHeader
@@ -157,7 +219,7 @@ export default function AddOnDetail({ create = false }: { create?: boolean }) {
           </Card>
         </div>
         <aside className="form2__side">
-          <AddOnRules rules={draft.rules} priceMinor={price.ok ? price.minor : 0} currency={CURRENCY} onChange={(rules) => set('rules', rules)} />
+          <AddOnRules rules={draft.rules} priceMinor={price.ok ? price.minor : 0} currency={currency} products={products} onChange={(rules) => set('rules', rules)} />
         </aside>
       </div>
     </div>

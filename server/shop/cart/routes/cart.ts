@@ -311,16 +311,18 @@ async function view(
     lines.map(async (line) => ({ line, quote: await deps.catalog.quote(db, line.variantId) })),
   );
 
+  const lineInputs = quoted.map(({ line, quote }) => ({
+    variantId: line.variantId,
+    // See the note in `checkout/repo.ts`: variantId, never ''.
+    productId: quote?.productId ?? line.variantId,
+    qty: line.qty,
+    unit: quote ? quote.price : null,
+    bulkTiers: quote?.bulkTiers ?? [],
+  }));
+
   const computed = computeTotals({
     currency: current.currency,
-    lines: quoted.map(({ line, quote }) => ({
-      variantId: line.variantId,
-      // See the note in `checkout/repo.ts`: variantId, never ''.
-      productId: quote?.productId ?? line.variantId,
-      qty: line.qty,
-      unit: quote ? quote.price : null,
-      bulkTiers: quote?.bulkTiers ?? [],
-    })),
+    lines: lineInputs,
     shipping: null,
     tax: unknownZoneTaxRate(),
     adjustments: [],
@@ -346,13 +348,7 @@ async function view(
     if (computed.ok && evaluated.applied.length > 0) {
       const charged = computeTotals({
         currency: current.currency,
-        lines: quoted.map(({ line, quote }) => ({
-          variantId: line.variantId,
-          productId: quote?.productId ?? line.variantId,
-          qty: line.qty,
-          unit: quote ? quote.price : null,
-          bulkTiers: quote?.bulkTiers ?? [],
-        })),
+        lines: lineInputs,
         shipping: null,
         tax: unknownZoneTaxRate(),
         adjustments: [],

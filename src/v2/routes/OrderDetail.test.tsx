@@ -581,6 +581,18 @@ describe('the next-step menu item', () => {
 
 // ============================================================================
 
+/**
+ * Money, matched WITHOUT its exact locale rendering. `Intl` renders NGN as
+ * "₦1,500.00" under a full ICU and "NGN 1,500.00" under a small one, and
+ * `formatMinor` resolves the process default locale — so a literal pin
+ * passes on one machine and fails on a `LANG=C` runner. See the same
+ * reasoning, stated at length, in `SpoolsAnalytics.test.tsx`.
+ */
+const amount = (digits: string) => (content: string) => {
+  const text = content.replace(/\u00A0/g, ' ').trim();
+  return /^(?:₦|NGN ?)?[\d.,]+$/.test(text) && text.includes(digits);
+};
+
 describe('add-ons on the order', () => {
   it('lists each add-on, marks the included one Included, and totals them under Payment', async () => {
     withOrder([], {
@@ -600,11 +612,11 @@ describe('add-ons on the order', () => {
     // getByText would throw on the very success this test is proving.
     expect(screen.getAllByText('Add-ons').length).toBeGreaterThan(0);
     // The rendered amount is locale-dependent (the naira sign under some
-    // ICU builds, the bare ISO code under this one); getByText also
-    // collapses the non-breaking space to a plain one, so that pairing
-    // is what this literal has to spell. Two occurrences are expected:
-    // the add-on row and the Payment total.
-    expect(screen.getAllByText('NGN 1,500.00').length).toBeGreaterThan(0);
+    // ICU builds, the bare ISO code under this one) and `getByText` also
+    // collapses the non-breaking space to a plain one — `amount()` matches
+    // on the digits alone, so this holds either way. Two occurrences are
+    // expected: the add-on row and the Payment total.
+    expect(screen.getAllByText(amount('1,500.00')).length).toBeGreaterThan(0);
   });
 
   it('renders an order with no add-ons exactly as before', async () => {
