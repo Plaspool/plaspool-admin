@@ -194,7 +194,7 @@ function PopEditSpecimen() {
         <>
           <AffixField
             label="Price"
-            prefix="NGN"
+            prefix="₦"
             inputMode="decimal"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -613,11 +613,11 @@ export default function DesignGallery() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(15rem, 1fr))', gap: 'var(--s4)' }}>
             <TextField label="Discount code" placeholder="SUMMER20" hint="Customers type this at checkout." />
             <TextField label="With an error" defaultValue="not-an-email" error="That does not look like an email address." />
-            <AffixField label="Amount off" prefix="NGN" placeholder="0.00" inputMode="decimal" />
+            <AffixField label="Amount off" prefix="₦" placeholder="0.00" inputMode="decimal" />
             <AffixField label="Percentage off" suffix="%" defaultValue="10" inputMode="decimal" />
             <AffixField
               label="With a quick-fill"
-              prefix="NGN"
+              prefix="₦"
               inputMode="decimal"
               value={fillDemo}
               hint="Tab — or tap the keycap — types the suggestion out, ready to edit. Empty until then."
