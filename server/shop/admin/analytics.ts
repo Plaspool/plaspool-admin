@@ -20,9 +20,31 @@ import type { Db } from '../../db/client';
  * is the same answer with no bet. If the store ever moves timezones, this
  * constant is the whole migration.
  *
- * MEASURED OVER paid_at AND NET OF REFUNDS, exactly as `shopStats.revenue`
- * is, and for the same reasons (money that never arrived is not revenue that
- * disappeared; a fully refunded order nets to zero rather than vanishing).
+ * MEASURED OVER paid_at, exactly as `shopStats.revenue` is (money that never
+ * arrived is not revenue).
+ *
+ * SALES ARE ITEM PRICES, AND THE REST IS NAMED SEPARATELY (owner, 2026-09-06).
+ * The screen used to print `grand_total - refunded_total` under "Sales", so a
+ * 28,000 order with 3,000 delivery read as 31,000 of sales. Every money
+ * figure is now split the way the order itself is frozen:
+ *
+ *   sales      sum(subtotal)       - item prices, after bulk discounts, before
+ *                                    everything else. THE headline.
+ *   discounts  sum(grand - subtotal - shipping - tax) - codes and points; the
+ *                                    order row has no adjustment column, so it
+ *                                    is read off the gap. <= 0, and exact,
+ *                                    because grandTotal = subtotal +
+ *                                    adjustmentTotal + shippingTotal + taxTotal
+ *                                    is the engine's own identity
+ *                                    (`shared/commerce/ports.ts`).
+ *   delivery   sum(shipping_total)
+ *   tax        sum(tax_total)
+ *   charged    sum(grand_total)     - what customers actually paid.
+ *   refunded   sum(refunded_total)  - order-level money that cannot honestly
+ *                                    be pinned to items or delivery, so it nets
+ *                                    ONLY the bottom line and never `sales`.
+ *   net        charged - refunded   - collected after refunds; a fully refunded
+ *                                    order nets to zero rather than vanishing.
  */
 
 export const WAT_OFFSET_MS = 60 * 60 * 1000;
@@ -32,11 +54,25 @@ export const WAT_OFFSET_MS = 60 * 60 * 1000;
  * served with a straight face. */
 export const ANALYTICS_RANGES = ['7', '30', '90', '365'] as const;
 
-export interface AnalyticsDay {
+/** The money split every window and every day carries. Minor units. */
+export interface AnalyticsMoney {
+  /** Item prices only: sum of subtotals, gross of refunds. */
+  sales: number;
+  /** Codes and points, <= 0. */
+  discounts: number;
+  delivery: number;
+  tax: number;
+  /** Sum of grand totals: sales + discounts + delivery + tax. */
+  charged: number;
+  refunded: number;
+  /** charged - refunded. */
+  net: number;
+}
+
+export interface AnalyticsDay extends AnalyticsMoney {
   /** YYYY-MM-DD in WAT. Days with no paid order are absent — the client
    * draws the gap, exactly as the old inline chart did. */
   day: string;
-  net: number;
   orders: number;
 }
 
@@ -56,11 +92,10 @@ export interface AnalyticsProductRow {
 export interface ShopAnalytics {
   generatedAt: number;
   days: number;
-  totals: {
-    net: number;
+  totals: AnalyticsMoney & {
     orders: number;
     items: number;
-    /** Net over orders, minor units, 0 when there were none. */
+    /** Sales (item prices) over orders, minor units, 0 when there were none. */
     averageOrder: number;
   };
   revenueByDay: AnalyticsDay[];
@@ -79,6 +114,30 @@ const WAT_DAY = sql.raw(
   `to_char(to_timestamp((o.paid_at + 3600000) / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD')`,
 );
 
+/** The money split, as aggregate columns over shop_orders o. One fragment
+ * for the day series and the window total, so the two cannot disagree about
+ * what a discount is. */
+const MONEY_COLUMNS = sql.raw(`
+  COALESCE(sum(o.subtotal), 0)::bigint AS sales,
+  COALESCE(sum(o.grand_total - o.subtotal - o.shipping_total - o.tax_total), 0)::bigint AS discounts,
+  COALESCE(sum(o.shipping_total), 0)::bigint AS delivery,
+  COALESCE(sum(o.tax_total), 0)::bigint AS tax,
+  COALESCE(sum(o.grand_total), 0)::bigint AS charged,
+  COALESCE(sum(o.refunded_total), 0)::bigint AS refunded,
+  COALESCE(sum(o.grand_total - o.refunded_total), 0)::bigint AS net`);
+
+function readMoney(row: Record<string, unknown>): AnalyticsMoney {
+  return {
+    sales: Number(row.sales ?? 0),
+    discounts: Number(row.discounts ?? 0),
+    delivery: Number(row.delivery ?? 0),
+    tax: Number(row.tax ?? 0),
+    charged: Number(row.charged ?? 0),
+    refunded: Number(row.refunded ?? 0),
+    net: Number(row.net ?? 0),
+  };
+}
+
 export async function shopAnalytics(
   db: Db,
   a: { now: number; days: number },
@@ -88,7 +147,7 @@ export async function shopAnalytics(
   const [byDay, byStatus, totals, products] = await Promise.all([
     db.execute(sql`
       SELECT ${WAT_DAY} AS day,
-             COALESCE(sum(o.grand_total - o.refunded_total), 0)::bigint AS net,
+             ${MONEY_COLUMNS},
              count(*)::int AS orders
         FROM shop_orders o
        WHERE o.paid_at IS NOT NULL AND o.paid_at >= ${since}
@@ -102,7 +161,7 @@ export async function shopAnalytics(
        WHERE o.placed_at >= ${since}
        GROUP BY o.status ORDER BY o.status ASC`),
     db.execute(sql`
-      SELECT COALESCE(sum(o.grand_total - o.refunded_total), 0)::bigint AS net,
+      SELECT ${MONEY_COLUMNS},
              count(*)::int AS orders,
              COALESCE((SELECT sum(l.qty)::int FROM shop_order_lines l
                         JOIN shop_orders po ON po.id = l.order_id
@@ -123,21 +182,21 @@ export async function shopAnalytics(
   ]);
 
   const totalRow = totals.rows[0] ?? {};
-  const net = Number(totalRow.net ?? 0);
+  const money = readMoney(totalRow);
   const orders = Number(totalRow.orders ?? 0);
 
   return {
     generatedAt: a.now,
     days: a.days,
     totals: {
-      net,
+      ...money,
       orders,
       items: Number(totalRow.items ?? 0),
-      averageOrder: orders === 0 ? 0 : Math.round(net / orders),
+      averageOrder: orders === 0 ? 0 : Math.round(money.sales / orders),
     },
     revenueByDay: byDay.rows.map((row) => ({
       day: String(row.day),
-      net: Number(row.net),
+      ...readMoney(row),
       orders: Number(row.orders),
     })),
     ordersByStatus: byStatus.rows.map((row) => ({

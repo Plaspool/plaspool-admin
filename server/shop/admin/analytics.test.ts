@@ -112,7 +112,9 @@ describe('GET /api/shop/admin/analytics', () => {
     expect(body.days).toBe(7);
     expect(body.totals.orders).toBe(2);
     expect(body.totals.net).toBe(grand - 100_000 + grand);
-    expect(body.totals.averageOrder).toBe(Math.round(body.totals.net / 2));
+    /* Average order is ITEM PRICES over orders, not the charged total — the
+     * fixture's 4500 subtotal, twice. */
+    expect(body.totals.averageOrder).toBe(4500);
     expect(body.revenueByDay).toHaveLength(2);
     const today = body.revenueByDay[body.revenueByDay.length - 1];
     expect(today.net).toBe(grand - 100_000);
@@ -130,6 +132,54 @@ describe('GET /api/shop/admin/analytics', () => {
     expect(body.revenueByDay).toHaveLength(0);
     const wide = await json<ShopAnalytics>(await c.get('/api/shop/admin/analytics?days=30'));
     expect(wide.totals.orders).toBe(1);
+  });
+
+  it('splits what was charged into item prices, delivery, VAT and discounts, and nets refunds only at the bottom line', async () => {
+    /* The owner's 2026-09-06 finding: "Sales" on the analytics screen was the
+     * GRAND total — delivery and VAT rolled into a number labelled sales. The
+     * fixture order is 4500 of items + 500 delivery + 400 VAT = 5400; the
+     * clone below carries a 700 discount, so its grand total no longer equals
+     * the sum of its parts and the discount has to be READ OFF the gap. */
+    const REAL = Date.now();
+    const { id } = await pipelineOrder(REAL, 1_000);
+    await cloneOrder(id, 1, REAL - DAY);
+    await ctx.db.execute(sql`
+      UPDATE shop_orders SET grand_total = grand_total - 700 WHERE id = 'ord_clone_1'`);
+
+    const c = await login(ctx.users.owner);
+    const body = await json<ShopAnalytics>(await c.get('/api/shop/admin/analytics?days=7'));
+
+    expect(body.totals).toMatchObject({
+      sales: 9_000,
+      delivery: 1_000,
+      tax: 800,
+      discounts: -700,
+      charged: 10_100,
+      refunded: 1_000,
+      net: 9_100,
+      orders: 2,
+      averageOrder: 4_500,
+    });
+
+    /* Per day the same split, oldest first. Refunds are order-level money,
+     * so they touch `net` and nothing else. */
+    expect(body.revenueByDay).toHaveLength(2);
+    expect(body.revenueByDay[0]).toMatchObject({
+      sales: 4_500,
+      delivery: 500,
+      tax: 400,
+      discounts: -700,
+      net: 4_700,
+      orders: 1,
+    });
+    expect(body.revenueByDay[1]).toMatchObject({
+      sales: 4_500,
+      delivery: 500,
+      tax: 400,
+      discounts: 0,
+      net: 4_400,
+      orders: 1,
+    });
   });
 
   it('counts items and ranks products by gross', async () => {

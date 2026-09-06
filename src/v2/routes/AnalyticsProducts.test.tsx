@@ -109,7 +109,18 @@ const NOW = 1_756_224_000_000;
 const BODY: ShopAnalytics = {
   generatedAt: NOW,
   days: 30,
-  totals: { net: 12_000_000, orders: 4, items: 15, averageOrder: 3_000_000 },
+  totals: {
+    sales: 12_000_000,
+    discounts: 0,
+    delivery: 0,
+    tax: 0,
+    charged: 12_000_000,
+    refunded: 0,
+    net: 12_000_000,
+    orders: 4,
+    items: 15,
+    averageOrder: 3_000_000,
+  },
   revenueByDay: [],
   ordersByStatus: [],
   topProducts: [
