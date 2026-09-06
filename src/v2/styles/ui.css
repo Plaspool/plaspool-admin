@@ -316,6 +316,17 @@
   z-index: 90;
   box-shadow: var(--shadow-float);
   animation: v2-float 150ms var(--ease-out);
+  /* THE BACKSTOP FOR THE WHOLE CLASS. Float slides a panel back inside a
+     side edge it would cross, but no amount of sliding fits a panel that is
+     WIDER THAN THE VIEWPORT — on a 375px phone it simply hangs off both
+     ends. Capping here means a new panel cannot reintroduce the overflow by
+     forgetting its own max-width.
+
+     A panel's `min-width` still beats this (CSS resolves min over max), so
+     any panel that sets one must clamp it too — see `.sselect__panel` and
+     `.statuspick__panel`, both of which hung off the left edge on the
+     Points-and-costs screen until they did. */
+  max-width: calc(100vw - var(--s6));
 }
 
 /* A bare trigger on a light surface (the row ⋯): the open state must read on
@@ -1826,7 +1837,11 @@
 /* Floated (Float.tsx). At least the trigger's width — `--float-anchor-w` is
    Float's measurement; the old `left/right: 0` span died with `absolute`. */
 .statuspick__panel {
-  min-width: max(15rem, var(--float-anchor-w, 0px));
+  /* Same clamp, and the reason CLAUDE.md named this rule: `max(15rem,
+     anchor-w)` against a wide anchor is unbounded, and there was no
+     max-width at all to bound it. */
+  min-width: min(max(15rem, var(--float-anchor-w, 0px)), calc(100vw - var(--s6)));
+  max-width: calc(100vw - var(--s6));
   padding: var(--s1);
   background: var(--surface);
   border-radius: var(--r-lg);
@@ -1950,7 +1965,11 @@
 /* Floated (Float.tsx). At least the trigger's width — the old
    `min-width: 100%` would resolve against the viewport once fixed. */
 .sselect__panel {
-  min-width: var(--float-anchor-w, auto);
+  /* Matching the trigger is a WISH, not a floor: a trigger as wide as the
+     screen (the state picker on a phone) made `min-width` win over the
+     `max-width` below — min beats max in CSS — and the panel ran off the
+     edge. Clamped, it matches the trigger only while the trigger fits. */
+  min-width: min(var(--float-anchor-w, 0px), calc(100vw - var(--s8)));
   width: max-content;
   max-width: min(19rem, calc(100vw - var(--s8)));
   display: flex;
