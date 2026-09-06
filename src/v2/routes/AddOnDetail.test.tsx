@@ -44,6 +44,11 @@ const box = {
 };
 const ONE = '/api/shop/admin/add-ons/ado_box';
 
+/** GET answers the fixture; a PATCH echoes the patch back over it, one revision on. */
+const echoing = (row: typeof box): Responder => (init) => ((init.method ?? 'GET') === 'GET'
+  ? { body: { addOn: row } }
+  : { body: { addOn: { ...row, ...(JSON.parse(String(init.body)) as { patch: object }).patch, revision: row.revision + 1 } } });
+
 function mount(path: string) {
   return render(
     <ToastHost>
@@ -61,9 +66,7 @@ function mount(path: string) {
 describe('AddOnDetail', () => {
   it('loads an add-on, edits its price and a rule, and PATCHes under the loaded revision', async () => {
     const user = userEvent.setup();
-    when(ONE, (init) => ((init.method ?? 'GET') === 'GET'
-      ? { body: { addOn: box } }
-      : { body: { addOn: { ...box, ...(JSON.parse(String(init.body)) as { patch: object }).patch, revision: 4 } } }));
+    when(ONE, echoing(box));
     mount('/products/add-ons/ado_box');
     await screen.findByDisplayValue('Gift box');
     expect(screen.getByText('Rules are read top to bottom. The first one that fits decides.')).toBeTruthy();
@@ -74,10 +77,11 @@ describe('AddOnDetail', () => {
 
     // Rule 1 reads: Ask the customer · when Items in cart is between 1 and 4.
     const rule = screen.getByTestId('rule-0');
-    expect(within(rule).getByRole('button', { name: 'Ask the customer', pressed: true })).toBeTruthy();
-    await user.click(within(rule).getByRole('button', { name: 'Add it automatically' }));
+    const outcome = within(rule).getByLabelText('What happens') as HTMLSelectElement;
+    expect(outcome.value).toBe('ask');
+    await user.selectOptions(outcome, 'include');
     const charge = within(rule).getByLabelText('Charge');
-    expect((charge as HTMLInputElement).placeholder).toContain('2,000');
+    expect((charge as HTMLInputElement).placeholder).toMatch(/2,?000/);
     await user.type(charge, '0');
 
     await user.click(screen.getByRole('button', { name: 'Save' }));
@@ -103,10 +107,14 @@ describe('AddOnDetail', () => {
     await screen.findByDisplayValue('Gift box');
     await user.click(screen.getByRole('button', { name: 'Add rule' }));
     const rule = screen.getByTestId('rule-1');
+    expect(within(rule).getByText('Every cart. Add a condition to narrow it down.')).toBeTruthy();
     await user.click(within(rule).getByRole('button', { name: 'Add condition' }));
     await user.selectOptions(within(rule).getByLabelText('Attribute'), 'tag');
     expect(within(rule).getByLabelText('Operator')).toBeTruthy();
     expect(within(rule).getByText('is any of')).toBeTruthy();
+    // A typed value becomes a chip on Enter.
+    await user.type(within(rule).getByLabelText('Values'), 'gift{Enter}');
+    expect(within(rule).getByRole('button', { name: 'Remove gift' })).toBeTruthy();
     await user.selectOptions(within(rule).getByLabelText('Attribute'), 'signed_in');
     expect(within(rule).getByLabelText('Value')).toBeTruthy();
   });
@@ -121,6 +129,45 @@ describe('AddOnDetail', () => {
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(bodiesOf('/api/shop/admin/add-ons', 'POST').length).toBe(1));
     expect(bodiesOf('/api/shop/admin/add-ons', 'POST')[0]).toMatchObject({ title: 'Note', priceMinor: 50_000, status: 'draft', rules: [{ when: [], then: 'ask' }] });
+  });
+
+  it('the status is one switch: on saves it active, off saves it a draft', async () => {
+    const user = userEvent.setup();
+    when(ONE, echoing(box));
+    mount('/products/add-ons/ado_box');
+    await screen.findByDisplayValue('Gift box');
+    const offered = screen.getByRole('switch', { name: 'Offered at checkout' }) as HTMLInputElement;
+    expect(offered.checked).toBe(false);
+    await user.click(offered);
+    expect(offered.checked).toBe(true);
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(bodiesOf(ONE, 'PATCH').length).toBe(1));
+    expect(bodiesOf(ONE, 'PATCH')[0].patch).toMatchObject({ status: 'active' });
+  });
+
+  it('archiving lives under More actions, asks first, and moves only the status', async () => {
+    const user = userEvent.setup();
+    when(ONE, echoing(box));
+    mount('/products/add-ons/ado_box');
+    await screen.findByDisplayValue('Gift box');
+    // An unsaved edit on screen must not ride along with the archive.
+    await user.type(screen.getByLabelText('Name'), '!');
+
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Archive add-on' }));
+    expect(await screen.findByText('Archive Gift box?')).toBeTruthy();
+    expect(bodiesOf(ONE, 'PATCH').length).toBe(0);
+
+    await user.click(screen.getByRole('button', { name: 'Archive' }));
+    await waitFor(() => expect(bodiesOf(ONE, 'PATCH').length).toBe(1));
+    expect(bodiesOf(ONE, 'PATCH')[0]).toEqual({ baseRevision: 3, patch: { status: 'archived' } });
+
+    // The screen adopts the archived row: the badge, the sidebar, and the menu
+    // now offering the way back.
+    expect(await screen.findByText('Archived')).toBeTruthy();
+    expect(screen.queryByRole('switch', { name: 'Offered at checkout' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    expect(await screen.findByRole('menuitem', { name: 'Put it back' })).toBeTruthy();
   });
 
   it('a stale save shows the conflict banner and does not lie about saving', async () => {
@@ -146,9 +193,7 @@ describe('AddOnDetail', () => {
         { when: [], then: 'include', amountMinor: 200_000 },
       ],
     };
-    when(ONE, (init) => ((init.method ?? 'GET') === 'GET'
-      ? { body: { addOn: twoRules } }
-      : { body: { addOn: { ...twoRules, ...(JSON.parse(String(init.body)) as { patch: object }).patch, revision: 4 } } }));
+    when(ONE, echoing(twoRules));
     mount('/products/add-ons/ado_box');
     await screen.findByDisplayValue('Gift box');
     expect(screen.getByTestId('rule-0')).toBeTruthy();
@@ -193,9 +238,7 @@ describe('AddOnDetail', () => {
 
   it('picks a product by its title through the search-select, not by typing its id', async () => {
     const user = userEvent.setup();
-    when(ONE, (init) => ((init.method ?? 'GET') === 'GET'
-      ? { body: { addOn: box } }
-      : { body: { addOn: { ...box, ...(JSON.parse(String(init.body)) as { patch: object }).patch, revision: 4 } } }));
+    when(ONE, echoing(box));
     when('/api/shop/admin/products', () => ({ body: { items: [{ id: 'prd_1', title: 'PLA Silk' }, { id: 'prd_2', title: 'PLA Basic' }], nextCursor: null } }));
     mount('/products/add-ons/ado_box');
     await screen.findByDisplayValue('Gift box');

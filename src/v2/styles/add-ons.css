@@ -1,0 +1,290 @@
+/* ── Add-on editor (Products → Add-ons) ──────────────────────────────────
+   Two pieces modelled on the reference admin's collection page (the owner's
+   screenshots, 2026-09-06):
+
+   THE HERO — the picture tile beside a heading-style name and a plain
+   description, so the card reads as the thing itself rather than as a form.
+
+   THE RULE BLOCK — one bordered block per rule: the outcome pill in its head
+   with the Charge at the far right, one row of pill selects per condition
+   with the bin at the right, the values underneath as chips joined by OR,
+   "Add condition" in the foot, and a dashed "+" to add a rule.
+
+   Every colour, size and radius is a token (tokens.css); nothing here is a
+   new colour. ─────────────────────────────────────────────────────────── */
+
+.addon-hero {
+  display: flex;
+  gap: var(--s4);
+  align-items: flex-start;
+}
+
+.addon-hero__pic {
+  flex: none;
+  width: 7.5rem;
+  height: 7.5rem;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--ink-sub);
+  cursor: pointer;
+}
+
+.addon-hero__pic:hover {
+  background: var(--surface-sub);
+  border-color: var(--ink-muted);
+}
+
+.addon-hero__pic:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.addon-hero__pic--set {
+  border-style: solid;
+  border-color: var(--border);
+}
+
+.addon-hero__pic img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.addon-hero__pic > svg {
+  width: 20px;
+  height: 20px;
+}
+
+.addon-hero__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+/* The name and the description are inputs that look like text until touched:
+   a border appears on hover, the accent ring on focus, as on the reference. */
+.addon-hero__title,
+.addon-hero__desc {
+  width: 100%;
+  margin-left: calc(-1 * var(--s2));
+  padding: var(--s1) var(--s2);
+  font: inherit;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+}
+
+.addon-hero__title {
+  font-size: var(--t-2xl);
+  font-weight: var(--w-semi);
+  color: var(--ink-strong);
+}
+
+.addon-hero__desc {
+  font-size: var(--t-md);
+  line-height: 1.5;
+  min-height: 4.25rem;
+  resize: vertical;
+}
+
+.addon-hero__title:hover,
+.addon-hero__desc:hover {
+  border-color: var(--border);
+}
+
+.addon-hero__title:focus,
+.addon-hero__desc:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.addon-hero__title::placeholder,
+.addon-hero__desc::placeholder {
+  color: var(--ink-muted);
+  font-weight: var(--w-normal);
+}
+
+.addon-hero__picrow {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--t-sm);
+  color: var(--ink-muted);
+}
+
+.addon-hero__error {
+  font-size: var(--t-sm);
+  color: var(--critical);
+}
+
+.addon-price {
+  max-width: 16rem;
+}
+
+/* ── the rule block ─────────────────────────────────────────────────── */
+
+.rule {
+  margin-top: var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.rule__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  padding: var(--s2) var(--s3);
+  background: var(--surface-sub);
+  border-bottom: 1px solid var(--border);
+}
+
+/* A select drawn as a pill — the "Type ⌃ is equal to ⌃" of the reference.
+   Native, so the keyboard and the screen reader get a real select. */
+.rule__pill {
+  appearance: none;
+  height: var(--ctl-h);
+  max-width: 100%;
+  padding: 0 var(--s6) 0 var(--s3);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background-color: var(--surface-sunken);
+  color: var(--ink-strong);
+  font: inherit;
+  font-size: var(--t-md);
+  font-weight: var(--w-medium);
+  cursor: pointer;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23616161' stroke-width='1.6' stroke-linecap='round'%3E%3Cpath d='M5 6.5 8 3.5l3 3M5 9.5l3 3 3-3'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--s2) center;
+  background-size: 14px;
+}
+
+.rule__pill:hover {
+  background-color: var(--surface-hover);
+}
+
+.rule__pill:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.rule__head .rule__pill {
+  background-color: var(--surface);
+  border-color: var(--border);
+}
+
+.rule__spacer {
+  flex: 1;
+}
+
+.rule__charge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--t-md);
+  color: var(--ink-sub);
+}
+
+.rule__charge .affix {
+  width: 9.5rem;
+}
+
+.rule__charge .input,
+.rule__values .input {
+  min-height: var(--ctl-h);
+}
+
+.rule__cond {
+  border-bottom: 1px solid var(--border);
+}
+
+.rule__pills {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  padding: var(--s2) var(--s3);
+}
+
+.rule__values {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  padding: 0 var(--s3) var(--s3);
+}
+
+.rule__values .affix {
+  width: 10rem;
+}
+
+.rule__num {
+  width: 8rem;
+}
+
+.rule__or {
+  font-size: var(--t-sm);
+  font-weight: var(--w-medium);
+  color: var(--ink-muted);
+}
+
+.rule__chip-input {
+  flex: 1;
+  min-width: 12rem;
+}
+
+.rule__foot {
+  padding: var(--s2) var(--s3);
+}
+
+.rule__empty {
+  padding: var(--s2) var(--s3);
+  font-size: var(--t-md);
+  color: var(--ink-muted);
+}
+
+.rule__add {
+  display: flex;
+  width: 100%;
+  justify-content: center;
+  align-items: center;
+  gap: var(--s2);
+  margin-top: var(--s3);
+  padding: var(--s3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-lg);
+  background: transparent;
+  color: var(--ink-sub);
+  font: inherit;
+  font-size: var(--t-md);
+  cursor: pointer;
+}
+
+.rule__add:hover {
+  background: var(--surface-sub);
+  color: var(--ink);
+}
+
+.rule__add:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.rule__add svg {
+  width: 16px;
+  height: 16px;
+}

@@ -1,30 +1,35 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Gift } from 'lucide-react';
+import { Archive, ArchiveRestore, Gift, ImagePlus } from 'lucide-react';
 import { moneyRefusalMessage, parseMajor, plainMajor, shopApi, type AddOnStatus, type ShopAddOn } from '../../data/api-shop';
 import { ApiError } from '../../data/errors';
+import { ImageError, storeImageFile } from '../../data/images';
 import { humanise, productTone } from '../lib/format';
 import { useAsync } from '../lib/useAsync';
 import { PageHeader } from '../ui/Page';
-import { Badge, Banner } from '../ui/primitives';
+import { Badge, Banner, Button } from '../ui/primitives';
 import { Card } from '../ui/Card';
-import { AffixField, Segmented, TextArea, TextField } from '../ui/Field';
-import { SingleImage } from '../ui/Img';
+import { AffixField, Toggle } from '../ui/Field';
+import { StoredImg } from '../ui/Img';
+import { MenuItem } from '../ui/Menu';
+import { Modal } from '../ui/Modal';
 import { SaveBar } from '../ui/SaveBar';
 import { useToast } from '../ui/Toast';
 import { AddOnRules, nextUid, type EditableRule } from './AddOnRules';
 
 /**
  * ADD-ON EDITOR — `/products/add-ons/new` and `/products/add-ons/:id`.
- * Left: the thing (picture, name, description, price, status). Right: when to
- * offer it. Saves the whole row under the loaded revision; a 409 stale_write
- * shows a banner rather than a "Saved" it cannot honour.
+ *
+ * Laid out like the reference admin's collection page (the owner's
+ * screenshots, 2026-09-06): the picture tile beside a heading-style name and
+ * a plain description, the rule builder underneath in the wide column, and
+ * the one switch that matters — offered at checkout or not — in the sidebar.
+ * Archiving is a "More actions" item behind a confirmation, not a third
+ * position on a status control.
+ *
+ * Saves the whole row under the loaded revision; a 409 stale_write shows a
+ * banner rather than a "Saved" it cannot honour.
  */
-const STATUSES: { value: AddOnStatus; label: string }[] = [
-  { value: 'draft', label: 'Draft' },
-  { value: 'active', label: 'Active' },
-  { value: 'archived', label: 'Archived' },
-];
 
 interface Draft {
   title: string;
@@ -66,7 +71,7 @@ const fromRow = (a: ShopAddOn): Draft => ({
 
 /**
  * Fresh client-only ids for every rule and condition in a draft — used on
- * Discard so React remounts every rule card rather than reusing the ones on
+ * Discard so React remounts every rule block rather than reusing the ones on
  * screen. Reusing them would leave an uncontrolled Charge (or a money
  * From/To/Value field) still showing whatever was typed: `defaultValue` only
  * applies at mount, so a same-keyed element that survives a state reset never
@@ -95,6 +100,69 @@ function plain(d: Draft) {
   };
 }
 
+/**
+ * The picture tile: a dashed square that opens the file dialog, the picture
+ * itself once one is set. Uploads through `storeImageFile` — validate, strip
+ * EXIF, upload, commit — and nothing lands in the draft until the server has
+ * committed the object, the same rule the product media card keeps.
+ */
+function PictureTile({
+  value,
+  alt,
+  onChange,
+}: {
+  value: string | null;
+  alt: string;
+  onChange: (next: string | null) => void;
+}) {
+  const toast = useToast();
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+
+  async function pick(file: File | undefined) {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const stored = await storeImageFile(file);
+      onChange(stored.id);
+    } catch (err) {
+      toast.show(err instanceof ImageError ? err.message : 'That image could not be added.', 'critical');
+    } finally {
+      setUploading(false);
+      if (fileInput.current) fileInput.current.value = '';
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s2)', alignItems: 'center' }}>
+      <button
+        type="button"
+        className={value ? 'addon-hero__pic addon-hero__pic--set' : 'addon-hero__pic'}
+        aria-label={value ? 'Replace picture' : 'Add picture'}
+        disabled={uploading}
+        onClick={() => fileInput.current?.click()}
+      >
+        {value ? <StoredImg id={value} alt={alt} /> : <ImagePlus aria-hidden="true" />}
+      </button>
+      {value ? (
+        <button type="button" className="addon-hero__picrow" style={{ background: 'none', border: 0, cursor: 'pointer', font: 'inherit' }} onClick={() => onChange(null)}>
+          Remove picture
+        </button>
+      ) : (
+        <span className="addon-hero__picrow">{uploading ? 'Uploading…' : 'Picture'}</span>
+      )}
+      <input
+        ref={fileInput}
+        type="file"
+        accept="image/*"
+        className="sr"
+        aria-label="Picture file"
+        onChange={(e) => void pick(e.target.files?.[0])}
+      />
+    </div>
+  );
+}
+
 export default function AddOnDetail({ create = false }: { create?: boolean }) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -105,6 +173,7 @@ export default function AddOnDetail({ create = false }: { create?: boolean }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
+  const [confirmArchive, setConfirmArchive] = useState(false);
 
   // The Product condition picks by title (spec: no raw ids typed by hand).
   // One page is enough for the picker, same as the command palette's own
@@ -124,7 +193,10 @@ export default function AddOnDetail({ create = false }: { create?: boolean }) {
         setSaved(fromRow(a));
       })
       .catch((cause) => {
-        if (cause instanceof DOMException && cause.name === 'AbortError') return;
+        // Our own abort (unmount, or StrictMode's first mount) surfaces from
+        // the data layer as a "could not reach the server" ApiError, not as a
+        // bare AbortError — so the signal, not the error's shape, is the test.
+        if (controller.signal.aborted) return;
         setLoadError(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
       });
     return () => controller.abort();
@@ -138,6 +210,7 @@ export default function AddOnDetail({ create = false }: { create?: boolean }) {
   const priceError = draft.priceText.trim() === '' ? 'A price is needed. 0 is fine.' : price.ok ? null : moneyRefusalMessage(price.reason, currency);
   const dirty = JSON.stringify(plain(draft)) !== JSON.stringify(plain(saved));
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }));
+  const archived = draft.status === 'archived';
 
   const body = () => {
     const p = plain(draft);
@@ -152,6 +225,14 @@ export default function AddOnDetail({ create = false }: { create?: boolean }) {
     };
   };
 
+  /** Apply a saved row to every copy of it this screen holds. */
+  function adopt(next: ShopAddOn) {
+    setRow(next);
+    setDraft(fromRow(next));
+    setSaved(fromRow(next));
+    setConflict(false);
+  }
+
   async function save() {
     if (saving || priceError || draft.title.trim() === '') return;
     setSaving(true);
@@ -162,17 +243,35 @@ export default function AddOnDetail({ create = false }: { create?: boolean }) {
         navigate(`/products/add-ons/${created.id}`, { replace: true });
         return;
       }
-      const next = await shopApi.updateAddOn(row!.id, body(), row!.revision);
-      setRow(next);
-      setDraft(fromRow(next));
-      setSaved(fromRow(next));
-      setConflict(false);
+      adopt(await shopApi.updateAddOn(row!.id, body(), row!.revision));
       toast.show('Saved');
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 409) setConflict(true);
       else toast.show(cause instanceof Error && cause.message ? cause.message : 'Could not save.', 'critical');
     } finally {
       setSaving(false);
+    }
+  }
+
+  /**
+   * Archive, or put back, IMMEDIATELY — a "More actions" item, not a field
+   * waiting on Save. Only the status moves: the row's other columns are left
+   * exactly as stored, so an unsaved edit on screen is neither lost nor
+   * silently shipped along with it.
+   */
+  async function setStatus(status: AddOnStatus) {
+    if (saving || !row) return;
+    setSaving(true);
+    try {
+      const next = await shopApi.updateAddOn(row.id, { status }, row.revision);
+      adopt(next);
+      toast.show(status === 'archived' ? `${next.title} archived` : `${next.title} put back as a draft`);
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 409) setConflict(true);
+      else toast.show(cause instanceof Error && cause.message ? cause.message : 'Could not change the status.', 'critical');
+    } finally {
+      setSaving(false);
+      setConfirmArchive(false);
     }
   }
 
@@ -201,6 +300,33 @@ export default function AddOnDetail({ create = false }: { create?: boolean }) {
         titleBadge={create ? null : <Badge tone={productTone(row!.status)}>{humanise(row!.status)}</Badge>}
         backTo="/products/add-ons"
         backLabel="Add-ons"
+        menu={
+          create
+            ? undefined
+            : (close) =>
+                row!.status === 'archived' ? (
+                  <MenuItem
+                    icon={<ArchiveRestore aria-hidden="true" />}
+                    onSelect={() => {
+                      close();
+                      void setStatus('draft');
+                    }}
+                  >
+                    Put it back
+                  </MenuItem>
+                ) : (
+                  <MenuItem
+                    critical
+                    icon={<Archive aria-hidden="true" />}
+                    onSelect={() => {
+                      close();
+                      setConfirmArchive(true);
+                    }}
+                  >
+                    Archive add-on
+                  </MenuItem>
+                )
+        }
       />
       {conflict ? (
         <Banner tone="warn" title="Someone else saved this add-on since you opened it">
@@ -210,18 +336,85 @@ export default function AddOnDetail({ create = false }: { create?: boolean }) {
 
       <div className="form2">
         <div className="form2__main">
-          <Card title="The add-on">
-            <SingleImage value={draft.imageId} onChange={(imageId) => set('imageId', imageId)} alt={draft.title} />
-            <TextField label="Name" value={draft.title} onChange={(e) => set('title', e.currentTarget.value)} error={dirty && draft.title.trim() === '' ? 'An add-on needs a name.' : null} />
-            <TextArea label="Description" rows={3} value={draft.description} onChange={(e) => set('description', e.currentTarget.value)} hint="One or two plain sentences. The shopper reads this at checkout." />
-            <AffixField label="Price" prefix="₦" inputMode="decimal" value={draft.priceText} onChange={(e) => set('priceText', e.currentTarget.value)} error={dirty ? priceError : null} hint="What it costs when it is added. A rule can charge something else." />
-            <Segmented label="Status" value={draft.status} options={STATUSES} onChange={(status) => set('status', status)} hint="Only Active add-ons are offered at checkout." />
+          <Card>
+            <div className="addon-hero">
+              <PictureTile value={draft.imageId} alt={draft.title} onChange={(imageId) => set('imageId', imageId)} />
+              <div className="addon-hero__body">
+                <input
+                  className="addon-hero__title"
+                  aria-label="Name"
+                  placeholder="Add-on name"
+                  value={draft.title}
+                  onChange={(e) => set('title', e.currentTarget.value)}
+                />
+                {dirty && draft.title.trim() === '' ? <span className="addon-hero__error">An add-on needs a name.</span> : null}
+                <textarea
+                  className="addon-hero__desc"
+                  aria-label="Description"
+                  placeholder="Add description — one or two plain sentences the shopper reads at checkout"
+                  rows={3}
+                  value={draft.description}
+                  onChange={(e) => set('description', e.currentTarget.value)}
+                />
+              </div>
+            </div>
+            <div className="addon-price">
+              <AffixField
+                label="Price"
+                prefix="₦"
+                inputMode="decimal"
+                value={draft.priceText}
+                onChange={(e) => set('priceText', e.currentTarget.value)}
+                error={dirty ? priceError : null}
+                hint="What it costs when it is added. A rule can charge something else."
+              />
+            </div>
           </Card>
+          <AddOnRules rules={draft.rules} priceMinor={price.ok ? price.minor : 0} currency={currency} products={products} onChange={(rules) => set('rules', rules)} />
         </div>
         <aside className="form2__side">
-          <AddOnRules rules={draft.rules} priceMinor={price.ok ? price.minor : 0} currency={currency} products={products} onChange={(rules) => set('rules', rules)} />
+          <Card title="Status">
+            {archived ? (
+              <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
+                Archived — not offered at checkout. Put it back from <strong>More actions</strong> to
+                switch it on again.
+              </p>
+            ) : (
+              <>
+                <Toggle
+                  label="Offered at checkout"
+                  checked={draft.status === 'active'}
+                  onChange={(on) => set('status', on ? 'active' : 'draft')}
+                />
+                <p className="muted" style={{ fontSize: 'var(--t-sm)', lineHeight: 1.5, marginTop: 'var(--s2)' }}>
+                  Switched on, shoppers see it at checkout. Switched off, it stays a draft. Takes effect
+                  when you save.
+                </p>
+              </>
+            )}
+          </Card>
         </aside>
       </div>
+
+      {confirmArchive && row ? (
+        <Modal
+          title={`Archive ${row.title}?`}
+          onClose={() => setConfirmArchive(false)}
+          footer={
+            <>
+              <Button onClick={() => setConfirmArchive(false)}>Cancel</Button>
+              <Button tone="critical" busy={saving} onClick={() => void setStatus('archived')}>
+                Archive
+              </Button>
+            </>
+          }
+        >
+          <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
+            It stops being offered at checkout. Orders that already carry it keep it, and you can put
+            it back from More actions later.
+          </p>
+        </Modal>
+      ) : null}
     </div>
   );
 }
