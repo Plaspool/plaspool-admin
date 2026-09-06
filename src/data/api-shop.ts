@@ -110,7 +110,31 @@ export function currencyDigits(currency: string): number {
 }
 
 /**
- * Minor units → what a person reads. `1990, 'GBP'` → `£19.90`.
+ * The formatter behind `formatMinor`, with the currency SIGN rather than its
+ * code: `₦1,500.00`, not `NGN 1,500.00` (the owner's call for every table,
+ * 2026-09-06). Under an English locale CLDR's plain `symbol` for the naira IS
+ * the three-letter code — only `narrowSymbol` reaches the ₦ — while the
+ * dollar and the pound render the same either way. An engine too old to know
+ * `narrowSymbol` throws a RangeError, and gets the code form rather than a
+ * screen with no money on it.
+ */
+function currencyFormat(currency: string, digits: number, locale?: string): Intl.NumberFormat {
+  const options: Intl.NumberFormatOptions = {
+    style: 'currency',
+    currency: currency.toUpperCase(),
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  };
+  try {
+    return new Intl.NumberFormat(locale, { ...options, currencyDisplay: 'narrowSymbol' });
+  } catch {
+    return new Intl.NumberFormat(locale, options);
+  }
+}
+
+/**
+ * Minor units → what a person reads. `1990, 'GBP'` → `£19.90`, `150000, 'NGN'`
+ * → `₦1,500.00`.
  *
  * THE TRAILING ZERO IS THE WHOLE REASON THIS IS NOT ONE LINE. `1990 / 100`
  * formatted by any code that thinks in numbers gives `£19.9`, and a price list
@@ -130,12 +154,7 @@ export function formatMinor(amount: number, currency: string, locale?: string): 
   const whole = raw.slice(0, raw.length - digits);
   const fraction = digits === 0 ? '' : raw.slice(raw.length - digits);
 
-  const format = new Intl.NumberFormat(locale, {
-    style: 'currency',
-    currency: currency.toUpperCase(),
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
+  const format = currencyFormat(currency, digits, locale);
   /*
    * A BigInt, so the whole part is formatted without ever becoming a double —
    * `Intl` formats BigInt exactly, at any magnitude.
