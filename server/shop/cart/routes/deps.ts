@@ -7,6 +7,7 @@ import type { CheckoutPaymentsPort } from '../payments-port';
 import type { ShippingZone } from '../checkout/shipping';
 import type { PointsRedemptionPort } from '../../../../shared/marketing/redemption';
 import type { DiscountCodePort } from '../../../../shared/marketing/discounts';
+import type { AddOnPort } from '../../../../shared/commerce/add-ons';
 
 /**
  * Everything the shop routes need that is not a database handle.
@@ -123,6 +124,13 @@ export interface ShopCartDeps {
    * alternative default reopens carts that were paid for, which is not.
    */
   payments?: CheckoutPaymentsPort;
+
+  /**
+   * Checkout add-ons (spec 2026-09-06). A PORT over the handle like payments.
+   * ABSENT MEANS NO ADD-ONS ANYWHERE: the cart view sends no addOns, the
+   * preview sends [], and the choice route answers 501.
+   */
+  addOns?: AddOnPort<Db>;
 }
 
 /** What the injected commerce drain reports back. Counts only — the per-event
@@ -145,5 +153,6 @@ export function resolveShopCartDeps(partial: Partial<ShopCartDeps> = {}): ShopCa
     redemption: partial.redemption,
     discounts: partial.discounts,
     payments: partial.payments,
+    addOns: partial.addOns,
   };
 }

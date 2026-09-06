@@ -5,6 +5,7 @@ import type { Db } from '../../../db/client';
 import { BadRequestError, NotFoundError } from '../../../repo/errors';
 import { CartPreconditionError, CartStaleWriteError } from '../errors';
 import { newId } from '../ids';
+import type { AddOnChoice } from '../../../../shared/commerce/add-ons';
 
 /**
  * The cart write path (brief §3, §5).
@@ -50,6 +51,8 @@ export interface Cart {
   taxZone: string | null;
   /** Uppercase discount code, or null when none is applied (migration 0820). */
   discountCode: string | null;
+  /** { "<addOnId>": "accepted" | "declined" } (migration 0940). Null = nothing answered. */
+  addOnChoices: Record<string, AddOnChoice> | null;
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
@@ -91,6 +94,7 @@ const CART_COLUMNS = [
      rather than derived, so it survives a reload and is re-validated at the
      freeze — an owner can switch a code off while a cart sits at payment. */
   'discount_code',
+  'add_on_choices',
   'created_at',
   'updated_at',
   'expires_at',
@@ -109,6 +113,12 @@ function rowToCart(row: Record<string, unknown>): Cart {
     shippingOptionId: row.shipping_option_id == null ? null : String(row.shipping_option_id),
     taxZone: row.tax_zone == null ? null : String(row.tax_zone),
     discountCode: row.discount_code == null ? null : String(row.discount_code),
+    addOnChoices:
+      row.add_on_choices == null
+        ? null
+        : ((typeof row.add_on_choices === 'string'
+            ? JSON.parse(row.add_on_choices)
+            : row.add_on_choices) as Record<string, AddOnChoice>),
     createdAt: toEpochMs(row.created_at),
     updatedAt: toEpochMs(row.updated_at),
     expiresAt: toEpochMs(row.expires_at),

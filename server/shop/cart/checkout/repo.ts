@@ -39,6 +39,8 @@ import type {
   DiscountRejection,
 } from '../../../../shared/marketing/discounts';
 import type { CodeDiscount } from '../../../../shared/commerce/ports';
+import { evaluateCartAddOns } from './add-ons';
+import type { AddOnOffer, AddOnPort } from '../../../../shared/commerce/add-ons';
 
 /**
  * Checkout — a state machine over the cart (brief §5).
@@ -95,6 +97,8 @@ export interface CheckoutConfig {
    * storefront never renders a field whose route would 501.
    */
   discounts?: (db: Db) => DiscountCodePort;
+  /** Checkout add-ons (spec 2026-09-06). Absent means none are offered and nothing is charged. */
+  addOns?: AddOnPort<Db>;
   /**
    * PAYMENTS, read-only but for one narrow cancel — the port that lets
    * `thawCheckout` open the freeze's one-way door. See
@@ -803,6 +807,7 @@ type PriceOutcome =
       totals: FrozenTotals;
       frozenLines: StoredCheckoutLine[];
       redemption: FrozenRedemption | null;
+      offers: AddOnOffer[];
     }
   | { ok: false; reason: 'empty_cart' }
   | { ok: false; reason: 'no_shipping_address' }
@@ -1005,8 +1010,32 @@ async function priceCart(
     discount: null,
   });
 
-  const redemption = undiscounted.ok
-    ? await quoteRedemption(db, config, cart, undiscounted.totals.grandTotal.amount, redeemPoints)
+  /*
+   * THE ADD-ONS, evaluated on the subtotal the ladder left, before points are
+   * quoted — so a charged add-on is inside the base the points cap measures.
+   * An unanswered ask is not in `applied` (owner: skip, never refuse).
+   */
+  const addOns = await evaluateCartAddOns(db, config.addOns, {
+    cart,
+    quotes,
+    address,
+    subtotalMinor: undiscounted.ok ? undiscounted.totals.subtotal.amount : 0,
+  });
+  const base =
+    addOns.applied.length > 0
+      ? computeTotals({
+          currency: cart.currency,
+          lines: totalsLines,
+          shipping,
+          tax,
+          adjustments: [],
+          discount: null,
+          addOns: addOns.applied,
+        })
+      : undiscounted;
+
+  const redemption = base.ok
+    ? await quoteRedemption(db, config, cart, base.totals.grandTotal.amount, redeemPoints)
     : null;
 
   /*
@@ -1027,8 +1056,9 @@ async function priceCart(
           tax,
           adjustments: redemption ? [redemption.quote.adjustment] : [],
           discount,
+          addOns: addOns.applied,
         })
-      : undiscounted;
+      : base;
 
   if (!computed.ok) {
     if (computed.reason === 'unresolved_lines') {
@@ -1048,7 +1078,7 @@ async function priceCart(
     throw new Error(`cart ${cart.id} has an unusable currency`);
   }
 
-  return { ok: true, totals: computed.totals, frozenLines, redemption };
+  return { ok: true, totals: computed.totals, frozenLines, redemption, offers: addOns.offers };
 }
 
 /**
@@ -1155,7 +1185,7 @@ export interface PreviewRedemption {
 }
 
 export type PreviewOutcome =
-  | { ok: true; totals: FrozenTotals; redemption: PreviewRedemption | null }
+  | { ok: true; totals: FrozenTotals; redemption: PreviewRedemption | null; addOns: AddOnOffer[] }
   | PricingRefusal;
 
 /**
@@ -1212,6 +1242,7 @@ export async function previewCheckout(
           balanceAfter: quote.balanceAfter,
         }
       : null,
+    addOns: priced.offers,
   };
 }
 

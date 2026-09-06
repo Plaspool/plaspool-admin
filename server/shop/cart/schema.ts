@@ -122,6 +122,8 @@ export const shopCarts = pgTable(
      */
     redemptionPoints: integer('redemption_points'),
     redemptionEmail: text('redemption_email'),
+    /** Uppercase discount code, or NULL when none is applied (migration 0820). */
+    discountCode: text('discount_code'),
     /** { "<addOnId>": "accepted" | "declined" } (migration 0940). NULL = nothing answered. */
     addOnChoices: jsonb('add_on_choices').$type<Record<string, 'accepted' | 'declined'>>(),
     createdAt: epochMs('created_at').notNull(),
@@ -154,6 +156,10 @@ export const shopCarts = pgTable(
     check(
       'shop_carts_add_on_choices_ck',
       sql`${t.addOnChoices} IS NULL OR jsonb_typeof(${t.addOnChoices}) = 'object'`,
+    ),
+    check(
+      'shop_carts_discount_code_ck',
+      sql`${t.discountCode} IS NULL OR (${t.discountCode} <> '' AND length(${t.discountCode}) <= 64)`,
     ),
   ],
 );
