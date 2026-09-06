@@ -81,6 +81,8 @@ export function fakeCheckoutPort(
         // answer "what is owed", and a discount has already been applied by the
         // time a total reaches Payments.
         discount: null,
+        addOns: [],
+        addOnTotal: nothing,
         subtotal: total,
         discountTotal: nothing,
         adjustmentTotal: nothing,

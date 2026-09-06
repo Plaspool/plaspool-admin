@@ -252,6 +252,21 @@ export interface Adjustment {
 }
 
 /**
+ * One add-on on a frozen total (spec 2026-09-06). NOT a line — Orders would
+ * try to snapshot a variant — and NOT an Adjustment, which applies after tax
+ * and means a payment instrument. Never taxed. `amount` is what was charged
+ * (zero when the rule made it free); `listPrice` is what it was worth.
+ */
+export interface FrozenAddOn {
+  id: string;
+  title: string;
+  /** How it got onto the order: the shopper said yes, or a rule included it. */
+  mode: 'chosen' | 'included';
+  listPrice: Money;
+  amount: Money;
+}
+
+/**
  * The frozen, authoritative totals for a checkout. **Never recomputed** (§5).
  *
  * IT CARRIES ITS OWN DERIVATION, and that is not decoration. `subtotal`,
@@ -277,6 +292,10 @@ export interface FrozenTotals {
    * survives is the number.
    */
   discount: CodeDiscount | null;
+  /** The add-ons on this order. `[]` when none — and, read back, `[]` for every payload frozen before they existed. */
+  addOns: FrozenAddOn[];
+  /** Σ addOns[].amount, ≥ 0. Not taxed, not discounted. */
+  addOnTotal: Money;
   /** Σ lineTotal, BEFORE any code discount — the list value of the goods. */
   subtotal: Money;
   /** Σ codeDiscount. Negative, or zero when no code applies. */
@@ -287,7 +306,7 @@ export interface FrozenTotals {
   shippingTotal: Money;
   /** Σ per-line tax + shipping tax. Rounded per line, THEN summed. */
   taxTotal: Money;
-  /** subtotal + discountTotal + adjustmentTotal + shippingTotal + taxTotal. */
+  /** subtotal + discountTotal + adjustmentTotal + addOnTotal + shippingTotal + taxTotal. */
   grandTotal: Money;
   rounding: RoundingMode;
 }

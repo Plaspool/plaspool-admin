@@ -491,6 +491,15 @@ export interface FrozenTotalsShape {
   shipping: { id: string; label: string; amount: AmountFields; taxable: boolean } | null;
   tax: { zone: string; label: string; rateBps: number };
   adjustments: Array<{ code: string; label: string; amount: AmountFields }>;
+  /** OPTIONAL — absent on every payload frozen before add-ons shipped. Same seam as the bulk fields. */
+  addOns?: Array<{
+    id: string;
+    title: string;
+    mode: 'chosen' | 'included';
+    listPrice: AmountFields;
+    amount: AmountFields;
+  }>;
+  addOnTotal?: AmountFields;
   subtotal: AmountFields;
   adjustmentTotal: AmountFields;
   shippingTotal: AmountFields;
