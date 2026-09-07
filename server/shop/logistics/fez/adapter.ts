@@ -87,9 +87,27 @@ export function createFezProvider(env: FezEnv, opts: FezClientOptions = {}): Log
           : {}),
       };
       const res = await client.call('POST', '/order', [order]);
+      /*
+       * READ UNDER THE KEY WE SENT, NEVER "whichever string came back".
+       *
+       * `/order` takes an ARRAY of orders and answers with `orderNos` keyed by
+       * each one's `uniqueID` — ours is `input.fulfillmentId`, so the waybill
+       * for this parcel is at exactly that key. Taking the first string in the
+       * object instead made every other string in it a candidate: a batch echo,
+       * a note, an order number belonging to a different parcel. Whatever came
+       * out became this parcel's PERMANENT `providerRef` and `trackingNumber` —
+       * the reference we track, cancel and match webhooks by, and the number
+       * the customer is mailed.
+       *
+       * A missing key is `bad_response` rather than a guess. Fez accepted the
+       * order or it did not; a waybill we cannot attribute to this parcel is
+       * not evidence that it did.
+       */
       const nos = res.orderNos as Record<string, unknown> | undefined;
-      const orderNo = nos ? Object.values(nos).find((v): v is string => typeof v === 'string') : undefined;
-      if (!orderNo) throw new LogisticsError('bad_response', 'Fez Delivery created no order number', { detail: res });
+      const orderNo = nos?.[input.fulfillmentId];
+      if (typeof orderNo !== 'string' || orderNo.length === 0) {
+        throw new LogisticsError('bad_response', `Fez Delivery returned no order number for ${input.fulfillmentId}`, { detail: res });
+      }
 
       let labelUrl: string | null = null;
       try {

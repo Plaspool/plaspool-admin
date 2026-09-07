@@ -233,6 +233,32 @@ describe('book', () => {
     const result = await provider.book(parcel(), 'fez', null, null);
     expect(result.costMinor).toBeNull();
   });
+
+  /**
+   * `orderNos` IS KEYED BY THE uniqueID WE SENT, and reading it any other way
+   * is how a parcel ends up permanently carrying somebody else's waybill —
+   * `providerRef` and `trackingNumber` are both taken from it, so a wrong one
+   * is the reference we later track, cancel and match webhooks by, and the
+   * number the customer is mailed.
+   */
+  it('refuses an orderNos that answers under a key other than the uniqueID we sent', async () => {
+    const { fetchImpl } = fezFetch([
+      AUTH_OK(),
+      { status: 200, json: { orderNos: { 'someone-elses-id': 'WRONG' } } },
+    ]);
+    const err = await failureOf(createFezProvider(ENV, { fetchImpl }).book(parcel(), 'fez', null, CHOSEN));
+    expect(err).toBeInstanceOf(LogisticsError);
+    expect(err.code).toBe('bad_response');
+    expect(err.message).toContain('fulfillment-1');
+    // What Fez actually said is kept for whoever looks; none of it becomes this parcel's reference.
+    expect(err.detail).toEqual({ orderNos: { 'someone-elses-id': 'WRONG' } });
+  });
+
+  it('refuses an empty orderNos', async () => {
+    const { fetchImpl } = fezFetch([AUTH_OK(), { status: 200, json: { orderNos: {} } }]);
+    const err = await failureOf(createFezProvider(ENV, { fetchImpl }).book(parcel(), 'fez', null, CHOSEN));
+    expect(err.code).toBe('bad_response');
+  });
 });
 
 describe('token caching', () => {
