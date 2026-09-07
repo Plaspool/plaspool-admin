@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { MapPin, Truck } from 'lucide-react';
+import { Layers, MapPin, Truck } from 'lucide-react';
 import {
   moneyRefusalMessage,
   parseMajor,
@@ -14,6 +14,7 @@ import { PageHeader } from '../ui/Page';
 import { Banner, Button, EmptyState } from '../ui/primitives';
 import { DataTable, IdCell, type Column } from '../ui/DataTable';
 import { AffixField, Toggle } from '../ui/Field';
+import { Modal } from '../ui/Modal';
 import { PopEdit, PopEditFoot } from '../ui/PopEdit';
 import { SearchSelect } from '../ui/SearchSelect';
 import { useToast } from '../ui/Toast';
@@ -50,6 +51,106 @@ import { useToast } from '../ui/Toast';
 
 const STORE_CURRENCY = 'NGN';
 
+/**
+ * ONE DELIVERY PRICE FOR EVERY DISTRICT IN A STATE.
+ *
+ * IT OVERWRITES, and the modal names the count rather than warning in the
+ * abstract — "6 already have their own price and will be replaced" can be
+ * checked against the table behind the modal; "this overwrites existing
+ * values" is a sentence people learn to click past.
+ *
+ * AN EMPTY BOX CLEARS, back to the state's zone rate. That is the screen's
+ * whole default and it is NOT free delivery — the footer under the table
+ * already says so and this repeats it, because the one place someone might
+ * believe otherwise is the moment they are about to do it to a whole state.
+ */
+function BulkRateModal({
+  region,
+  areas,
+  opinions,
+  zoneLabel,
+  busy,
+  onClose,
+  onSave,
+}: {
+  region: string;
+  areas: ServiceArea[];
+  opinions: Map<string, ShopDeliveryArea>;
+  zoneLabel: string;
+  busy: boolean;
+  onClose: () => void;
+  onSave: (rateMinor: number | null) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const priced = areas.filter((a) => opinions.get(a.key)?.rateMinor != null).length;
+
+  function commit() {
+    const text = draft.trim();
+    if (text === '') {
+      setError(null);
+      void onSave(null);
+      return;
+    }
+    const parsed = parseMajor(text, STORE_CURRENCY);
+    if (!parsed.ok) {
+      setError(moneyRefusalMessage(parsed.reason, STORE_CURRENCY));
+      return;
+    }
+    setError(null);
+    void onSave(parsed.minor);
+  }
+
+  return (
+    <Modal
+      title={`Set the delivery price for all of ${region}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button tone="primary" busy={busy} onClick={commit}>
+            Set {areas.length} {areas.length === 1 ? 'district' : 'districts'}
+          </Button>
+        </>
+      }
+    >
+      <p className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+        Every district in {region} takes this price.
+        {priced > 0 ? (
+          <>
+            {' '}
+            <strong>
+              {priced} already {priced === 1 ? 'has its own price' : 'have their own price'} and will
+              be replaced.
+            </strong>
+          </>
+        ) : null}
+      </p>
+      <p className="muted" style={{ fontSize: 'var(--t-xs)', marginTop: 'var(--s2)' }}>
+        Leave it empty to clear the price everywhere in {region}, sending each district back to the
+        state rate ({zoneLabel}). Clearing never means free delivery.
+      </p>
+      <div style={{ marginTop: 'var(--s4)' }}>
+        <AffixField
+          label={`Delivery price across ${region}`}
+          prefix="₦"
+          inputMode="decimal"
+          placeholder="0.00"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+        />
+      </div>
+      {error ? (
+        <p className="field__error" style={{ marginTop: 'var(--s3)' }}>
+          {error}
+        </p>
+      ) : null}
+    </Modal>
+  );
+}
+
+
 interface Row {
   area: ServiceArea;
   /** The shop's opinion, or null — "delivers at the zone rate". */
@@ -78,6 +179,7 @@ export default function DeliveryAreas() {
   const [region, setRegion] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -188,6 +290,48 @@ export default function DeliveryAreas() {
     }
   }
 
+  /**
+   * ONE PRICE ACROSS A WHOLE STATE.
+   *
+   * Unlike the pickup costs on Points and costs, this needs no fan-out: the
+   * shop has had `POST /admin/delivery-areas/bulk` since the master switch
+   * above was built, and it takes a `rateMinor` alongside the `delivers` that
+   * switch sends. One request, no compare-and-swap, so there is no partial
+   * success to report.
+   *
+   * `null` CLEARS the override, which is what sends a district back to its
+   * state's zone rate — the screen's whole default, and NOT the same as free
+   * delivery. The modal says so.
+   */
+  async function priceAll(rateMinor: number | null) {
+    if (!shown) return;
+    setBulkBusy(true);
+    try {
+      const written = await shopApi.saveDeliveryAreas({
+        areaKeys: shown.areas.map((a) => a.key),
+        rateMinor,
+      });
+      setOpinions((m) => {
+        const merged = new Map(m);
+        for (const d of written) merged.set(d.areaKey, d);
+        return merged;
+      });
+      toast.show(
+        rateMinor === null
+          ? `Cleared the price on ${written.length} ${written.length === 1 ? 'district' : 'districts'} — back to the state rate`
+          : `Price set for ${written.length} ${written.length === 1 ? 'district' : 'districts'} in ${shown.region}`,
+      );
+      setBulkOpen(false);
+    } catch (cause) {
+      toast.show(
+        cause instanceof Error && cause.message ? cause.message : 'Something went wrong.',
+        'critical',
+      );
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   const columns: Column<Row>[] = [
     {
       key: 'district',
@@ -268,15 +412,32 @@ export default function DeliveryAreas() {
                 a rate of its own.
               </p>
             </div>
-            <span style={bulkBusy ? { opacity: 0.6, pointerEvents: 'none' } : undefined}>
-              <Toggle
-                label={`All of ${shown.region}`}
-                checked={shown.areas.length > 0 && shown.on === shown.areas.length}
-                onChange={(next) => void switchAll(next)}
-              />
-            </span>
+            <div className="row" style={{ gap: 'var(--s3)', alignItems: 'center' }}>
+              <Button onClick={() => setBulkOpen(true)} disabled={shown.areas.length === 0}>
+                <Layers aria-hidden="true" /> Set the price for all of {shown.region}
+              </Button>
+              <span style={bulkBusy ? { opacity: 0.6, pointerEvents: 'none' } : undefined}>
+                <Toggle
+                  label={`All of ${shown.region}`}
+                  checked={shown.areas.length > 0 && shown.on === shown.areas.length}
+                  onChange={(next) => void switchAll(next)}
+                />
+              </span>
+            </div>
           </div>
         </section>
+      ) : null}
+
+      {bulkOpen && shown ? (
+        <BulkRateModal
+          region={shown.region}
+          areas={shown.areas}
+          opinions={opinions}
+          zoneLabel={zoneRateLabel(zone)}
+          busy={bulkBusy}
+          onClose={() => setBulkOpen(false)}
+          onSave={priceAll}
+        />
       ) : null}
 
       <DataTable

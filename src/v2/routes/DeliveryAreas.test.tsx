@@ -275,3 +275,82 @@ describe('the delivery areas board', () => {
     );
   });
 });
+
+/**
+ * SET THE PRICE FOR A WHOLE STATE.
+ *
+ * The owner asked for it directly: "for delivery instead of just district or
+ * zone settings there should be a set all at once thingy". The route it uses
+ * has existed since the master delivers-switch was built — only the form was
+ * missing — so what these pin is the BODY, and the two facts about it that a
+ * plausible-looking implementation gets wrong:
+ *
+ *  - it sends `rateMinor` and NOT `delivers`, so pricing a state does not
+ *    quietly switch its districts on;
+ *  - an empty box sends a real `null`, which is "back to the state's zone
+ *    rate" and is emphatically not free delivery.
+ */
+describe('pricing every district in a state at once', () => {
+  it('sends one bulk write carrying every district and no delivers flag', async () => {
+    const user = userEvent.setup();
+    withBoard([{ id: 'da_ik', areaKey: 'ikeja', delivers: true, rateMinor: 250_000, revision: 3 }]);
+    when(`${DELIVERY}/bulk`, (_url, init) => {
+      const body = JSON.parse(String(init.body)) as { areaKeys: string[]; rateMinor: number | null };
+      return {
+        body: {
+          items: body.areaKeys.map((key, i) => ({
+            id: `da_${key}`,
+            areaKey: key,
+            delivers: true,
+            rateMinor: body.rateMinor,
+            revision: 9 + i,
+          })),
+        },
+      };
+    });
+    mount();
+
+    await user.click(await screen.findByRole('button', { name: /Set the price for all of Lagos/ }));
+    /* The count of districts already carrying their own price — the fact the
+       person checks against the table behind the modal before overwriting. */
+    expect(screen.getByText(/1 already has its own price and will be replaced/)).toBeTruthy();
+
+    await user.type(screen.getByLabelText('Delivery price across Lagos'), '3000');
+    await user.click(screen.getByRole('button', { name: 'Set 2 districts' }));
+
+    await waitFor(() => expect(bodiesOf(`${DELIVERY}/bulk`, 'POST')).toHaveLength(1));
+    const body = bodiesOf(`${DELIVERY}/bulk`, 'POST')[0]!;
+    expect(body.areaKeys).toEqual(['ikeja', 'yaba']);
+    /* ₦3,000 — 100 minor units per naira, the store's own scale. */
+    expect(body.rateMinor).toBe(300_000);
+    expect('delivers' in body).toBe(false);
+  });
+
+  it('an empty box clears the price with an explicit null, not a missing key', async () => {
+    const user = userEvent.setup();
+    withBoard([{ id: 'da_ik', areaKey: 'ikeja', delivers: true, rateMinor: 250_000, revision: 3 }]);
+    when(`${DELIVERY}/bulk`, { items: [] });
+    mount();
+
+    await user.click(await screen.findByRole('button', { name: /Set the price for all of Lagos/ }));
+    await user.click(screen.getByRole('button', { name: 'Set 2 districts' }));
+
+    await waitFor(() => expect(bodiesOf(`${DELIVERY}/bulk`, 'POST')).toHaveLength(1));
+    const body = bodiesOf(`${DELIVERY}/bulk`, 'POST')[0]!;
+    expect('rateMinor' in body).toBe(true);
+    expect(body.rateMinor).toBeNull();
+  });
+
+  it('refuses money it cannot read instead of sending something wrong', async () => {
+    const user = userEvent.setup();
+    withBoard([]);
+    when(`${DELIVERY}/bulk`, { items: [] });
+    mount();
+
+    await user.click(await screen.findByRole('button', { name: /Set the price for all of Lagos/ }));
+    await user.type(screen.getByLabelText('Delivery price across Lagos'), 'three thousand');
+    await user.click(screen.getByRole('button', { name: 'Set 2 districts' }));
+
+    expect(bodiesOf(`${DELIVERY}/bulk`, 'POST')).toHaveLength(0);
+  });
+});

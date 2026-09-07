@@ -6,7 +6,138 @@ import { AnalyticsBar, AnalyticsMenuItem, PageHeader, useAnalyticsBar, type Metr
 import { Badge, Banner, Button, EmptyState } from '../ui/primitives';
 import { ShelfArt } from '../ui/illustrations';
 import { DataTable, IdCell, type Column } from '../ui/DataTable';
+import { TextArea, TextField } from '../ui/Field';
+import { Modal } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
+
+/** No tint chosen. Empty rather than a colour, because "none" is a real
+ *  answer here and a default colour would put a tile tint on every category
+ *  whether or not anyone picked one. */
+const NO_TINT = '';
+
+/**
+ * ADD A CATEGORY.
+ *
+ * The button used to raise a toast saying this was "coming with the new
+ * product editor". It was not coming: `POST /admin/categories` and
+ * `shopApi.createCategory` have both existed the whole time, so the only
+ * missing piece was this form.
+ *
+ * 201 EVEN WHEN THE NAME IS ALREADY IN USE as free text on products, and that
+ * is the interesting case rather than an error: "adopt the category I have
+ * been typing onto products" and "create a new one" are the same request, and
+ * the response comes back with those products already counted. The toast says
+ * so when it happens, because a category that arrives owning six products
+ * looks like a bug if nobody explains it.
+ *
+ * NO SLUG FIELD. The server allocates it, and a published URL is a promise —
+ * moving it is a separate, deliberate act on the row afterwards.
+ */
+function NewCategoryModal({
+  initialName,
+  onClose,
+  onCreated,
+}: {
+  initialName: string;
+  onClose: () => void;
+  onCreated: (category: ShopCategory) => void;
+}) {
+  const [name, setName] = useState(initialName);
+  const [blurb, setBlurb] = useState('');
+  const [accent, setAccent] = useState(NO_TINT);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save() {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setError('Give the category a name.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const category = await shopApi.createCategory({
+        name: trimmed,
+        blurb: blurb.trim(),
+        accentHex: accent === NO_TINT ? null : accent,
+      });
+      onCreated(category);
+    } catch (cause) {
+      setError(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title="Add a category"
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button tone="primary" busy={busy} onClick={() => void save()}>
+            Add category
+          </Button>
+        </>
+      }
+    >
+      <div style={{ display: 'grid', gap: 'var(--s4)' }}>
+        <TextField
+          label="Name"
+          value={name}
+          autoFocus
+          placeholder="Filament"
+          hint="What shoppers see at the top of the category's page."
+          onChange={(e) => setName(e.target.value)}
+        />
+        <TextArea
+          label="Short description"
+          value={blurb}
+          rows={3}
+          placeholder="One line under the heading on its page."
+          hint="Optional. You can write it later."
+          onChange={(e) => setBlurb(e.target.value)}
+        />
+        <div className="field">
+          <span className="field__label">Tile colour</span>
+          <div className="row" style={{ gap: 'var(--s2)', alignItems: 'center' }}>
+            <input
+              type="color"
+              aria-label="Tile colour"
+              value={accent === NO_TINT ? '#1b4fa8' : accent}
+              onChange={(e) => setAccent(e.target.value)}
+              style={{
+                width: '2.5rem',
+                height: '2.25rem',
+                padding: 0,
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--r-md)',
+                background: 'none',
+              }}
+            />
+            {accent === NO_TINT ? (
+              <span className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+                No colour — the tile uses the shop's default.
+              </span>
+            ) : (
+              <Button tone="plain" onClick={() => setAccent(NO_TINT)}>
+                Clear colour
+              </Button>
+            )}
+          </div>
+          <span className="field__hint">Optional. Tints the category's tile in your shop.</span>
+        </div>
+      </div>
+      {error ? (
+        <p className="field__error" style={{ marginTop: 'var(--s3)' }}>
+          {error}
+        </p>
+      ) : null}
+    </Modal>
+  );
+}
 
 /**
  * CATEGORIES — the shop's collections surface.
@@ -24,7 +155,11 @@ export default function Categories() {
   const toast = useToast();
   const [search, setSearch] = useState('');
 
-  const { data, error, loading } = useAsync((signal) => shopApi.listCategories(signal), []);
+  const { data, error, loading, reload } = useAsync(
+    (signal) => shopApi.listCategories(signal),
+    [],
+  );
+  const [adding, setAdding] = useState<string | null>(null);
   const all = data ?? [];
 
   const rows = useMemo(() => {
@@ -99,16 +234,28 @@ export default function Categories() {
         title="Categories"
         subtitle="How products are grouped in your shop."
         actions={
-          <Button
-            tone="primary"
-            size="lg"
-            onClick={() => toast.show('Adding categories is coming with the new product editor')}
-          >
+          <Button tone="primary" size="lg" onClick={() => setAdding('')}>
             Add category
           </Button>
         }
         menu={(close) => <AnalyticsMenuItem shown={shown} onToggle={toggle} close={close} />}
       />
+
+      {adding !== null ? (
+        <NewCategoryModal
+          initialName={adding}
+          onClose={() => setAdding(null)}
+          onCreated={(category) => {
+            setAdding(null);
+            toast.show(
+              category.count > 0
+                ? `${category.name} set up properly — its ${category.count} product${category.count === 1 ? '' : 's'} came with it`
+                : `${category.name} added`,
+            );
+            reload();
+          }}
+        />
+      ) : null}
 
       {shown ? <AnalyticsBar range="All time" metrics={metrics} /> : null}
 

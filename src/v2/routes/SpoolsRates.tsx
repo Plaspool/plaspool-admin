@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { BadgePercent, Lock, MapPin, Plus } from 'lucide-react';
+import { BadgePercent, Layers, Lock, MapPin, Plus } from 'lucide-react';
 import {
   labelsOf,
   marketingApi,
@@ -17,6 +17,7 @@ import { Card } from '../ui/Card';
 import { DataTable, IdCell, type Column } from '../ui/DataTable';
 import { Defs } from '../ui/Defs';
 import { AffixField, SelectField } from '../ui/Field';
+import { Modal } from '../ui/Modal';
 import { PopEdit, PopEditFoot } from '../ui/PopEdit';
 import { SearchSelect } from '../ui/SearchSelect';
 import { useToast } from '../ui/Toast';
@@ -121,6 +122,8 @@ export default function SpoolsRates() {
   }, [groups]);
 
   const shown = groups.find((g) => g.region === region) ?? null;
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -200,6 +203,48 @@ export default function SpoolsRates() {
       /* A CAS miss means another tab moved it — re-read rather than guess. */
       void load();
       return false;
+    }
+  }
+
+  /**
+   * ONE COST ACROSS A WHOLE STATE.
+   *
+   * There is no bulk route for areas — the server takes `PATCH /areas/:id`
+   * one at a time, with CAS on `expectedRevision` — so this fans out and
+   * REPORTS PARTIAL SUCCESS, the shape the master switch on Where we collect
+   * already uses. Do not flatten that into a single toast: some rows moving
+   * and some not is the normal case when another tab is open, and the count
+   * is the only honest thing to say about it.
+   *
+   * It OVERWRITES, including districts already priced by hand, which is why
+   * the modal names that number before it runs.
+   */
+  async function writeAllStandard(patch: Record<string, number | null>) {
+    if (!shown) return;
+    const targets = shown.areas;
+    if (targets.length === 0) return;
+    setBulkBusy(true);
+    try {
+      const results = await Promise.allSettled(
+        targets.map((a) => marketingApi.patchArea(a.id, { expectedRevision: a.revision, ...patch })),
+      );
+      const done = results.filter((r) => r.status === 'fulfilled').length;
+      const failed = results.length - done;
+      if (failed === 0) {
+        toast.show(
+          `Pickup cost set for ${done} ${done === 1 ? 'district' : 'districts'} in ${shown.region}`,
+        );
+      } else {
+        toast.show(
+          `${done} set, ${failed} could not be. Nothing was lost — try again.`,
+          'critical',
+        );
+      }
+      setBulkOpen(false);
+    } finally {
+      /* Some rows moved and some may not have: read the truth back. */
+      await load();
+      setBulkBusy(false);
     }
   }
 
@@ -313,6 +358,10 @@ export default function SpoolsRates() {
                 </p>
               </div>
               {groups.length > 0 && region ? (
+                <div className="row" style={{ gap: 'var(--s2)', alignItems: 'flex-end' }}>
+                  <Button onClick={() => setBulkOpen(true)} disabled={!shown}>
+                    <Layers aria-hidden="true" /> Set for all of {shown?.region ?? 'this state'}
+                  </Button>
                 <SearchSelect
                   label="State"
                   value={region}
@@ -326,9 +375,20 @@ export default function SpoolsRates() {
                     meta: `${g.areas.length} ${g.areas.length === 1 ? 'district' : 'districts'}`,
                   }))}
                 />
+                </div>
               ) : null}
             </div>
           </section>
+
+          {bulkOpen && shown ? (
+            <BulkStandardModal
+              region={shown.region}
+              areas={shown.areas}
+              busy={bulkBusy}
+              onClose={() => setBulkOpen(false)}
+              onSave={writeAllStandard}
+            />
+          ) : null}
 
           <DataTable
             caption="What a pickup normally costs, by district"
@@ -482,6 +542,119 @@ function ProgramCard({
           : `ID code ${p.key}. Changing the rate only affects pickups asked for from now on.`}
       </span>
     </Card>
+  );
+}
+
+/**
+ * ONE PICKUP COST FOR EVERY DISTRICT IN A STATE.
+ *
+ * Typing four figures into twenty-eight districts by hand is the thing this
+ * screen was worst at, and the owner asked for it directly.
+ *
+ * IT OVERWRITES, and the modal says so with a COUNT rather than a warning
+ * adjective — "6 already have their own figures and will be replaced" is a
+ * fact the person can check against the table behind the modal; "this will
+ * overwrite existing values" is a noise they will learn to click past. When
+ * nothing is priced yet the sentence is absent entirely, because there is
+ * nothing to lose and a warning about it would be a lie.
+ *
+ * An empty box CLEARS that line across the state, the same meaning it has in
+ * the per-district popover — "we have no standard here", which is a different
+ * claim from "it is free".
+ */
+function BulkStandardModal({
+  region,
+  areas,
+  busy,
+  onClose,
+  onSave,
+}: {
+  region: string;
+  areas: ServiceArea[];
+  busy: boolean;
+  onClose: () => void;
+  onSave: (patch: Record<string, number | null>) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState<Record<StandardKey, string>>({
+    stdTransportMinor: '',
+    stdLocalMinor: '',
+    stdDriverMinor: '',
+    stdFeesMinor: '',
+  });
+  const [error, setError] = useState<string | null>(null);
+
+  /* `!= null`, never `!== null` — a payload written before 0920 carries
+     `undefined` on these four, and counting it as "priced" would overstate
+     what is about to be replaced. */
+  const priced = areas.filter((a) => STANDARD_LINES.some((l) => a[l.key] != null)).length;
+
+  function commit() {
+    const patch: Record<string, number | null> = {};
+    for (const line of STANDARD_LINES) {
+      const text = draft[line.key].trim();
+      if (text === '') {
+        patch[line.key] = null;
+        continue;
+      }
+      const parsed = parseMajor(text, CURRENCY);
+      if (!parsed.ok) {
+        setError(`${line.label}: ${moneyRefusalMessage(parsed.reason, CURRENCY)}`);
+        return;
+      }
+      patch[line.key] = parsed.minor;
+    }
+    setError(null);
+    void onSave(patch);
+  }
+
+  return (
+    <Modal
+      title={`Set the pickup cost for all of ${region}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button tone="primary" busy={busy} onClick={commit}>
+            Set {areas.length} {areas.length === 1 ? 'district' : 'districts'}
+          </Button>
+        </>
+      }
+    >
+      <p className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+        Every district you collect from in {region} takes these figures.
+        {priced > 0 ? (
+          <>
+            {' '}
+            <strong>
+              {priced} already {priced === 1 ? 'has its own figures' : 'have their own figures'} and{' '}
+              {priced === 1 ? 'will be' : 'will be'} replaced.
+            </strong>
+          </>
+        ) : null}
+      </p>
+      <p className="muted" style={{ fontSize: 'var(--t-xs)', marginTop: 'var(--s2)' }}>
+        Leave a box empty to clear that line everywhere — that means “we have no standard here”,
+        not “it is free”.
+      </p>
+      <div style={{ display: 'grid', gap: 'var(--s3)', marginTop: 'var(--s4)' }}>
+        {STANDARD_LINES.map((line) => (
+          <AffixField
+            key={line.key}
+            label={line.label}
+            prefix="₦"
+            inputMode="decimal"
+            placeholder="0.00"
+            value={draft[line.key]}
+            onChange={(e) => setDraft((d) => ({ ...d, [line.key]: e.target.value }))}
+          />
+        ))}
+      </div>
+      {error ? (
+        <p className="field__error" style={{ marginTop: 'var(--s3)' }}>
+          {error}
+        </p>
+      ) : null}
+    </Modal>
   );
 }
 
