@@ -176,7 +176,8 @@ export async function recordCourierBooking(
  * Apply what the courier says now. The timeline row is written ONLY when the
  * raw status actually changed, so a replayed webhook or an idle poll adds
  * nothing. Links are COALESCEd: a courier that stops sending a URL it once sent
- * does not erase it.
+ * does not erase it — but see `links` below for the one row state where a
+ * courier's link is not learned at all.
  *
  * `revision` moves under the SAME condition as the timeline row — an idle poll
  * or a redelivered webhook that reports the status we already have must not
@@ -231,11 +232,34 @@ export async function recordCourierSnapshot(
     message: string;
   },
 ): Promise<{ fulfillment: Fulfillment; changed: boolean }> {
+  /*
+   * ── A CANCELLED PARCEL LEARNS NO LINKS ───────────────────────────────────
+   *
+   * `recordCourierCancelled` NULLs carrier, tracking number, tracking page and
+   * label precisely so a later ship-by-hand mails none of them. Cancelling at
+   * the courier is also what MAKES the courier send its own `cancelled` event,
+   * and both adapters fill every field they know on every event — so the plain
+   * COALESCE handed all four straight back, and the shipment email quoted the
+   * dead waybill. The ordinary sequence, not an exotic one.
+   *
+   * The test is on the row's EXISTING state, which under `SET` is the value
+   * from before this statement. That is deliberate on both sides: a parcel that
+   * is still cancelled after this snapshot never re-acquires a customer-facing
+   * link, and a cancel the courier overrode by delivering anyway heals on the
+   * NEXT event — by then `courier_state` is no longer `cancelled` and the links
+   * fill normally.
+   *
+   * Everything that is not customer-facing — the raw status, our reading of it,
+   * when we heard, and the `courier_update` timeline row — lands regardless.
+   */
+  const live = sql`f.courier_state IS DISTINCT FROM 'cancelled'`;
+  const learn = (value: string | null | undefined, column: SQL): SQL =>
+    sql`CASE WHEN ${live} THEN COALESCE(${value ?? null}::text, ${column}) ELSE ${column} END`;
   const links = sql`
-        tracking_number = COALESCE(${a.trackingNumber ?? null}::text, f.tracking_number),
-        tracking_url = COALESCE(${a.trackingUrl ?? null}::text, f.tracking_url),
-        label_url = COALESCE(${a.labelUrl ?? null}::text, f.label_url),
-        carrier = COALESCE(${a.carrier ?? null}::text, f.carrier)`;
+        tracking_number = ${learn(a.trackingNumber, sql`f.tracking_number`)},
+        tracking_url = ${learn(a.trackingUrl, sql`f.tracking_url`)},
+        label_url = ${learn(a.labelUrl, sql`f.label_url`)},
+        carrier = ${learn(a.carrier, sql`f.carrier`)}`;
   const res = await db.execute(sql`
     WITH changed AS (
       UPDATE shop_fulfillments f SET

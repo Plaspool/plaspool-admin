@@ -234,12 +234,24 @@ describe('courier writes', () => {
    * it changes what the customer is told. Book with Fez, the courier falls
    * through, cancel it, ship the parcel by hand — the shipment email queued by
    * that ship must not read like Fez is still coming.
+   *
+   * THE SNAPSHOT IN THE MIDDLE IS THE ORDINARY SEQUENCE, not an exotic one:
+   * cancelling at the courier is what MAKES the courier send `cancelled`, and
+   * Terminal's `parseWebhook` fills every field it knows on every event, so that
+   * confirmation arrives carrying the waybill, the tracking page, the label and
+   * the carrier's name. A snapshot that COALESCEd those back onto the row would
+   * hand the ship-by-hand email the dead booking the cancel had just taken away.
    */
   it('booking, then cancelling, then shipping by hand mails no dead courier link or number', async () => {
     const { order, id } = await parcel();
     await recordCourierBooking(ctx.db, id, { ...booking, trackingUrl: 'https://t.test/1' });
     await recordCourierCancelled(ctx.db, id, { now: NOW + 2, actorId: 'u_admin', message: 'Courier cancelled: changed our mind' });
-    await shipFulfillment(ctx.db, id, NOW + 3, null, 'u_admin');
+    // The courier confirms the cancellation, re-stating everything it knows.
+    await recordCourierSnapshot(ctx.db, id, {
+      rawStatus: 'cancelled', state: 'cancelled', trackingNumber: 'ASAC1', trackingUrl: 'https://t.test/1',
+      labelUrl: 'https://fez.test/m.pdf', carrier: 'Fez Delivery', now: NOW + 3, message: 'Fez Delivery: cancelled',
+    });
+    await shipFulfillment(ctx.db, id, NOW + 4, null, 'u_admin');
 
     const shipment = (await listIntents(ctx.db, order.order.id)).find((i) => i.kind === 'shipment');
     expect(shipment).toBeDefined();
@@ -247,6 +259,37 @@ describe('courier writes', () => {
     expect(shipment!.body).not.toContain('Track:');
     expect(shipment!.body).not.toContain('ASAC1');
     expect(shipment!.body).not.toContain('Fez Delivery');
+  });
+
+  /**
+   * The same guard read off the row rather than off an email: a cancelled parcel
+   * still LEARNS from the courier — the raw word it sent, our reading of it, when
+   * we heard, and a `courier_update` on the timeline — and still refuses the four
+   * columns that point a customer at a courier that is not coming.
+   */
+  it('a snapshot on a cancelled parcel records the status but never refills its links', async () => {
+    const { order, id } = await parcel();
+    await recordCourierBooking(ctx.db, id, { ...booking, trackingUrl: 'https://t.test/1' });
+    await recordCourierCancelled(ctx.db, id, { now: NOW + 2, actorId: 'u_admin', message: 'Courier cancelled: changed our mind' });
+
+    const snapshot = await recordCourierSnapshot(ctx.db, id, {
+      rawStatus: 'cancelled', state: 'cancelled', trackingNumber: 'ASAC1', trackingUrl: 'https://t.test/1',
+      labelUrl: 'https://fez.test/m.pdf', carrier: 'Fez Delivery', now: NOW + 3, message: 'Fez Delivery: cancelled',
+    });
+    expect(snapshot.changed).toBe(true);
+    expect(snapshot.fulfillment).toMatchObject({ carrier: null, trackingNumber: null, trackingUrl: null, labelUrl: null });
+    // Everything that is not customer-facing still lands.
+    expect(snapshot.fulfillment).toMatchObject({ providerStatus: 'cancelled', courierState: 'cancelled', providerSyncedAt: NOW + 3 });
+    expect((await listTimeline(ctx.db, order.order.id)).filter((e) => e.type === 'courier_update')).toHaveLength(1);
+
+    /* And the SECOND branch too — a redelivered copy of that same webhook takes
+       the `same` UPDATE, whose SET list carries the links and nothing else. */
+    const replay = await recordCourierSnapshot(ctx.db, id, {
+      rawStatus: 'cancelled', state: 'cancelled', trackingNumber: 'ASAC1', trackingUrl: 'https://t.test/1',
+      labelUrl: 'https://fez.test/m.pdf', carrier: 'Fez Delivery', now: NOW + 4, message: 'Fez Delivery: cancelled',
+    });
+    expect(replay.changed).toBe(false);
+    expect(replay.fulfillment).toMatchObject({ carrier: null, trackingNumber: null, trackingUrl: null, labelUrl: null, providerSyncedAt: NOW + 4 });
   });
 
   it('refuses to cancel a courier on a parcel that has none, or that has already shipped', async () => {
