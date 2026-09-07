@@ -105,6 +105,30 @@ export function CourierDialog({
     return cause instanceof Error && cause.message ? cause.message : 'Something went wrong.';
   }
 
+  /**
+   * The lines a `weights_missing` refusal names, or `null` if that is not what
+   * this failure was.
+   *
+   * BOTH THE QUOTE AND THE BOOKING CAN RAISE IT. The server re-asks the
+   * question at booking time rather than trusting the quote (`bookParcel`),
+   * because a quote and a booking are two requests with an operator in
+   * between — somebody can clear a weight in that gap. Read in one place so
+   * the second door leads to the same step as the first instead of printing
+   * the server's code at a person.
+   */
+  function weightsRefused(cause: unknown): ShopCourierMissingWeight[] | null {
+    if (cause instanceof ApiError && cause.code === 'weights_missing') {
+      return (cause.body as { lines?: ShopCourierMissingWeight[] } | undefined)?.lines ?? [];
+    }
+    return null;
+  }
+
+  /** Seed a box per line, keeping anything already typed. */
+  function askForWeights(lines: ShopCourierMissingWeight[]) {
+    setWeights((w) => ({ ...Object.fromEntries(lines.map((l) => [l.variantId, ''])), ...w }));
+    setPhase({ kind: 'weights', lines });
+  }
+
   /** `already_booked` is not a failure to read — the parcel HAS a courier, so
    *  say so and let the row redraw from the server rather than stranding the
    *  operator in a dialog about a booking that exists. */
@@ -142,13 +166,9 @@ export function CourierDialog({
         chosen: q.options.length === 1 ? q.options[0]!.id : null,
       });
     } catch (cause) {
-      if (cause instanceof ApiError && cause.code === 'weights_missing') {
-        const lines = (cause.body as { lines?: ShopCourierMissingWeight[] } | undefined)?.lines ?? [];
-        setWeights((w) => ({
-          ...Object.fromEntries(lines.map((l) => [l.variantId, ''])),
-          ...w,
-        }));
-        setPhase({ kind: 'weights', lines });
+      const missing = weightsRefused(cause);
+      if (missing) {
+        askForWeights(missing);
         return;
       }
       if (adopted(cause)) return;
@@ -198,6 +218,13 @@ export function CourierDialog({
     } catch (cause) {
       setBusy(false);
       if (adopted(cause)) return;
+      /* A weight cleared between the quote and this click: back to the step
+         that fixes it, not a code in a red line. */
+      const missing = weightsRefused(cause);
+      if (missing) {
+        askForWeights(missing);
+        return;
+      }
       setError(describe(cause));
     }
   }

@@ -409,6 +409,30 @@ describe('OrderDetail — courier booking', () => {
     await waitFor(() => expect(sent(BOOK, 'POST')).toEqual({ optionId: 'fez', quoteRef: null }));
   });
 
+  it('sends a booking that lost a weight back to the weights step, not to a code', async () => {
+    const user = userEvent.setup();
+    withOrder([parcel('pending')]);
+    when(PROVIDER, { provider: 'terminal', label: 'Terminal Africa' });
+    when(QUOTE, terminalQuote);
+    /* The server re-asks the weight question at booking time rather than
+       trusting the quote, so somebody clearing a weight in between lands
+       here — and `weights_missing` is a code, not a sentence. */
+    when(BOOK, () => ({
+      status: 422,
+      body: { error: 'weights_missing', lines: [{ orderLineId: 'line_1', variantId: 'var_1', sku: 'SPL-RED', title: 'Recycled Spool' }] },
+    }));
+    mount();
+    await loaded();
+    await user.click(await screen.findByRole('button', { name: 'Book with Terminal Africa' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Book Parcel 1 with Terminal Africa' });
+    await user.click(await within(dialog).findByRole('radio', { name: /GIG Logistics/ }));
+    await user.click(within(dialog).getByRole('button', { name: 'Book' }));
+
+    expect(await within(dialog).findByText(/needs a weight for every item/)).toBeTruthy();
+    expect(within(dialog).getByLabelText('Weight of Recycled Spool')).toBeTruthy();
+    expect(within(dialog).queryByRole('radio')).toBeNull();
+  });
+
   it('turns courier errors into words', async () => {
     const user = userEvent.setup();
     withOrder([parcel('pending')]);
