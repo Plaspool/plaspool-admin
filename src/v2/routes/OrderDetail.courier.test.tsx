@@ -470,6 +470,41 @@ describe('OrderDetail — courier booking', () => {
     await waitFor(() => expect(sent(CANCEL_COURIER, 'POST')).toEqual({}));
   });
 
+  /*
+   * THE ROW'S OWN FAILURES ARE SENTENCES TOO. `ApiError.message` is the
+   * server's CODE (`src/data/api.ts` passes no message), so the toast used to
+   * read `provider_rejected` — which tells an operator holding a parcel
+   * neither what happened nor what to do next.
+   */
+  it('a courier that refuses the cancel is quoted, not coded', async () => {
+    const user = userEvent.setup();
+    withOrder([{ ...booked, trackingUrl: 'https://track.test/ASAC27012319' }]);
+    when(PROVIDER, { provider: 'fez', label: 'Fez Delivery' });
+    when(CANCEL_COURIER, () => ({
+      status: 422,
+      body: { error: 'provider_rejected', message: 'Already collected from your address' },
+    }));
+    mount();
+    await loaded();
+    await user.click(await screen.findByRole('button', { name: 'Cancel courier' }));
+    expect(
+      await screen.findByText('Fez Delivery said: Already collected from your address'),
+    ).toBeTruthy();
+  });
+
+  it('a cancel the parcel has outrun reads as "already gone out"', async () => {
+    const user = userEvent.setup();
+    withOrder([{ ...booked, trackingUrl: 'https://track.test/ASAC27012319' }]);
+    when(PROVIDER, { provider: 'fez', label: 'Fez Delivery' });
+    when(CANCEL_COURIER, () => ({ status: 409, body: { error: 'already_shipped' } }));
+    mount();
+    await loaded();
+    await user.click(await screen.findByRole('button', { name: 'Cancel courier' }));
+    expect(
+      await screen.findByText('This parcel has already gone out. Refresh to see where it is.'),
+    ).toBeTruthy();
+  });
+
   it('offers Book again after the courier cancelled', async () => {
     withOrder([{ ...booked, courierState: 'cancelled', providerStatus: 'Cancelled' }]);
     when(PROVIDER, { provider: 'fez', label: 'Fez Delivery' });

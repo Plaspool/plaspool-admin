@@ -335,12 +335,13 @@ logisticsRoutes.post('/admin/logistics/webhooks/register', requireAdmin(), async
 /**
  * A refusal about STATE, which is an answer rather than a failure.
  *
- * 409 FOR THREE OF THEM AND 422 FOR THE FOURTH, per the plan's error table:
- * the first three describe a conflict with how things currently are ("the shop
- * ships by hand", "somebody booked this already"), and the client's move is to
- * re-read. `weights_missing` is about the CONTENT of what was asked for — the
- * dialog turns it into an inline "Set weights" step — so it carries the lines
- * to fix and the code that means unprocessable.
+ * 409 FOR ALL BUT ONE OF THEM AND 422 FOR THAT ONE, per the plan's error
+ * table: the rest describe a conflict with how things currently are ("the shop
+ * ships by hand", "somebody booked this already", "this parcel has already
+ * gone out"), and the client's move is to re-read. `weights_missing` is about
+ * the CONTENT of what was asked for — the dialog turns it into an inline "Set
+ * weights" step — so it carries the lines to fix and the code that means
+ * unprocessable.
  */
 function refusal(c: Context<AppEnv>, r: Refusal): Response {
   if (r.refused === 'weights_missing') {
@@ -456,6 +457,9 @@ logisticsRoutes.post('/admin/fulfillments/:id/courier/cancel', auth, async (c) =
       now: deps.now(),
     });
     if (out === null) throw new NotFoundError(id);
+    /* `already_shipped` — the parcel outran the cancel. A refusal about state,
+       answered as the same 409 the other conflicts get. */
+    if ('refused' in out) return refusal(c, out);
     return c.json({ fulfillment: out });
   } catch (err) {
     return providerFailure(c, err);

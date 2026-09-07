@@ -20,6 +20,7 @@ import { catalogPort } from './catalog/port';
 import { addOnPort } from './catalog/add-ons/port';
 import { checkoutPaymentsPort } from './payments/port';
 import { orders } from './orders/routes';
+import { CourierConflictError } from './orders/repo/courier';
 import { drainCommerceEvents } from './orders/repo/consumer';
 import { cartShopRoutes } from './cart/routes';
 import { resolveShopCustomer } from './cart/identity/customers';
@@ -170,7 +171,30 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
                */
               err instanceof DuplicateOptionsError
               ? { error: 'duplicate_options', detail: 'optionValues', summary: err.summary }
-              : null;
+              : /*
+                 * TWO COURIERS RACING ONE PARCEL — belt and braces behind the
+                 * refusals the logistics service already returns.
+                 *
+                 * `CourierConflictError` is raised by every guarded write in
+                 * `orders/repo/courier.ts`, and the service catches it at each
+                 * door it knows about (`quoteParcel`, `bookParcel`,
+                 * `cancelParcelCourier`). `server/middleware/errors.ts` has no
+                 * row for it, so ANY door added later that forgets to catch it
+                 * would answer `{"error":"internal"}` — a 500, which the client
+                 * then retries five times for a question whose answer can never
+                 * change, on the one surface in this admin that spends money at
+                 * a third party. Classified here, that failure mode is closed by
+                 * construction rather than by everyone remembering.
+                 *
+                 * `err.reason` and not a fixed string: `already_booked` ("this
+                 * parcel is spoken for") and `ref_in_use` ("that waybill belongs
+                 * to another parcel") are different situations with different
+                 * next moves, and the class carries the distinction precisely so
+                 * a caller can tell them apart.
+                 */
+                err instanceof CourierConflictError
+                ? { error: err.reason }
+                : null;
 
     if (!body) return toResponse(err, requestId);
 

@@ -25,7 +25,7 @@ import { MenuItem, MenuSeparator } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
 import { Timeline, type TimelineEvent } from '../ui/Timeline';
 import { useToast } from '../ui/Toast';
-import { CourierDialog } from './CourierDialog';
+import { CourierDialog, describeCourierError } from './CourierDialog';
 import { COURIER_COPY, canBook, courierStateBadge } from './courier-copy';
 import { isAdminRole } from '../../../shared/roles';
 
@@ -688,7 +688,15 @@ function FulfilmentRow({
 
   /** Ask the courier where the parcel is, or call the booking off. Both
    *  answer with the parcel, and both re-read the order rather than patching
-   *  the row from here: a refresh can also SHIP or DELIVER it server-side. */
+   *  the row from here: a refresh can also SHIP or DELIVER it server-side.
+   *
+   *  THE FAILURE IS A SENTENCE, NOT A CODE. These two buttons hit the same
+   *  routes the booking dialog does and get the same refusals back —
+   *  `already_shipped`, `provider_rejected`, `provider_error` — and
+   *  `ApiError.message` is the bare code (`src/data/api.ts` passes no
+   *  message), so this toast used to read `provider_rejected` at an operator
+   *  holding a parcel. `describeCourierError` is the dialog's own switch,
+   *  shared rather than copied. */
   async function courierAction(kind: 'refresh' | 'cancel') {
     setBusy(kind);
     try {
@@ -697,7 +705,7 @@ function FulfilmentRow({
       toast.show(kind === 'refresh' ? P.refreshed(index) : P.courierCancelled(index));
       onChanged(false);
     } catch (cause) {
-      toast.show(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.', 'critical');
+      toast.show(describeCourierError(cause, courier.label), 'critical');
     } finally {
       setBusy(null);
     }

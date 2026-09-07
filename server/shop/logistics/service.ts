@@ -13,6 +13,7 @@ import {
   recordCourierCancelled,
   recordCourierDraft,
   recordCourierSnapshot,
+  recordCourierSyncError,
 } from '../orders/repo/courier';
 import { readShippingAddress } from './address';
 import type { ResolvedLogisticsDeps } from './deps';
@@ -82,7 +83,20 @@ export interface QuoteResponse {
 }
 
 export type Refusal =
-  | { refused: 'provider_manual' | 'already_booked' | 'provider_not_configured' }
+  | {
+      refused:
+        | 'provider_manual'
+        | 'already_booked'
+        | 'provider_not_configured'
+        /**
+         * The parcel has left. Only `cancelParcelCourier` produces it, and it
+         * is a refusal rather than a throw for the reason the other four are:
+         * "this is already on a van" is an ordinary answer about state that
+         * the screen must RENDER, not a failure. Raised as a 409 by
+         * `routes.ts#refusal`, exactly like `already_booked`.
+         */
+        | 'already_shipped';
+    }
   | { refused: 'weights_missing'; lines: MissingWeight[] };
 
 export interface CourierUpdateOutcome {
@@ -299,7 +313,24 @@ export async function quoteParcel(
      is what stops the next quote creating a second one. */
   if (quote.packagingRef) await setTerminalPackagingId(db, quote.packagingRef);
   if (quote.providerRef) {
-    await recordCourierDraft(db, f.id, { provider: providerId, providerRef: quote.providerRef, now });
+    try {
+      await recordCourierDraft(db, f.id, {
+        provider: providerId,
+        providerRef: quote.providerRef,
+        now,
+      });
+    } catch (err) {
+      /*
+       * SOMEBODY BOOKED IT WHILE WE WERE ASKING THE PRICE — the same race
+       * `bookParcel` catches below, one door earlier. `preflight` read the
+       * parcel free, Terminal was asked for a draft, and by the time the
+       * draft came back another tab (or the operator's second click) had
+       * booked it. Left to escape, this was a 500 on a question whose honest
+       * answer is the ordinary 409 the screen already knows how to draw.
+       */
+      if (err instanceof CourierConflictError) return { refused: 'already_booked' };
+      throw err;
+    }
   }
 
   return {
@@ -518,15 +549,39 @@ export async function refreshParcel(
  * would leave a parcel that looks free to rebook while a van is still coming
  * for it; this way a courier that refuses the cancellation leaves the row
  * exactly as it was, which is the truth.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * BUT THE STATE IS CHECKED BEFORE ANY OF THAT, AND THAT CHECK IS THE POINT.
+ *
+ * `recordCourierCancelled`'s guard is `status = 'pending'`, so a parcel a
+ * webhook has just shipped cannot be recorded as cancelled — and with the
+ * courier called first, the shipped bug was: a real collection stopped, a
+ * customer already holding a shipment email that quotes that waybill, and the
+ * operator told `{"error":"internal"}` — that the server had crashed and the
+ * cancellation had probably not gone through. Every part of that is wrong,
+ * and the expensive part is the van.
+ *
+ * A PRE-CHECK IS NORMALLY THE ANTI-PATTERN THIS SUBSYSTEM ARGUES AGAINST
+ * (`orders/repo/courier.ts`: decide inside the UPDATE's own WHERE, never
+ * against a snapshot). It earns its place here because the thing it guards is
+ * not a database write but an irreversible call to a third party: the guarded
+ * write remains the authority, and the race that lands between the two is
+ * caught below rather than pretended away.
+ * ═══════════════════════════════════════════════════════════════════════════
  */
 export async function cancelParcelCourier(
   db: Db,
   deps: ResolvedLogisticsDeps,
   fulfillmentId: string,
   a: { reason: string; actorId: string; now: number },
-): Promise<Fulfillment | null> {
+): Promise<Fulfillment | Refusal | null> {
   const ctx = await load(db, fulfillmentId);
+  /* No booking to call off is a 404, not a refusal: nobody promised there
+     would be a courier on this parcel. */
   if (!ctx || !ctx.f.provider || !ctx.f.providerRef) return null;
+
+  /* Asked from a FRESH read (`load` above), and asked before the courier is. */
+  if (ctx.f.status !== 'pending') return { refused: 'already_shipped' };
 
   const provider = deps.providerFor(ctx.f.provider);
   if (!provider) {
@@ -537,11 +592,34 @@ export async function cancelParcelCourier(
   }
 
   await provider.cancel(ctx.f.providerRef, a.reason);
-  return recordCourierCancelled(db, ctx.f.id, {
-    now: a.now,
-    actorId: a.actorId,
-    /* The reason is optional here as everywhere else in this admin (owner's
-       call, 2026-09-03), so a blank one must still read as a sentence. */
-    message: `Courier cancelled${a.reason ? `: ${a.reason}` : ''}`,
-  });
+  try {
+    return await recordCourierCancelled(db, ctx.f.id, {
+      now: a.now,
+      actorId: a.actorId,
+      /* The reason is optional here as everywhere else in this admin (owner's
+         call, 2026-09-03), so a blank one must still read as a sentence. */
+      message: `Courier cancelled${a.reason ? `: ${a.reason}` : ''}`,
+    });
+  } catch (err) {
+    if (!(err instanceof CourierConflictError)) throw err;
+    /*
+     * THE CHECK AND THE WRITE ARE TWO STATEMENTS, so a webhook can still land
+     * between them — and when it does, THE COURIER HAS ALREADY BEEN
+     * CANCELLED. That is the one fact the row must not lose: the parcel now
+     * says `shipped` with a waybill on it that no van is coming for, and only
+     * a human can reconcile that.
+     *
+     * So the outcome is recorded rather than swallowed. `provider_last_error`
+     * is where this subsystem already puts "the courier and this row disagree"
+     * — it renders on the parcel row as "Courier problem: …" — and it moves
+     * no status, which is right: nothing about the parcel's own lifecycle
+     * changed. The answer to the operator is the same `already_shipped` the
+     * pre-check gives, because their next move is identical: refresh and look.
+     */
+    await recordCourierSyncError(db, ctx.f.id, {
+      now: a.now,
+      message: `Cancelled at ${provider.label}, but this parcel had already shipped — no collection is coming for waybill ${ctx.f.providerRef}.`,
+    });
+    return { refused: 'already_shipped' };
+  }
 }

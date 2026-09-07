@@ -44,6 +44,59 @@ import { COURIER_COPY, PROVIDER_ENV, PROVIDER_LABEL } from './courier-copy';
 
 const D = COURIER_COPY.dialog;
 
+/**
+ * A COURIER'S REFUSAL IN WORDS THE OPERATOR CAN ACT ON.
+ *
+ * `ApiError.message` IS THE SERVER'S CODE. `src/data/api.ts` builds the error
+ * from `{ error }` and passes no message, so anything that prints
+ * `cause.message` puts `provider_rejected` in front of a person holding a
+ * parcel. Every friendly sentence therefore needs its own branch.
+ *
+ * MODULE-LEVEL AND EXPORTED because the dialog is not the only door: the
+ * parcel row's Refresh and Cancel buttons (`OrderDetail.tsx`) hit the same
+ * four routes and get the same codes back, and two copies of this switch is
+ * how one of them drifts into printing a code again.
+ *
+ * `provider_rejected` CARRIES THE COURIER'S OWN WORDS from the body rather
+ * than a sentence of ours: only Fez or Terminal can say WHICH part of the
+ * request they would not take.
+ */
+export function describeCourierError(cause: unknown, providerLabel: string): string {
+  if (cause instanceof ApiError) {
+    const body = cause.body as { message?: string; provider?: 'fez' | 'terminal' } | undefined;
+    switch (cause.code) {
+      case 'provider_not_configured':
+        return D.notConfigured(
+          PROVIDER_ENV[
+            body?.provider ?? (providerLabel === PROVIDER_LABEL.terminal ? 'terminal' : 'fez')
+          ],
+        );
+      case 'provider_rejected':
+        return D.rejected(providerLabel, body?.message ?? cause.detail ?? 'no reason given');
+      /* The one refusal that names the boxes to go and fill in — an order
+         whose delivery address the courier cannot collect at. It is the
+         courier's own sentence, which is the only thing that says WHICH
+         part of the address is unusable. */
+      case 'address_incomplete':
+        return D.rejected(providerLabel, body?.message ?? 'the delivery address is incomplete');
+      case 'provider_error':
+        return D.unavailable(providerLabel);
+      case 'already_booked':
+        return D.alreadyBooked;
+      /* The cancel lost a race with the courier's own webhook: the parcel is
+         out, and the server refused rather than calling off a van it could
+         not then record. */
+      case 'already_shipped':
+        return D.alreadyShipped;
+      case 'provider_manual':
+        return D.manual;
+      default:
+        break;
+    }
+  }
+  return cause instanceof Error && cause.message ? cause.message : 'Something went wrong.';
+}
+
 type Phase =
   | { kind: 'quoting' }
   | { kind: 'weights'; lines: ShopCourierMissingWeight[] }
@@ -72,38 +125,7 @@ export function CourierDialog({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  /** A courier's refusal in words the operator can act on. `ApiError.message`
-   *  is the server's CODE, so every friendly sentence needs its own branch. */
-  function describe(cause: unknown): string {
-    if (cause instanceof ApiError) {
-      const body = cause.body as { message?: string; provider?: 'fez' | 'terminal' } | undefined;
-      switch (cause.code) {
-        case 'provider_not_configured':
-          return D.notConfigured(
-            PROVIDER_ENV[
-              body?.provider ?? (providerLabel === PROVIDER_LABEL.terminal ? 'terminal' : 'fez')
-            ],
-          );
-        case 'provider_rejected':
-          return D.rejected(providerLabel, body?.message ?? cause.detail ?? 'no reason given');
-        /* The one refusal that names the boxes to go and fill in — an order
-           whose delivery address the courier cannot collect at. It is the
-           courier's own sentence, which is the only thing that says WHICH
-           part of the address is unusable. */
-        case 'address_incomplete':
-          return D.rejected(providerLabel, body?.message ?? 'the delivery address is incomplete');
-        case 'provider_error':
-          return D.unavailable(providerLabel);
-        case 'already_booked':
-          return D.alreadyBooked;
-        case 'provider_manual':
-          return D.manual;
-        default:
-          break;
-      }
-    }
-    return cause instanceof Error && cause.message ? cause.message : 'Something went wrong.';
-  }
+  const describe = (cause: unknown): string => describeCourierError(cause, providerLabel);
 
   /**
    * The lines a `weights_missing` refusal names, or `null` if that is not what

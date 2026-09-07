@@ -96,6 +96,11 @@ export const COURIER_COPY = {
     rejected: (label: string, msg: string) => `${label} said: ${msg}`,
     unavailable: (label: string) => `${label} didn't answer. Try again in a minute.`,
     alreadyBooked: 'This parcel already has a courier. Reloading.',
+    /* The cancel button lost a race with the courier's own webhook. Says what
+       happened and what to press next, because "already_shipped" says neither.
+       Lives beside `alreadyBooked` because `describeCourierError` is the one
+       reader of both, and it reads every other sentence from this table. */
+    alreadyShipped: 'This parcel has already gone out. Refresh to see where it is.',
     manual: 'Courier booking is switched off. Turn it on under Settings → Delivery courier.',
   },
 } as const;

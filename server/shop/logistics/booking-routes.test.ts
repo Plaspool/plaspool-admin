@@ -85,6 +85,15 @@ interface Behaviour {
   fails?: LogisticsError;
 }
 
+/**
+ * Every van this suite actually called off, in order.
+ *
+ * A COUNTER RATHER THAN A SPY BECAUSE THE ABSENCE IS THE ASSERTION: the bug
+ * this pins is a cancel that reached the courier and then failed to record —
+ * money spent and a collection stopped for a parcel already on its way.
+ */
+let cancelled: { ref: string; reason: string }[] = [];
+
 function fakeProvider(id: ProviderId, b: Behaviour = {}): LogisticsProvider {
   const unused = (method: string) => (): never => {
     throw new Error(`fake ${id}: ${method} is not driven by this case`);
@@ -100,8 +109,9 @@ function fakeProvider(id: ProviderId, b: Behaviour = {}): LogisticsProvider {
     quote: async () => answer(b.quote, 'quote'),
     book: async () => answer(b.book, 'book'),
     track: async () => answer(b.track, 'track'),
-    cancel: async () => {
+    cancel: async (ref: string, reason: string) => {
       if (b.fails) throw b.fails;
+      cancelled.push({ ref, reason });
     },
     registerWebhook: unused('registerWebhook'),
     parseWebhook: unused('parseWebhook'),
@@ -219,6 +229,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   http.clearCookies();
+  cancelled = [];
   resetLogisticsDeps();
   await resetOrderTables(ctx.db);
   await ctx.db.execute(sql`DELETE FROM sessions`);
@@ -428,6 +439,36 @@ describe('POST courier/cancel', () => {
     await http.post(courier(parcel, 'book'), { optionId: 'fez' });
 
     expect((await http.post(courier(parcel, 'cancel'))).status).toBe(200);
+  });
+
+  /**
+   * ═════════════════════════════════════════════════════════════════════════
+   * THE PARCEL OUTRAN THE CANCEL — 409, AND THE VAN IS LEFT ALONE.
+   *
+   * The shipped bug had two halves and the second was the expensive one.
+   * `cancelParcelCourier` called `provider.cancel()` FIRST and recorded
+   * SECOND, and the recording guard is `status = 'pending'` — so a parcel a
+   * webhook had just shipped produced: a real collection called off at the
+   * courier, a customer already holding a shipment email quoting that
+   * waybill, and an operator told `{"error":"internal"}`, i.e. that the
+   * server had crashed and the cancel had probably not happened.
+   *
+   * `refresh` stands in for the webhook here: it is the same
+   * `applyCourierUpdate`, so the parcel arrives at `shipped` by the exact
+   * route a real Fez callback takes.
+   * ═════════════════════════════════════════════════════════════════════════
+   */
+  it('409 already_shipped once the parcel has gone out, WITHOUT calling the courier off', async () => {
+    fezReady();
+    const { parcel } = await scene();
+    await settings('fez');
+    await http.post(courier(parcel, 'book'), { optionId: 'fez' });
+    expect((await http.post(courier(parcel, 'refresh'))).status).toBe(200);
+
+    const res = await http.post(courier(parcel, 'cancel'), { reason: 'Customer changed their mind' });
+    expect(res.status).toBe(409);
+    expect(await json(res)).toMatchObject({ error: 'already_shipped' });
+    expect(cancelled).toEqual([]);
   });
 });
 
