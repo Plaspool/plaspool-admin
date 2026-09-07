@@ -30,7 +30,7 @@ CREATE TABLE shop_logistics_settings (
   terminal_packaging_id text,
   revision integer NOT NULL DEFAULT 1,
   updated_at bigint NOT NULL,
-  updated_by uuid REFERENCES users(id),
+  updated_by uuid REFERENCES users(id) ON DELETE SET NULL,
   CONSTRAINT shop_logistics_settings_id_ck CHECK (id = 'main'),
   CONSTRAINT shop_logistics_settings_provider_ck CHECK (provider IN ('manual', 'fez', 'terminal')),
   CONSTRAINT shop_logistics_settings_revision_ck CHECK (revision > 0),

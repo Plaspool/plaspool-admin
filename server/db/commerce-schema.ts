@@ -284,6 +284,22 @@ export const shopFulfillments = pgTable(
     revision: integer('revision').notNull(),
     /** Its own trigger-maintained pin: a re-applied `ship` is a double shipment. */
     lifecycleGeneration: integer('lifecycle_generation').notNull().default(0),
+    /* ── courier booking (migration 0960); all NULL for a parcel shipped by
+     * hand. The unions mirror server/shop/orders/repo/fulfillments.ts's
+     * CourierProvider/CourierState, inlined rather than imported so this
+     * schema file takes no dependency on a repo module. ── */
+    provider: text('provider').$type<'fez' | 'terminal'>(),
+    providerRef: text('provider_ref'),
+    providerStatus: text('provider_status'),
+    courierState: text('courier_state').$type<
+      | 'draft' | 'booked' | 'picked_up' | 'in_transit' | 'delivered'
+      | 'returned' | 'cancelled' | 'failed' | 'unknown'
+    >(),
+    trackingUrl: text('tracking_url'),
+    labelUrl: text('label_url'),
+    providerCostMinor: bigint('provider_cost_minor', { mode: 'number' }),
+    providerSyncedAt: bigint('provider_synced_at', { mode: 'number' }),
+    providerLastError: text('provider_last_error'),
   },
   (t) => [
     check(
@@ -291,6 +307,15 @@ export const shopFulfillments = pgTable(
       sql`${t.status} IN ('pending', 'shipped', 'delivered', 'cancelled')`,
     ),
     check('shop_fulfillments_revision_ck', sql`${t.revision} > 0`),
+    check(
+      'shop_fulfillments_provider_ck',
+      sql`${t.provider} IS NULL OR ${t.provider} IN ('fez', 'terminal')`,
+    ),
+    check(
+      'shop_fulfillments_courier_state_ck',
+      sql`${t.courierState} IS NULL OR ${t.courierState} IN ('draft', 'booked', 'picked_up',
+        'in_transit', 'delivered', 'returned', 'cancelled', 'failed', 'unknown')`,
+    ),
     index('shop_fulfillments_order_idx').on(t.orderId, t.createdAt),
   ],
 );
