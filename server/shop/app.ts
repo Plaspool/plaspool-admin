@@ -27,6 +27,9 @@ import { SHOP_CURRENCY } from './currency';
 import { shopAdminRoutes } from './admin/routes';
 import { shippingZoneRoutes } from './cart/checkout/shipping-zones-routes';
 import { deliverySettingsRoutes } from './settings/routes';
+import { logisticsRoutes } from './logistics/routes';
+import { registerLogisticsDefaults } from './logistics/deps';
+import { logisticsCatalogPort } from './catalog/logistics-port';
 import { ShippingZonePreconditionFailedError } from './cart/checkout/shipping-zones-repo';
 
 /**
@@ -346,6 +349,34 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
    * split `server/shop/reviews/public.ts` makes and for the same reason.
    */
   shop.route('/', deliverySettingsRoutes);
+
+  /*
+   * DELIVERY COURIERS — `/admin/logistics/*` and `/logistics/provider`
+   * (migration 0960). Which courier is switched on, the address we ship from,
+   * the box Terminal quotes against, and the log of every webhook a courier has
+   * sent us. `settings` domain on the admin half, `requireAuth()` on the read
+   * every packer needs; both guarded per route inside the router.
+   *
+   * THE ONE DEPENDENCY IS CATALOG'S, AND THIS IS THE ONLY PLACE THAT KNOWS BOTH
+   * HALVES. Logistics declares `LogisticsCatalog` and never imports Catalog;
+   * `logisticsCatalogPort` is Catalog's implementation of it, because
+   * `shop_variants` and "which variants can be sold" are Catalog's. Registered
+   * as a DEFAULT rather than set outright: `shopApp()` runs for every server
+   * suite in this repository, so a plain registration here would silently
+   * replace a fake a test had already registered — the failure
+   * `registerOrdersDefaults` documents.
+   *
+   * THE COURIERS THEMSELVES ARE NOT WIRED HERE. They are built from
+   * `logisticsEnv()` inside `resolveLogisticsDeps`, so a deployment with no
+   * credentials reports both as "not configured" rather than failing to boot.
+   *
+   * ITS WEBHOOK ROUTES ARE NOT HERE EITHER, for the reason Payments' are not:
+   * a courier calls back server-to-server with no `Origin`, which is a 403 from
+   * `originGuard` every time. They are mounted in `server/index.ts` above the
+   * guard, where their order relative to it is the thing you read.
+   */
+  registerLogisticsDefaults({ catalog: logisticsCatalogPort });
+  shop.route('/', logisticsRoutes);
 
   /*
    * THE DASHBOARD'S READ SURFACE — `/admin/stats`, `/admin/customers`,

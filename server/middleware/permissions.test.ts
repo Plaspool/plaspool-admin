@@ -45,6 +45,10 @@ const PROBES: Record<string, string> = {
   customers: '/api/shop/admin/customers',
   analytics: '/api/shop/admin/stats',
   settings: '/api/shop/admin/shipping-zones',
+  /* A SECOND `settings` PREFIX, and it earns its row: the courier surface is a
+   * mount of its own (migration 0960), so only driving it proves its rule is in
+   * the table rather than falling through to the admin catch-all. */
+  courier: '/api/shop/admin/logistics/settings',
   marketing: '/api/marketing/discounts',
   emailMarketing: '/api/admin/email/templates',
   content: '/api/posts',
@@ -66,6 +70,7 @@ describe('the domain gate', () => {
     expect(await probe(c, PROBES.customers)).toBe(403);
     expect(await probe(c, PROBES.analytics)).toBe(403);
     expect(await probe(c, PROBES.settings)).toBe(403);
+    expect(await probe(c, PROBES.courier)).toBe(403);
     expect(await probe(c, PROBES.marketing)).toBe(403);
     expect(await probe(c, PROBES.team)).toBe(403);
   });
@@ -78,6 +83,9 @@ describe('the domain gate', () => {
     expect(await probe(c, PROBES.analytics)).toBe(200);
     expect(await probe(c, PROBES.marketing)).toBe(403);
     expect(await probe(c, PROBES.settings)).toBe(403);
+    /* Packs the parcels, does not choose the courier — the read that says which
+     * one is on lives outside the admin prefix and is tested with the routes. */
+    expect(await probe(c, PROBES.courier)).toBe(403);
     expect(await probe(c, PROBES.content)).toBe(403);
     expect(await probe(c, PROBES.team)).toBe(403);
   });
