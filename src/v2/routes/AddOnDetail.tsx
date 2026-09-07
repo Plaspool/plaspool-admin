@@ -366,7 +366,7 @@ export default function AddOnDetail({ create = false }: { create?: boolean }) {
                 value={draft.priceText}
                 onChange={(e) => set('priceText', e.currentTarget.value)}
                 error={dirty ? priceError : null}
-                hint="What it costs when it is added. A rule can charge something else."
+                hint="What one costs. A rule can set a different amount, charge it for each item, or hand it back."
               />
             </div>
           </Card>

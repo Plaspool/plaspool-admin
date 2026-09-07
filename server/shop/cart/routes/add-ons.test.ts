@@ -24,7 +24,7 @@ const UK = { name: 'A Shopper', line1: '1 High Street', line2: null, city: 'Lond
 
 const port: AddOnPort<Db> = {
   async offers(_db, input) {
-    const offer: AddOnOffer = { id: 'ado_box', title: 'Gift box', description: null, imageUrl: null, price: { amount: 1500, currency: CURRENCY }, amount: { amount: 1500, currency: CURRENCY }, mode: 'ask', choice: input.choices?.ado_box ?? null };
+    const offer: AddOnOffer = { id: 'ado_box', title: 'Gift box', description: null, imageUrl: null, price: { amount: 1500, currency: CURRENCY }, unitAmount: { amount: 1500, currency: CURRENCY }, units: 1, basis: 'order', amount: { amount: 1500, currency: CURRENCY }, mode: 'ask', choice: input.choices?.ado_box ?? null };
     return [offer];
   },
 };

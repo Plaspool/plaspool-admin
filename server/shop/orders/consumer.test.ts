@@ -197,6 +197,46 @@ describe('checkout.completed creates the order', () => {
       [0, 'ado_box', 'chosen', 150, 150, CURRENCY],
       [1, 'ado_note', 'included', 0, 50, CURRENCY],
     ]);
+    /* An event written before 0960 carries no unit_amount, units or basis, and
+       every one of them meant one unit charged once for the order. */
+    expect(read?.addOns.map((a) => [a.unitAmount, a.units, a.basis])).toEqual([
+      [150, 1, 'order'],
+      [0, 1, 'order'],
+    ]);
+  });
+
+  /*
+   * THE ROW THE MIGRATION EXISTS FOR. Before 0960 every one of these numbers
+   * was refused by a CHECK: add_on_total >= 0, amount >= 0, and a mode column
+   * that knew two words. This test writes them through the real consumer into
+   * the real table, so the constraints are exercised rather than described.
+   */
+  it('takes a REMOVED add-on, negative amount and all, into shop_order_add_ons', async () => {
+    await drive([
+      checkoutCompleted({
+        totals: {
+          subtotal: 4500, shippingTotal: 500, taxTotal: 400, grandTotal: 3400, addOnTotal: -2000,
+          addOns: [
+            {
+              id: 'ado_pack', title: 'Packaging', mode: 'removed',
+              amount: -2000, listPrice: 500, unitAmount: -500, units: 4, basis: 'item',
+            },
+          ],
+        },
+      }),
+    ]);
+    const read = await readOrderByCheckout(ctx.db, CHECKOUT);
+    expect(read?.order.addOnTotal).toBe(-2000);
+    expect(read?.addOns).toHaveLength(1);
+    expect(read?.addOns[0]).toMatchObject({
+      addOnId: 'ado_pack',
+      mode: 'removed',
+      amount: -2000,
+      listPrice: 500,
+      unitAmount: -500,
+      units: 4,
+      basis: 'item',
+    });
   });
 });
 

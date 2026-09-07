@@ -53,6 +53,7 @@ import type { ShopCategoryPatch } from './categories';
 import type { ProductPatch } from './types';
 import { csvRoutes } from './csv';
 import { addOnRoutes } from './add-ons/routes';
+import { addOnPublicRoutes } from './add-ons/public';
 
 /**
  * Catalog's HTTP surface (brief §6).
@@ -928,3 +929,5 @@ routes.route('/', csvRoutes);
  * composition root stays a one-line mount per subsystem.
  */
 routes.route('/', addOnRoutes);
+/* The product page's shop window (0960). Public, beside /products. */
+routes.route('/', addOnPublicRoutes);

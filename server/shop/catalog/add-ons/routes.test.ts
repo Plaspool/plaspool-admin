@@ -45,6 +45,27 @@ describe('/admin/add-ons', () => {
     expect(one.addOn.id).toBe(body.addOn.id);
   });
 
+  /* The two things a rule may now say (0960). Round-tripped through the
+     column, because the jsonb is what the evaluator reads back. */
+  it('stores an opt_out rule and a per-item basis, and hands them back verbatim', async () => {
+    const rules = [
+      { when: [{ attribute: 'item_count', op: 'between', min: 1, max: 4 }], then: 'opt_out', amountMinor: 50_000, basis: 'item' },
+    ];
+    const { status, body } = await create({ rules });
+    expect(status).toBe(201);
+    expect(body.addOn.rules).toEqual(rules);
+    const one = await json<{ addOn: any }>(await http.get(`${BASE}/${body.addOn.id}`));
+    expect(one.addOn.rules).toEqual(rules);
+  });
+
+  it('refuses a basis nobody defined, rather than storing it and meaning nothing', async () => {
+    expect((await create({ rules: [{ when: [], then: 'opt_out', basis: 'per_kg' }] })).status).toBe(400);
+    expect((await create({ rules: [{ when: [], then: 'exclude' }] })).status).toBe(400);
+    /* Absent is legal and means once per order -- every rule stored before
+       0960 is exactly this shape and must keep validating. */
+    expect((await create({ rules: [{ when: [], then: 'opt_out' }] })).status).toBe(201);
+  });
+
   it('refuses a bad body with the field path, never a 500', async () => {
     expect((await create({ rules: [] })).status).toBe(400);
     expect((await create({ priceMinor: -1 })).status).toBe(400);

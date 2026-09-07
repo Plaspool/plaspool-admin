@@ -10,7 +10,37 @@ import type { Money } from './money';
  * its pickers and the storefront brief copies `AddOnOffer` verbatim.
  */
 
-export type AddOnMode = 'ask' | 'include';
+/**
+ * WHAT THE RULE DOES.
+ *
+ * `ask` and `include` are the original two. `opt_out` (migration 0960) is the
+ * third and it is the one that reads backwards: the extra is ALREADY IN THE
+ * PRODUCT PRICE, so keeping it costs nothing and REMOVING it pays the shopper
+ * back. A box baked into a filament's price is the case it was added for — the
+ * shopper who does not want four boxes takes them out and saves 4 × ₦500.
+ *
+ * That is why `amount` on an offer may now be NEGATIVE, and it is the only way
+ * it can be. See `AddOnOffer.amount`.
+ */
+export type AddOnMode = 'ask' | 'include' | 'opt_out';
+export const ADD_ON_MODES: readonly AddOnMode[] = ['ask', 'include', 'opt_out'];
+
+/**
+ * WHAT THE PRICE IS MULTIPLIED BY (migration 0960).
+ *
+ * `order` is once for the whole cart and is the DEFAULT — every rule written
+ * before this existed means `order`, and an absent key must keep meaning that
+ * forever. `item` is once per unit in the cart (Σ qty, `AddOnFacts.itemCount`):
+ * two filaments and three nozzles is five boxes.
+ *
+ * Deliberately only two. "Once per different product" was considered and left
+ * out (owner, 2026-09-07): it is a third thing to explain in the picker and
+ * nothing wanted it yet. Adding it later is one entry here, one branch in
+ * `unitsFor`, and one label in the admin's `add-on-copy.ts`.
+ */
+export type AddOnBasis = 'order' | 'item';
+export const ADD_ON_BASES: readonly AddOnBasis[] = ['order', 'item'];
+
 export type AddOnChoice = 'accepted' | 'declined';
 export type AddOnStatus = 'draft' | 'active' | 'archived';
 export const ADD_ON_STATUSES: readonly AddOnStatus[] = ['draft', 'active', 'archived'];
@@ -64,8 +94,14 @@ export interface AddOnRule {
   /** AND. An empty list always holds. */
   when: AddOnCondition[];
   then: AddOnMode;
-  /** Overrides the add-on's price for this rule. Absent or null = the price; 0 = free. */
+  /**
+   * Overrides the add-on's price for this rule, PER UNIT. Absent or null = the
+   * price; 0 = free. Under `basis: 'item'` this is the price of ONE — the
+   * ₦500 in "₦500 a box" — never the cart's total.
+   */
   amountMinor?: number | null;
+  /** Absent or null = `'order'`, which is what every rule written before 0960 meant. */
+  basis?: AddOnBasis | null;
 }
 
 /** What the evaluator needs of a stored add-on. Catalog projects rows into this. */
@@ -85,12 +121,38 @@ export interface AddOnOffer {
   title: string;
   description: string | null;
   imageUrl: string | null;
-  /** The list price. */
+  /** The add-on's list price, PER UNIT. Struck through when `unitAmount` is less. */
   price: Money;
-  /** What will be charged. Render this, never `price`. */
+  /**
+   * What one unit costs under the rule that fired — SIGNED, so an `opt_out`
+   * removal is negative. Render "₦500 each" from its magnitude.
+   */
+  unitAmount: Money;
+  /** How many units `unitAmount` is multiplied by: 1 for `order`, Σ qty for `item`. */
+  units: number;
+  basis: AddOnBasis;
+  /**
+   * What will be charged. Render this, never `price`.
+   *
+   * `unitAmount × units`, and NEGATIVE when an `opt_out` add-on has been
+   * removed — the shopper is being paid back for packaging already inside the
+   * product price. Nothing else can make it negative.
+   *
+   * FLOORED SO THE BILL CANNOT GO BELOW THE GOODS. Savings across all add-ons
+   * are capped at the cart subtotal, so `amount` is `unitAmount × units`
+   * EXCEPT where that cap bit — which only a misconfiguration (a ₦50,000
+   * per-item saving on a ₦28,000 cart) can reach, and which must not be
+   * allowed to mint a negative Paystack intent.
+   */
   amount: Money;
   mode: AddOnMode;
-  /** The shopper's answer for an ask add-on; null = not asked yet, and always null for include. */
+  /**
+   * The shopper's answer for an `ask` or `opt_out` add-on; null = not asked
+   * yet, and always null for `include`, which offers no choice.
+   *
+   * For `opt_out`, null and `'accepted'` mean the same thing — the extra stays,
+   * because it is already in the price — and only `'declined'` takes it out.
+   */
   choice: AddOnChoice | null;
 }
 
@@ -144,8 +206,19 @@ export interface AddOnPort<Db> {
   offers(db: Db, input: AddOnCartInput): Promise<AddOnOffer[]>;
 }
 
-export function amountFor(addOn: AddOnRecord, rule: AddOnRule): number {
+/** What ONE unit costs under this rule, unsigned. The rule may override the price. */
+export function unitAmountFor(addOn: AddOnRecord, rule: AddOnRule): number {
   return rule.amountMinor ?? addOn.priceMinor;
+}
+
+/** `'order'` for a rule written before 0960, and for one that never set it. */
+export function basisFor(rule: AddOnRule): AddOnBasis {
+  return rule.basis ?? 'order';
+}
+
+/** How many units the price is multiplied by. */
+export function unitsFor(basis: AddOnBasis, facts: AddOnFacts): number {
+  return basis === 'item' ? facts.itemCount : 1;
 }
 
 /** Names match case-insensitively and trimmed; ids and codes exactly; countries uppercased. */
@@ -265,25 +338,66 @@ export function factsFrom(
  * The first rule that fits decides; no rule → no offer. Add-ons in another
  * currency are SKIPPED — a misconfiguration must not stop a checkout. The
  * input order is the output order (Catalog sorts by position).
+ *
+ * THE SAVINGS BUDGET is why this is a loop with state rather than a `map`.
+ * `opt_out` amounts are negative, and enough of them could in principle drive
+ * a grand total below zero — which is not a discount, it is a payout, and
+ * Paystack cannot be asked for one. The goods subtotal is the budget; each
+ * removal spends from it and a removal that would overdraw is capped. One
+ * misconfigured add-on therefore costs the shop the cart's value at worst,
+ * never more, and the checkout still completes — an add-on must never be the
+ * reason a shopper cannot pay.
  */
 export function evaluateAddOns(
   addOns: readonly AddOnRecord[],
   facts: AddOnFacts,
 ): AddOnOffer[] {
   const offers: AddOnOffer[] = [];
+  let savingsBudget = Math.max(0, facts.subtotalMinor);
   for (const addOn of addOns) {
     if (addOn.currency !== facts.currency) continue;
     const rule = addOn.rules.find((r) => r.when.every((c) => holds(c, facts)));
     if (!rule) continue;
+
+    const mode = rule.then;
+    const basis = basisFor(rule);
+    const unit = unitAmountFor(addOn, rule);
+    const units = unitsFor(basis, facts);
+    // `include` offers no choice, so it never carries one; the other two read
+    // the cart's stored answers, and for `opt_out` only 'declined' does anything.
+    const choice = mode === 'include' ? null : (facts.choices[addOn.id] ?? null);
+    const gross = unit * units;
+
+    let signedUnit = unit;
+    let amount: number;
+    if (mode === 'opt_out') {
+      if (choice === 'declined') {
+        signedUnit = -unit;
+        amount = -Math.min(gross, savingsBudget);
+        savingsBudget += amount;
+      } else {
+        // Kept. It is already inside the product price; charging again would
+        // bill the shopper twice for the same box.
+        amount = 0;
+      }
+    } else if (mode === 'include') {
+      amount = gross;
+    } else {
+      amount = choice === 'accepted' ? gross : 0;
+    }
+
     offers.push({
       id: addOn.id,
       title: addOn.title,
       description: addOn.description,
       imageUrl: addOn.imageUrl,
       price: money(addOn.priceMinor, addOn.currency),
-      amount: money(amountFor(addOn, rule), addOn.currency),
-      mode: rule.then,
-      choice: rule.then === 'ask' ? (facts.choices[addOn.id] ?? null) : null,
+      unitAmount: money(signedUnit, addOn.currency),
+      units,
+      basis,
+      amount: money(amount, addOn.currency),
+      mode,
+      choice,
     });
   }
   return offers;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ADD_ON_ATTRIBUTES } from '../../../shared/commerce/add-ons';
-import { ATTRIBUTE_LABELS, describeCondition, describeRule, shortCondition, summariseRules } from './add-on-copy';
+import { ADD_ON_ATTRIBUTES, ADD_ON_BASES, ADD_ON_MODES } from '../../../shared/commerce/add-ons';
+import { ATTRIBUTE_LABELS, BASIS_LABELS, MODE_LABELS, describeCondition, describeRule, shortCondition, summariseRules } from './add-on-copy';
 
 /**
  * Money, matched WITHOUT its exact locale rendering. `formatMinor` resolves
@@ -61,5 +61,26 @@ describe('add-on copy', () => {
     expect(summariseRules([...demo], 150_000, 'NGN')).toEqual({ lead: 'Ask · 1–4 items', more: 1 });
     expect(summariseRules([{ when: [], then: 'ask' }], 150_000, 'NGN')).toEqual({ lead: 'Ask · always', more: 0 });
     expect(summariseRules([], 150_000, 'NGN')).toEqual({ lead: 'Never offered', more: 0 });
+  });
+
+  /*
+   * 0960's two words, and the promise that goes with them: EVERY PER-ORDER
+   * SENTENCE IS UNCHANGED. 571 assertions across the v2 suites match on
+   * visible text, so `each` had to be a suffix rather than a rewrite -- the
+   * four assertions above are the ones that would have gone red.
+   */
+  it('says what a per-item rule costs, and what taking it out gives back', () => {
+    const optOut = { when: [], then: 'opt_out', basis: 'item' } as const;
+    expect(norm(describeRule(optOut, 50_000, 'NGN'))).toMatch(/^In the price, save (?:₦|NGN ?)500\.00 each always$/);
+    expect(norm(describeRule({ when: [], then: 'opt_out' }, 50_000, 'NGN'))).toMatch(/^In the price, save (?:₦|NGN ?)500\.00 always$/);
+    // Free to take out is not a saving, and must not read as one.
+    expect(describeRule({ when: [], then: 'opt_out', amountMinor: 0 }, 50_000, 'NGN')).toBe('In the price always');
+    expect(norm(describeRule({ when: [], then: 'ask', basis: 'item' }, 50_000, 'NGN'))).toMatch(/^Ask, (?:₦|NGN ?)500\.00 each always$/);
+    expect(norm(describeRule({ when: [], then: 'include', basis: 'item' }, 50_000, 'NGN'))).toMatch(/^Included at (?:₦|NGN ?)500\.00 each always$/);
+  });
+
+  it('every mode and every basis has a label, straight off the registry', () => {
+    for (const mode of ADD_ON_MODES) expect(MODE_LABELS[mode]).toBeTruthy();
+    for (const basis of ADD_ON_BASES) expect(BASIS_LABELS[basis]).toBeTruthy();
   });
 });

@@ -153,7 +153,7 @@ export interface OrderMailView {
     imageId?: string | null;
   }[];
   /** The add-ons, after the goods. Optional so every fulfilment view compiles; absent renders nothing. */
-  addOns?: { title: string; amount: number; mode: 'chosen' | 'included' }[];
+  addOns?: { title: string; amount: number; mode: 'chosen' | 'included' | 'removed' }[];
   /** When the order was placed, epoch-ms. Optional so existing callers compile;
    * absent renders as an empty date rather than as "Invalid Date". */
   placedAt?: number | null;
@@ -402,11 +402,20 @@ function baseValues(
     amount: formatAmount(l.lineTotal, view.currency),
     imageUrl: imageUrlFor(l.imageId),
   }));
+  /*
+   * A REMOVED ADD-ON IS A LINE THAT PAYS THE CUSTOMER BACK (migration 0960),
+   * and it has to read that way rather than as a charge with a minus in front
+   * of it. `formatAmount` renders a negative as `-₦2,000`; the row says
+   * "Taken out" beside it so the minus is explained by the line it is on.
+   */
   const addOnRows = (view.addOns ?? []).map((a) => ({
     title: a.title,
-    sku: a.mode === 'included' ? 'Included' : 'Add-on',
+    sku: a.mode === 'removed' ? 'Taken out' : a.mode === 'included' ? 'Included' : 'Add-on',
     qty: 1,
-    amount: a.mode === 'included' && a.amount === 0 ? 'Included' : formatAmount(a.amount, view.currency),
+    amount:
+      a.mode !== 'removed' && a.amount === 0
+        ? 'Included'
+        : formatAmount(a.amount, view.currency),
     imageUrl: null,
   }));
   const total = formatAmount(view.grandTotal, view.currency);
