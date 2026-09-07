@@ -708,9 +708,17 @@ function FulfilmentRow({
   async function courierAction(kind: 'refresh' | 'cancel') {
     setBusy(kind);
     try {
-      if (kind === 'refresh') await shopApi.refreshCourier(fulfillment.id);
-      else await shopApi.cancelCourier(fulfillment.id);
-      toast.show(kind === 'refresh' ? P.refreshed(index) : P.courierCancelled(index));
+      if (kind === 'refresh') {
+        const res = await shopApi.refreshCourier(fulfillment.id);
+        /* Nothing moved: say so, rather than repeating "status refreshed" over
+           a row that looks exactly like it did before the press. */
+        toast.show(
+          !res.changed && res.transitioned === null ? P.refreshedNoChange : P.refreshed(index),
+        );
+      } else {
+        await shopApi.cancelCourier(fulfillment.id);
+        toast.show(P.courierCancelled(index));
+      }
       onChanged(false);
     } catch (cause) {
       toast.show(describeCourierError(cause, courier.label), 'critical');

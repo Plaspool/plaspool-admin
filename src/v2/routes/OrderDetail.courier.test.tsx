@@ -448,6 +448,43 @@ describe('OrderDetail — courier booking', () => {
     await waitFor(() => expect(sent(BOOK, 'POST')).toEqual({ optionId: 'fez', quoteRef: null }));
   });
 
+  /**
+   * ═════════════════════════════════════════════════════════════════════════
+   * THE SAME GAP, ON THE PATH THAT NEVER GATES.
+   *
+   * Fez's missing weights are a warning, not a refusal, so `support` reaches
+   * this step too — with `orders` and no `products`. Offering the grams boxes
+   * and a `Save weights` button anyway would 403 the moment they pressed it;
+   * naming the items and saying who has to weigh them is the honest version,
+   * and Book stays live because Fez does not need the weight to book.
+   * ═════════════════════════════════════════════════════════════════════════
+   */
+  it('Fez: a teammate who cannot edit products gets no weight input either, but Book stays live', async () => {
+    const user = userEvent.setup();
+    fixture.session.user.role = 'support';
+    withOrder([parcel('pending')]);
+    when(PROVIDER, { provider: 'fez', label: 'Fez Delivery' });
+    when(QUOTE, { ...fezQuote, missingWeights: [{ orderLineId: 'line_1', variantId: 'var_1', sku: 'SPL-RED', title: 'Recycled Spool' }] });
+    when(BOOK, { fulfillment: booked });
+    mount();
+    await loaded();
+    await user.click(await screen.findByRole('button', { name: 'Book with Fez Delivery' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Book Parcel 1 with Fez Delivery' });
+
+    expect(await within(dialog).findByText(/who can edit products/)).toBeTruthy();
+    /* The items are still NAMED — that is the whole of what gets passed on. */
+    expect(within(dialog).getByText('Recycled Spool')).toBeTruthy();
+    expect(within(dialog).getByText('SPL-RED')).toBeTruthy();
+
+    expect(within(dialog).queryByLabelText('Weight of Recycled Spool')).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Save weights' })).toBeNull();
+
+    /* Book stays live — this is the difference from Terminal's blocking gate. */
+    await user.click(within(dialog).getByRole('button', { name: 'Book' }));
+    await waitFor(() => expect(sent(BOOK, 'POST')).toEqual({ optionId: 'fez', quoteRef: null }));
+    expect(sentNothing(VARIANT)).toBe(true);
+  });
+
   it('sends a booking that lost a weight back to the weights step, not to a code', async () => {
     const user = userEvent.setup();
     withOrder([parcel('pending')]);
@@ -507,6 +544,42 @@ describe('OrderDetail — courier booking', () => {
 
     await user.click(screen.getByRole('button', { name: 'Cancel courier' }));
     await waitFor(() => expect(sent(CANCEL_COURIER, 'POST')).toEqual({}));
+  });
+
+  /**
+   * ═════════════════════════════════════════════════════════════════════════
+   * REFRESH SAYS WHETHER ANYTHING ACTUALLY HAPPENED.
+   *
+   * `POST …/courier/refresh` answers `{ fulfillment, changed, transitioned }`
+   * on purpose (`server/shop/logistics/routes.ts`) so this toast need not
+   * repaint an identical row and leave the operator guessing whether the
+   * button did anything — a courier with nothing new earns its own sentence.
+   * ═════════════════════════════════════════════════════════════════════════
+   */
+  it('refresh says the parcel moved when the courier answered with something new', async () => {
+    const user = userEvent.setup();
+    withOrder([{ ...booked, trackingUrl: 'https://track.test/ASAC27012319' }]);
+    when(PROVIDER, { provider: 'fez', label: 'Fez Delivery' });
+    when(REFRESH, {
+      fulfillment: { ...booked, providerStatus: 'Dispatched', courierState: 'in_transit', status: 'shipped' },
+      changed: true,
+      transitioned: 'shipped',
+    });
+    mount();
+    await loaded();
+    await user.click(await screen.findByRole('button', { name: 'Refresh status' }));
+    expect(await screen.findByText('Parcel 1 status refreshed')).toBeTruthy();
+  });
+
+  it('refresh says there is nothing new when the courier reports no change', async () => {
+    const user = userEvent.setup();
+    withOrder([{ ...booked, trackingUrl: 'https://track.test/ASAC27012319' }]);
+    when(PROVIDER, { provider: 'fez', label: 'Fez Delivery' });
+    when(REFRESH, { fulfillment: booked, changed: false, transitioned: null });
+    mount();
+    await loaded();
+    await user.click(await screen.findByRole('button', { name: 'Refresh status' }));
+    expect(await screen.findByText('Nothing new from the courier yet')).toBeTruthy();
   });
 
   /*

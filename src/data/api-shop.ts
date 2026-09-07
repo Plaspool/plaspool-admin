@@ -737,6 +737,18 @@ export interface ShopCourierQuote {
   missingWeights: ShopCourierMissingWeight[];
 }
 
+/**
+ * What `POST …/courier/refresh` answers (`server/shop/logistics/routes.ts`).
+ * `changed` and `transitioned` ride along with the parcel on purpose — the
+ * screen can say "nothing new" instead of repainting an identical row and
+ * leaving the operator to wonder whether the button did anything.
+ */
+export interface ShopCourierRefresh {
+  fulfillment: ShopFulfillment;
+  changed: boolean;
+  transitioned: 'shipped' | 'delivered' | null;
+}
+
 export interface ShopTimelineEntry {
   id: string;
   type: string;
@@ -1867,12 +1879,13 @@ export const shopApi = {
     return res.fulfillment;
   },
 
-  async refreshCourier(fulfillmentId: string): Promise<ShopFulfillment> {
-    const res = await shopFetch<{ fulfillment: ShopFulfillment }>(
+  /** Returns the whole answer, not just the parcel — `changed` and
+   *  `transitioned` are what let the caller say whether anything moved. */
+  async refreshCourier(fulfillmentId: string): Promise<ShopCourierRefresh> {
+    return shopFetch<ShopCourierRefresh>(
       `${BASE}/fulfillments/${seg(fulfillmentId)}/courier/refresh`,
       { method: 'POST', body: {}, id: fulfillmentId, subject: 'Parcel' },
     );
-    return res.fulfillment;
   },
 
   async cancelCourier(fulfillmentId: string, reason?: string): Promise<ShopFulfillment> {

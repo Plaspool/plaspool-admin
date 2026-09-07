@@ -348,7 +348,10 @@ export function CourierDialog({
       return (
         <>
           <Button onClick={onClose}>Cancel</Button>
-          {q.missingWeights.length > 0 ? (
+          {/* Same rule as the blocking gate: the only action this button takes
+              is a variant PATCH, so it does not exist for a viewer who cannot
+              make one — Book below stays live regardless. */}
+          {q.missingWeights.length > 0 && canWeigh ? (
             <Button busy={busy} onClick={() => void saveWeights(q.missingWeights)}>
               {D.saveWeights}
             </Button>
@@ -402,9 +405,11 @@ export function CourierDialog({
             {phase.quote.missingWeights.length > 0 ? (
               <>
                 <Banner tone="warn" title={D.weightsTitle}>
-                  {D.weightsSoft(phase.quote.missingWeights.length, phase.quote.weightKg)}
+                  {canWeigh
+                    ? D.weightsSoft(phase.quote.missingWeights.length, phase.quote.weightKg)
+                    : D.weightsSoftNoPermission(providerLabel, phase.quote.weightKg)}
                 </Banner>
-                {weightInputs(phase.quote.missingWeights)}
+                {canWeigh ? weightInputs(phase.quote.missingWeights) : itemList(phase.quote.missingWeights)}
               </>
             ) : null}
             <h3 style={{ fontSize: 'var(--t-md)', margin: 0 }}>

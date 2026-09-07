@@ -87,6 +87,10 @@ export const COURIER_COPY = {
     /* The two toasts the parcel row raises, in the same shape as its existing
        ones ("Parcel 1 shipped", "Parcel 1 tracking saved"). */
     refreshed: (index: number) => `Parcel ${index} status refreshed`,
+    /** `POST …/courier/refresh` answers `changed: false, transitioned: null`
+     *  when the courier had nothing new to say — this is that toast, so a
+     *  press of the button never looks identical to one that moved nothing. */
+    refreshedNoChange: 'Nothing new from the courier yet',
     courierCancelled: (index: number) => `Parcel ${index} courier cancelled`,
     cost: (amount: string) => `Cost ${amount}`,
     lastError: (msg: string) => `Courier problem: ${msg}`,
@@ -108,6 +112,16 @@ export const COURIER_COPY = {
       'Terminal Africa needs a weight for every item below, and a weight is saved on the product — which your role cannot edit. Ask somebody who can edit products to weigh these, then book this parcel again.',
     weightsSoft: (n: number, kg: number) =>
       `${n} item${n === 1 ? ' has' : 's have'} no weight. Fez will be told ${kg} kg. You can set weights now or book anyway.`,
+    /**
+     * THE SAME WARNING, FOR SOMEBODY WHO CANNOT ACT ON IT.
+     *
+     * `weightsSoft` invites the viewer to "set weights now" — wrong for a
+     * teammate whose role cannot PATCH a variant. Book is still live on this
+     * path (Fez does not need the weight to book, unlike Terminal's gate), so
+     * this only redirects who does the weighing.
+     */
+    weightsSoftNoPermission: (carrier: string, kg: number) =>
+      `Someone who can edit products has to set these weights. You can book anyway — ${carrier} will be told ${kg} kg.`,
     weightLabel: (title: string) => `Weight of ${title}`,
     saveWeights: 'Save weights',
     weightsInvalid: 'Weight is grams — a whole number above 0.',
