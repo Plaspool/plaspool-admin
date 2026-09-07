@@ -1,6 +1,6 @@
 import { TERMINAL_LIVE_URL, environmentOf, type TerminalEnv } from '../config';
 import { splitName, terminalStateName, toE164, zipFor } from '../address';
-import { LogisticsError, type BookingResult, type LogisticsProvider, type ParcelInput, type QuoteOption, type QuoteResult, type TrackResult, type WebhookEvent } from '../port';
+import { LogisticsError, type BookingResult, type LogisticsProvider, type ParcelInput, type ProviderDiagnostics, type ProviderSimulateOutcome, type QuoteOption, type QuoteResult, type SimulateLeg, type TrackResult, type WebhookEvent } from '../port';
 import { terminalState } from '../status';
 import { terminalItemKg, totalGrams } from '../weights';
 import { TerminalClient, type TerminalClientOptions } from './client';
@@ -52,8 +52,93 @@ export function createTerminalProvider(env: TerminalEnv, opts: TerminalClientOpt
   };
   const carrierName = (data: Record<string, unknown>): string | null => str(data.carrier) ?? str(rec(data.carrier).name);
 
+  /**
+   * Run one diagnostic call and REPORT rather than throw.
+   *
+   * The whole value of `provider_simulate` is the pair of answers — accepted
+   * here, errored there — so a rejection from either leg has to survive as
+   * data. `client.call` promises every failure is a `LogisticsError`; anything
+   * else really is ours and is left to escape.
+   */
+  const attempt = async (
+    call: () => Promise<Record<string, unknown>>,
+  ): Promise<SimulateLeg & { envelope: Record<string, unknown> | null }> => {
+    try {
+      const envelope = await call();
+      return { ok: true, message: str(envelope.message), envelope };
+    } catch (err) {
+      if (!(err instanceof LogisticsError)) throw err;
+      return { ok: false, message: err.message, envelope: null };
+    }
+  };
+
+  /**
+   * How many deliveries Terminal says it made, or `null` when it answered in a
+   * shape we cannot count. **`null` is not zero** — "we could not tell" and
+   * "there were none" send an operator to different places, and only the
+   * second is evidence that their pipeline is down.
+   */
+  const deliveryCount = (envelope: Record<string, unknown> | null): number | null => {
+    if (!envelope) return null;
+    if (Array.isArray(envelope.data)) return envelope.data.length;
+    const nested = rec(envelope.data).deliveries;
+    return Array.isArray(nested) ? nested.length : null;
+  };
+
+  const diagnostics: ProviderDiagnostics = {
+    environment: environmentOf(env.baseUrl, TERMINAL_LIVE_URL),
+
+    /**
+     * `GET /webhooks` — the cheapest authenticated read Terminal has. It
+     * creates nothing, costs nothing, and the list it answers with doubles as
+     * the answer to "is our callback URL registered over there at all", which
+     * is the next question an operator asks. URLs only: nothing in a webhook
+     * record is a credential, but there is no reason to render its ids either.
+     */
+    async ping(): Promise<Record<string, unknown>> {
+      const res = await client.call('GET', '/webhooks');
+      const list = Array.isArray(res.data) ? (res.data as Record<string, unknown>[]) : [];
+      return {
+        probe: 'GET /webhooks',
+        webhooks: list.length,
+        urls: list.flatMap((w) => {
+          const u = str(w.url);
+          return u ? [u] : [];
+        }),
+      };
+    },
+
+    /**
+     * ASK TERMINAL TO SEND ONE, THEN READ WHAT IT THINKS IT SENT.
+     *
+     * BOTH LEGS ALWAYS RUN, and the second runs even when the first refused:
+     * the delivery log is where the truth is, and on the sandbox it has been
+     * answering an error while the simulator answered "queued". Reporting only
+     * the first would have this call say everything was fine.
+     */
+    async simulateWebhook(shipmentId: string): Promise<ProviderSimulateOutcome> {
+      const simulate = await attempt(() =>
+        client.call('POST', '/webhooks/simulate', {
+          event: 'shipment.updated',
+          shipment_id: shipmentId,
+        }),
+      );
+      const deliveries = await attempt(() =>
+        client.call('GET', `/webhooks/deliveries?shipment_id=${encodeURIComponent(shipmentId)}`),
+      );
+      return {
+        simulate: { ok: simulate.ok, message: simulate.message },
+        deliveries: {
+          ok: deliveries.ok,
+          message: deliveries.message,
+          count: deliveries.ok ? deliveryCount(deliveries.envelope) : null,
+        },
+      };
+    },
+  };
+
   return {
-    id: 'terminal', label: TERMINAL_LABEL,
+    id: 'terminal', label: TERMINAL_LABEL, diagnostics,
 
     async quote(input: ParcelInput): Promise<QuoteResult> {
       if (!input.from) throw new LogisticsError('address_incomplete', 'Terminal Africa needs a ship-from address', { detail: ['shipFrom'] });

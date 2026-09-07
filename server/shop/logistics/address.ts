@@ -1,4 +1,29 @@
 import { LogisticsError } from './port';
+import type { ShipFrom } from './port';
+
+/**
+ * The fields a courier cannot collect without. `email` and `line2` are not on
+ * it: both providers treat them as optional and refusing over a missing second
+ * address line would be pedantry with a shop's dispatch behind it.
+ *
+ * HERE RATHER THAN IN `routes.ts`, where it began, because two callers now ask
+ * the same question — the settings patch and `diagnostics.ts` — and this is a
+ * fact about a `ShipFrom`, not about HTTP.
+ */
+export const SHIP_FROM_REQUIRED: (keyof ShipFrom)[] = [
+  'name',
+  'phone',
+  'line1',
+  'city',
+  'region',
+  'postalCode',
+];
+
+/** Which required fields are absent or blank. Empty means the address is usable. */
+export function shipFromMissing(from: ShipFrom | null): string[] {
+  if (!from) return [...SHIP_FROM_REQUIRED];
+  return SHIP_FROM_REQUIRED.filter((key) => !from[key] || String(from[key]).trim() === '');
+}
 
 export interface RecipientAddress {
   name: string; phone: string | null; email: string | null; line1: string; line2: string | null;

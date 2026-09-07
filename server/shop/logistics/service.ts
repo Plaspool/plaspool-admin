@@ -129,10 +129,12 @@ const asMissing = (line: ParcelLine): MissingWeight => ({
 });
 
 /**
- * ₦6,450.00 from 645000. Local, because there is no shared money formatter on
- * the server and one string in one timeline message does not earn a module.
+ * ₦6,450.00 from 645000. Still here rather than in a module of its own, because
+ * there is no shared money formatter on the server and two call sites in one
+ * subsystem do not earn one — `diagnostics.ts` imports this rather than
+ * carrying a second copy that could drift.
  */
-function naira(minor: number): string {
+export function naira(minor: number): string {
   return `₦${(minor / 100).toLocaleString('en-NG', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,

@@ -398,3 +398,59 @@ describe('secret key fallback', () => {
     expect(calls[1]!.headers['secret-key']).toBe('org-secret-xyz');
   });
 });
+
+/**
+ * The owner's test bench. Fez has no read-only endpoint that proves less, so
+ * `ping` is a price — which is also the only call that exercises BOTH the
+ * sign-in and the `secret-key` header in one round trip.
+ */
+describe('diagnostics', () => {
+  it('reports the environment from the base URL it was built with', () => {
+    expect(createFezProvider(ENV, {}).diagnostics!.environment).toBe('sandbox');
+    expect(
+      createFezProvider({ ...ENV, baseUrl: 'https://api.fezdelivery.co/v1' }, {}).diagnostics!
+        .environment,
+    ).toBe('live');
+  });
+
+  it('pings with a trivial priced state, and never hands back the sign-in body', async () => {
+    const { fetchImpl, calls } = fezFetch([AUTH_OK(), { status: 200, json: { totalCost: 6450 } }]);
+    const out = await createFezProvider(ENV, { fetchImpl }).diagnostics!.ping();
+
+    expect(calls[1]!.url).toBe('https://fez.test/v1/order/cost');
+    expect(calls[1]!.method).toBe('POST');
+    expect(calls[1]!.body).toEqual({ state: 'Lagos', weight: 1 });
+    expect(calls[1]!.headers.authorization).toBe('Bearer tok-abc123');
+
+    expect(out).toEqual({
+      probe: 'POST /order/cost',
+      state: 'Lagos',
+      weightKg: 1,
+      amountMinor: 645000,
+    });
+    /* `orgDetails['secret-key']` is a credential, and it reaches nothing here. */
+    expect(JSON.stringify(out)).not.toContain('secret');
+  });
+
+  /**
+   * The refusal a connection check is actually for: the SIGN-IN is rejected, so
+   * nothing after it is ever attempted. Fez's own words escape as a
+   * `provider_rejected`, which is what puts them on the operator's screen
+   * verbatim instead of behind "the courier failed".
+   */
+  it('lets a refused sign-in escape as the LogisticsError the caller classifies', async () => {
+    const { fetchImpl, calls } = fezFetch([
+      { status: 401, json: { description: 'Invalid user credentials' } },
+    ]);
+    const err = await failureOf(createFezProvider(ENV, { fetchImpl }).diagnostics!.ping());
+    expect(err.code).toBe('provider_rejected');
+    expect(err.message).toBe('Invalid user credentials');
+    /* Never reached `/order/cost`: there was nothing to price with. */
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe('https://fez.test/v1/user/authenticate');
+  });
+
+  it('offers no webhook simulator, because Fez has none', () => {
+    expect(createFezProvider(ENV, {}).diagnostics!.simulateWebhook).toBeUndefined();
+  });
+});

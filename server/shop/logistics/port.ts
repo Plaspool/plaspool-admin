@@ -44,6 +44,46 @@ export interface TrackResult {
 }
 export interface WebhookEvent extends TrackResult { providerRef: string }
 
+/** One half of a `provider_simulate`: what the courier said, without a throw. */
+export interface SimulateLeg { ok: boolean; message: string | null }
+
+/**
+ * What asking a courier to send us a webhook actually produced. **Both halves
+ * are reported and NEITHER throws**: Terminal's `POST /webhooks/simulate`
+ * answers "queued" and then delivers nothing, while its own
+ * `GET /webhooks/deliveries` answers an error — and that pair IS the finding.
+ * An exception would collapse the two into one failure and lose the evidence.
+ */
+export interface ProviderSimulateOutcome {
+  simulate: SimulateLeg;
+  /** `count` is `null` when the courier answered but we could not tell how many. */
+  deliveries: SimulateLeg & { count: number | null };
+}
+
+/**
+ * WHAT AN OWNER CAN ASK A COURIER FROM THE ADMIN, rather than from a throwaway
+ * script. Optional on `LogisticsProvider` so a fake in a suite that has no
+ * business with diagnostics stays a valid provider; both real adapters
+ * implement it.
+ *
+ * DELIBERATELY NARROW. This is not a second courier API — it is the two calls
+ * `diagnostics.ts` cannot make for itself because they need the adapter's own
+ * client, credentials and base URL. Quoting is not here: that is the ordinary
+ * `quote()` against a synthetic parcel, which is the point.
+ */
+export interface ProviderDiagnostics {
+  /** Sandbox or live, from the base URL this adapter was built with — known whether or not a call succeeds. */
+  readonly environment: 'sandbox' | 'live';
+  /**
+   * The cheapest authenticated call that proves the credentials work.
+   * Resolves with a SMALL, SECRET-FREE summary of what the courier answered;
+   * throws a `LogisticsError` when it refuses.
+   */
+  ping(): Promise<Record<string, unknown>>;
+  /** Terminal only. Ask the courier to send one itself, then read its delivery log. */
+  simulateWebhook?(shipmentId: string): Promise<ProviderSimulateOutcome>;
+}
+
 export interface LogisticsProvider {
   readonly id: ProviderId;
   readonly label: string;
@@ -54,6 +94,8 @@ export interface LogisticsProvider {
   registerWebhook(url: string): Promise<void>;
   /** Verify the signature and parse the body. Throws LogisticsError('bad_signature') when it does not verify. */
   parseWebhook(rawBody: Uint8Array, headers: Headers, now: number): WebhookEvent | null;
+  /** The owner's test bench. Absent on a provider that has none — see `ProviderDiagnostics`. */
+  readonly diagnostics?: ProviderDiagnostics;
 }
 
 export type LogisticsErrorCode =

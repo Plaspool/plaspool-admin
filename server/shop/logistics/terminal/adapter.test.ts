@@ -423,3 +423,110 @@ describe('error mapping', () => {
     expect(err.code).toBe('bad_response');
   });
 });
+
+/**
+ * The owner's test bench: the two calls `diagnostics.ts` cannot make for itself
+ * because they need this client's credentials and base URL.
+ */
+describe('diagnostics', () => {
+  it('reports the environment from the base URL it was built with', () => {
+    expect(createTerminalProvider(ENV, {}).diagnostics!.environment).toBe('sandbox');
+    expect(
+      createTerminalProvider({ ...ENV, baseUrl: TERMINAL_LIVE_URL }, {}).diagnostics!.environment,
+    ).toBe('live');
+  });
+
+  it('pings the webhook list, and reports the URLs registered over there', async () => {
+    const { fetchImpl, calls } = terminalFetch([
+      OK([
+        { id: 'WH-1', url: 'https://admin.plaspool.com/api/shop/logistics/terminal/webhook', active: true },
+        { id: 'WH-2', url: 'https://old.example/hook', active: false },
+      ]),
+    ]);
+    const out = await createTerminalProvider(ENV, { fetchImpl }).diagnostics!.ping();
+
+    expect(calls[0]!.url).toBe('https://terminal.test/v1/webhooks');
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.headers.authorization).toBe('Bearer sk_test_abc123');
+    expect(calls[0]!.body).toBeUndefined();
+
+    expect(out).toEqual({
+      probe: 'GET /webhooks',
+      webhooks: 2,
+      urls: [
+        'https://admin.plaspool.com/api/shop/logistics/terminal/webhook',
+        'https://old.example/hook',
+      ],
+    });
+  });
+
+  it('lets a refused ping escape as the LogisticsError the caller classifies', async () => {
+    const { fetchImpl } = terminalFetch([{ status: 401, json: { status: false, message: 'Unauthorized' } }]);
+    const err = await failureOf(createTerminalProvider(ENV, { fetchImpl }).diagnostics!.ping());
+    expect(err.code).toBe('provider_rejected');
+    expect(err.message).toBe('Unauthorized');
+  });
+
+  it('simulates, then reads the delivery log, and counts what came back', async () => {
+    const { fetchImpl, calls } = terminalFetch([
+      OK({ queued: true }, 'Webhook simulation queued'),
+      OK([{ id: 'DL-1', response_code: 200 }], 'Deliveries retrieved'),
+    ]);
+    const out = await createTerminalProvider(ENV, { fetchImpl }).diagnostics!.simulateWebhook!('SH-1');
+
+    expect(calls[0]!.url).toBe('https://terminal.test/v1/webhooks/simulate');
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.body).toEqual({ event: 'shipment.updated', shipment_id: 'SH-1' });
+
+    expect(calls[1]!.url).toBe('https://terminal.test/v1/webhooks/deliveries?shipment_id=SH-1');
+    expect(calls[1]!.method).toBe('GET');
+
+    expect(out).toEqual({
+      simulate: { ok: true, message: 'Webhook simulation queued' },
+      deliveries: { ok: true, message: 'Deliveries retrieved', count: 1 },
+    });
+  });
+
+  /**
+   * THE SANDBOX AS IT ACTUALLY BEHAVES, and the reason this check reports both
+   * halves: the simulator answers "queued" and the delivery log answers an
+   * error, so a call that threw on the second would lose the evidence.
+   */
+  it('reports a delivery log that errors WITHOUT throwing, keeping both answers', async () => {
+    const { fetchImpl } = terminalFetch([
+      OK({ queued: true }, 'Webhook simulation queued'),
+      { status: 400, json: { status: false, message: 'An unknown error occurred, please try again' } },
+    ]);
+    const out = await createTerminalProvider(ENV, { fetchImpl }).diagnostics!.simulateWebhook!('SH-1');
+
+    expect(out).toEqual({
+      simulate: { ok: true, message: 'Webhook simulation queued' },
+      deliveries: { ok: false, message: 'An unknown error occurred, please try again', count: null },
+    });
+  });
+
+  /** The delivery log is where the truth is, so it is read even when the simulator refused. */
+  it('still reads the delivery log when the simulation itself is refused', async () => {
+    const { fetchImpl, calls } = terminalFetch([
+      { status: 404, json: { status: false, message: 'Shipment not found' } },
+      OK([], 'Deliveries retrieved'),
+    ]);
+    const out = await createTerminalProvider(ENV, { fetchImpl }).diagnostics!.simulateWebhook!('SH-9');
+
+    expect(calls).toHaveLength(2);
+    expect(out).toEqual({
+      simulate: { ok: false, message: 'Shipment not found' },
+      /* Zero and "we could not tell" are different findings — this is zero. */
+      deliveries: { ok: true, message: 'Deliveries retrieved', count: 0 },
+    });
+  });
+
+  it('counts null rather than zero when the log answers in a shape it cannot count', async () => {
+    const { fetchImpl } = terminalFetch([
+      OK({ queued: true }, 'queued'),
+      OK({ pending: 'unknown' }, 'ok'),
+    ]);
+    const out = await createTerminalProvider(ENV, { fetchImpl }).diagnostics!.simulateWebhook!('SH-1');
+    expect(out.deliveries.count).toBeNull();
+  });
+});

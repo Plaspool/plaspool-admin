@@ -8,10 +8,12 @@ import type { AppEnv } from '../../app-env';
 import { adminOrigin } from '../../admin-url';
 import { NotFoundError } from '../../repo/errors';
 import { loadTemplates } from '../../email/system-templates';
+import { shipFromMissing } from './address';
 import { FEZ_LIVE_URL, TERMINAL_LIVE_URL, environmentOf, logisticsEnv } from './config';
 import { resolveLogisticsDeps } from './deps';
+import { DiagnosticsBody, runDiagnostic } from './diagnostics';
 import { LogisticsError, PROVIDER_LABEL } from './port';
-import type { ProviderId, ShipFrom } from './port';
+import type { ProviderId } from './port';
 import { getLogisticsSettings, listRecentWebhooks, patchLogisticsSettings } from './repo';
 import type { LogisticsSettings } from './repo';
 import { bookParcel, cancelParcelCourier, quoteParcel, refreshParcel } from './service';
@@ -84,26 +86,6 @@ const SettingsBody = z
     packaging: PackagingBody.optional(),
   })
   .strict();
-
-/**
- * The fields a courier cannot collect without. `email` and `line2` are not on
- * it: both providers treat them as optional and refusing a save over a missing
- * second address line would be pedantry with a shop's dispatch behind it.
- */
-export const SHIP_FROM_REQUIRED: (keyof ShipFrom)[] = [
-  'name',
-  'phone',
-  'line1',
-  'city',
-  'region',
-  'postalCode',
-];
-
-/** Which required fields are absent or blank. Empty means the address is usable. */
-export function shipFromMissing(from: ShipFrom | null): string[] {
-  if (!from) return [...SHIP_FROM_REQUIRED];
-  return SHIP_FROM_REQUIRED.filter((key) => !from[key] || String(from[key]).trim() === '');
-}
 
 /**
  * The origin a courier's webhook must be pointed at.
@@ -329,6 +311,49 @@ logisticsRoutes.post('/admin/logistics/webhooks/register', requireAdmin(), async
     throw err;
   }
   return c.json({ ok: true });
+});
+
+/**
+ * THE OWNER'S TEST BENCH — the four checks that used to need a throwaway script.
+ *
+ * ═══ EVERY CHECK ANSWERS 200, INCLUDING THE ONES THAT FAIL ═══
+ *
+ * A diagnostic that cannot fail is useless. A courier refusing our credentials,
+ * refusing a city, or answering an error from its own delivery log is EXACTLY
+ * what the operator pressed the button to find out — so it comes back as
+ * `{ ok: false, summary: <their words> }` with a 200, never a 502. Making it a
+ * 502 would put the finding behind an error banner and buy five client retries
+ * for a verdict that cannot change.
+ *
+ * The only 4xx here are requests that are unusable before any courier is
+ * asked, and they reuse the codes the rest of this file already spends:
+ *
+ *   bad body / unknown courier / `provider_simulate` for Fez  → 400 `bad_request`
+ *   this deployment has no credentials for that courier       → 409 `provider_not_configured`
+ *   Terminal quote with no ship-from saved                    → 409 `ship_from_incomplete`
+ *
+ * `provider_simulate` is refused for Fez by the SCHEMA (`z.literal('terminal')`)
+ * rather than by a branch, because Fez has no simulator at all: the request is
+ * malformed, not merely unlucky, and a 400 with Zod's own detail says which
+ * field.
+ *
+ * THE WEBHOOK URL IS DERIVED HERE, never accepted from the body — the same rule
+ * `webhooks/register` follows, and for a stronger reason: this route makes the
+ * server POST a *signed* payload at that address, so a caller who could choose
+ * it would have us sign for them.
+ */
+logisticsRoutes.post('/admin/logistics/diagnostics', requireAdmin(), async (c) => {
+  const body = await readJson(c, DiagnosticsBody);
+  const out = await runDiagnostic(currentDb(c), resolveLogisticsDeps(), body, {
+    webhookUrl: `${webhookBase(c)}${webhookPath(body.provider)}`,
+  });
+  if ('refused' in out) {
+    if (out.refused === 'ship_from_incomplete') {
+      return c.json({ error: 'ship_from_incomplete', missing: out.missing }, 409);
+    }
+    return c.json({ error: 'provider_not_configured', provider: out.provider }, 409);
+  }
+  return c.json(out);
 });
 
 /*

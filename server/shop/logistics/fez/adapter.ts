@@ -1,10 +1,11 @@
-import type { FezEnv } from '../config';
+import { FEZ_LIVE_URL, environmentOf, type FezEnv } from '../config';
 import { fezStateName, oneLine } from '../address';
 import {
   LogisticsError,
   type BookingResult,
   type LogisticsProvider,
   type ParcelInput,
+  type ProviderDiagnostics,
   type QuoteOption,
   type QuoteResult,
   type TrackResult,
@@ -30,9 +31,37 @@ const toMinor = (v: unknown): number | null => {
 export function createFezProvider(env: FezEnv, opts: FezClientOptions = {}): LogisticsProvider {
   const client = new FezClient(env, opts);
 
+  /**
+   * THE CHEAPEST CALL THAT PROVES THE CREDENTIALS, and for Fez there is no
+   * cheaper one than a price: `client.call` signs in first (that is the token
+   * dance), so `POST /order/cost` exercises BOTH halves — the sign-in and the
+   * `secret-key` header every authenticated call carries — in one round trip.
+   * There is no read-only endpoint here that does less.
+   *
+   * A FIXED, TRIVIAL STATE AND WEIGHT: Lagos at 1 kg is a state Fez has always
+   * accepted, so a refusal is about the credentials rather than about the
+   * address, which is what this check is for. It reserves nothing and books
+   * nothing — Fez holds no draft between a price and an order.
+   *
+   * THE SIGN-IN'S OWN RESPONSE NEVER LEAVES THE CLIENT. `orgDetails['secret-key']`
+   * is a credential; only the price comes back here.
+   */
+  const diagnostics: ProviderDiagnostics = {
+    environment: environmentOf(env.baseUrl, FEZ_LIVE_URL),
+    async ping(): Promise<Record<string, unknown>> {
+      const state = 'Lagos';
+      const weightKg = 1;
+      const cost = await client.call('POST', '/order/cost', { state, weight: weightKg });
+      const amountMinor =
+        toMinor(cost.totalCost) ?? toMinor((cost.cost as Record<string, unknown> | undefined)?.cost);
+      return { probe: 'POST /order/cost', state, weightKg, amountMinor };
+    },
+  };
+
   return {
     id: 'fez',
     label: FEZ_LABEL,
+    diagnostics,
 
     async quote(input: ParcelInput): Promise<QuoteResult> {
       const missing = missingWeights(input.items);
