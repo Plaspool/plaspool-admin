@@ -313,3 +313,78 @@ describe('points and costs', () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+/**
+ * SET THE PICKUP COST FOR A WHOLE STATE.
+ *
+ * Twenty-eight FCT districts, four figures each, is the thing this screen was
+ * worst at, and the owner asked for it directly.
+ *
+ * THERE IS NO BULK ROUTE FOR AREAS — the server takes `PATCH /areas/:id` one
+ * at a time with CAS on `expectedRevision` — so the interesting thing to pin
+ * is that it fans out, sends EVERY district's OWN revision (a shared one would
+ * lose the CAS race by construction), and reports partial success rather than
+ * claiming a clean sweep. The `Promise.allSettled` shape is deliberate: some
+ * rows moving and some not is the normal case with another tab open.
+ */
+describe('setting the pickup cost across a state', () => {
+  it('writes every district in the state, each with its own revision', async () => {
+    const user = userEvent.setup();
+    withEverything();
+    const seen: string[] = [];
+    for (const area of allAreasView.areas) {
+      when(`${AREAS}/${area.id}`, (_url, init) => {
+        seen.push(area.id);
+        const { expectedRevision: _r, ...rest } = JSON.parse(String(init.body)) as Record<
+          string,
+          unknown
+        >;
+        return { body: { area: { ...area, ...rest, revision: area.revision + 1 } } };
+      });
+    }
+    mount();
+
+    const open = await screen.findByRole('button', { name: /Set for all of/ });
+    const region = open.textContent!.replace('Set for all of ', '').trim();
+    await user.click(open);
+
+    await user.type(screen.getByLabelText('Transport in'), '1500');
+    await user.type(screen.getByLabelText('Driver'), '500');
+    await user.click(screen.getByRole('button', { name: /^Set \d+ districts?$/ }));
+
+    /* Only the state on screen — never every district in the country. */
+    const inRegion = allAreasView.areas.filter((a) => a.region === region && a.active);
+    await waitFor(() => expect(seen.length).toBe(inRegion.length));
+    expect(new Set(seen)).toEqual(new Set(inRegion.map((a) => a.id)));
+
+    for (const area of inRegion) {
+      const body = bodiesOf(`${AREAS}/${area.id}`, 'PATCH')[0]!;
+      /* Each row's OWN revision. One shared number would lose the CAS race. */
+      expect(body.expectedRevision).toBe(area.revision);
+      /* ₦1,500 and ₦500 — 100 minor units per naira. */
+      expect(body.stdTransportMinor).toBe(150_000);
+      expect(body.stdDriverMinor).toBe(50_000);
+      /* An empty box CLEARS that line, which is "no standard here" and not
+         "it is free" — a missing key would have left the old figure. */
+      expect(body.stdLocalMinor).toBeNull();
+      expect(body.stdFeesMinor).toBeNull();
+    }
+  });
+
+  it('refuses money it cannot read instead of writing it to the whole state', async () => {
+    const user = userEvent.setup();
+    withEverything();
+    for (const area of allAreasView.areas) {
+      when(`${AREAS}/${area.id}`, { area });
+    }
+    mount();
+
+    await user.click(await screen.findByRole('button', { name: /Set for all of/ }));
+    await user.type(screen.getByLabelText('Transport in'), 'fifteen hundred');
+    await user.click(screen.getByRole('button', { name: /^Set \d+ districts?$/ }));
+
+    for (const area of allAreasView.areas) {
+      expect(bodiesOf(`${AREAS}/${area.id}`, 'PATCH')).toHaveLength(0);
+    }
+  });
+});
