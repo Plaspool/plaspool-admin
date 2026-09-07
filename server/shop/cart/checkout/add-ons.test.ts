@@ -33,9 +33,9 @@ const UK = { name: 'A Shopper', line1: '1 High Street', line2: null, city: 'Lond
 let seen: AddOnCartInput[] = [];
 const box = (input: AddOnCartInput): AddOnOffer[] => {
   const qty = input.lines.reduce((n, l) => n + l.qty, 0);
-  const base = { id: 'ado_box', title: 'Gift box', description: null, imageUrl: null, price: { amount: 1500, currency: CURRENCY } };
-  if (qty >= 5) return [{ ...base, amount: { amount: 0, currency: CURRENCY }, mode: 'include', choice: null }];
-  if (qty >= 1) return [{ ...base, amount: { amount: 1500, currency: CURRENCY }, mode: 'ask', choice: input.choices?.ado_box ?? null }];
+  const base = { id: 'ado_box', title: 'Gift box', description: null, imageUrl: null, price: { amount: 1500, currency: CURRENCY }, units: 1, basis: 'order' as const };
+  if (qty >= 5) return [{ ...base, unitAmount: { amount: 0, currency: CURRENCY }, amount: { amount: 0, currency: CURRENCY }, mode: 'include', choice: null }];
+  if (qty >= 1) return [{ ...base, unitAmount: { amount: 1500, currency: CURRENCY }, amount: { amount: 1500, currency: CURRENCY }, mode: 'ask', choice: input.choices?.ado_box ?? null }];
   return [];
 };
 const port: AddOnPort<Db> = {
@@ -99,7 +99,7 @@ describe('the choice', () => {
     expect(await stored(cart.id)).toEqual({ ado_box: 'accepted' });
     const preview = await previewCheckout(db, catalog, config(), { cartId: cart.id });
     if (!preview.ok) throw new Error(preview.reason);
-    expect(preview.totals.addOns).toEqual([{ id: 'ado_box', title: 'Gift box', mode: 'chosen', listPrice: { amount: 1500, currency: CURRENCY }, amount: { amount: 1500, currency: CURRENCY } }]);
+    expect(preview.totals.addOns).toEqual([{ id: 'ado_box', title: 'Gift box', mode: 'chosen', listPrice: { amount: 1500, currency: CURRENCY }, unitAmount: { amount: 1500, currency: CURRENCY }, units: 1, basis: 'order', amount: { amount: 1500, currency: CURRENCY } }]);
     expect(preview.totals.grandTotal.amount).toBe(4000 + 400 + 800 + 1500);
   });
 

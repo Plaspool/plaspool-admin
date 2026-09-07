@@ -19,7 +19,7 @@
 import { apiFetch, type RequestOptions } from './api';
 import type { AnalyticsMoney } from './api-shop-analytics';
 import { UNRENDERABLE } from './when';
-import type { AddOnRule, AddOnStatus } from '../../shared/commerce/add-ons';
+import type { AddOnBasis, AddOnRule, AddOnStatus } from '../../shared/commerce/add-ons';
 
 /**
  * `apiFetch` with the one method the blog's own API never uses.
@@ -551,7 +551,7 @@ export interface BulkTierSet {
 // ============================================================================
 // ADD-ONS (spec 2026-09-06)
 // ============================================================================
-export type { AddOnCondition, AddOnRule, AddOnStatus } from '../../shared/commerce/add-ons';
+export type { AddOnBasis, AddOnCondition, AddOnMode, AddOnRule, AddOnStatus } from '../../shared/commerce/add-ons';
 
 export interface ShopAddOn {
   id: string;
@@ -761,9 +761,13 @@ export interface ShopOrderAddOn {
   position: number;
   addOnId: string;
   title: string;
-  mode: 'chosen' | 'included';
+  mode: 'chosen' | 'included' | 'removed';
   amount: number;
   listPrice: number;
+  /** Signed price of one, and how many of them (migration 0960). */
+  unitAmount: number;
+  units: number;
+  basis: AddOnBasis;
   currency: string;
 }
 

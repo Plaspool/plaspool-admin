@@ -694,8 +694,8 @@ describe('checkout.completed', () => {
     const port: AddOnPort<Db> = {
       async offers() {
         return [
-          { id: 'ado_box', title: 'Gift box', description: null, imageUrl: null, price: { amount: 1500, currency: CURRENCY }, amount: { amount: 1500, currency: CURRENCY }, mode: 'include', choice: null },
-          { id: 'ado_note', title: 'Note', description: null, imageUrl: null, price: { amount: 500, currency: CURRENCY }, amount: { amount: 0, currency: CURRENCY }, mode: 'include', choice: null },
+          { id: 'ado_box', title: 'Gift box', description: null, imageUrl: null, price: { amount: 1500, currency: CURRENCY }, unitAmount: { amount: 1500, currency: CURRENCY }, units: 1, basis: 'order', amount: { amount: 1500, currency: CURRENCY }, mode: 'include', choice: null },
+          { id: 'ado_note', title: 'Note', description: null, imageUrl: null, price: { amount: 500, currency: CURRENCY }, unitAmount: { amount: 0, currency: CURRENCY }, units: 1, basis: 'order', amount: { amount: 0, currency: CURRENCY }, mode: 'include', choice: null },
         ];
       },
     };
@@ -712,10 +712,77 @@ describe('checkout.completed', () => {
     if (!parsed.ok) throw new Error(parsed.detail);
     expect(parsed.value.addOnTotal).toBe(1500);
     expect(parsed.value.addOns).toEqual([
-      { id: 'ado_box', title: 'Gift box', mode: 'included', amount: 1500, listPrice: 1500 },
-      { id: 'ado_note', title: 'Note', mode: 'included', amount: 0, listPrice: 500 },
+      { id: 'ado_box', title: 'Gift box', mode: 'included', amount: 1500, listPrice: 1500, unitAmount: 1500, units: 1, basis: 'order' },
+      { id: 'ado_note', title: 'Note', mode: 'included', amount: 0, listPrice: 500, unitAmount: 0, units: 1, basis: 'order' },
     ]);
     expect(parsed.value.grandTotal).toBe(frozen.totals.grandTotal.amount);
+  });
+
+  /*
+   * THE OTHER DIRECTION (migration 0960). This is the test that would have
+   * caught the three CHECK constraints, because it drives a NEGATIVE add-on
+   * all the way through the freeze and into the event: the shop is paying the
+   * shopper back for boxes already inside the product price, and every layer
+   * from computeTotals to parseCheckoutCompleted has to carry the minus sign
+   * without refusing it.
+   */
+  it('carries a REMOVED add-on through as a negative, and the grand total drops', async () => {
+    const port: AddOnPort<Db> = {
+      async offers() {
+        return [
+          {
+            id: 'ado_box',
+            title: 'Packaging',
+            description: null,
+            imageUrl: null,
+            price: { amount: 500, currency: CURRENCY },
+            unitAmount: { amount: -500, currency: CURRENCY },
+            units: 4,
+            basis: 'item',
+            amount: { amount: -2000, currency: CURRENCY },
+            mode: 'opt_out',
+            choice: 'declined',
+          },
+        ];
+      },
+    };
+    /* A freeze moves the cart to `converting`, so the baseline gets its own
+       identical cart rather than a second freeze of this one. */
+    const baseline = await readyCart();
+    const plain = await freezeCheckout(db, catalog, CONFIG, { cartId: baseline.id });
+    if (!plain.ok) throw new Error('expected totals');
+
+    const cart = await readyCart();
+    const frozen = await freezeCheckout(db, catalog, { ...CONFIG, addOns: port }, { cartId: cart.id });
+    if (!frozen.ok) throw new Error('expected totals');
+    expect(frozen.totals.addOnTotal.amount).toBe(-2000);
+    expect(frozen.totals.grandTotal.amount).toBe(plain.totals.grandTotal.amount - 2000);
+    /* NOT TAXED, in this direction either (owner, 2026-09-07): the bill drops
+       by exactly 2,000, not by 2,000 plus the VAT paid on it. */
+    expect(frozen.totals.taxTotal.amount).toBe(plain.totals.taxTotal.amount);
+
+    await setCheckoutContact(db, { cartId: cart.id, email: 'buyer@example.test' });
+    await completeCheckout(db, { cartId: cart.id });
+
+    const rows = await db.execute(sql`SELECT payload FROM commerce_events`);
+    const mine = rows.rows
+      .map((r) => r.payload as Record<string, unknown>)
+      .find((payload) => payload.checkoutId === cart.id);
+    const parsed = parseCheckoutCompleted(mine!, cart.id);
+    if (!parsed.ok) throw new Error(parsed.detail);
+    expect(parsed.value.addOnTotal).toBe(-2000);
+    expect(parsed.value.addOns).toEqual([
+      {
+        id: 'ado_box',
+        title: 'Packaging',
+        mode: 'removed',
+        amount: -2000,
+        listPrice: 500,
+        unitAmount: -500,
+        units: 4,
+        basis: 'item',
+      },
+    ]);
   });
 
   it('carries the reservation ids taken at checkout start', async () => {

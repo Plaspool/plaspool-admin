@@ -154,7 +154,11 @@ describe('checkout.completed', () => {
     });
     const parsed = parseCheckoutCompleted(withAddOns.payload, CHECKOUT);
     expect(parsed.ok && parsed.value.addOnTotal).toBe(150);
-    expect(parsed.ok && parsed.value.addOns).toEqual([{ id: 'ado_box', title: 'Gift box', mode: 'chosen', amount: 150, listPrice: 150 }]);
+    /* No unitAmount/units/basis on the wire (a pre-0960 event): each defaults
+       to "one unit, charged once for the order", which is what it meant. */
+    expect(parsed.ok && parsed.value.addOns).toEqual([
+      { id: 'ado_box', title: 'Gift box', mode: 'chosen', amount: 150, listPrice: 150, unitAmount: 150, units: 1, basis: 'order' },
+    ]);
 
     const legacy = parseCheckoutCompleted(checkoutCompleted().payload, CHECKOUT);
     expect(legacy.ok && legacy.value.addOns).toEqual([]);

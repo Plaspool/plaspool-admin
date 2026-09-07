@@ -24,6 +24,7 @@
  * `server/shop/orders/schema.test.ts` reads them back out of `pg_catalog`.
  */
 import { sql } from 'drizzle-orm';
+import type { AddOnBasis } from '../../shared/commerce/add-ons';
 import {
   bigint,
   check,
@@ -171,7 +172,6 @@ export const shopOrders = pgTable(
     check('shop_orders_currency_ck', sql`${t.currency} ~ '^[A-Z]{3}$'`),
     check('shop_orders_revision_ck', sql`${t.revision} > 0`),
     check('shop_orders_refunded_ck', sql`${t.refundedTotal} >= 0`),
-    check('shop_orders_add_on_total_ck', sql`${t.addOnTotal} >= 0`),
     check('shop_orders_email_ck', sql`length(${t.email}) > 0`),
     index('shop_orders_customer_idx').on(t.customerId, t.placedAt.desc(), t.id),
     index('shop_orders_status_idx').on(t.status, t.placedAt.desc(), t.id),
@@ -252,16 +252,24 @@ export const shopOrderAddOns = pgTable(
     position: integer('position').notNull(),
     addOnId: text('add_on_id').notNull(),
     title: text('title').notNull(),
-    mode: text('mode').$type<'chosen' | 'included'>().notNull(),
+    mode: text('mode').$type<'chosen' | 'included' | 'removed'>().notNull(),
     amount: integer('amount').notNull(),
     listPrice: integer('list_price').notNull(),
     currency: text('currency').notNull(),
+    /* 0960. Signed, so amount = unitAmount * units reads off the row. */
+    unitAmount: integer('unit_amount').notNull().default(0),
+    units: integer('units').notNull().default(1),
+    basis: text('basis').$type<AddOnBasis>().notNull().default('order'),
   },
   (t) => [
     uniqueIndex('shop_order_add_ons_position_uq').on(t.orderId, t.position),
     index('shop_order_add_ons_add_on_idx').on(t.addOnId),
-    check('shop_order_add_ons_mode_ck', sql`${t.mode} IN ('chosen','included')`),
-    check('shop_order_add_ons_amount_ck', sql`${t.amount} >= 0 AND ${t.listPrice} >= 0`),
+    check('shop_order_add_ons_mode_ck', sql`${t.mode} IN ('chosen','included','removed')`),
+    check('shop_order_add_ons_list_price_ck', sql`${t.listPrice} >= 0`),
+    /* Only a removal may be negative (0960). */
+    check('shop_order_add_ons_amount_sign_ck', sql`${t.amount} >= 0 OR ${t.mode} = 'removed'`),
+    check('shop_order_add_ons_units_ck', sql`${t.units} >= 0`),
+    check('shop_order_add_ons_basis_ck', sql`${t.basis} IN ('order','item')`),
     check('shop_order_add_ons_currency_ck', sql`${t.currency} ~ '^[A-Z]{3}$'`),
   ],
 );

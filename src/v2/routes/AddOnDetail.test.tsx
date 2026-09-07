@@ -100,6 +100,39 @@ describe('AddOnDetail', () => {
     });
   });
 
+  /*
+   * THE OWNER'S EXAMPLE, BUILT THE WAY THEY WOULD BUILD IT (0960): switch the
+   * outcome to "in the price", type 500, say it is for each item, save. The
+   * assertion is the PATCH body, because the rule that reaches the column is
+   * what the checkout evaluates -- a green screen that posts the wrong jsonb
+   * is the failure this suite exists to catch.
+   */
+  it('sets up a take-it-out rule at ₦500 for each item, and posts the basis', async () => {
+    const user = userEvent.setup();
+    when(ONE, echoing(box));
+    mount('/products/add-ons/ado_box');
+    await screen.findByDisplayValue('Gift box');
+
+    const rule = screen.getByTestId('rule-0');
+    await user.selectOptions(within(rule).getByLabelText('What happens'), 'opt_out');
+    /* The money box is not called Charge any more: the number is money going
+       BACK, and a box labelled Charge would be read with the wrong sign. */
+    expect(within(rule).queryByLabelText('Charge')).toBeNull();
+    await user.type(within(rule).getByLabelText('Save'), '500');
+    await user.selectOptions(within(rule).getByLabelText('How often'), 'item');
+
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(bodiesOf(ONE, 'PATCH').length).toBe(1));
+    expect(bodiesOf(ONE, 'PATCH')[0].patch.rules).toEqual([
+      {
+        when: [{ attribute: 'item_count', op: 'between', min: 1, max: 4 }],
+        then: 'opt_out',
+        amountMinor: 50_000,
+        basis: 'item',
+      },
+    ]);
+  });
+
   it('adds a rule and a condition through the registry pickers', async () => {
     const user = userEvent.setup();
     when(ONE, () => ({ body: { addOn: box } }));

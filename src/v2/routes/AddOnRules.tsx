@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { Plus, Trash2, X } from 'lucide-react';
-import { attributesOfKind } from '../../../shared/commerce/add-ons';
-import type { AddOnAttribute, AddOnCondition, AddOnMode, AddOnRule, NumberAttribute } from '../../../shared/commerce/add-ons';
+import { ADD_ON_BASES, ADD_ON_MODES, attributesOfKind, basisFor } from '../../../shared/commerce/add-ons';
+import type { AddOnAttribute, AddOnBasis, AddOnCondition, AddOnMode, AddOnRule, NumberAttribute } from '../../../shared/commerce/add-ons';
 import { formatMinor, parseMajor, plainMajor } from '../../data/api-shop';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/primitives';
 import { SearchSelect } from '../ui/SearchSelect';
-import { ATTRIBUTE_LABELS, NUMBER_OPS, SET_OPS, kindOf } from './add-on-copy';
+import { ATTRIBUTE_LABELS, BASIS_LABELS, MODE_LABELS, NUMBER_OPS, SET_OPS, kindOf } from './add-on-copy';
 
 /**
  * "When to offer it" — one block per rule, laid out the way the reference
@@ -26,11 +26,21 @@ import { ATTRIBUTE_LABELS, NUMBER_OPS, SET_OPS, kindOf } from './add-on-copy';
  * screen reader get a real control, and a test can `selectOptions` on it.
  */
 
-/** The two outcomes a rule can decide, in the admin's words. */
-const OUTCOMES: { value: AddOnMode; label: string }[] = [
-  { value: 'ask', label: 'Ask the customer' },
-  { value: 'include', label: 'Add it automatically' },
-];
+/** The three outcomes a rule can decide, in the admin's words. */
+const OUTCOMES = ADD_ON_MODES.map((value) => ({ value, label: MODE_LABELS[value] }));
+const BASES = ADD_ON_BASES.map((value) => ({ value, label: BASIS_LABELS[value] }));
+
+/**
+ * The money box's label, which is NOT always "Charge" any more. Under
+ * `opt_out` the number is money going BACK to the shopper, and a box called
+ * Charge holding the amount of a refund is the kind of label that gets a
+ * price entered with the wrong sign in mind.
+ */
+const moneyLabel = (mode: AddOnMode) => (mode === 'opt_out' ? 'Save' : 'Charge');
+const moneyHint = (mode: AddOnMode) =>
+  mode === 'opt_out'
+    ? 'What comes off the bill when they take it out. Leave empty to use the add-on’s price.'
+    : 'Leave empty to charge the add-on’s price. 0 makes it free.';
 
 const ATTRIBUTES = [
   ...attributesOfKind(['number', 'money']),
@@ -435,10 +445,10 @@ export function AddOnRules({
             </select>
             <span className="rule__spacer" />
             {/* Empty charges the add-on's price (the placeholder shows it); 0 makes it free. */}
-            <span className="rule__charge" title="Leave empty to charge the add-on’s price. 0 makes it free.">
-              Charge
+            <span className="rule__charge" title={moneyHint(rule.then)}>
+              {moneyLabel(rule.then)}
               <MoneyBox
-                label="Charge"
+                label={moneyLabel(rule.then)}
                 placeholder={majorPlaceholder(priceMinor, currency)}
                 defaultValue={rule.amountMinor == null ? '' : plainMajor(rule.amountMinor, currency)}
                 onCommit={(text) => {
@@ -447,6 +457,19 @@ export function AddOnRules({
                   if (parsed.ok) update(i, { ...rule, amountMinor: parsed.minor });
                 }}
               />
+              {/* Reads straight on from the money: ₦500 for each item. */}
+              <select
+                className="rule__pill"
+                aria-label="How often"
+                value={basisFor(rule)}
+                onChange={(e) => update(i, { ...rule, basis: e.currentTarget.value as AddOnBasis })}
+              >
+                {BASES.map((b) => (
+                  <option key={b.value} value={b.value}>
+                    {b.label}
+                  </option>
+                ))}
+              </select>
             </span>
             {rules.length > 1 ? (
               <Button tone="plain" iconOnly aria-label="Remove rule" onClick={() => onChange(rules.filter((_, j) => j !== i))}>

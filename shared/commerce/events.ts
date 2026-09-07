@@ -495,8 +495,13 @@ export interface FrozenTotalsShape {
   addOns?: Array<{
     id: string;
     title: string;
-    mode: 'chosen' | 'included';
+    mode: 'chosen' | 'included' | 'removed';
     listPrice: AmountFields;
+    /** Signed per-unit price and the count (0960). Absent on every pre-0960 payload. */
+    unitAmount?: AmountFields;
+    units?: number;
+    basis?: 'order' | 'item';
+    /** Signed. Negative only when mode is 'removed'. */
     amount: AmountFields;
   }>;
   addOnTotal?: AmountFields;
