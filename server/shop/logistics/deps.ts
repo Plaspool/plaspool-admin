@@ -3,6 +3,7 @@ import { logisticsEnv } from './config';
 import type { FezEnv, TerminalEnv } from './config';
 import { createFezProvider } from './fez/adapter';
 import type { LogisticsProvider, ProviderId } from './port';
+import { createTerminalProvider } from './terminal/adapter';
 
 /**
  * What this subsystem needs from the ones it cannot see, **taken by injection**
@@ -55,21 +56,17 @@ export interface ResolvedLogisticsDeps {
 }
 
 /**
- * The env-built adapters. `terminal` is a registered `null` until its own task
- * writes `terminal/adapter.ts` — that deployment reports Terminal as not
- * configured until then, which is honest and exactly what a half-shipped
- * feature should say.
- *
- * `fez` IS A DIRECT IMPORT, not the constructor-injected seam this record was
- * first built as. Building a `FezClient` from an env is `fez/adapter.ts`'s job
- * and nowhere else's, so *something* here has to import it; a record rather
- * than a branch per provider is kept anyway, so wiring Terminal in later is one
+ * The env-built adapters. `fez` and `terminal` ARE DIRECT IMPORTS, not the
+ * constructor-injected seam this record was first built as. Building a
+ * `FezClient`/`TerminalClient` from an env is each adapter module's own job
+ * and nowhere else's, so *something* here has to import them; a record rather
+ * than a branch per provider is kept anyway, so a THIRD courier would be one
  * more line rather than a change to this module's shape.
  */
 export const envProviders: {
   fez: ((env: FezEnv) => LogisticsProvider) | null;
   terminal: ((env: TerminalEnv) => LogisticsProvider) | null;
-} = { fez: (env) => createFezProvider(env), terminal: null };
+} = { fez: (env) => createFezProvider(env), terminal: (env) => createTerminalProvider(env) };
 
 let registered: LogisticsDeps = {};
 let defaults: LogisticsDeps = {};
