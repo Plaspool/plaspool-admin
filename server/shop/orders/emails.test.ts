@@ -495,6 +495,13 @@ describe('what the customer would read', () => {
     expect(shipment!.body).toContain('Fez Delivery');
     expect(shipment!.body).toContain('ASAC9');
     expect(shipment!.html).toContain('https://t.test/x');
+    /*
+     * AND IT IS AN ANCHOR, not a line of text that happens to be a URL.
+     * Outlook renders mail through Word, which does not auto-linkify a bare
+     * URL — so the one row in this email whose entire job is "click here to
+     * see where your parcel is" arrived as something to retype by hand.
+     */
+    expect(shipment!.html).toContain('href="https://t.test/x"');
   });
 });
 

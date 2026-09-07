@@ -503,8 +503,17 @@ export function renderShipment(
      * which is the part a customer copies. Only a courier booking has a page —
      * `tracking_url` is NULL for every parcel shipped by hand — so the row
      * simply is not there in that case.
+     *
+     * `href` MAKES THE HTML HALF AN ACTUAL LINK while the text half below
+     * keeps the bare URL. Outlook renders through Word, which does not
+     * auto-linkify a URL in a table cell, so without this the one row whose
+     * whole job is "click to see where your parcel is" was something to
+     * retype. `facts` refuses any scheme that is not http(s), so a courier
+     * that sends us nonsense costs the link and nothing else.
      */
-    ...(view.trackingUrl ? [{ label: 'Track', value: view.trackingUrl, mono: true }] : []),
+    ...(view.trackingUrl
+      ? [{ label: 'Track', value: view.trackingUrl, mono: true, href: view.trackingUrl }]
+      : []),
   ];
   values.blocks.tracking_panel =
     rows.length === 0

@@ -451,22 +451,48 @@ ${foot}
 }
 
 /**
+ * THE ONLY TWO SCHEMES A ROW'S `href` MAY CARRY, and this is an ALLOW-LIST
+ * rather than a filter on purpose.
+ *
+ * `esc` does not make an `href` safe: `javascript:alert(1)` contains none of
+ * the five characters it replaces, so it would survive escaping intact and
+ * become a working link. The values that reach here are couriers' strings —
+ * `shop_fulfillments.tracking_url` is whatever Fez or Terminal sent us — so
+ * the scheme is checked, and a row whose link is refused keeps its text and
+ * loses only the anchor.
+ */
+function httpHref(href: string): string | null {
+  const trimmed = href.trim();
+  return /^https?:\/\//i.test(trimmed) ? trimmed : null;
+}
+
+/**
  * A labelled fact panel — tracking number, delivery address, refund breakdown.
  *
  * Rows rather than a definition list, because a `dl` is unstyled in Outlook.
+ *
+ * A ROW MAY CARRY AN `href`, AND ONE THAT DOES BECOMES A REAL ANCHOR. Outlook
+ * renders through Word, which does NOT auto-linkify a bare URL sitting in a
+ * cell — so a "Track" row printed as plain text is a page the customer has to
+ * retype. Same colour and underline as `link()` below, because it is the same
+ * thing in a different container.
  */
 export function facts(
-  rows: { label: string; value: string; mono?: boolean }[],
+  rows: { label: string; value: string; mono?: boolean; href?: string }[],
   tone: Tone = 'neutral',
 ): string {
   const t = TONES[tone];
   const cells = rows
-    .map(
-      (r) => `<tr>
+    .map((r) => {
+      const href = r.href === undefined ? null : httpHref(r.href);
+      const value = href
+        ? `<a class="b-link" href="${esc(href)}" style="color:${BRAND.accent};text-decoration:underline">${esc(r.value)}</a>`
+        : esc(r.value);
+      return `<tr>
       <td class="b-ink3" style="padding:4px 14px 4px 0;font-family:${FONT_UI};font-size:12px;letter-spacing:0.04em;text-transform:uppercase;color:${BRAND.ink4};white-space:nowrap;vertical-align:top">${esc(r.label)}</td>
-      <td class="b-ink" style="padding:4px 0;font-family:${r.mono ? FONT_MONO : FONT_UI};font-size:14px;font-weight:600;color:${BRAND.ink};vertical-align:top">${esc(r.value)}</td>
-    </tr>`,
-    )
+      <td class="b-ink" style="padding:4px 0;font-family:${r.mono ? FONT_MONO : FONT_UI};font-size:14px;font-weight:600;color:${BRAND.ink};vertical-align:top">${value}</td>
+    </tr>`;
+    })
     .join('\n');
   return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="b-soft" style="margin:2px 0 20px 0;background:${t.bg};border:1px solid ${t.line};border-radius:10px">
     <tr><td class="b-pad" style="padding:15px 18px">
