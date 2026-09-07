@@ -22,6 +22,16 @@ export const PROVIDER_ENV: Record<'fez' | 'terminal', string> = {
   terminal: 'TERMINAL_SECRET_KEY',
 };
 
+/**
+ * The ONE variable each courier signs its webhooks with — the half of
+ * `PROVIDER_ENV` that decides whether statuses can come back at all. Fez books
+ * on two other credentials entirely, so it can be `configured` without this.
+ */
+export const PROVIDER_WEBHOOK_ENV: Record<'fez' | 'terminal', string> = {
+  fez: 'FEZ_SECRET_KEY',
+  terminal: 'TERMINAL_SECRET_KEY',
+};
+
 export const COURIER_COPY = {
   settings: {
     title: 'Delivery courier',
@@ -30,6 +40,13 @@ export const COURIER_COPY = {
     notSetUp: (env: string) => `Not set up on this server — add ${env}, then redeploy.`,
     envLine: (environment: 'sandbox' | 'live') => (environment === 'live' ? 'Live' : 'Sandbox'),
     connected: 'connected',
+    /**
+     * BOOKABLE BUT DEAF. Says which half works, which half does not, and the
+     * exact variable that fixes it — the only action available, and it is a
+     * deploy rather than anything on this screen.
+     */
+    webhookNotReady: (p: 'fez' | 'terminal') =>
+      `Bookings will work, but ${p === 'fez' ? 'Fez' : 'Terminal'} cannot send status updates until ${PROVIDER_WEBHOOK_ENV[p]} is set on this server.`,
     shipFromTitle: 'Ship-from address',
     shipFromHint: 'Where the courier collects parcels. Required for Terminal Africa; Fez uses the address on your Fez account unless you fill this in.',
     packagingTitle: 'Packaging',

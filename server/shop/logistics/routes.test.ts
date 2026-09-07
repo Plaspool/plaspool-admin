@@ -5,6 +5,7 @@ import type { TestCtx } from '../../test/harness';
 import { httpClient, json, TEST_ORIGIN } from '../../test/http';
 import type { HttpClient } from '../../test/http';
 import { DEFAULT_ADMIN_ORIGIN } from '../../admin-url';
+import { resetLogisticsEnv } from './config';
 import { registerLogisticsDeps, resetLogisticsDeps } from './deps';
 import type { LogisticsCatalog } from './deps';
 import { LogisticsError } from './port';
@@ -48,6 +49,7 @@ const SHIP_FROM: ShipFrom = {
 
 interface ProviderStatus {
   configured: boolean;
+  webhookReady: boolean;
   environment: 'sandbox' | 'live';
   webhookUrl: string;
 }
@@ -120,9 +122,14 @@ beforeEach(async () => {
     VALUES ('main', 'manual', ${SEEDED_AT})`);
 });
 
+/** The courier credentials a case may set; cleared so none leaks into the next. */
+const ENV_KEYS = ['FEZ_USER_ID', 'FEZ_PASSWORD', 'FEZ_SECRET_KEY'];
+
 afterEach(() => {
   /* So one case's fakes cannot answer the next suite's questions. */
   resetLogisticsDeps();
+  for (const key of ENV_KEYS) delete process.env[key];
+  resetLogisticsEnv();
 });
 
 describe('GET the settings', () => {
@@ -179,6 +186,49 @@ describe('GET the settings', () => {
     expect(body.providers.fez.webhookUrl).toBe(
       `${DEFAULT_ADMIN_ORIGIN}/api/shop/logistics/fez/webhook`,
     );
+  });
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════
+   * "CONNECTED" IS TWO FACTS, AND THEY COME APART ON SERVERLESS.
+   *
+   * Fez's `configured` asks only for `FEZ_USER_ID` and `FEZ_PASSWORD` — the
+   * two credentials a BOOKING needs. Verifying a Fez WEBHOOK needs
+   * `FEZ_SECRET_KEY`, which the adapter will otherwise learn from a sign-in
+   * *this process* happened to make; on Vercel that means a correctly-signed
+   * callback 401s on any instance that has not signed in yet. The settings
+   * card said "Sandbox · connected" and offered *Connect webhook* anyway,
+   * which is the shop being told statuses will come back when they will not.
+   * ═══════════════════════════════════════════════════════════════════════
+   */
+  it('reports a courier that can be BOOKED but cannot report back', async () => {
+    process.env.FEZ_USER_ID = 'G-1';
+    process.env.FEZ_PASSWORD = 'pw';
+    delete process.env.FEZ_SECRET_KEY;
+    resetLogisticsEnv();
+
+    await http.signIn({ email: 'owner@test.local' });
+    const body = await json<SettingsView>(await http.get(SETTINGS));
+    expect(body.providers.fez).toMatchObject({ configured: true, webhookReady: false });
+  });
+
+  it('reports webhookReady once the signing key is on the server', async () => {
+    process.env.FEZ_USER_ID = 'G-1';
+    process.env.FEZ_PASSWORD = 'pw';
+    process.env.FEZ_SECRET_KEY = 'shhh';
+    resetLogisticsEnv();
+
+    await http.signIn({ email: 'owner@test.local' });
+    const body = await json<SettingsView>(await http.get(SETTINGS));
+    expect(body.providers.fez).toMatchObject({ configured: true, webhookReady: true });
+  });
+
+  it('Terminal has one credential, so its two flags never disagree', async () => {
+    /* `TERMINAL_SECRET_KEY` both authenticates the API calls and signs the
+       webhooks — there is no second half to be missing. */
+    await http.signIn({ email: 'owner@test.local' });
+    const body = await json<SettingsView>(await http.get(SETTINGS));
+    expect(body.providers.terminal.webhookReady).toBe(body.providers.terminal.configured);
   });
 
   it('shows the recent deliveries, newest first, without their payloads', async () => {

@@ -157,9 +157,27 @@ export const webhookPath = (provider: ProviderId): string =>
  * switched on, and a screen that has to ask for it separately is a screen that
  * will show the switch without the reason.
  *
- * NO SECRET EVER APPEARS HERE. `configured` is a boolean and `environment` is
- * derived from a base URL; the credentials themselves live only in
- * `config.ts` and never leave it.
+ * NO SECRET EVER APPEARS HERE. `configured` and `webhookReady` are booleans
+ * and `environment` is derived from a base URL; the credentials themselves
+ * live only in `config.ts` and never leave it.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * `configured` AND `webhookReady` ARE TWO DIFFERENT QUESTIONS, and Fez is the
+ * courier that answers them differently.
+ *
+ * `configured` means "a parcel can be BOOKED": for Fez that is
+ * `FEZ_USER_ID` + `FEZ_PASSWORD`. Verifying a Fez CALLBACK needs
+ * `FEZ_SECRET_KEY` — which the adapter will otherwise learn from a sign-in
+ * *this process* made, so on serverless a correctly-signed webhook 401s on
+ * every instance that has not signed in yet. Read from the environment ALONE
+ * here, deliberately: a flag that went true because this lambda happened to
+ * have signed in would tell the operator the shop can hear back when the next
+ * cold start cannot.
+ *
+ * Terminal's `TERMINAL_SECRET_KEY` both authenticates its API calls and signs
+ * its webhooks, so it has no second half to be missing and the two flags are
+ * the same expression by construction.
+ * ═══════════════════════════════════════════════════════════════════════════
  */
 async function settingsView(
   c: Context<AppEnv>,
@@ -175,6 +193,8 @@ async function settingsView(
     listRecentWebhooks(db, 10),
   ]);
 
+  const terminalConfigured = deps.providerFor('terminal') !== null;
+
   return {
     provider: settings.provider,
     shipFrom: settings.shipFrom,
@@ -184,11 +204,13 @@ async function settingsView(
     providers: {
       fez: {
         configured: deps.providerFor('fez') !== null,
+        webhookReady: env.fez?.secretKey != null,
         environment: environmentOf(env.fez?.baseUrl ?? '', FEZ_LIVE_URL),
         webhookUrl: `${base}${webhookPath('fez')}`,
       },
       terminal: {
-        configured: deps.providerFor('terminal') !== null,
+        configured: terminalConfigured,
+        webhookReady: terminalConfigured,
         environment: environmentOf(env.terminal?.baseUrl ?? '', TERMINAL_LIVE_URL),
         webhookUrl: `${base}${webhookPath('terminal')}`,
       },

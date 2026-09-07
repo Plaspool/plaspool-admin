@@ -284,6 +284,11 @@ export default function SettingsDeliveryCourier() {
               {PROVIDERS.map((p) => {
                 const status = p === 'manual' ? null : settings.providers[p];
                 const off = status !== null && !status.configured;
+                /* BOOKABLE BUT DEAF — see `webhookNotReady`. Not `off`: the
+                   courier works for everything this card decides, and greying
+                   it out would stop a shop booking parcels over a status feed
+                   it can live without for a day. */
+                const deaf = status !== null && status.configured && !status.webhookReady;
                 const picked = provider === p;
                 return (
                   <label
@@ -313,6 +318,11 @@ export default function SettingsDeliveryCourier() {
                       <span className="field__hint" style={{ display: 'block', marginTop: 2 }}>
                         {PROVIDER_BLURB[p]}
                       </span>
+                      {deaf ? (
+                        <span className="field__error" style={{ display: 'block', marginTop: 4 }}>
+                          {C.webhookNotReady(p as 'fez' | 'terminal')}
+                        </span>
+                      ) : null}
                     </span>
                   </label>
                 );
@@ -361,22 +371,31 @@ export default function SettingsDeliveryCourier() {
 
           <Card title={C.webhooksTitle}>
             <p className="muted" style={{ fontSize: 'var(--t-sm)', margin: 0 }}>{C.webhooksHint}</p>
-            {(['fez', 'terminal'] as const).map((p) => (
-              <div key={p} className="row" style={{ gap: 'var(--s3)', alignItems: 'center', flexWrap: 'wrap' }}>
-                <div style={{ flex: 1, minWidth: '14rem' }}>
-                  <div style={{ fontWeight: 'var(--w-medium)' }}>{PROVIDER_LABEL[p]}</div>
-                  <div className="muted mono" style={{ fontSize: 'var(--t-sm)', wordBreak: 'break-all' }}>{settings.providers[p].webhookUrl}</div>
+            {(['fez', 'terminal'] as const).map((p) => {
+              /* NO SIGNING KEY, NO BUTTON. Registering the URL would succeed
+                 and every callback it produced would then be refused as
+                 unverifiable — a "connected" state that quietly means the
+                 opposite. The reason travels with the control, and the same
+                 sentence sits on the courier's card above. */
+              const deaf = settings.providers[p].configured && !settings.providers[p].webhookReady;
+              return (
+                <div key={p} className="row" style={{ gap: 'var(--s3)', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, minWidth: '14rem' }}>
+                    <div style={{ fontWeight: 'var(--w-medium)' }}>{PROVIDER_LABEL[p]}</div>
+                    <div className="muted mono" style={{ fontSize: 'var(--t-sm)', wordBreak: 'break-all' }}>{settings.providers[p].webhookUrl}</div>
+                  </div>
+                  <Button
+                    aria-label={`${C.connect} for ${PROVIDER_LABEL[p]}`}
+                    title={deaf ? C.webhookNotReady(p) : undefined}
+                    disabled={!settings.providers[p].configured || deaf}
+                    busy={connecting === p}
+                    onClick={() => void connect(p)}
+                  >
+                    {C.connect}
+                  </Button>
                 </div>
-                <Button
-                  aria-label={`${C.connect} for ${PROVIDER_LABEL[p]}`}
-                  disabled={!settings.providers[p].configured}
-                  busy={connecting === p}
-                  onClick={() => void connect(p)}
-                >
-                  {C.connect}
-                </Button>
-              </div>
-            ))}
+              );
+            })}
             <h3 style={{ fontSize: 'var(--t-md)', margin: 0 }}>{C.recentTitle}</h3>
             {settings.recentWebhooks.length === 0 ? (
               <p className="muted" style={{ fontSize: 'var(--t-sm)', margin: 0 }}>{C.recentEmpty}</p>

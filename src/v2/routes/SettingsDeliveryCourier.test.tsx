@@ -149,8 +149,8 @@ const baseSettings = {
   revision: 3,
   updatedAt: 1_757_000_000_000,
   providers: {
-    fez: { configured: true, environment: 'sandbox', webhookUrl: 'https://admin.dev.plaspool.com/api/shop/logistics/fez/webhook' },
-    terminal: { configured: true, environment: 'sandbox', webhookUrl: 'https://admin.dev.plaspool.com/api/shop/logistics/terminal/webhook' },
+    fez: { configured: true, webhookReady: true, environment: 'sandbox', webhookUrl: 'https://admin.dev.plaspool.com/api/shop/logistics/fez/webhook' },
+    terminal: { configured: true, webhookReady: true, environment: 'sandbox', webhookUrl: 'https://admin.dev.plaspool.com/api/shop/logistics/terminal/webhook' },
   },
   variantsMissingWeight: 7,
   variantsTotal: 12,
@@ -200,6 +200,36 @@ describe('Settings → Delivery courier', () => {
     const radio = (await screen.findByRole('radio', { name: /Terminal Africa/ })) as HTMLInputElement;
     expect(radio.disabled).toBe(true);
     expect(screen.getByText(/add TERMINAL_SECRET_KEY, then redeploy/)).toBeTruthy();
+  });
+
+  /*
+   * "Connected" is two facts. Fez books with FEZ_USER_ID + FEZ_PASSWORD but
+   * VERIFIES its callbacks with FEZ_SECRET_KEY, so a deployment holding only
+   * the first two can send parcels and can never hear back — and the card used
+   * to say "Sandbox · connected" and offer Connect webhook regardless.
+   */
+  it('says when a courier can be booked but cannot report back, and refuses to Connect', async () => {
+    when(SETTINGS, {
+      ...baseSettings,
+      providers: {
+        ...baseSettings.providers,
+        fez: { ...baseSettings.providers.fez, webhookReady: false },
+      },
+    });
+    mount();
+    expect(
+      await screen.findByText(
+        'Bookings will work, but Fez cannot send status updates until FEZ_SECRET_KEY is set on this server.',
+      ),
+    ).toBeTruthy();
+    /* Booking still works, so the card is NOT switched off and both couriers
+       still read as connected — this warning is about the other direction. */
+    expect((screen.getByRole('radio', { name: /Fez Delivery/ }) as HTMLInputElement).disabled).toBe(false);
+    expect(screen.getAllByText(/Sandbox · connected/).length).toBe(2);
+
+    expect((screen.getByRole('button', { name: 'Connect webhook for Fez Delivery' }) as HTMLButtonElement).disabled).toBe(true);
+    /* Terminal's one key does both jobs, so it is untouched. */
+    expect((screen.getByRole('button', { name: 'Connect webhook for Terminal Africa' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('saves Fez with the expected revision and the ship-from address', async () => {

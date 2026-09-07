@@ -688,7 +688,19 @@ export interface ShopShipFrom {
   city: string; region: string; postalCode: string; countryCode: 'NG';
 }
 export interface ShopCourierPackaging { name: string; lengthCm: number; widthCm: number; heightCm: number; weightKg: number }
-export interface ShopCourierProviderStatus { configured: boolean; environment: 'sandbox' | 'live'; webhookUrl: string }
+export interface ShopCourierProviderStatus {
+  /** A parcel can be BOOKED with this courier: the credentials it books with are on the server. */
+  configured: boolean;
+  /**
+   * This courier's callbacks can be VERIFIED here — a different question, and
+   * for Fez a different credential (`FEZ_SECRET_KEY`, absent from
+   * `configured`). `configured && !webhookReady` is a shop that can send
+   * parcels and can never hear what happened to them.
+   */
+  webhookReady: boolean;
+  environment: 'sandbox' | 'live';
+  webhookUrl: string;
+}
 export interface ShopCourierWebhookRow {
   id: string; provider: 'fez' | 'terminal'; providerRef: string | null; rawStatus: string | null;
   verified: boolean; applied: 'applied' | 'ignored' | 'unmatched' | 'rejected'; receivedAt: number;
