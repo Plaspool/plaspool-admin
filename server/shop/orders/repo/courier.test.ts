@@ -292,6 +292,54 @@ describe('courier writes', () => {
     expect(replay.fulfillment).toMatchObject({ carrier: null, trackingNumber: null, trackingUrl: null, labelUrl: null, providerSyncedAt: NOW + 4 });
   });
 
+  /**
+   * THE OTHER DIRECTION, AND THE ONE NOBODY ASKED FOR: THE COURIER CANCELS.
+   *
+   * The two cases above both start with `recordCourierCancelled` — WE called it
+   * off — and the guard they prove reads the row's EXISTING state, so it is
+   * blind to the case where the cancellation arrives as news. A rider never
+   * turns up and Fez cancels the collection itself; the webhook that says so is
+   * the FIRST we hear of it, `courier_state` is still 'booked' when the snapshot
+   * runs, and every link COALESCEs straight back onto the row.
+   *
+   * That is a live waybill on a parcel no courier is coming for — and the next
+   * thing an operator does is ship it by hand, which mails the customer the
+   * carrier's name, its tracking number and a tracking page that will never
+   * move. An admin cancel takes all four away; a courier's cancel has to take
+   * exactly the same four away, or the two doors into the same state leave the
+   * row in two different conditions.
+   */
+  it('a courier cancelling of its own accord voids the same four links an admin cancel does', async () => {
+    const { order, id } = await parcel();
+    await recordCourierBooking(ctx.db, id, { ...booking, trackingUrl: 'https://t.test/1' });
+
+    /* NO admin cancel first. This is the courier telling us, and the row is
+       still 'booked' at the moment the snapshot's UPDATE evaluates. */
+    const snapshot = await recordCourierSnapshot(ctx.db, id, {
+      rawStatus: 'Cancelled', state: 'cancelled', trackingNumber: 'ASAC1', trackingUrl: 'https://t.test/1',
+      labelUrl: 'https://fez.test/m.pdf', carrier: 'Fez Delivery', now: NOW + 3, message: 'Fez Delivery: Cancelled',
+    });
+    expect(snapshot.changed).toBe(true);
+    expect(snapshot.fulfillment).toMatchObject({ carrier: null, trackingNumber: null, trackingUrl: null, labelUrl: null });
+    /* Everything that is not customer-facing still lands, exactly as it does
+       when we were the ones who cancelled. */
+    expect(snapshot.fulfillment).toMatchObject({ providerStatus: 'Cancelled', courierState: 'cancelled', providerSyncedAt: NOW + 3 });
+    expect((await listTimeline(ctx.db, order.order.id)).filter((e) => e.type === 'courier_update')).toHaveLength(1);
+
+    /* The reference survives, so a later event from the same courier still finds
+       this parcel — and the parcel is free to be booked again. */
+    expect(snapshot.fulfillment).toMatchObject({ provider: 'fez', providerRef: 'ASAC1', status: 'pending' });
+
+    /* AND THE CONSEQUENCE, which is the whole reason the columns matter: ship it
+       by hand and the customer is told nothing about a courier that never came. */
+    await shipFulfillment(ctx.db, id, NOW + 4, null, 'u_admin');
+    const shipment = (await listIntents(ctx.db, order.order.id)).find((i) => i.kind === 'shipment');
+    expect(shipment).toBeDefined();
+    expect(shipment!.body).not.toContain('Track:');
+    expect(shipment!.body).not.toContain('ASAC1');
+    expect(shipment!.body).not.toContain('Fez Delivery');
+  });
+
   it('refuses to cancel a courier on a parcel that has none, or that has already shipped', async () => {
     const { id } = await parcel();
     // Nothing booked: there is no courier to call off.

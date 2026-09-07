@@ -233,28 +233,49 @@ export async function recordCourierSnapshot(
   },
 ): Promise<{ fulfillment: Fulfillment; changed: boolean }> {
   /*
-   * ── A CANCELLED PARCEL LEARNS NO LINKS ───────────────────────────────────
+   * ── A CANCELLED PARCEL LEARNS NO LINKS, AND KEEPS NONE ───────────────────
    *
    * `recordCourierCancelled` NULLs carrier, tracking number, tracking page and
-   * label precisely so a later ship-by-hand mails none of them. Cancelling at
-   * the courier is also what MAKES the courier send its own `cancelled` event,
-   * and both adapters fill every field they know on every event — so the plain
-   * COALESCE handed all four straight back, and the shipment email quoted the
-   * dead waybill. The ordinary sequence, not an exotic one.
+   * label precisely so a later ship-by-hand mails none of them. Two separate
+   * things would otherwise put them back, and BOTH are the ordinary sequence
+   * rather than an exotic one:
    *
-   * The test is on the row's EXISTING state, which under `SET` is the value
-   * from before this statement. That is deliberate on both sides: a parcel that
-   * is still cancelled after this snapshot never re-acquires a customer-facing
-   * link, and a cancel the courier overrode by delivering anyway heals on the
-   * NEXT event — by then `courier_state` is no longer `cancelled` and the links
-   * fill normally.
+   * 1. WE CANCELLED, AND THE COURIER CONFIRMS IT. Cancelling at the courier is
+   *    what MAKES it send its own `cancelled` event, and both adapters fill
+   *    every field they know on every event — so a plain COALESCE handed all
+   *    four straight back on the confirmation. Caught by `live`, which tests
+   *    the row's EXISTING state (under `SET`, the value from before this
+   *    statement): a parcel that is already cancelled never re-acquires a
+   *    customer-facing link, while a cancel the courier overrode by delivering
+   *    anyway heals on the NEXT event — by then `courier_state` is no longer
+   *    `cancelled` and the links fill normally.
+   *
+   * 2. THE COURIER CANCELLED, AND WE ARE HEARING IT FIRST. No admin cancel came
+   *    before it, so the row still says `booked` and `live` is true — the
+   *    existing-state test cannot see this one at all. What arrives is a live
+   *    waybill for a collection nobody is coming to make, and the operator's
+   *    next move is to ship the parcel by hand, which mails the carrier's name,
+   *    the tracking number and a tracking page that will never move. Caught by
+   *    `cancelling`, which tests the INCOMING state: the two doors into
+   *    `courier_state = 'cancelled'` must leave the row in the same condition,
+   *    or which one was used decides what the customer is told.
+   *
+   * `cancelling` is decided in TypeScript rather than in SQL because it is a
+   * property of the argument, not of the row — there is nothing concurrent
+   * about it to lose to a snapshot. It applies to both UPDATEs below: on the
+   * `same` branch the columns are already NULL (only a row that is already
+   * cancelled can take it with this state), so writing NULL again is a no-op
+   * kept for the property rather than for the effect.
    *
    * Everything that is not customer-facing — the raw status, our reading of it,
    * when we heard, and the `courier_update` timeline row — lands regardless.
    */
+  const cancelling = a.state === 'cancelled';
   const live = sql`f.courier_state IS DISTINCT FROM 'cancelled'`;
   const learn = (value: string | null | undefined, column: SQL): SQL =>
-    sql`CASE WHEN ${live} THEN COALESCE(${value ?? null}::text, ${column}) ELSE ${column} END`;
+    cancelling
+      ? sql`NULL::text`
+      : sql`CASE WHEN ${live} THEN COALESCE(${value ?? null}::text, ${column}) ELSE ${column} END`;
   const links = sql`
         tracking_number = ${learn(a.trackingNumber, sql`f.tracking_number`)},
         tracking_url = ${learn(a.trackingUrl, sql`f.tracking_url`)},
