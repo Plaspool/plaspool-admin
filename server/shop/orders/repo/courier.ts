@@ -295,8 +295,15 @@ export async function recordCourierCancelled(
     id,
     sql`carrier = NULL, tracking_number = NULL, tracking_url = NULL, label_url = NULL,
         courier_state = 'cancelled',
-        -- "Cancelled" is our own label for this state; it is not a status the courier sent us.
-        provider_status = 'Cancelled', provider_synced_at = ${a.now}, provider_last_error = NULL`,
+        -- provider_status is the courier's own last raw word, never ours: an
+        -- admin cancel is OUR decision, not something the courier said, so
+        -- this clears to NULL rather than writing a made-up 'Cancelled'. A
+        -- fabricated value here would read as "already the newest status" to
+        -- recordCourierSnapshot's IS DISTINCT FROM guard the day the courier
+        -- genuinely sends Cancelled for this parcel, and that real webhook
+        -- would silently miss the timeline. NULL can never equal a courier's
+        -- raw string, so a real one always still lands.
+        provider_status = NULL, provider_synced_at = ${a.now}, provider_last_error = NULL`,
     sql`status = 'pending' AND provider_ref IS NOT NULL`,
     timelineRow('courier_cancelled', a.message, a.now, a.actorId),
   );

@@ -104,20 +104,42 @@ export function shipFromMissing(from: ShipFrom | null): string[] {
 /**
  * The origin a courier's webhook must be pointed at.
  *
- * THE REQUEST'S OWN ORIGIN **ONLY IF IT IS ALLOW-LISTED**, else the pinned
- * default. This URL is handed to a third party who will then call it, so
- * building it from an unvalidated header would let a caller register an endpoint
- * of their choosing as this admin's courier webhook. `c.get('origins')` is the
- * exact list `originGuard` judged this request against — the same value
- * `POST /api/invites` builds an invite link from, and for the identical reason.
+ * RESOLVED IN THREE STEPS, IN ORDER, and every one of them is judged against
+ * `c.get('origins')` — the exact list `originGuard` checked this request
+ * against, the same value `POST /api/invites` builds an invite link from, and
+ * for the identical reason: this URL is handed to a third party who will then
+ * call it, so building it from anything unvalidated would let a caller
+ * register an endpoint of their choosing as this admin's courier webhook.
  *
- * Reading it at all — rather than always answering `adminOrigin()` — is what
- * makes the dev host register its own URL instead of production's.
+ *   1. The `Origin` header, when it is allow-listed. Every unsafe method
+ *      (`POST`, `PATCH`) carries one — `originGuard` refuses the request
+ *      otherwise — so this is what a dev host or a preview registers itself
+ *      under.
+ *   2. Else the request URL's OWN origin (`new URL(c.req.url).origin`), when
+ *      THAT is allow-listed. A same-origin browser `GET` carries no `Origin`
+ *      header at all — that is what a browser does, not a gap here — so
+ *      skipping straight to step 3 whenever the header is missing would make
+ *      `GET /admin/logistics/settings` show one host while `POST
+ *      …/webhooks/register` from the very same tab registers another. Reading
+ *      where the request actually arrived is safe for the identical reason
+ *      step 1 is: it is not a value the caller gets to assert.
+ *   3. Else the pinned default, `adminOrigin()` — nothing about this request
+ *      names an allow-listed origin at all, by header or by arrival.
+ *
+ * Falling through past step 1 at all — rather than always answering
+ * `adminOrigin()` — is what makes the dev host register its own URL instead
+ * of production's; step 2 is what makes a GET agree with the POST beside it.
  */
 export function webhookBase(c: Context<AppEnv>): string {
-  const origin = c.req.header('origin');
   const allowed = c.get('origins') ?? [];
-  return origin && allowed.includes(origin) ? origin : adminOrigin();
+
+  const headerOrigin = c.req.header('origin');
+  if (headerOrigin && allowed.includes(headerOrigin)) return headerOrigin;
+
+  const requestOrigin = new URL(c.req.url).origin;
+  if (allowed.includes(requestOrigin)) return requestOrigin;
+
+  return adminOrigin();
 }
 
 export const webhookPath = (provider: ProviderId): string =>

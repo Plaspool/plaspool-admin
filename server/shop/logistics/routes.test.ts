@@ -125,13 +125,17 @@ afterEach(() => {
   resetLogisticsDeps();
 });
 
-/** A GET carrying the allow-listed Origin, which is what a browser sends. */
-const getAs = (path: string) => http.get(path, { headers: { origin: TEST_ORIGIN } });
-
 describe('GET the settings', () => {
   it('answers the seeded row with provider status, webhook URLs and weight coverage', async () => {
     await http.signIn({ email: 'owner@test.local' });
-    const res = await getAs(SETTINGS);
+    /* An ABSOLUTE URL on the allow-listed origin — what a same-origin browser
+     * GET actually looks like on the wire: no `Origin` header at all (a
+     * browser never sends one for a same-origin request, and `server/test/
+     * http.ts` mirrors that by setting one only for unsafe methods), but
+     * arriving AT that origin. `webhookBase` has to read the second half of
+     * that sentence, not just the first — see the fallback case below for
+     * what happens when it cannot read either half. */
+    const res = await http.get(`${TEST_ORIGIN}${SETTINGS}`);
     expect(res.status).toBe(200);
 
     const body = await json<SettingsView>(res);
@@ -163,13 +167,15 @@ describe('GET the settings', () => {
     expect(body.recentWebhooks).toEqual([]);
   });
 
-  it('falls back to the pinned admin origin when the request carries no allow-listed one', async () => {
+  it('falls back to the pinned admin origin when the request arrives at no allow-listed origin', async () => {
     await http.signIn({ email: 'owner@test.local' });
-    /* A URL a courier must be able to call cannot be built from an attacker's
-     * `Host`, and an unlisted `Origin` is not evidence of anything. */
-    const body = await json<SettingsView>(
-      await http.get(SETTINGS, { headers: { origin: 'https://evil.example' } }),
-    );
+    /* A PLAIN PATH, no `Origin` header. `app.request()` defaults an
+     * unqualified path's own request URL to `http://localhost`, which is not
+     * allow-listed here any more than a forged `Origin` header would be — and
+     * a URL a courier will be told to call cannot be built from either one, so
+     * this has to fall all the way through to the pinned default rather than
+     * handing a courier `http://localhost`. */
+    const body = await json<SettingsView>(await http.get(SETTINGS));
     expect(body.providers.fez.webhookUrl).toBe(
       `${DEFAULT_ADMIN_ORIGIN}/api/shop/logistics/fez/webhook`,
     );
@@ -186,7 +192,7 @@ describe('GET the settings', () => {
       now: NOW,
     });
     await http.signIn({ email: 'owner@test.local' });
-    const body = await json<SettingsView>(await getAs(SETTINGS));
+    const body = await json<SettingsView>(await http.get(SETTINGS));
     expect(body.recentWebhooks).toHaveLength(1);
     expect(body.recentWebhooks[0]).toMatchObject({ provider: 'fez', applied: 'applied' });
     expect(JSON.stringify(body.recentWebhooks)).not.toContain('customer address');
@@ -240,7 +246,7 @@ describe('PATCH the settings', () => {
       provider: 'terminal',
     });
     /* Refused, not half-applied. */
-    expect((await json<SettingsView>(await getAs(SETTINGS))).provider).toBe('manual');
+    expect((await json<SettingsView>(await http.get(SETTINGS))).provider).toBe('manual');
   });
 
   it('refuses terminal while the ship-from is incomplete: 409 ship_from_incomplete', async () => {
@@ -279,7 +285,7 @@ describe('PATCH the settings', () => {
     expect(await json(res)).toMatchObject({ error: 'ship_from_incomplete' });
 
     /* The address the courier collects from is still there. */
-    expect((await json<SettingsView>(await getAs(SETTINGS))).shipFrom).toEqual(SHIP_FROM);
+    expect((await json<SettingsView>(await http.get(SETTINGS))).shipFrom).toEqual(SHIP_FROM);
   });
 
   it('refuses a malformed ship-from before anything reaches the database', async () => {
@@ -295,7 +301,7 @@ describe('PATCH the settings', () => {
       const res = await http.patch(SETTINGS, { expectedRevision: 1, shipFrom });
       expect(res.status, JSON.stringify(shipFrom)).toBe(400);
     }
-    expect((await json<SettingsView>(await getAs(SETTINGS))).revision).toBe(1);
+    expect((await json<SettingsView>(await http.get(SETTINGS))).revision).toBe(1);
   });
 
   it('lets the same clear through once the courier is back to manual', async () => {
@@ -311,17 +317,17 @@ describe('PATCH the settings', () => {
 describe('the guards', () => {
   it('a supply_chain user can read the provider but gets 403 on the settings routes', async () => {
     await http.signIn({ email: 'supply@test.local' });
-    expect((await getAs(PROVIDER)).status).toBe(200);
-    expect((await getAs(SETTINGS)).status).toBe(403);
+    expect((await http.get(PROVIDER)).status).toBe(200);
+    expect((await http.get(SETTINGS)).status).toBe(403);
     expect((await http.patch(SETTINGS, { expectedRevision: 1, provider: 'fez' })).status).toBe(403);
     expect((await http.post(REGISTER, { provider: 'fez' })).status).toBe(403);
   });
 
   it('GET the provider answers { provider, label } and 401s without a session', async () => {
-    expect((await getAs(PROVIDER)).status).toBe(401);
+    expect((await http.get(PROVIDER)).status).toBe(401);
 
     await http.signIn({ email: 'writer@test.local' });
-    expect(await json(await getAs(PROVIDER))).toMatchObject({
+    expect(await json(await http.get(PROVIDER))).toMatchObject({
       provider: 'manual',
       label: 'By hand',
     });
@@ -329,7 +335,7 @@ describe('the guards', () => {
     http.clearCookies();
     await http.signIn({ email: 'owner@test.local' });
     await http.patch(SETTINGS, { expectedRevision: 1, provider: 'fez', shipFrom: SHIP_FROM });
-    expect(await json(await getAs(PROVIDER))).toMatchObject({
+    expect(await json(await http.get(PROVIDER))).toMatchObject({
       provider: 'fez',
       label: 'Fez Delivery',
     });

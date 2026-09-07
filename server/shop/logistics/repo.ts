@@ -265,7 +265,7 @@ export async function listRecentWebhooks(db: Db, limit = 10): Promise<WebhookRow
   const res = await db.execute(sql`
     SELECT id, provider, provider_ref, raw_status, verified, applied, received_at
       FROM shop_logistics_webhooks
-     ORDER BY received_at DESC, id DESC
+     ORDER BY received_at DESC, id ASC
      LIMIT ${limit}`);
 
   return res.rows.map((r) => ({

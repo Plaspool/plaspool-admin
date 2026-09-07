@@ -188,7 +188,9 @@ describe('courier writes', () => {
     const { order, id } = await parcel();
     await recordCourierBooking(ctx.db, id, { ...booking, trackingUrl: 'https://t.test/1' });
     const f = await recordCourierCancelled(ctx.db, id, { now: NOW + 2, actorId: 'u_admin', message: 'Courier cancelled: changed our mind' });
-    expect(f).toMatchObject({ status: 'pending', courierState: 'cancelled', providerStatus: 'Cancelled' });
+    // `provider_status` is the COURIER'S last raw word, and an admin cancel is
+    // not that — it goes to NULL, not to a made-up 'Cancelled' of our own.
+    expect(f).toMatchObject({ status: 'pending', courierState: 'cancelled', providerStatus: null });
     /* EVERY WAY A CUSTOMER COULD BE POINTED AT A COURIER THAT IS NOT COMING is
      * cleared, because the next thing an operator does is ship the parcel by
      * hand — and the shipment email reads carrier, tracking number and tracking
@@ -198,6 +200,33 @@ describe('courier writes', () => {
     expect(f).toMatchObject({ provider: 'fez', providerRef: 'ASAC1' });
     expect((await listTimeline(ctx.db, order.order.id)).at(-1)).toMatchObject({ type: 'courier_cancelled' });
     await expect(recordCourierBooking(ctx.db, id, { ...booking, providerRef: 'ASAC2', trackingNumber: 'ASAC2' })).resolves.toMatchObject({ providerRef: 'ASAC2', courierState: 'booked' });
+  });
+
+  /**
+   * `provider_status` HOLDS THE COURIER'S OWN WORD, NEVER OURS — and this is
+   * why. Had the admin cancel written its own `'Cancelled'` into that column,
+   * a courier that genuinely goes on to send `Cancelled` for the same parcel
+   * would read as the status we already have: `recordCourierSnapshot`'s
+   * `changed` CTE compares by `IS DISTINCT FROM`, so the real webhook would
+   * match the `same` branch, skip the timeline row, and leave nobody able to
+   * tell "we called this off" apart from "the courier called this off" on the
+   * parcel's own history. NULL can never equal a courier's raw string, so the
+   * genuine webhook always lands.
+   */
+  it('a courier Cancelled webhook after an admin cancel still changes the row and reaches the timeline', async () => {
+    const { order, id } = await parcel();
+    await recordCourierBooking(ctx.db, id, booking);
+    await recordCourierCancelled(ctx.db, id, { now: NOW + 2, actorId: 'u_admin', message: 'Courier cancelled: changed our mind' });
+
+    const snapshot = await recordCourierSnapshot(ctx.db, id, {
+      rawStatus: 'Cancelled',
+      state: 'cancelled',
+      now: NOW + 3,
+      message: 'Fez Delivery: Cancelled',
+    });
+    expect(snapshot.changed).toBe(true);
+    expect(snapshot.fulfillment.providerStatus).toBe('Cancelled');
+    expect((await listTimeline(ctx.db, order.order.id)).filter((e) => e.type === 'courier_update')).toHaveLength(1);
   });
 
   /**
