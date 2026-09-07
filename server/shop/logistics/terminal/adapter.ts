@@ -1,5 +1,5 @@
 import { TERMINAL_LIVE_URL, environmentOf, type TerminalEnv } from '../config';
-import { splitName, toE164, zipFor } from '../address';
+import { splitName, terminalStateName, toE164, zipFor } from '../address';
 import { LogisticsError, type BookingResult, type LogisticsProvider, type ParcelInput, type QuoteOption, type QuoteResult, type TrackResult, type WebhookEvent } from '../port';
 import { terminalState } from '../status';
 import { terminalItemKg, totalGrams } from '../weights';
@@ -24,7 +24,9 @@ function address(a: { name: string; phone: string | null; email: string | null; 
   if (!phone) throw new LogisticsError('address_incomplete', `Terminal Africa needs a phone number for ${a.name}`, { detail: ['phone'] });
   return {
     first_name: firstName, last_name: lastName, ...(a.email ? { email: a.email } : {}), phone,
-    line1: a.line1, ...(a.line2 ? { line2: a.line2 } : {}), city: a.city, state: a.region || a.city,
+    line1: a.line1, ...(a.line2 ? { line2: a.line2 } : {}), city: a.city,
+    /* Terminal's OWN spelling, which is not ours and not Fez's — see terminalStateName. */
+    state: terminalStateName(a.region || a.city),
     country: a.countryCode.toUpperCase(), zip: zipFor(a.postalCode, a.region), is_residential: residential,
   };
 }

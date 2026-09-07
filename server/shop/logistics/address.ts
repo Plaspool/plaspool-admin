@@ -54,6 +54,30 @@ export function fezStateName(region: string): string {
   return t.replace(/\s+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+/**
+ * The 37 names Terminal accepts for Nigeria, read from its own
+ * `GET /states?country_code=NG` on 2026-09-07 against the sandbox.
+ *
+ * ═══ TERMINAL CALLS THE CAPITAL TERRITORY "Abuja". FEZ CALLS IT "FCT". ═══
+ * The two couriers disagree about the one region whose name is genuinely
+ * contested, and in opposite directions, so neither mapping can be shared.
+ * Sending `FCT` here is not a near miss: Terminal answers
+ * `400 Delivery Address - Invalid state, please select a state from the list
+ * of states` and the whole quote fails, which is how this was found.
+ *
+ * Every other one of the 37 is the ordinary spelling that title-casing already
+ * produces (Akwa Ibom, Cross River, Nasarawa...), so the capital territory is
+ * the only name this has to translate. An unrecognised region is passed
+ * through in title case rather than guessed at, so Terminal's own refusal —
+ * which lists every name it accepts — reaches the operator instead of a
+ * silent substitution.
+ */
+export function terminalStateName(region: string): string {
+  const t = region.trim().replace(/\s+/g, ' ');
+  if (FCT.test(t)) return 'Abuja';
+  return t.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 const CAPITAL_ZIP: Record<string, string> = {
   fct: '900001', abuja: '900001', lagos: '100001', rivers: '500001', kano: '700001', oyo: '200001', kaduna: '800001',
   enugu: '400001', delta: '320001', 'akwa ibom': '520001', anambra: '420001', edo: '300001', ogun: '110001', plateau: '930001',

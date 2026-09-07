@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fezStateName, oneLine, readShippingAddress, splitName, toE164, zipFor } from './address';
+import { fezStateName, oneLine, readShippingAddress, splitName, terminalStateName, toE164, zipFor } from './address';
 
 describe('readShippingAddress', () => {
   it('narrows the jsonb snapshot and tolerates the older shapes', () => {
@@ -24,6 +24,20 @@ describe('helpers', () => {
   ])('toE164(%s) → %s', (raw, want) => expect(toE164(raw)).toBe(want));
   it.each([['Abuja', 'FCT'], ['FCT', 'FCT'], ['Federal Capital Territory', 'FCT'], ['Abuja FCT', 'FCT'], [' lagos ', 'Lagos'], ['Akwa Ibom', 'Akwa Ibom']])(
     'fezStateName(%s) → %s', (raw, want) => expect(fezStateName(raw)).toBe(want));
+  /* The two couriers disagree about the capital territory, in opposite
+     directions. Terminal's sandbox refused `FCT` outright on 2026-09-07 and
+     answered with its own list of 37 names, in which it is `Abuja`. */
+  it.each([
+    ['FCT', 'Abuja'], ['fct', 'Abuja'], ['Abuja', 'Abuja'], ['Federal Capital Territory', 'Abuja'],
+    ['Abuja FCT', 'Abuja'], [' lagos ', 'Lagos'], ['akwa  ibom', 'Akwa Ibom'], ['cross river', 'Cross River'],
+    ['Nowhere', 'Nowhere'],
+  ])('terminalStateName(%s) → %s', (raw, want) => expect(terminalStateName(raw)).toBe(want));
+
+  it('spells the capital territory differently for each courier', () => {
+    expect(fezStateName('Abuja')).toBe('FCT');
+    expect(terminalStateName('FCT')).toBe('Abuja');
+  });
+
   it('falls back to a state capital postcode, then Lagos', () => {
     expect(zipFor('900108', 'FCT')).toBe('900108');
     expect(zipFor(null, 'FCT')).toBe('900001');
