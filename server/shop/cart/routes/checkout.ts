@@ -357,10 +357,14 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
   });
 
   /**
-   * Record the shopper's answer to an ask add-on (spec §6). Open cart only,
-   * CAS like every edit. One 409 code for "not an ask offer right now" AND
-   * "no such add-on": the storefront's remedy is the same silent re-read, and
-   * a 404 gone here would be read by its client as a lost cart.
+   * Record the shopper's answer (spec §6). Open cart only, CAS like every
+   * edit. One 409 code for "nothing to answer right now" AND "no such
+   * add-on": the storefront's remedy is the same silent re-read, and a 404
+   * gone here would be read by its client as a lost cart.
+   *
+   * TAKES AN `opt_out` ANSWER TOO, since 0960 -- 'declined' there means
+   * "take the box out and pay me back", not "no thanks". Only `include`
+   * offers no choice at all, and it is the only mode this refuses.
    */
   routes.put('/checkout/add-ons/:addOnId', async (c) => {
     if (!deps.addOns) return c.json({ error: 'not_implemented' }, 501);
@@ -726,7 +730,7 @@ const DiscountBody = z
   .object({ code: str().trim().min(1).max(64), baseRevision: Base })
   .strict();
 
-/** The add-on choice route's body: an ask answer, and the CAS token every edit takes. */
+/** The add-on choice route's body: the answer, and the CAS token every edit takes. */
 const AddOnChoiceBody = z.object({ choice: z.enum(['accepted', 'declined']), baseRevision: Base }).strict();
 
 const SweepBody = z
