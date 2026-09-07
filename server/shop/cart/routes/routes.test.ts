@@ -642,6 +642,140 @@ describe('a shopper who reaches the payment page and does not pay', () => {
     const res = await client.post('/api/shop/checkout/cancel');
     expect(res.status).toBe(404);
   });
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * THE SAME DEAD END, REACHED FROM THE BASKET INSTEAD OF THE CHECKOUT PAGE.
+   *
+   * Every test above recovers a shopper who is still ON the checkout page. The
+   * one who is not — handed off to Paystack, did not pay, came back to the shop
+   * and opened the cart drawer — had no recovery anywhere:
+   *
+   *   - the three line writes are guarded on `status = 'open'` and answered
+   *     `409 precondition_failed` for ever, naming only the operation refused;
+   *   - `LIVE_STATUSES` keeps handing the frozen basket back to the cookie, so
+   *     it does not clear itself the way a `converted` cart does;
+   *   - `POST /cart` returns the cart that already exists rather than a fresh
+   *     one, so "start again" returns the same dead basket.
+   *
+   * The storefront's two thaw triggers both miss this journey by design:
+   * `pagehide` deliberately skips the Paystack hand-off (thawing there would
+   * unfreeze the cart in the same breath as sending the shopper to pay), and
+   * `pageshow` only fires on a bfcache Back. Reported from production on
+   * 2026-09-07 by a shopper whose basket had been unusable since the previous
+   * day.
+   *
+   * EDITING THE BASKET IS BACKING OUT OF PAYMENT, said in the only vocabulary a
+   * cart drawer has — the same sentence `putAddresses` already makes about an
+   * address, and the reason `makeEditable` was written to be shared rather than
+   * inlined into the checkout routes.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  it('takes an item OUT of a frozen basket, thawing it on the way', async () => {
+    await frozen();
+    const lineId = (await json<CartView>(await client.get('/api/shop/cart'))).lines[0]!.id;
+
+    const res = await client.del(`/api/shop/cart/lines/${lineId}`);
+
+    expect(res.status).toBe(200);
+    const after = await json<CartView>(await client.get('/api/shop/cart'));
+    expect(after.cart?.status).toBe('open');
+    expect(after.lines).toHaveLength(0);
+  });
+
+  it('puts an item INTO a frozen basket, thawing it on the way', async () => {
+    await frozen();
+
+    const res = await client.post('/api/shop/cart/lines', { variantId: scarce.id, qty: 1 });
+
+    expect(res.status).toBe(201);
+    const after = await json<CartView>(await client.get('/api/shop/cart'));
+    expect(after.cart?.status).toBe('open');
+    expect(after.lines).toHaveLength(2);
+  });
+
+  it('chains off the revision the THAW produced, not the one the shopper held', async () => {
+    /*
+     * ═══ THE TEST THE OTHERS WERE HIDING ═══
+     *
+     * The storefront sends `baseRevision: cart.revision` on every line write
+     * (`packages/shop/src/data/cart-api.ts`), read before any of this happens.
+     * The thaw is ITSELF a write, so it bumps the revision and spends that
+     * token — passing the shopper's original value on to `addLine` would answer
+     * a successful recovery with `409 stale_write`, the same dead end one step
+     * further along.
+     *
+     * Every other test in this block omits `baseRevision`, so `makeEditable`
+     * returns `undefined` and the repo falls back to the cart's current
+     * revision — which papers over the chaining entirely. This one sends what
+     * production actually sends. CLAUDE.md §2: put the value the application
+     * really writes into a fixture, or the default stays untested.
+     */
+    const before = await frozen();
+
+    const res = await client.post('/api/shop/cart/lines', {
+      variantId: scarce.id,
+      qty: 1,
+      baseRevision: before.revision,
+    });
+
+    expect(res.status).toBe(201);
+    const after = await json<CartView>(await client.get('/api/shop/cart'));
+    expect(after.cart?.status).toBe('open');
+    expect(after.lines).toHaveLength(2);
+  });
+
+  it('changes a quantity on a frozen basket, thawing it on the way', async () => {
+    await frozen();
+    const lineId = (await json<CartView>(await client.get('/api/shop/cart'))).lines[0]!.id;
+
+    const res = await client.patch(`/api/shop/cart/lines/${lineId}`, { qty: 3 });
+
+    expect(res.status).toBe(200);
+    const after = await json<CartView>(await client.get('/api/shop/cart'));
+    expect(after.cart?.status).toBe('open');
+    expect(after.lines[0]!.qty).toBe(3);
+  });
+
+  it('REFUSES a line write on a checkout that was actually paid', async () => {
+    /*
+     * The money guard is the whole reason this goes through `makeEditable`
+     * rather than flipping the status: a captured intent on a `converting` cart
+     * is a PAID order waiting for the sweep, and emptying its basket would
+     * build the order from lines the customer was never charged for.
+     *
+     * `checkout_paid` rather than `remove_line`, because the two need different
+     * sentences on the screen — one says "your payment went through, here is
+     * your order", the other says nothing a shopper can act on.
+     */
+    const cart = await frozen();
+    const lineId = (await json<CartView>(await client.get('/api/shop/cart'))).lines[0]!.id;
+    await intent(cart.id, 'captured');
+
+    const res = await client.del(`/api/shop/cart/lines/${lineId}`);
+
+    expect(res.status).toBe(409);
+    const body = await json<{ error: string; operation: string }>(res);
+    expect(body.error).toBe('precondition_failed');
+    expect(body.operation).toBe('checkout_paid');
+    const after = await json<CartView>(await client.get('/api/shop/cart'));
+    expect(after.cart?.status).toBe('converting');
+    expect(after.lines).toHaveLength(1);
+  });
+
+  it('CANCELS the pending intent when the basket is what thaws the cart', async () => {
+    // Same obligation as `POST /checkout/cancel`: a live payment page must not
+    // be left pointed at a cart whose total is about to move.
+    const cart = await frozen();
+    const lineId = (await json<CartView>(await client.get('/api/shop/cart'))).lines[0]!.id;
+    await intent(cart.id, 'requires_payment');
+
+    expect((await client.patch(`/api/shop/cart/lines/${lineId}`, { qty: 2 })).status).toBe(200);
+
+    const after = await ctx.db.execute(sql`
+      SELECT status FROM shop_payment_intents WHERE checkout_id = ${cart.id}`);
+    expect(after.rows[0]?.status).toBe('cancelled');
+  });
 });
 
 describe('the maintenance cron route', () => {
@@ -711,8 +845,23 @@ describe('every route maps this subsystem’s errors', () => {
   });
 
   it('turns a repo-level precondition into a 409 rather than a 500', async () => {
-    // The end-to-end version of the same property, through the real stack.
-    await newCart();
+    /*
+     * The end-to-end version of the same property, through the real stack.
+     *
+     * ═══ THE FIXTURE CHANGED, THE PROPERTY DID NOT ═══
+     * This used to freeze the cart and assert that the next line write answered
+     * `409 / add_line`. A frozen cart is no longer a refusal — `routes/cart.ts`
+     * thaws it and the write succeeds, which is the bug that motivated the
+     * change and is asserted four times over in the block above. So the fixture
+     * moved to the one precondition a line write can still legitimately raise:
+     * a cart whose payment was CAPTURED, which must never be reopened.
+     *
+     * It is the same class from the same layer through the same route, so it
+     * still measures what this test is for — `CartPreconditionError` leaving a
+     * repo function and reaching the client as a 409 rather than a 500, by way
+     * of `mapErrors()` and not a middleware.
+     */
+    const view = await newCart();
     await client.post('/api/shop/cart/lines', { variantId: tee.id, qty: 1 });
     await client.request('/api/shop/checkout/addresses', {
       method: 'PUT',
@@ -720,13 +869,18 @@ describe('every route maps this subsystem’s errors', () => {
       body: JSON.stringify({ shipping: UK }),
     });
     await client.post('/api/shop/checkout/freeze');
+    await ctx.db.execute(sql`
+      INSERT INTO shop_payment_intents
+        (id, checkout_id, amount, currency, status, idempotency_key, request_fingerprint,
+         refunded_total, created_at, updated_at, revision)
+      VALUES ('pi_mapping', ${view.cart!.id}, 1000, ${CURRENCY}, 'captured',
+              'key_mapping', 'fp', 0, 1, 1, 1)`);
 
-    // The cart is `converting` now, so a line write is refused, not raced.
     const res = await client.post('/api/shop/cart/lines', { variantId: scarce.id, qty: 1 });
     expect(res.status).toBe(409);
     const body = await json<{ error: string; operation: string; cart: { status: string } }>(res);
     expect(body.error).toBe('precondition_failed');
-    expect(body.operation).toBe('add_line');
+    expect(body.operation).toBe('checkout_paid');
     expect(body.cart.status).toBe('converting');
   });
 
