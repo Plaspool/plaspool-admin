@@ -46,7 +46,7 @@ const PROBES: Record<string, string> = {
   analytics: '/api/shop/admin/stats',
   settings: '/api/shop/admin/shipping-zones',
   /* A SECOND `settings` PREFIX, and it earns its row: the courier surface is a
-   * mount of its own (migration 0960), so only driving it proves its rule is in
+   * mount of its own (migration 0980), so only driving it proves its rule is in
    * the table rather than falling through to the admin catch-all. */
   courier: '/api/shop/admin/logistics/settings',
   marketing: '/api/marketing/discounts',

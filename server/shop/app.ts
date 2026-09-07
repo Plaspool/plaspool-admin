@@ -352,7 +352,7 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
 
   /*
    * DELIVERY COURIERS — `/admin/logistics/*` and `/logistics/provider`
-   * (migration 0960). Which courier is switched on, the address we ship from,
+   * (migration 0980). Which courier is switched on, the address we ship from,
    * the box Terminal quotes against, and the log of every webhook a courier has
    * sent us. `settings` domain on the admin half, `requireAuth()` on the read
    * every packer needs; both guarded per route inside the router.

@@ -1,5 +1,5 @@
 /**
- * Courier writes on a parcel (migration 0960's columns on shop_fulfillments).
+ * Courier writes on a parcel (migration 0980's columns on shop_fulfillments).
  *
  * Every test drives the REAL statements against PGlite, because what these
  * functions are FOR is the guard inside the SQL: booking is refused by the
@@ -293,7 +293,7 @@ describe('courier writes', () => {
     await recordCourierBooking(ctx.db, newer, { ...booking, providerRef: 'REF-NEW', trackingNumber: 'REF-NEW', now: NOW + 200 });
     /* Only a raw statement can produce a booked parcel that has never been
      * synced — every writer in this file stamps provider_synced_at. The column
-     * is nullable in migration 0960 all the same, so NULLS FIRST has to hold. */
+     * is nullable in migration 0980 all the same, so NULLS FIRST has to hold. */
     await ctx.db.execute(sql`UPDATE shop_fulfillments SET provider_synced_at = NULL WHERE id = ${never}`);
 
     expect((await listCourierParcelsToSync(ctx.db, 10)).map((f) => f.id)).toEqual([never, older, newer]);

@@ -55,7 +55,7 @@ const RULES: readonly Rule[] = [
   { prefix: '/api/shop/admin/delivery-areas', domain: 'settings' },
   { prefix: '/api/shop/admin/delivery-settings', domain: 'settings' },
   /* Which courier is switched on, the address we ship from, the box we quote
-   * against (migration 0960) — settings, beside the zones it prices against.
+   * against (migration 0980) — settings, beside the zones it prices against.
    * `GET /api/shop/logistics/provider` is deliberately NOT here: it matches no
    * prefix, so every teammate who packs a parcel can read which courier is on
    * while only this admin half is owner-and-developer work. */

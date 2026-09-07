@@ -9,7 +9,7 @@ import { shopLogisticsSettings, shopLogisticsWebhooks } from './schema';
 /**
  * The declaration and the applied DDL, reconciled against a real database.
  *
- * `schema.test.ts` beside this one already asserts that migration 0960 RAN —
+ * `schema.test.ts` beside this one already asserts that migration 0980 RAN —
  * the columns exist, the singleton is seeded, the CHECKs bite. This file
  * asserts the other half, which nothing else does: that
  * `server/shop/logistics/schema.ts` still DESCRIBES what ran. Neither table is
@@ -73,7 +73,7 @@ async function namesOf(query: ReturnType<typeof sql>): Promise<string[]> {
   return res.rows.map((row) => String(row.name)).sort();
 }
 
-describe('the 0960 declaration and the applied DDL agree', () => {
+describe('the 0980 declaration and the applied DDL agree', () => {
   it.each(TABLES)('%s: every column, type, nullability and default', async (name, table) => {
     const declared = getTableConfig(table).columns;
     const actual = await columnsOf(name);
@@ -85,7 +85,7 @@ describe('the 0960 declaration and the applied DDL agree', () => {
      * first is the one that survives unnoticed. */
     expect(
       actual.map((row) => row.column_name).sort(),
-      `${name}: column sets differ between schema.ts and 0960_logistics.sql`,
+      `${name}: column sets differ between schema.ts and 0980_logistics.sql`,
     ).toEqual(declared.map((column) => column.name).sort());
 
     for (const column of declared) {
@@ -117,7 +117,7 @@ describe('the 0960 declaration and the applied DDL agree', () => {
       .sort();
     /* Filtered to this codebase's `_ck` naming, so a NOT NULL constraint some
      * Postgres version materialises into `pg_constraint` cannot turn an honest
-     * comparison red. Every hand-written CHECK in 0960 is named. */
+     * comparison red. Every hand-written CHECK in 0980 is named. */
     const actual = (
       await namesOf(sql`
         SELECT conname AS name FROM pg_constraint
@@ -164,7 +164,7 @@ describe('the 0960 declaration and the applied DDL agree', () => {
   });
 
   /**
-   * The third table 0960 touched, which Orders owns.
+   * The third table 0980 touched, which Orders owns.
    *
    * Checked here rather than in `server/shop/orders/schema.test.ts` because the
    * migration that added these objects is this subsystem's, and because nothing
@@ -174,7 +174,7 @@ describe('the 0960 declaration and the applied DDL agree', () => {
    * is precisely the drift that goes unnoticed until somebody trusts the
    * declaration to say what is storable.
    */
-  it('shop_fulfillments: the 0960 courier columns, CHECKs and indexes are all declared', async () => {
+  it('shop_fulfillments: the 0980 courier columns, CHECKs and indexes are all declared', async () => {
     const config = getTableConfig(shopFulfillments);
     const declaredColumns = config.columns.map((c) => c.name);
     const applied = await columnsOf('shop_fulfillments');

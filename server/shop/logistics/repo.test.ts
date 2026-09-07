@@ -14,7 +14,7 @@ import {
 import type { Packaging, ShipFrom } from './port';
 
 /**
- * The courier settings singleton and the inbound webhook log (migration 0960),
+ * The courier settings singleton and the inbound webhook log (migration 0980),
  * against a real Postgres.
  *
  * PGlite rather than a fake, for the reasons this repository keeps re-learning:
@@ -23,7 +23,7 @@ import type { Packaging, ShipFrom } from './port';
  * hand-rolled double agrees with right up until it matters.
  *
  * ONE FIXTURE IS THE STORED DEFAULT ON PURPOSE. `DEFAULT_PACKAGING` is the same
- * box migration 0960 seeds into the column, so the read path is exercised
+ * box migration 0980 seeds into the column, so the read path is exercised
  * against the value a fresh deployment actually holds rather than against one
  * invented here — CLAUDE.md §2's empty-document lesson, applied to a row.
  */
@@ -32,7 +32,7 @@ let ctx: TestCtx;
 
 /** The clock every write is given, so `updated_at` is an assertion, not a race. */
 const NOW = 1_800_000_000_000;
-/** What migration 0960's INSERT put in `updated_at`. */
+/** What migration 0980's INSERT put in `updated_at`. */
 const SEEDED_AT = 1_786_600_005_100;
 
 const SHIP_FROM: ShipFrom = {

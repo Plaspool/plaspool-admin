@@ -455,7 +455,7 @@ describe('what the customer would read', () => {
    * THE TRACKING LINK, AND WHY THIS TEST GOES THROUGH THE REPOSITORY AND NOT
    * THROUGH `renderShipment` ALONE.
    *
-   * `tracking_url` is written by the courier (migration 0960) and read by the
+   * `tracking_url` is written by the courier (migration 0980) and read by the
    * ship transition; a unit test on the renderer would pass with `shipTransition`
    * never passing the field along, which is the seam this feature actually adds.
    * So the courier books the parcel, the parcel ships, and the assertion is on

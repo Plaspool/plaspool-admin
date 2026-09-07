@@ -1,4 +1,4 @@
--- DELIVERY COURIERS (range 0960-0979; spec docs/superpowers/specs/2026-09-07-logistics-providers-design.md).
+-- DELIVERY COURIERS (range 0980-0999; spec docs/superpowers/specs/2026-09-07-logistics-providers-design.md).
 --
 -- HAND-WRITTEN IN FULL, as every commerce migration is: drizzle-kit has never
 -- seen these tables and can neither generate nor undo this DDL.

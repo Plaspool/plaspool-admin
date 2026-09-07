@@ -3,7 +3,7 @@ import { bigint, boolean, check, index, integer, jsonb, pgTable, text, uuid } fr
 import { users } from '../../db/schema';
 
 /**
- * The two tables the delivery-courier subsystem owns (migration 0960).
+ * The two tables the delivery-courier subsystem owns (migration 0980).
  *
  * DECLARED IN A FILE THIS SUBSYSTEM OWNS EXCLUSIVELY and re-exported from
  * `server/db/commerce-schema.ts`, following Catalog, Payments, Cart, Reviews and
@@ -13,7 +13,7 @@ import { users } from '../../db/schema';
  *
  * ⚠️  NOT THE SOURCE OF TRUTH FOR THE DDL. `drizzle.config.ts` declares only
  *     `server/db/schema.ts`, so drizzle-kit has never seen either table and
- *     never will. They exist because `migrations/0960_logistics.sql` created
+ *     never will. They exist because `migrations/0980_logistics.sql` created
  *     them, hand-written in full. What this file buys is `$inferSelect`, one
  *     place to read the shape, and a home for the documentation;
  *     `schema-parity.test.ts` reads both shapes back out of `information_schema`

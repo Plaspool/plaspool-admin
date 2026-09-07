@@ -52,7 +52,7 @@ export type FulfillmentStatus = 'pending' | 'shipped' | 'delivered' | 'cancelled
 /** Which courier booked a parcel. NULL on the row = shipped by hand. */
 export type CourierProvider = 'fez' | 'terminal';
 
-/** Our normalised reading of the courier's last raw status (migration 0960). */
+/** Our normalised reading of the courier's last raw status (migration 0980). */
 export type CourierState =
   | 'draft' | 'booked' | 'picked_up' | 'in_transit' | 'delivered'
   | 'returned' | 'cancelled' | 'failed' | 'unknown';
@@ -74,7 +74,7 @@ export interface Fulfillment {
   createdAt: number;
   revision: number;
   lines: FulfillmentLine[];
-  /* ── courier booking (0960); all NULL for a parcel shipped by hand ── */
+  /* ── courier booking (0980); all NULL for a parcel shipped by hand ── */
   provider: CourierProvider | null;
   providerRef: string | null;
   providerStatus: string | null;
@@ -537,7 +537,7 @@ function shipTransition(details?: FulfillmentDetails): FulfillmentTransition {
             carrier: shipping.carrier,
             trackingNumber: shipping.trackingNumber,
             /* The courier's tracking page, when a courier booked this parcel
-             * (migration 0960). NOT part of `FulfillmentDetails`: the ship
+             * (migration 0980). NOT part of `FulfillmentDetails`: the ship
              * dialog cannot type it, only a booking can write it, so it comes
              * off the stored row and never off the request. */
             trackingUrl: shipping.trackingUrl,

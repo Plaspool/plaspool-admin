@@ -36,7 +36,7 @@ import type { Refusal } from './service';
  * the screen for the people doing the packing.
  *
  * THERE IS NO POST AND NO DELETE for the settings. The row is a CHECK-pinned
- * singleton seeded by migration 0960; a route that could create or remove it
+ * singleton seeded by migration 0980; a route that could create or remove it
  * would be a route that can leave the shop with no courier configuration at all.
  */
 export const logisticsRoutes = new Hono<AppEnv>();

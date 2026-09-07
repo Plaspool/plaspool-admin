@@ -14,7 +14,7 @@ import {
 
 /**
  * COURIER WRITES ON A PARCEL — Orders owns shop_fulfillments, so the courier
- * columns migration 0960 added to it are written HERE, by the same rules as
+ * columns migration 0980 added to it are written HERE, by the same rules as
  * every other write in this folder: one guarded statement, the timeline row
  * in the same statement, never a transaction.
  *

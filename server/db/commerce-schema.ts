@@ -284,7 +284,7 @@ export const shopFulfillments = pgTable(
     revision: integer('revision').notNull(),
     /** Its own trigger-maintained pin: a re-applied `ship` is a double shipment. */
     lifecycleGeneration: integer('lifecycle_generation').notNull().default(0),
-    /* ── courier booking (migration 0960); all NULL for a parcel shipped by
+    /* ── courier booking (migration 0980); all NULL for a parcel shipped by
      * hand. The unions mirror server/shop/orders/repo/fulfillments.ts's
      * CourierProvider/CourierState, inlined rather than imported so this
      * schema file takes no dependency on a repo module. ── */
@@ -593,7 +593,7 @@ export * from '../shop/settings/schema';
 
 // ============================================================================
 // DELIVERY COURIERS — owned by `server/shop/logistics/` (migration range
-// 0960–0979). RE-EXPORTED FROM A FILE THAT SUBSYSTEM OWNS EXCLUSIVELY,
+// 0980–0999). RE-EXPORTED FROM A FILE THAT SUBSYSTEM OWNS EXCLUSIVELY,
 // following Catalog, Payments, Cart, Reviews and Delivery settings above and
 // for the reason they record: a block declared here is a block a wholesale
 // overwrite deletes silently, while a lost `export *` is one line `tsc` names

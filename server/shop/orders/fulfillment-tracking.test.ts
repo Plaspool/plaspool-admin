@@ -314,7 +314,7 @@ describe('the customer order lookup carries a SAFE fulfilments projection', () =
      * the leak this pins against is the next field somebody adds to the row —
      * revision, lifecycle internals, order-line ids.
      *
-     * `trackingUrl` joined the list with the courier columns (migration 0960)
+     * `trackingUrl` joined the list with the courier columns (migration 0980)
      * and is the ONLY one of the nine that did. The reference, the waybill,
      * the courier's raw status, what it cost us and the last sync error are
      * all on the row and all stay off this projection — which is the whole

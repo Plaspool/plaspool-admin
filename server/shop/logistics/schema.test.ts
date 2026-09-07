@@ -13,7 +13,7 @@ const columns = async (table: string): Promise<string[]> => {
   return res.rows.map((r) => String(r.column_name));
 };
 
-describe('migration 0960_logistics', () => {
+describe('migration 0980_logistics', () => {
   it('adds the courier columns to shop_fulfillments', async () => {
     const cols = await columns('shop_fulfillments');
     for (const c of ['provider', 'provider_ref', 'provider_status', 'courier_state', 'tracking_url',

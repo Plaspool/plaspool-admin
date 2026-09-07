@@ -163,7 +163,7 @@ export interface ShipmentMailView extends OrderMailView {
   carrier: string | null;
   trackingNumber: string | null;
   /**
-   * The courier's own tracking PAGE (migration 0960), when a courier booked the
+   * The courier's own tracking PAGE (migration 0980), when a courier booked the
    * parcel. Optional rather than required so every existing caller and test
    * compiles unchanged; absent and `null` both render the panel exactly as it
    * was, because a parcel shipped by hand has a number and nowhere to put it.

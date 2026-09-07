@@ -6,7 +6,7 @@ import { LID, newLogisticsId } from './ids';
 import type { Packaging, ProviderId, ShipFrom } from './port';
 
 /**
- * The courier configuration — one row, `id = 'main'` (migration 0960) — and the
+ * The courier configuration — one row, `id = 'main'` (migration 0980) — and the
  * log of every inbound courier webhook.
  *
  * `provider` IS THE FEATURE FLAG. One column holding one of `manual | fez |
@@ -46,7 +46,7 @@ export interface LogisticsSettings {
 }
 
 /**
- * THE SAME BOX MIGRATION 0960 SEEDS INTO THE COLUMN DEFAULT.
+ * THE SAME BOX MIGRATION 0980 SEEDS INTO THE COLUMN DEFAULT.
  *
  * Written down here as well as in the DDL because it is also the FLOOR every
  * read is spread over: a row hand-edited to `{}` — or one written by a future
