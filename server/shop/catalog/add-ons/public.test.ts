@@ -5,7 +5,7 @@ import type { TestCtx } from '../../../test/harness';
 import { httpClient, json } from '../../../test/http';
 import type { HttpClient } from '../../../test/http';
 import { seedProduct, seedVariant } from '../test/catalog-harness';
-import { publishProduct, saveProduct } from '../products';
+import { publishProduct } from '../products';
 import { createAddOn } from './repo';
 
 /**
@@ -40,7 +40,8 @@ async function pla(): Promise<string> {
   const product = await seedProduct(ctx.db, ctx.users.owner, { title: 'PLA Basic', category: 'Filament' });
   await seedVariant(ctx.db, product.id, ctx.users.owner, { sku: 'PLA-BLK', amount: 2_800_000 });
   await seedVariant(ctx.db, product.id, ctx.users.owner, { sku: 'PLA-RED', amount: 3_100_000 });
-  await saveProduct(ctx.db, product.id, { slug: 'pla-basic' }, { actor: ctx.users.owner });
+  /* The slug is derived from the title on the way through, so it is read back
+     off the published row rather than asserted here. */
   const live = await publishProduct(ctx.db, product.id, ctx.users.owner);
   return live.slug!;
 }
