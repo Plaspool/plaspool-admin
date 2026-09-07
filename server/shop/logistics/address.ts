@@ -39,11 +39,19 @@ export function toE164(raw: string): string | null {
 }
 
 const FCT = /^(abuja|fct|federal capital territory|abuja fct|fct abuja|abuja \(fct\))$/i;
-/** Fez wants exactly one of its 37 state names; Abuja is FCT there. */
+/**
+ * Fez wants exactly one of its 37 state names; Abuja is FCT there.
+ *
+ * Title-casing every word is all the normalisation this needs: "akwa ibom"
+ * becomes "Akwa Ibom" from the word-boundary pass alone, and every other state
+ * name Fez accepts is title case too. (There WAS a trailing
+ * `.replace(/\bIbom\b/i, 'Ibom')` here, which could only ever run after the
+ * title-casing had already produced "Ibom" — a no-op that read like a rule.)
+ */
 export function fezStateName(region: string): string {
   const t = region.trim();
   if (FCT.test(t)) return 'FCT';
-  return t.replace(/\s+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).replace(/\bIbom\b/i, 'Ibom');
+  return t.replace(/\s+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 const CAPITAL_ZIP: Record<string, string> = {

@@ -316,7 +316,38 @@ export const shopFulfillments = pgTable(
       sql`${t.courierState} IS NULL OR ${t.courierState} IN ('draft', 'booked', 'picked_up',
         'in_transit', 'delivered', 'returned', 'cancelled', 'failed', 'unknown')`,
     ),
+    /* A waybill with no courier behind it names nothing anybody could track. */
+    check(
+      'shop_fulfillments_provider_ref_ck',
+      sql`${t.provider} IS NOT NULL OR ${t.providerRef} IS NULL`,
+    ),
+    /* What a courier charged us cannot be negative. */
+    check(
+      'shop_fulfillments_provider_cost_ck',
+      sql`${t.providerCostMinor} IS NULL OR ${t.providerCostMinor} >= 0`,
+    ),
     index('shop_fulfillments_order_idx').on(t.orderId, t.createdAt),
+    /**
+     * PARTIAL UNIQUE, the same shape as `shop_refunds.provider_refund_id` and
+     * for the same reason: a plain UNIQUE cannot hold the many rows sharing
+     * "shipped by hand", and Postgres permits many NULLs. What it buys is that
+     * an inbound webhook naming a waybill resolves to EXACTLY ONE parcel —
+     * `server/shop/orders/repo/courier.ts` classifies its 23505 into a 409
+     * rather than letting a retried booking answer 500.
+     */
+    uniqueIndex('shop_fulfillments_provider_ref_uq')
+      .on(t.provider, t.providerRef)
+      .where(sql`${t.providerRef} IS NOT NULL`),
+    /**
+     * The sweep's queue, and partial so it stays the size of the live bookings
+     * rather than of the whole shipping history. `NULLS FIRST` is not the ASC
+     * default and is load-bearing: a parcel booked but never yet polled must
+     * sort ahead of one polled an hour ago, or a slice-per-pass sweep would
+     * never reach it (`listCourierParcelsToSync`).
+     */
+    index('shop_fulfillments_courier_sync_idx')
+      .on(t.providerSyncedAt.nullsFirst())
+      .where(sql`${t.providerRef} IS NOT NULL AND ${t.status} IN ('pending', 'shipped')`),
   ],
 );
 
@@ -559,3 +590,21 @@ export * from '../shop/reviews/schema';
 // against a migrated database by `server/shop/settings/schema.test.ts`.
 // ============================================================================
 export * from '../shop/settings/schema';
+
+// ============================================================================
+// DELIVERY COURIERS — owned by `server/shop/logistics/` (migration range
+// 0960–0979). RE-EXPORTED FROM A FILE THAT SUBSYSTEM OWNS EXCLUSIVELY,
+// following Catalog, Payments, Cart, Reviews and Delivery settings above and
+// for the reason they record: a block declared here is a block a wholesale
+// overwrite deletes silently, while a lost `export *` is one line `tsc` names
+// immediately.
+//
+// `shop_logistics_settings` — the CHECK-pinned singleton naming the one courier
+// that is switched on, the ship-from address and the packaging Terminal quotes
+// against — and `shop_logistics_webhooks`, the inbound delivery log. The
+// courier columns those two write back to live on `shop_fulfillments` above,
+// which Orders owns. §4's purpose is preserved: both tables are reachable from
+// this one import path, and their applied shapes are asserted against a
+// migrated database by `server/shop/logistics/schema-parity.test.ts`.
+// ============================================================================
+export * from '../shop/logistics/schema';

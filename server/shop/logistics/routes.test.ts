@@ -373,6 +373,58 @@ describe('POST webhooks/register', () => {
     expect(await json(res)).toMatchObject({ error: 'provider_error' });
   });
 
+  /**
+   * A REFUSAL AND AN OUTAGE ARE NOT THE SAME ANSWER, and 502 says the second.
+   *
+   * `provider_rejected` is the courier reading our request and declining it —
+   * an unreachable callback URL, an account not enabled for webhooks. Retrying
+   * that produces the identical refusal forever, and the operator needs to read
+   * WHAT the courier said, not "the other end failed". 422 is the code this
+   * project already spends on exactly that (global constraints' error table),
+   * and it is the code the booking routes use for the same class of answer.
+   */
+  it('reports a courier that REFUSED the URL as 422 provider_rejected', async () => {
+    registerLogisticsDeps({
+      providers: {
+        fez: fakeProvider('fez', () => {
+          throw new LogisticsError('provider_rejected', 'Fez will not call a .test host');
+        }),
+        terminal: null,
+      },
+    });
+    await http.signIn({ email: 'owner@test.local' });
+    const res = await http.post(REGISTER, { provider: 'fez' });
+    expect(res.status).toBe(422);
+    /* The courier's own words reach the screen. A generic message here is a
+     * support ticket that starts with "it just says provider error". */
+    expect(await json(res)).toMatchObject({
+      error: 'provider_rejected',
+      message: 'Fez will not call a .test host',
+    });
+  });
+
+  /**
+   * The adapter is registered but its OWN credentials are gone — a different
+   * failure from `providerFor` answering null, arriving later and through the
+   * throw rather than the guard. Same cause, so the same 409 and the same body:
+   * an operator must not have to learn that two spellings of "this deployment
+   * has no Fez credentials" mean one thing.
+   */
+  it('reports missing credentials as 409 provider_not_configured, not a 502', async () => {
+    registerLogisticsDeps({
+      providers: {
+        fez: fakeProvider('fez', () => {
+          throw new LogisticsError('not_configured', 'FEZ_SECRET_KEY is not set');
+        }),
+        terminal: null,
+      },
+    });
+    await http.signIn({ email: 'owner@test.local' });
+    const res = await http.post(REGISTER, { provider: 'fez' });
+    expect(res.status).toBe(409);
+    expect(await json(res)).toMatchObject({ error: 'provider_not_configured', provider: 'fez' });
+  });
+
   it('refuses a body naming manual, which is not a courier at all', async () => {
     await http.signIn({ email: 'owner@test.local' });
     expect((await http.post(REGISTER, { provider: 'manual' })).status).toBe(400);

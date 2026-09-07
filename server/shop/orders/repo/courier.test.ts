@@ -155,6 +155,35 @@ describe('courier writes', () => {
     expect(updates).toHaveLength(1);
   });
 
+  /**
+   * The other half of "a replay is a no-op": it is a no-op about the TIMELINE
+   * and the REVISION, not about the row. A courier that only produces the
+   * waybill on its third poll is ordinary, and a snapshot that refused to learn
+   * it because the status word had not moved would leave the parcel without the
+   * label an operator prints.
+   *
+   * This is the case that walks the second of the two UPDATEs end to end — its
+   * SET list carries everything except the status and the revision.
+   */
+  it('a replay that finally carries the label learns it, with no timeline row and no revision bump', async () => {
+    const { order, id } = await parcel();
+    await recordCourierBooking(ctx.db, id, { ...booking, labelUrl: null });
+    const first = await recordCourierSnapshot(ctx.db, id, { rawStatus: 'Dispatched', state: 'in_transit', now: NOW + 5, message: 'Fez Delivery: Dispatched' });
+    expect(first.changed).toBe(true);
+
+    const late = await recordCourierSnapshot(ctx.db, id, {
+      rawStatus: 'Dispatched', state: 'in_transit', labelUrl: 'https://fez.test/label.pdf',
+      carrier: 'GIG Logistics', trackingNumber: 'GIG-9', now: NOW + 6, message: 'Fez Delivery: Dispatched',
+    });
+    expect(late.changed).toBe(false);
+    expect(late.fulfillment).toMatchObject({
+      labelUrl: 'https://fez.test/label.pdf', carrier: 'GIG Logistics', trackingNumber: 'GIG-9',
+      providerStatus: 'Dispatched', courierState: 'in_transit', providerSyncedAt: NOW + 6, providerLastError: null,
+    });
+    expect(late.fulfillment.revision).toBe(first.fulfillment.revision);
+    expect((await listTimeline(ctx.db, order.order.id)).filter((e) => e.type === 'courier_update')).toHaveLength(1);
+  });
+
   it('cancelling the courier voids its tracking, keeps the parcel pending, and lets it be booked again', async () => {
     const { order, id } = await parcel();
     await recordCourierBooking(ctx.db, id, { ...booking, trackingUrl: 'https://t.test/1' });

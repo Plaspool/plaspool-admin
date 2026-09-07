@@ -174,14 +174,43 @@ export async function recordCourierBooking(
 
 /**
  * Apply what the courier says now. The timeline row is written ONLY when the
- * raw status actually changed (the CTE reads the previous value), so a replayed
- * webhook or an idle poll adds nothing. Links are COALESCEd: a courier that
- * stops sending a URL it once sent does not erase it.
+ * raw status actually changed, so a replayed webhook or an idle poll adds
+ * nothing. Links are COALESCEd: a courier that stops sending a URL it once sent
+ * does not erase it.
  *
  * `revision` moves under the SAME condition as the timeline row — an idle poll
  * or a redelivered webhook that reports the status we already have must not
  * bump it, or it would invalidate a concurrently open admin view (and the
  * ship/deliver CAS in `fulfillments.ts`) for a change that never happened.
+ *
+ * ── TWO UPDATES, AND THAT IS THE WHOLE POINT ──────────────────────────────
+ *
+ * "Did this change anything" is decided by the UPDATE's own WHERE, never by a
+ * value read beside it. The obvious shape — a `prev` CTE reading
+ * `provider_status`, then one UPDATE that compares against it — is wrong under
+ * concurrency, and wrong in exactly the case this subsystem lives in: the
+ * sweep and a webhook applying the SAME status at the same moment.
+ *
+ * Every sub-statement in one statement shares one snapshot, so a `prev` read is
+ * a value from before either writer started. Under READ COMMITTED an UPDATE
+ * that meets a row another transaction has just committed does NOT use that
+ * snapshot: it blocks on the row lock and then re-evaluates its WHERE against
+ * the NEWEST row version (EvalPlanQual). So the comparison in a WHERE is
+ * re-judged against what is actually there, while a comparison against `prev`
+ * is not — and both writers would read the old status, both would answer
+ * `changed = true`, and the parcel would grow two identical `courier_update`
+ * rows on its timeline for one thing that happened once.
+ *
+ * Hence: one UPDATE whose WHERE carries the "is this new?" test, and a second
+ * that does the rest of the work when it was not. The two are mutually
+ * exclusive by `NOT EXISTS (SELECT 1 FROM changed)` — which also orders them,
+ * since a data-modifying CTE another CTE reads runs to completion first —
+ * because Postgres will not update one row twice in one statement.
+ *
+ * The second UPDATE deliberately does NOT re-test `provider_status`. Testing it
+ * would leave the raced case matching neither branch (the first is refused by
+ * the newest version, the second by the snapshot's), and a parcel that plainly
+ * exists would come back as a 404.
  *
  * NO REBOOKABLE GUARD, deliberately — a snapshot is the courier telling us what
  * happened, not us asking for something. The only condition is that a booking
@@ -202,24 +231,37 @@ export async function recordCourierSnapshot(
     message: string;
   },
 ): Promise<{ fulfillment: Fulfillment; changed: boolean }> {
-  const res = await db.execute(sql`
-    WITH prev AS (SELECT id, provider_status FROM shop_fulfillments WHERE id = ${id}),
-    ful AS (
-      UPDATE shop_fulfillments f SET
-        provider_status = ${a.rawStatus}, courier_state = ${a.state}, provider_synced_at = ${a.now}, provider_last_error = NULL,
+  const links = sql`
         tracking_number = COALESCE(${a.trackingNumber ?? null}::text, f.tracking_number),
         tracking_url = COALESCE(${a.trackingUrl ?? null}::text, f.tracking_url),
         label_url = COALESCE(${a.labelUrl ?? null}::text, f.label_url),
-        carrier = COALESCE(${a.carrier ?? null}::text, f.carrier),
-        revision = f.revision + CASE WHEN f.provider_status IS DISTINCT FROM ${a.rawStatus}::text THEN 1 ELSE 0 END
-       FROM prev WHERE f.id = prev.id AND f.provider_ref IS NOT NULL
-      RETURNING ${sql.raw(returning('f'))}, (prev.provider_status IS DISTINCT FROM ${a.rawStatus}::text) AS changed),
+        carrier = COALESCE(${a.carrier ?? null}::text, f.carrier)`;
+  const res = await db.execute(sql`
+    WITH changed AS (
+      UPDATE shop_fulfillments f SET
+        provider_status = ${a.rawStatus}, courier_state = ${a.state}, provider_synced_at = ${a.now}, provider_last_error = NULL,
+        ${links}, revision = f.revision + 1
+       WHERE f.id = ${id} AND f.provider_ref IS NOT NULL
+         AND f.provider_status IS DISTINCT FROM ${a.rawStatus}::text
+      RETURNING ${sql.raw(returning('f'))}),
+    same AS (
+      UPDATE shop_fulfillments f SET
+        courier_state = ${a.state}, provider_synced_at = ${a.now}, provider_last_error = NULL,
+        ${links}
+       WHERE f.id = ${id} AND f.provider_ref IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM changed)
+      RETURNING ${sql.raw(returning('f'))}),
     timeline AS (
       INSERT INTO shop_order_events (id, order_id, type, message, occurred_at, actor_id)
-      SELECT ${newId(ID.timeline)}, ful.order_id, 'courier_update', ${a.message}, ${a.now}, NULL::text
-        FROM ful WHERE ful.changed RETURNING 1)
-    SELECT ${sql.raw(returning('ful'))}, ful.changed, ${LINES} FROM ful`);
+      SELECT ${newId(ID.timeline)}, changed.order_id, 'courier_update', ${a.message}, ${a.now}, NULL::text
+        FROM changed RETURNING 1)
+    SELECT ${sql.raw(returning('ful'))}, true AS changed, ${LINES} FROM changed ful
+    UNION ALL
+    SELECT ${sql.raw(returning('ful'))}, false AS changed, ${LINES} FROM same ful`);
   const row = res.rows[0];
+  /* Neither branch matched, which is only ever "no such parcel" or "that parcel
+     has no courier on it" — the two WHEREs differ solely in the status test,
+     and the second has none. */
   if (!row) throw new NotFoundError(id);
   return { fulfillment: rowToFulfillment(row), changed: row.changed === true };
 }

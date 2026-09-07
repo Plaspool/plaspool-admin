@@ -251,10 +251,31 @@ logisticsRoutes.post('/admin/logistics/webhooks/register', requireAdmin(), async
   try {
     await adapter.registerWebhook(`${webhookBase(c)}${webhookPath(provider)}`);
   } catch (err) {
-    /* A courier refusing is not this application failing. 502 says "the other
-       end said no", which is a thing an operator can retry; a 500 would be
-       retried five times by the client for an answer that will not change. */
+    /*
+     * A courier refusing is not this application failing, and the three ways it
+     * can refuse are not one answer either — the operator's next move differs
+     * for each, and a single 502 tells them to press the button again for all
+     * three (global constraints' error table; 500 is worse still, because the
+     * client retries it five times for an answer that cannot change).
+     *
+     *   not_configured   → 409. This deployment has no credentials for that
+     *                      courier. The same body the guard above answers, so
+     *                      one cause reads as one thing however it surfaces:
+     *                      the fix is an env var, not a retry.
+     *   provider_rejected → 422. The courier read the request and declined it.
+     *                      Retrying produces the identical refusal, so their
+     *                      words go to the screen and the operator changes
+     *                      something — usually the URL or the account.
+     *   anything else     → 502. The other end was unreachable, timed out or
+     *                      answered nonsense. THIS is the retryable one.
+     */
     if (err instanceof LogisticsError) {
+      if (err.code === 'not_configured') {
+        return c.json({ error: 'provider_not_configured', provider }, 409);
+      }
+      if (err.code === 'provider_rejected') {
+        return c.json({ error: 'provider_rejected', message: err.message }, 422);
+      }
       return c.json({ error: 'provider_error', message: err.message }, 502);
     }
     throw err;
