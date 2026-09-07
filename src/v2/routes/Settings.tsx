@@ -42,6 +42,12 @@ const DOORS: SettingsDoor[] = [
     body: 'What each part of the country pays for delivery, and how much tax is added.',
   },
   {
+    to: '/settings/delivery-courier',
+    icon: <Truck />,
+    title: 'Delivery courier',
+    body: 'Who carries parcels to customers — by hand, Fez Delivery or Terminal Africa.',
+  },
+  {
     to: '/settings/team',
     icon: <Users />,
     title: 'Team',

@@ -35,6 +35,7 @@ import SpoolsRates from './routes/SpoolsRates';
 import Marketing from './routes/Marketing';
 import Settings from './routes/Settings';
 import SettingsShipping from './routes/SettingsShipping';
+import SettingsDeliveryCourier from './routes/SettingsDeliveryCourier';
 import SettingsTeam from './routes/SettingsTeam';
 import SettingsWriting from './routes/SettingsWriting';
 import EmailBroadcasts from './routes/EmailBroadcasts';
@@ -200,6 +201,7 @@ const router = createHashRouter([
       /* ── settings ────────────────────────────────────────────────────── */
       { path: '/settings', element: <Settings /> },
       { path: '/settings/shipping', element: <SettingsShipping /> },
+      { path: '/settings/delivery-courier', element: <SettingsDeliveryCourier /> },
       { path: '/settings/team', element: <SettingsTeam /> },
       { path: '/settings/writing', element: <SettingsWriting /> },
 
