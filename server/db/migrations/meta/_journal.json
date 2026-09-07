@@ -407,6 +407,13 @@
                         "when":  1786600005000,
                         "tag":  "0940_add_ons",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  58,
+                        "version":  "7",
+                        "when":  1786600005100,
+                        "tag":  "0960_logistics",
+                        "breakpoints":  true
                     }
                 ]
 }

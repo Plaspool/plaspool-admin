@@ -59,17 +59,10 @@ export type OrderStatus =
   | 'partially_refunded';
 
 export type OrderTimelineType =
-  | 'placed'
-  | 'payment_authorized'
-  | 'payment_failed'
-  | 'paid'
-  | 'fulfillment_created'
-  | 'shipped'
-  | 'delivered'
-  | 'fulfillment_cancelled'
-  | 'cancelled'
-  | 'refunded'
-  | 'refund_failed';
+  | 'placed' | 'payment_authorized' | 'payment_failed' | 'paid'
+  | 'fulfillment_created' | 'shipped' | 'delivered' | 'fulfillment_cancelled'
+  | 'cancelled' | 'refunded' | 'refund_failed'
+  | 'courier_booked' | 'courier_update' | 'courier_cancelled';
 
 export interface Order {
   id: string;
