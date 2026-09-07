@@ -67,6 +67,10 @@ export const COURIER_COPY = {
     waybill: 'Waybill',
     refresh: 'Refresh status',
     cancelCourier: 'Cancel courier',
+    /* The two toasts the parcel row raises, in the same shape as its existing
+       ones ("Parcel 1 shipped", "Parcel 1 tracking saved"). */
+    refreshed: (index: number) => `Parcel ${index} status refreshed`,
+    courierCancelled: (index: number) => `Parcel ${index} courier cancelled`,
     cost: (amount: string) => `Cost ${amount}`,
     lastError: (msg: string) => `Courier problem: ${msg}`,
   },
