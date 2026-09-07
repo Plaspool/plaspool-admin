@@ -251,7 +251,7 @@ const ORDER_SHIPMENT: SystemTemplate = {
   key: 'order.shipment',
   name: 'Order shipped',
   description: 'Sent per parcel when a fulfilment ships. A three-parcel order sends three.',
-  variables: [...ORDER_VARS, '{{carrier}}', '{{tracking_number}}'],
+  variables: [...ORDER_VARS, '{{carrier}}', '{{tracking_number}}', '{{tracking_url}}'],
   subject: 'Order {{order_number}} has shipped',
   html: shell({
     title: 'Order {{order_number}} has shipped',

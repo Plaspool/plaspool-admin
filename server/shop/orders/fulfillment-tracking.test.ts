@@ -303,6 +303,7 @@ describe('the customer order lookup carries a SAFE fulfilments projection', () =
     status: string;
     carrier: string | null;
     trackingNumber: string | null;
+    trackingUrl: string | null;
     shippedAt: number | null;
     deliveredAt: number | null;
     createdAt: number;
@@ -311,7 +312,14 @@ describe('the customer order lookup carries a SAFE fulfilments projection', () =
   function expectSafeParcel(parcel: CustomerParcel): void {
     /* AN EXACT KEY SET, not a contains: the projection is an allow-list, and
      * the leak this pins against is the next field somebody adds to the row —
-     * revision, lifecycle internals, order-line ids. */
+     * revision, lifecycle internals, order-line ids.
+     *
+     * `trackingUrl` joined the list with the courier columns (migration 0960)
+     * and is the ONLY one of the nine that did. The reference, the waybill,
+     * the courier's raw status, what it cost us and the last sync error are
+     * all on the row and all stay off this projection — which is the whole
+     * argument for pinning the key set exactly rather than spreading the row
+     * and deleting what looks private today. */
     expect(Object.keys(parcel).sort()).toEqual([
       'carrier',
       'createdAt',
@@ -320,11 +328,15 @@ describe('the customer order lookup carries a SAFE fulfilments projection', () =
       'shippedAt',
       'status',
       'trackingNumber',
+      'trackingUrl',
     ]);
     expect(parcel).toMatchObject({
       status: 'shipped',
       carrier: 'GIG Logistics',
       trackingNumber: 'GIG-123',
+      /* Shipped by hand, so there is no courier page to link — the field is
+       * present and null rather than absent, so a storefront reads one shape. */
+      trackingUrl: null,
       shippedAt: NOW,
       deliveredAt: null,
     });

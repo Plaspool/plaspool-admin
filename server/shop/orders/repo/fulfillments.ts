@@ -536,6 +536,11 @@ function shipTransition(details?: FulfillmentDetails): FulfillmentTransition {
             lines: parcelLines(order, fulfillment),
             carrier: shipping.carrier,
             trackingNumber: shipping.trackingNumber,
+            /* The courier's tracking page, when a courier booked this parcel
+             * (migration 0960). NOT part of `FulfillmentDetails`: the ship
+             * dialog cannot type it, only a booking can write it, so it comes
+             * off the stored row and never off the request. */
+            trackingUrl: shipping.trackingUrl,
           },
           link,
           templates,

@@ -21,6 +21,7 @@ import { CHECKOUT, T0, checkoutCompleted, insertEvents, paymentCaptured } from '
 import { sweepCommerceEvents, type ConsumerDeps } from './repo/consumer';
 import { markOrderPaid, readOrder, readOrderByCheckout } from './repo/orders';
 import { createFulfillment, shipFulfillment } from './repo/fulfillments';
+import { recordCourierBooking } from './repo/courier';
 import { EMAIL_ATTEMPT_LIMIT, listIntents, sweepEmailIntents } from './repo/emails';
 import {
   LoggingMailer,
@@ -445,6 +446,55 @@ describe('what the customer would read', () => {
     expect(shipment!.body).toContain('Logo T-Shirt');
     // The mug is still in the warehouse. Telling the customer otherwise is a support call.
     expect(shipment!.body).not.toContain('Enamel Mug');
+    /* A parcel shipped by hand has no tracking PAGE, only a number — the panel
+     * is exactly the two rows it has always been. */
+    expect(shipment!.body).not.toContain('Track:');
+  });
+
+  /**
+   * THE TRACKING LINK, AND WHY THIS TEST GOES THROUGH THE REPOSITORY AND NOT
+   * THROUGH `renderShipment` ALONE.
+   *
+   * `tracking_url` is written by the courier (migration 0960) and read by the
+   * ship transition; a unit test on the renderer would pass with `shipTransition`
+   * never passing the field along, which is the seam this feature actually adds.
+   * So the courier books the parcel, the parcel ships, and the assertion is on
+   * the message a customer would receive.
+   */
+  it('a courier-booked parcel puts the tracking PAGE in the shipment mail', async () => {
+    const read = await paidOrderWithLink();
+    const fulfillment = await createFulfillment(
+      ctx.db,
+      read.order.id,
+      { lines: [{ orderLineId: read.lines[1].id, qty: 1 }], carrier: null, trackingNumber: null },
+      ACTOR,
+      NOW,
+    );
+    await recordCourierBooking(ctx.db, fulfillment.id, {
+      provider: 'fez',
+      providerRef: 'ASAC9',
+      carrier: 'Fez Delivery',
+      trackingNumber: 'ASAC9',
+      trackingUrl: 'https://t.test/x',
+      labelUrl: null,
+      costMinor: 645000,
+      rawStatus: 'Pending Pick-Up',
+      state: 'booked',
+      now: NOW,
+      actorId: ACTOR,
+      message: 'Booked with Fez Delivery',
+    });
+    await shipFulfillment(ctx.db, fulfillment.id, NOW, null, ACTOR);
+
+    const mailer = new LoggingMailer();
+    await sweepEmailIntents(ctx.db, mailer, NOW + 100);
+    const shipment = mailer.sent.find((m) => m.subject.includes('has shipped'));
+    expect(shipment).toBeDefined();
+    expect(shipment!.body).toContain('Track: https://t.test/x');
+    // The two rows that were always there are untouched by the third.
+    expect(shipment!.body).toContain('Fez Delivery');
+    expect(shipment!.body).toContain('ASAC9');
+    expect(shipment!.html).toContain('https://t.test/x');
   });
 });
 

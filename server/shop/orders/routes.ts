@@ -317,6 +317,11 @@ function customerFulfillmentView(f: Fulfillment) {
       status: f.status,
       carrier: f.carrier,
       trackingNumber: f.trackingNumber,
+      /* The courier's tracking page (migration 0960) — the one courier column
+       * on the customer's side of the allow-list, because it is the whole
+       * point of the booking from where they are standing. The reference, the
+       * waybill, what the courier cost us and the last error stay private. */
+      trackingUrl: f.trackingUrl,
       shippedAt: f.shippedAt,
       deliveredAt: f.deliveredAt,
       createdAt: f.createdAt,

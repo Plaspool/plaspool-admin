@@ -162,6 +162,13 @@ export interface OrderMailView {
 export interface ShipmentMailView extends OrderMailView {
   carrier: string | null;
   trackingNumber: string | null;
+  /**
+   * The courier's own tracking PAGE (migration 0960), when a courier booked the
+   * parcel. Optional rather than required so every existing caller and test
+   * compiles unchanged; absent and `null` both render the panel exactly as it
+   * was, because a parcel shipped by hand has a number and nowhere to put it.
+   */
+  trackingUrl?: string | null;
 }
 
 export interface RefundMailView extends OrderMailView {
@@ -474,6 +481,7 @@ export function renderShipment(
   const values = baseValues(view, link, 'shipment');
   values.scalars.carrier = view.carrier ?? '';
   values.scalars.tracking_number = view.trackingNumber ?? '';
+  values.scalars.tracking_url = view.trackingUrl ?? '';
 
   /*
    * THE PANEL IS OMITTED ENTIRELY WHEN THERE IS NO TRACKING, rather than rendered
@@ -487,6 +495,16 @@ export function renderShipment(
     ...(view.trackingNumber === null
       ? []
       : [{ label: 'Tracking', value: view.trackingNumber, mono: true }]),
+    /*
+     * A THIRD ROW AND NOT A LINKED TRACKING NUMBER, on purpose. The number is
+     * what a customer types into a courier's own search box and quotes on the
+     * phone; the page is where they click. Wrapping the number in an anchor
+     * would give one row two jobs and lose the plain number in the text part,
+     * which is the part a customer copies. Only a courier booking has a page —
+     * `tracking_url` is NULL for every parcel shipped by hand — so the row
+     * simply is not there in that case.
+     */
+    ...(view.trackingUrl ? [{ label: 'Track', value: view.trackingUrl, mono: true }] : []),
   ];
   values.blocks.tracking_panel =
     rows.length === 0
