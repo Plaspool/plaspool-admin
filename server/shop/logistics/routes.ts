@@ -1,17 +1,21 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
-import { readJson, str } from '../../middleware/errors';
+import { pathParam, readJson, readJsonOrEmpty, str } from '../../middleware/errors';
 import { requireAdmin, requireAuth } from '../../middleware/session';
 import { currentDb, currentUser } from '../../app-env';
 import type { AppEnv } from '../../app-env';
 import { adminOrigin } from '../../admin-url';
+import { NotFoundError } from '../../repo/errors';
+import { loadTemplates } from '../../email/system-templates';
 import { FEZ_LIVE_URL, TERMINAL_LIVE_URL, environmentOf, logisticsEnv } from './config';
 import { resolveLogisticsDeps } from './deps';
 import { LogisticsError, PROVIDER_LABEL } from './port';
 import type { ProviderId, ShipFrom } from './port';
 import { getLogisticsSettings, listRecentWebhooks, patchLogisticsSettings } from './repo';
 import type { LogisticsSettings } from './repo';
+import { bookParcel, cancelParcelCourier, quoteParcel, refreshParcel } from './service';
+import type { Refusal } from './service';
 
 /**
  * The delivery-courier surface — `/admin/logistics/*` and one read for everyone
@@ -303,4 +307,157 @@ logisticsRoutes.post('/admin/logistics/webhooks/register', requireAdmin(), async
     throw err;
   }
   return c.json({ ok: true });
+});
+
+/*
+ * ═══════════════════════════════════════════════════════════════════════════
+ * BOOKING A COURIER FOR A PARCEL — `/admin/fulfillments/:id/courier/*`.
+ *
+ * A DIFFERENT PREFIX AND THEREFORE A DIFFERENT DOMAIN, AND THAT IS THE WHOLE
+ * REASON THEY LIVE HERE RATHER THAN UNDER `/admin/logistics/`.
+ * `server/middleware/permissions.ts` maps `/api/shop/admin/fulfillments` to
+ * `orders`, so the teammate who packs the box books the courier for it —
+ * exactly as they already press "ship". Under the settings prefix these would
+ * be `settings`, and the people doing the packing would get a 403 on the one
+ * button their job is made of.
+ *
+ * MOUNTED IN THIS ROUTER RATHER THAN IN ORDERS' because everything they
+ * decide is this subsystem's: which courier is switched on, what a parcel
+ * weighs, what a quote costs. Orders owns `shop_fulfillments` and keeps
+ * owning it — every write below goes through `orders/repo/courier.ts`.
+ *
+ * Hono resolves two routers claiming one path by registration order, and
+ * `shopApp()` mounts `orders` BEFORE this router. Nothing collides: Orders
+ * owns `/admin/fulfillments/:id` itself, these four are two segments deeper.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+
+/**
+ * A refusal about STATE, which is an answer rather than a failure.
+ *
+ * 409 FOR THREE OF THEM AND 422 FOR THE FOURTH, per the plan's error table:
+ * the first three describe a conflict with how things currently are ("the shop
+ * ships by hand", "somebody booked this already"), and the client's move is to
+ * re-read. `weights_missing` is about the CONTENT of what was asked for — the
+ * dialog turns it into an inline "Set weights" step — so it carries the lines
+ * to fix and the code that means unprocessable.
+ */
+function refusal(c: Context<AppEnv>, r: Refusal): Response {
+  if (r.refused === 'weights_missing') {
+    return c.json({ error: 'weights_missing', lines: r.lines }, 422);
+  }
+  return c.json({ error: r.refused }, 409);
+}
+
+/**
+ * How a courier's own failure reaches the screen — the three answers
+ * `webhooks/register` above gives, for the same reasons, plus the one only a
+ * parcel can produce: an order whose delivery address is unusable.
+ *
+ * ANYTHING THAT IS NOT A `LogisticsError` IS RE-THROWN UNTOUCHED, which is
+ * what lets the handlers below wrap their whole body in one `try`: a
+ * `NotFoundError` raised for an unknown parcel, a `StaleWriteError` from a
+ * transition, a genuine bug — all of them land on the application's own error
+ * table rather than being flattened into a courier problem.
+ */
+function providerFailure(c: Context<AppEnv>, err: unknown): Response {
+  if (!(err instanceof LogisticsError)) throw err;
+  switch (err.code) {
+    case 'not_configured':
+      return c.json({ error: 'provider_not_configured', message: err.message }, 409);
+    case 'provider_rejected':
+      return c.json({ error: 'provider_rejected', message: err.message }, 422);
+    /* The one refusal that names the boxes to go and fill in — an order whose
+       delivery address a courier cannot collect at. */
+    case 'address_incomplete':
+      return c.json(
+        { error: 'address_incomplete', message: err.message, missing: err.detail ?? [] },
+        422,
+      );
+    default:
+      return c.json({ error: 'provider_error', message: err.message }, 502);
+  }
+}
+
+/** No body at all is the ordinary call; an unknown key is still a 400. */
+const Empty = z.object({}).strict();
+const BookBody = z
+  .object({ optionId: str().min(1).max(200), quoteRef: str().max(200).nullable().optional() })
+  .strict();
+const CancelBody = z.object({ reason: str().max(255).optional() }).strict();
+
+logisticsRoutes.post('/admin/fulfillments/:id/courier/quote', auth, async (c) => {
+  await readJsonOrEmpty(c, Empty);
+  const id = pathParam(c, 'id');
+  const deps = resolveLogisticsDeps();
+  try {
+    const out = await quoteParcel(currentDb(c), deps, id, deps.now());
+    if (out === null) throw new NotFoundError(id);
+    if ('refused' in out) return refusal(c, out);
+    return c.json(out);
+  } catch (err) {
+    return providerFailure(c, err);
+  }
+});
+
+logisticsRoutes.post('/admin/fulfillments/:id/courier/book', auth, async (c) => {
+  const body = await readJson(c, BookBody);
+  const id = pathParam(c, 'id');
+  const deps = resolveLogisticsDeps();
+  try {
+    const out = await bookParcel(currentDb(c), deps, id, {
+      optionId: body.optionId,
+      quoteRef: body.quoteRef ?? null,
+      actorId: currentUser(c).id,
+      now: deps.now(),
+    });
+    if (out === null) throw new NotFoundError(id);
+    if ('refused' in out) return refusal(c, out);
+    return c.json({ fulfillment: out });
+  } catch (err) {
+    return providerFailure(c, err);
+  }
+});
+
+/**
+ * `changed` AND `transitioned` RIDE ALONG WITH THE PARCEL, so the screen can
+ * say "nothing new since 12:04" rather than re-rendering an identical row and
+ * leaving the operator to wonder whether the button did anything.
+ */
+logisticsRoutes.post('/admin/fulfillments/:id/courier/refresh', auth, async (c) => {
+  await readJsonOrEmpty(c, Empty);
+  const id = pathParam(c, 'id');
+  const db = currentDb(c);
+  const deps = resolveLogisticsDeps();
+  try {
+    const out = await refreshParcel(db, deps, id, {
+      now: deps.now(),
+      templates: await loadTemplates(db),
+    });
+    if (out === null) throw new NotFoundError(id);
+    return c.json({
+      fulfillment: out.fulfillment,
+      changed: out.changed,
+      transitioned: out.transitioned,
+    });
+  } catch (err) {
+    return providerFailure(c, err);
+  }
+});
+
+logisticsRoutes.post('/admin/fulfillments/:id/courier/cancel', auth, async (c) => {
+  const body = await readJsonOrEmpty(c, CancelBody);
+  const id = pathParam(c, 'id');
+  const deps = resolveLogisticsDeps();
+  try {
+    const out = await cancelParcelCourier(currentDb(c), deps, id, {
+      reason: body.reason ?? '',
+      actorId: currentUser(c).id,
+      now: deps.now(),
+    });
+    if (out === null) throw new NotFoundError(id);
+    return c.json({ fulfillment: out });
+  } catch (err) {
+    return providerFailure(c, err);
+  }
 });
