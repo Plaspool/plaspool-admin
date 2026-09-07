@@ -7,7 +7,7 @@ import { adoptCartForCustomer } from '../cart/merge';
 import { runCartMaintenance } from '../events/consumer';
 import { computeTotals } from '../totals/compute';
 import { unknownZoneTaxRate } from '../checkout/shipping';
-import { getAddress } from '../checkout/repo';
+import { getAddress, makeEditable } from '../checkout/repo';
 import { evaluateCartAddOns } from '../checkout/add-ons';
 import { cartCookie, clearCartCookie, setCartCookie } from '../identity/cookies';
 import { currentCustomer, shopClientIp, shopDb, shopLimit } from '../shop-env';
@@ -88,11 +88,12 @@ export function cartRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     const body = await readJson(c, AddLineBody);
     const cart = await requireCart(c, db);
     await limitWrites(c, cart.id);
+    const base = await thawIfFrozen(db, deps, cart.id, body.baseRevision);
     const { cart: after } = await addLine(db, {
       cartId: cart.id,
       variantId: body.variantId,
       qty: body.qty,
-      baseRevision: body.baseRevision,
+      baseRevision: base,
     });
     return c.json(await view(c, db, deps, after), 201);
   });
@@ -105,11 +106,12 @@ export function cartRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     const body = await readJson(c, SetQtyBody);
     const cart = await requireCart(c, db);
     await limitWrites(c, cart.id);
+    const base = await thawIfFrozen(db, deps, cart.id, body.baseRevision);
     const { cart: after } = await setLineQty(db, {
       cartId: cart.id,
       lineId,
       qty: body.qty,
-      baseRevision: body.baseRevision,
+      baseRevision: base,
     });
     return c.json(await view(c, db, deps, after));
   });
@@ -134,10 +136,11 @@ export function cartRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     const body = await readJsonOrEmpty(c, BaseOnlyBody);
     const cart = await requireCart(c, db);
     await limitWrites(c, cart.id);
+    const base = await thawIfFrozen(db, deps, cart.id, body.baseRevision);
     const after = await removeLine(db, {
       cartId: cart.id,
       lineId,
-      baseRevision: body.baseRevision,
+      baseRevision: base,
     });
     return c.json(await view(c, db, deps, after));
   });
@@ -152,6 +155,66 @@ async function limitWrites(c: Context<ShopEnv>, cartId: string): Promise<void> {
   // shoppers, and a per-IP limit would make the shop look broken at exactly the
   // moment it is busiest.
   await shopLimit(c, `shop-cart-write:${cartId}`, CART_WRITE_LIMIT, CART_WRITE_WINDOW_MS);
+}
+
+/**
+ * Give a frozen basket back before writing to it, and report the revision the
+ * write must now chain off.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * EDITING THE BASKET IS BACKING OUT OF PAYMENT.
+ *
+ * `putAddresses` has said this about an address since PR #104 — "editing a
+ * delivery address IS backing out of payment, said in the only vocabulary a
+ * checkout form has". It is at least as true of the basket, and until this
+ * existed the basket was the ONE surface with no way to say it.
+ *
+ * ═══ WHY THE CHECKOUT PAGE'S OWN THAW DOES NOT COVER THIS ═══
+ *
+ * The storefront thaws from two events, and both miss the same shopper:
+ *
+ *   - `pagehide` fires a `POST /checkout/cancel`, but SKIPS the Paystack
+ *     hand-off deliberately — thawing there would unfreeze the cart in the same
+ *     breath as sending the shopper to pay for it, which is a far worse bug.
+ *   - `pageshow` thaws only when `event.persisted` is true, i.e. on a bfcache
+ *     Back and nothing else.
+ *
+ * So "went to Paystack, did not pay, came back to the shop by any other route"
+ * — a fresh navigation, a new tab, Paystack's own cancel redirect, or a mobile
+ * browser that evicted the page — reaches neither, and lands on the cart page
+ * holding a `converting` cart. Widening either trigger is not available: the
+ * first is load-bearing, and the second cannot observe a journey that never
+ * returns to the checkout page at all.
+ *
+ * From there nothing recovered it. The three line writes are guarded on
+ * `status = 'open'` and answered `409 precondition_failed` for ever;
+ * `LIVE_STATUSES` below keeps handing the frozen cart back to the cookie rather
+ * than retiring it the way a `converted` one is; and `POST /cart` returns the
+ * cart that already exists. There was no button in the shop that fixed it, and
+ * a real shopper sat on it for a day before reporting it (2026-09-07).
+ *
+ * ═══ THE MONEY GUARD COMES WITH IT, WHICH IS THE POINT OF SHARING ═══
+ *
+ * `makeEditable` is a no-op on an ordinary open cart — every request that was
+ * not frozen reaches its write with precisely what it had before, and consults
+ * Payments not at all. On a frozen one it asks Payments first and REFUSES with
+ * `checkout_paid` at `authorized` or above, because a captured intent on a
+ * `converting` cart is a paid order waiting for the sweep and emptying its
+ * basket would build that order from lines nobody was charged for. Reusing the
+ * checkout's function rather than flipping the status here is what makes that
+ * guard impossible to forget.
+ *
+ * `deps` satisfies `ThawDeps` structurally — the port and nothing else, so this
+ * costs no extra query on the shop's hottest write path.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+async function thawIfFrozen(
+  db: Db,
+  deps: ShopCartDeps,
+  cartId: string,
+  baseRevision: number | undefined,
+): Promise<number | undefined> {
+  return makeEditable(db, deps, { cartId, baseRevision });
 }
 
 /**
@@ -177,6 +240,15 @@ async function limitWrites(c: Context<ShopEnv>, cartId: string): Promise<void> {
  * implicitly. Keeping `converting` live is therefore load-bearing rather than
  * aspirational — it is what lets the shopper come back to the cart the cancel
  * is about to reopen.
+ *
+ * ═══ AND SINCE 2026-09-07, SO DOES EVERY LINE WRITE ON THIS FILE ═══
+ *
+ * The paragraph above was still only half true while the only thaws lived on
+ * the CHECKOUT page. A shopper who left for Paystack and came back to the shop
+ * rather than to that page reached this constant holding a `converting` cart
+ * and had nothing that could reopen it — see `thawIfFrozen` for the two
+ * storefront triggers that miss the journey. Now the basket reopens it too, so
+ * every surface a returning shopper can actually reach has a way out.
  */
 const LIVE_STATUSES: readonly Cart['status'][] = ['open', 'converting'];
 
