@@ -191,9 +191,13 @@
   flex: 1;
 }
 
+/* The money box, its word, and how often it applies (0960). WRAPS, because
+   on a phone “Save  ₦[ 500 ]  for each item” is wider than the viewport and
+   the row it sits in already wraps around it. */
 .rule__charge {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--s2);
   font-size: var(--t-md);
   color: var(--ink-sub);
@@ -201,6 +205,25 @@
 
 .rule__charge .affix {
   width: 9.5rem;
+}
+
+/* The three outcome labels are a clause each now, so the head's first pill is
+   the one that has to give. It shrinks before the money does; below 32rem it
+   takes the whole line and the money row sits under it. */
+.rule__head > .rule__pill:first-child {
+  flex: 0 1 auto;
+  min-width: 8rem;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 32rem) {
+  .rule__head > .rule__pill:first-child {
+    flex: 1 1 100%;
+  }
+
+  .rule__spacer {
+    display: none;
+  }
 }
 
 .rule__charge .input,

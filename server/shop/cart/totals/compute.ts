@@ -582,12 +582,25 @@ export function parseFrozenTotals(value: unknown): FrozenTotals | null {
       addOns: Array.isArray(raw.addOns)
         ? (raw.addOns as unknown[]).map((entry) => {
             const addOn = entry as Record<string, unknown>;
+            const amount = m(addOn.amount);
+            /* AND AGAIN, ONE FEATURE LATER STILL (migration 0960). Every
+               payload frozen between 2026-09-06 and now carries an add-on with
+               no `unitAmount`, no `units` and no `basis`, and every one of them
+               meant "once, for the whole order" — so that is what an absent key
+               reads as. A strict read here would make each of those orders
+               render as corrupt, which is the same mistake this seam has now
+               been asked not to make three times. */
+            const units = typeof addOn.units === 'number' && addOn.units > 0 ? Math.floor(addOn.units) : 1;
             return {
               id: String(addOn.id),
               title: String(addOn.title),
-              mode: addOn.mode === 'included' ? 'included' : 'chosen',
+              mode:
+                addOn.mode === 'included' ? 'included' : addOn.mode === 'removed' ? 'removed' : 'chosen',
               listPrice: m(addOn.listPrice),
-              amount: m(addOn.amount),
+              unitAmount: addOn.unitAmount === undefined ? amount : m(addOn.unitAmount),
+              units,
+              basis: addOn.basis === 'item' ? 'item' : 'order',
+              amount,
             } satisfies FrozenAddOn;
           })
         : [],

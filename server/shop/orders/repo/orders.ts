@@ -12,6 +12,7 @@ import { ID, newId } from '../ids';
 import { formatOrderNumber } from '../order-number';
 import type { CheckoutCompletedInput } from '../inbound';
 import type { OrderCancelReason, OrderLineRef } from '../../../../shared/commerce/events';
+import type { AddOnBasis } from '../../../../shared/commerce/add-ons';
 import type { Post } from '../../../../shared/types';
 import { mintGuestToken } from '../tokens';
 import type { AccessLink } from '../mailer';
@@ -140,9 +141,15 @@ export interface OrderAddOn {
   position: number;
   addOnId: string;
   title: string;
-  mode: 'chosen' | 'included';
+  /** 'removed' (0960) is the shopper taking it out of a price that had it in. */
+  mode: 'chosen' | 'included' | 'removed';
+  /** Signed. Negative only when mode is 'removed'. */
   amount: number;
   listPrice: number;
+  /** Signed price of one, and how many -- so a slip can print "4 x -500". */
+  unitAmount: number;
+  units: number;
+  basis: AddOnBasis;
   currency: string;
 }
 
@@ -152,9 +159,12 @@ function rowToAddOn(row: Record<string, unknown>): OrderAddOn {
     position: Number(row.position),
     addOnId: String(row.add_on_id),
     title: String(row.title),
-    mode: row.mode === 'included' ? 'included' : 'chosen',
+    mode: row.mode === 'included' ? 'included' : row.mode === 'removed' ? 'removed' : 'chosen',
     amount: Number(row.amount),
     listPrice: Number(row.list_price),
+    unitAmount: Number(row.unit_amount ?? row.amount),
+    units: Number(row.units ?? 1),
+    basis: row.basis === 'item' ? 'item' : 'order',
     currency: String(row.currency),
   };
 }
@@ -696,6 +706,9 @@ export async function createOrderFromCheckout(
       mode: addOn.mode,
       amount: addOn.amount,
       list_price: addOn.listPrice,
+      unit_amount: addOn.unitAmount,
+      units: addOn.units,
+      basis: addOn.basis,
       currency: input.currency,
     }));
 
@@ -752,11 +765,14 @@ export async function createOrderFromCheckout(
         ), ins_add_ons AS (
           /* The add-ons (migration 0940), a snapshot beside the lines. An
              empty array yields no rows and no error. */
-          INSERT INTO shop_order_add_ons (id, order_id, position, add_on_id, title, mode, amount, list_price, currency)
-          SELECT a.id, ord.id, a.position, a.add_on_id, a.title, a.mode, a.amount, a.list_price, a.currency
+          INSERT INTO shop_order_add_ons (id, order_id, position, add_on_id, title, mode, amount, list_price,
+                                          unit_amount, units, basis, currency)
+          SELECT a.id, ord.id, a.position, a.add_on_id, a.title, a.mode, a.amount, a.list_price,
+                 a.unit_amount, a.units, a.basis, a.currency
             FROM ord, jsonb_to_recordset(${jsonb(addOns)}) AS a(
                    id text, position integer, add_on_id text, title text, mode text,
-                   amount integer, list_price integer, currency text)
+                   amount integer, list_price integer, unit_amount integer, units integer,
+                   basis text, currency text)
           RETURNING 1
         ), timeline AS (
           INSERT INTO shop_order_events (id, order_id, type, message, occurred_at, actor_id)

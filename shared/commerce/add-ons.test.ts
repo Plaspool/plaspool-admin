@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   ADD_ON_ATTRIBUTES,
-  amountFor,
+  basisFor,
+  unitAmountFor,
   attributesOfKind,
   evaluateAddOns,
   factsFrom,
@@ -110,6 +111,9 @@ describe('evaluateAddOns', () => {
         description: 'Boxed and ribboned.',
         imageUrl: null,
         price: { amount: 150_000, currency: 'NGN' },
+        unitAmount: { amount: 150_000, currency: 'NGN' },
+        units: 1,
+        basis: 'order',
         amount: { amount: 150_000, currency: 'NGN' },
         mode: 'include',
         choice: null,
@@ -124,10 +128,10 @@ describe('evaluateAddOns', () => {
   });
 
   it('a rule may override the amount; 0 is free; absent means the price', () => {
-    expect(amountFor(box([]), include([], 0))).toBe(0);
-    expect(amountFor(box([]), include([], 20_000))).toBe(20_000);
-    expect(amountFor(box([]), include([], null))).toBe(150_000);
-    expect(amountFor(box([]), ask())).toBe(150_000);
+    expect(unitAmountFor(box([]), include([], 0))).toBe(0);
+    expect(unitAmountFor(box([]), include([], 20_000))).toBe(20_000);
+    expect(unitAmountFor(box([]), include([], null))).toBe(150_000);
+    expect(unitAmountFor(box([]), ask())).toBe(150_000);
     const [free] = evaluateAddOns([box([include([], 0)])], facts());
     expect(free?.amount).toEqual({ amount: 0, currency: 'NGN' });
     expect(free?.price).toEqual({ amount: 150_000, currency: 'NGN' });
@@ -187,5 +191,102 @@ describe('factsFrom', () => {
       hasDiscountCode: true,
       choices: {},
     });
+  });
+});
+/**
+ * PER-ITEM PRICING AND TAKING SOMETHING BACK OUT (migration 0960).
+ *
+ * The owner's worked example is the first test and every number in it is
+ * theirs: a box already inside the product price, 500 naira each, offered for
+ * removal on carts of one to four items, and 2,000 naira back when four are
+ * taken out.
+ */
+describe('basis and opt_out', () => {
+  const optOut = (when: AddOnRule['when'] = [], over: Partial<AddOnRule> = {}): AddOnRule => ({
+    when,
+    then: 'opt_out',
+    ...over,
+  });
+  const only = (rules: AddOnRule[], over: Partial<AddOnFacts> = {}) =>
+    evaluateAddOns([box(rules, { priceMinor: 50_000 })], facts(over))[0];
+
+  it("the owner's example: four items, box taken out, 2,000 naira back", () => {
+    const rule = optOut([{ attribute: 'item_count', op: 'between', min: 1, max: 4 }], { basis: 'item' });
+    const offer = only([rule], { itemCount: 4, choices: { ado_box: 'declined' } });
+    expect(offer.mode).toBe('opt_out');
+    expect(offer.units).toBe(4);
+    expect(offer.unitAmount).toEqual({ amount: -50_000, currency: 'NGN' });
+    expect(offer.amount).toEqual({ amount: -200_000, currency: 'NGN' });
+  });
+
+  it('kept, or never answered, costs nothing at all — it is already in the price', () => {
+    const rule = optOut([], { basis: 'item' });
+    expect(only([rule], { itemCount: 4 }).amount.amount).toBe(0);
+    expect(only([rule], { itemCount: 4 }).choice).toBe(null);
+    expect(only([rule], { itemCount: 4, choices: { ado_box: 'accepted' } }).amount.amount).toBe(0);
+    // Kept still reports what one WOULD have been worth, so a screen can say
+    // "save 500 each" without a second read.
+    expect(only([rule], { itemCount: 4 }).unitAmount.amount).toBe(50_000);
+  });
+
+  it('a cart of five is over the limit, so nothing is offered and the boxes stay', () => {
+    const rule = optOut([{ attribute: 'item_count', op: 'between', min: 1, max: 4 }], { basis: 'item' });
+    expect(evaluateAddOns([box([rule])], facts({ itemCount: 5, choices: { ado_box: 'declined' } }))).toEqual([]);
+  });
+
+  it('per item multiplies a CHARGE too, and per order is still the default', () => {
+    const perItem = only([{ when: [], then: 'include', basis: 'item' }], { itemCount: 3 });
+    expect(perItem.amount).toEqual({ amount: 150_000, currency: 'NGN' });
+    expect(perItem.units).toBe(3);
+
+    const perOrder = only([{ when: [], then: 'include' }], { itemCount: 3 });
+    expect(perOrder.amount).toEqual({ amount: 50_000, currency: 'NGN' });
+    expect(perOrder.units).toBe(1);
+    expect(perOrder.basis).toBe('order');
+  });
+
+  it('an ask still charges nothing until it is accepted, per item or not', () => {
+    const rule: AddOnRule = { when: [], then: 'ask', basis: 'item' };
+    expect(only([rule], { itemCount: 3 }).amount.amount).toBe(0);
+    expect(only([rule], { itemCount: 3, choices: { ado_box: 'declined' } }).amount.amount).toBe(0);
+    expect(only([rule], { itemCount: 3, choices: { ado_box: 'accepted' } }).amount.amount).toBe(150_000);
+  });
+
+  it('the rule amount overrides the price PER UNIT, not per cart', () => {
+    const offer = only([{ when: [], then: 'include', basis: 'item', amountMinor: 10_000 }], { itemCount: 6 });
+    expect(offer.unitAmount.amount).toBe(10_000);
+    expect(offer.amount.amount).toBe(60_000);
+    // The list price is untouched: it is what one is worth, so a strike-through
+    // has something to strike.
+    expect(offer.price.amount).toBe(50_000);
+  });
+
+  /*
+   * THE BACKSTOP. A misconfigured saving must cost the shop the cart at worst,
+   * and must never mint a negative payment intent — Paystack cannot be asked
+   * for one, and a checkout that cannot be paid is worse than a wrong price.
+   */
+  it('savings are capped at the goods subtotal, and the cap is shared across add-ons', () => {
+    const huge = only([optOut([], { basis: 'item', amountMinor: 5_000_000 })], {
+      itemCount: 1,
+      subtotalMinor: 2_800_000,
+      choices: { ado_box: 'declined' },
+    });
+    expect(huge.amount.amount).toBe(-2_800_000);
+
+    const two = evaluateAddOns(
+      [
+        box([optOut([], { amountMinor: 200_000 })], { id: 'a', priceMinor: 200_000 }),
+        box([optOut([], { amountMinor: 200_000 })], { id: 'b', priceMinor: 200_000 }),
+      ],
+      facts({ subtotalMinor: 300_000, choices: { a: 'declined', b: 'declined' } }),
+    );
+    expect(two.map((o) => o.amount.amount)).toEqual([-200_000, -100_000]);
+  });
+
+  it('a rule stored before 0960 has no basis key and still means once per order', () => {
+    const legacy = JSON.parse('{"when":[],"then":"include"}') as AddOnRule;
+    expect(basisFor(legacy)).toBe('order');
+    expect(only([legacy], { itemCount: 9 }).units).toBe(1);
   });
 });

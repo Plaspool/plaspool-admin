@@ -396,9 +396,17 @@ export default function OrderDetail() {
                     key={a.id}
                     style={{ display: 'flex', justifyContent: 'space-between', gap: 'var(--s3)' }}
                   >
-                    <span>{a.title}</span>
+                    <span>
+                      {a.title}
+                      {/* A packer has to know a box was taken OUT, and how many.
+                          The money alone does not say it — a minus is easy to
+                          read past, and ₦0 beside “Included” says nothing about
+                          how many went in. */}
+                      {a.mode === 'removed' ? <span className="muted"> · taken out</span> : null}
+                      {a.units > 1 ? <span className="muted"> · {a.units} × {money(Math.abs(a.unitAmount), a.currency)}</span> : null}
+                    </span>
                     <span className="num">
-                      {a.mode === 'included' && a.amount === 0 ? 'Included' : money(a.amount, a.currency)}
+                      {a.mode !== 'removed' && a.amount === 0 ? 'Included' : money(a.amount, a.currency)}
                     </span>
                   </li>
                 ))}

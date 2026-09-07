@@ -20,6 +20,9 @@ const box: FrozenAddOn = {
   title: 'Gift box',
   mode: 'chosen',
   listPrice: ngn(150_000),
+  unitAmount: ngn(150_000),
+  units: 1,
+  basis: 'order',
   amount: ngn(150_000),
 };
 const freeBox: FrozenAddOn = { ...box, mode: 'included', amount: ngn(0) };

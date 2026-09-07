@@ -46,12 +46,31 @@ export function subtotalOf(currency: string, quotes: readonly QuotedLine[]): num
   return res.ok ? res.totals.subtotal.amount : 0;
 }
 
+/**
+ * THREE OFFER MODES, THREE ORDER MODES, AND THEY DO NOT LINE UP ONE TO ONE.
+ * An `opt_out` add-on the shopper LEFT ALONE is `included` at ₦0 — the box is
+ * in the price and the packer still has to put one in — while one they took
+ * out is `removed` at a negative amount. Only a declined `opt_out` is ever
+ * negative, which is what makes "did this order pay money back" a mode check
+ * rather than a sign check.
+ */
 export function toFrozenAddOn(offer: AddOnOffer): FrozenAddOn {
+  const mode =
+    offer.mode === 'ask'
+      ? 'chosen'
+      : offer.mode === 'include'
+        ? 'included'
+        : offer.choice === 'declined'
+          ? 'removed'
+          : 'included';
   return {
     id: offer.id,
     title: offer.title,
-    mode: offer.mode === 'include' ? 'included' : 'chosen',
+    mode,
     listPrice: offer.price,
+    unitAmount: offer.unitAmount,
+    units: offer.units,
+    basis: offer.basis,
     amount: offer.amount,
   };
 }
@@ -81,8 +100,14 @@ export async function evaluateCartAddOns(
     hasDiscountCode: a.cart.discountCode !== null,
     choices: a.cart.addOnChoices,
   });
+  /*
+   * An `opt_out` add-on is ALWAYS applied, whichever way it went: kept, it
+   * belongs on the order at ₦0 so the packer knows to put a box in; removed,
+   * it belongs on the order as the negative that paid the shopper back. It is
+   * the one mode with nothing to leave off.
+   */
   const applied = offers
-    .filter((o) => o.mode === 'include' || o.choice === 'accepted')
+    .filter((o) => o.mode === 'include' || o.mode === 'opt_out' || o.choice === 'accepted')
     .map(toFrozenAddOn);
   return { offers, applied };
 }
@@ -120,7 +145,10 @@ export async function setAddOnChoice(
 
   const { offers } = await currentOffers(db, catalog, config.addOns, cart);
   const offer = offers.find((o) => o.id === a.addOnId);
-  if (!offer || offer.mode !== 'ask') return { ok: false, reason: 'not_offered' };
+  /* `include` is the only mode with no question in it. `opt_out` takes an
+   * answer for the same reason `ask` does — the shopper is choosing — it is
+   * just that its default is yes rather than no. */
+  if (!offer || offer.mode === 'include') return { ok: false, reason: 'not_offered' };
 
   const base = a.baseRevision ?? cart.revision;
   const res = await db.execute(sql`

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { str } from '../../../middleware/errors';
-import { attributesOfKind } from '../../../../shared/commerce/add-ons';
+import { ADD_ON_BASES, ADD_ON_MODES, attributesOfKind } from '../../../../shared/commerce/add-ons';
 
 /**
  * The shape of shop_add_ons.rules, built FROM THE REGISTRY so an attribute
@@ -33,9 +33,15 @@ export const ConditionSchema = z.union([
 export const RuleSchema = z
   .object({
     when: z.array(ConditionSchema).max(8),
-    then: z.enum(['ask', 'include']),
-    /** Overrides the add-on's price for this rule; null/absent = the price; 0 = free. */
+    then: enumOf([...ADD_ON_MODES]),
+    /** Overrides the add-on's price for this rule, PER UNIT; null/absent = the price; 0 = free. */
     amountMinor: Whole.nullable().optional(),
+    /**
+     * What the per-unit amount is multiplied by (0960). Null/absent = 'order',
+     * which is what every rule stored before this existed means — so an old
+     * row must keep validating, and `.nullable().optional()` is how it does.
+     */
+    basis: enumOf([...ADD_ON_BASES]).nullable().optional(),
   })
   .strict();
 

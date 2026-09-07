@@ -1,5 +1,5 @@
-import { ADD_ON_ATTRIBUTES } from '../../../shared/commerce/add-ons';
-import type { AddOnAttribute, AddOnCondition, AddOnRule } from '../../../shared/commerce/add-ons';
+import { ADD_ON_ATTRIBUTES, basisFor } from '../../../shared/commerce/add-ons';
+import type { AddOnAttribute, AddOnBasis, AddOnCondition, AddOnMode, AddOnRule } from '../../../shared/commerce/add-ons';
 import { formatMinor } from '../../data/api-shop';
 
 /**
@@ -22,6 +22,24 @@ export const ATTRIBUTE_LABELS: Record<AddOnAttribute, string> = {
   shipping_option: 'Delivery option',
   signed_in: 'Signed in',
   has_discount_code: 'Has a discount code',
+};
+
+/**
+ * WHAT A RULE DOES, in the admin's words. `opt_out` is the one that needs a
+ * whole clause: the shopper is not buying anything, they are taking something
+ * OUT of a price that already carries it, and "Exclude" alone would not say
+ * whose money moves.
+ */
+export const MODE_LABELS: Record<AddOnMode, string> = {
+  ask: 'Ask the customer',
+  include: 'Add it automatically',
+  opt_out: 'In the price — they can take it out',
+};
+
+/** What the price is multiplied by. Reads after the money: "₦500 for each item". */
+export const BASIS_LABELS: Record<AddOnBasis, string> = {
+  order: 'for the order',
+  item: 'for each item',
 };
 
 export const NUMBER_OPS = [
@@ -66,12 +84,26 @@ export function describeCondition(condition: AddOnCondition, currency: string): 
   }
 }
 
-/** What the rule does, in two or three words: the head of both sentence shapes. */
+/**
+ * What the rule does, in a few words: the head of both sentence shapes.
+ *
+ * EVERY PER-ORDER SENTENCE IS BYTE-FOR-BYTE WHAT IT WAS BEFORE 0960, which is
+ * deliberate and is why `each` is a suffix rather than a rewrite. `order` is
+ * the default and every rule written before the basis existed has it, so the
+ * screens and the 571 assertions that match on their text do not move.
+ */
 function ruleHead(rule: AddOnRule, priceMinor: number, currency: string): string {
-  if (rule.then === 'ask') return 'Ask';
-  if (rule.amountMinor === 0) return 'Included free';
-  if (rule.amountMinor != null && rule.amountMinor !== priceMinor) return `Included at ${formatMinor(rule.amountMinor, currency)}`;
-  return 'Included';
+  const perItem = basisFor(rule) === 'item';
+  const each = perItem ? ' each' : '';
+  const unit = rule.amountMinor ?? priceMinor;
+  const money = formatMinor(unit, currency);
+  if (rule.then === 'opt_out') {
+    return unit === 0 ? 'In the price' : `In the price, save ${money}${each}`;
+  }
+  if (rule.then === 'ask') return perItem ? `Ask, ${money}${each}` : 'Ask';
+  if (unit === 0) return 'Included free';
+  if (rule.amountMinor != null && rule.amountMinor !== priceMinor) return `Included at ${money}${each}`;
+  return perItem ? `Included at ${money}${each}` : 'Included';
 }
 
 /** One rule as a sentence: "Ask when Items in cart is between 1 and 4". */

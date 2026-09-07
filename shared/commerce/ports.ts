@@ -127,6 +127,7 @@ export interface PaymentPort<Db> {
 // ============================================================================
 
 import type { Money, RoundingMode } from './money';
+import type { AddOnBasis } from './add-ons';
 
 /**
  * One cart line's contribution to the total, and the arithmetic that produced it.
@@ -260,9 +261,20 @@ export interface Adjustment {
 export interface FrozenAddOn {
   id: string;
   title: string;
-  /** How it got onto the order: the shopper said yes, or a rule included it. */
-  mode: 'chosen' | 'included';
+  /**
+   * How it got onto the order: the shopper said yes, a rule included it, or —
+   * since 0960 — the shopper TOOK IT OUT of a price that already carried it,
+   * which is the one case where `amount` is negative.
+   */
+  mode: 'chosen' | 'included' | 'removed';
+  /** The list price of ONE. */
   listPrice: Money;
+  /** Signed price of one unit, so a packing slip can print "4 × −₦500". */
+  unitAmount: Money;
+  /** 1 for a per-order add-on; the cart's item count for a per-item one. */
+  units: number;
+  basis: AddOnBasis;
+  /** Σ, signed. Negative only for `removed`. */
   amount: Money;
 }
 
@@ -294,7 +306,7 @@ export interface FrozenTotals {
   discount: CodeDiscount | null;
   /** The add-ons on this order. `[]` when none — and, read back, `[]` for every payload frozen before they existed. */
   addOns: FrozenAddOn[];
-  /** Σ addOns[].amount, ≥ 0. Not taxed, not discounted. */
+  /** Σ addOns[].amount. Not taxed, not discounted. Negative when removals outweigh charges (0960). */
   addOnTotal: Money;
   /** Σ lineTotal, BEFORE any code discount — the list value of the goods. */
   subtotal: Money;
