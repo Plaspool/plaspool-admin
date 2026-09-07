@@ -10,6 +10,14 @@ export const TERMINAL_LABEL = 'Terminal Africa';
 const rec = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {});
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() !== '' ? v : null);
 
+/** A finite number, or a non-blank string that parses to one — null/''/false/[] are not a price, they are its absence. */
+const toMinor = (v: unknown): number | null => {
+  if (typeof v === 'number') return Number.isFinite(v) ? Math.round(v * 100) : null;
+  if (typeof v !== 'string' || v.trim() === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n * 100) : null;
+};
+
 function address(a: { name: string; phone: string | null; email: string | null; line1: string; line2: string | null; city: string; region: string; postalCode: string | null; countryCode: string }, residential: boolean) {
   const { firstName, lastName } = splitName(a.name);
   const phone = a.phone ? toE164(a.phone) : null;
@@ -40,6 +48,7 @@ export function createTerminalProvider(env: TerminalEnv, opts: TerminalClientOpt
     const events = Array.isArray(data.events) ? (data.events as Record<string, unknown>[]) : [];
     return str(events.at(-1)?.description);
   };
+  const carrierName = (data: Record<string, unknown>): string | null => str(data.carrier) ?? str(rec(data.carrier).name);
 
   return {
     id: 'terminal', label: TERMINAL_LABEL,
@@ -48,6 +57,11 @@ export function createTerminalProvider(env: TerminalEnv, opts: TerminalClientOpt
       if (!input.from) throw new LogisticsError('address_incomplete', 'Terminal Africa needs a ship-from address', { detail: ['shipFrom'] });
       const noWeight = input.items.find((i) => i.weightGrams == null);
       if (noWeight) throw new LogisticsError('address_incomplete', `${noWeight.title} has no weight`, { detail: ['weight'] });
+      // Build both addresses — where an unusable phone throws — before creating anything at
+      // Terminal, so a bad address never leaves an orphaned packaging record behind.
+      const from = { ...input.from, phone: input.from.phone, email: input.from.email ?? null, line2: input.from.line2 ?? null, postalCode: input.from.postalCode };
+      const pickupAddress = address(from, false);
+      const deliveryAddress = address(input.to, true);
       let packagingRef = input.packagingRef;
       let created: string | undefined;
       if (!packagingRef) {
@@ -57,9 +71,8 @@ export function createTerminalProvider(env: TerminalEnv, opts: TerminalClientOpt
         if (!packagingRef) throw new LogisticsError('bad_response', 'Terminal Africa returned no packaging id');
         created = packagingRef;
       }
-      const from = { ...input.from, phone: input.from.phone, email: input.from.email ?? null, line2: input.from.line2 ?? null, postalCode: input.from.postalCode };
       const shipment = await client.call('POST', '/shipments/quick', {
-        pickup_address: address(from, false), delivery_address: address(input.to, true),
+        pickup_address: pickupAddress, delivery_address: deliveryAddress,
         parcel: {
           description: `Order ${input.orderNumber}`,
           items: input.items.map((i) => ({ name: i.title, description: i.sku, currency: 'NGN', value: i.unitMinor / 100, quantity: i.qty, weight: terminalItemKg(i.weightGrams ?? 0) })),
@@ -72,10 +85,10 @@ export function createTerminalProvider(env: TerminalEnv, opts: TerminalClientOpt
       const rates = await client.call('GET', `/rates/shipment?shipment_id=${encodeURIComponent(shipmentId)}&currency=NGN`);
       const list = Array.isArray(rates.data) ? (rates.data as Record<string, unknown>[]) : [];
       const options: QuoteOption[] = list.flatMap((r) => {
-        const id = str(r.rate_id); const amount = typeof r.amount === 'number' ? r.amount : Number(r.amount);
-        if (!id || !Number.isFinite(amount)) return [];
+        const id = str(r.rate_id); const amountMinor = toMinor(r.amount);
+        if (!id || amountMinor === null) return [];
         const carrier = str(r.carrier_name) ?? 'Courier';
-        return [{ id, carrier, label: str(r.carrier_rate_description) ? `${carrier} · ${r.carrier_rate_description as string}` : carrier, amountMinor: Math.round(amount * 100), currency: 'NGN' as const, ...(str(r.delivery_time) ? { eta: r.delivery_time as string } : {}), ...(str(r.pickup_time) ? { pickupEta: r.pickup_time as string } : {}) }];
+        return [{ id, carrier, label: str(r.carrier_rate_description) ? `${carrier} · ${r.carrier_rate_description as string}` : carrier, amountMinor, currency: 'NGN' as const, ...(str(r.delivery_time) ? { eta: r.delivery_time as string } : {}), ...(str(r.pickup_time) ? { pickupEta: r.pickup_time as string } : {}) }];
       });
       return { providerRef: shipmentId, options, weightKg: Math.round(totalGrams(input.items)) / 1000, note: null, ...(created ? { packagingRef: created } : {}) };
     },
@@ -85,7 +98,7 @@ export function createTerminalProvider(env: TerminalEnv, opts: TerminalClientOpt
       const res = await client.call('POST', '/shipments/pickup', { rate_id: optionId, shipment_id: quoteRef });
       const data = rec(res.data);
       const x = extras(data);
-      const carrier = str(data.carrier) ?? str(rec(data.carrier).name) ?? chosen?.carrier ?? 'Courier';
+      const carrier = carrierName(data) ?? chosen?.carrier ?? 'Courier';
       const raw = str(data.status) ?? 'confirmed';
       return { providerRef: str(data.shipment_id) ?? quoteRef, carrier, trackingNumber: x.trackingNumber ?? (str(data.shipment_id) ?? quoteRef), trackingUrl: x.trackingUrl, labelUrl: x.labelUrl, costMinor: chosen?.amountMinor ?? null, rawStatus: raw, state: terminalState(raw) === 'draft' ? 'booked' : terminalState(raw) };
     },
@@ -95,7 +108,7 @@ export function createTerminalProvider(env: TerminalEnv, opts: TerminalClientOpt
       const data = rec(res.data);
       const raw = str(data.status);
       if (!raw) throw new LogisticsError('bad_response', 'Terminal Africa returned no status');
-      return { rawStatus: raw, state: terminalState(raw), description: lastEvent(data), ...extras(data), carrier: str(data.carrier) ?? str(rec(data.carrier).name) };
+      return { rawStatus: raw, state: terminalState(raw), description: lastEvent(data), ...extras(data), carrier: carrierName(data) };
     },
 
     async cancel(providerRef): Promise<void> { await client.call('POST', '/shipments/cancel', { shipment_id: providerRef }); },
@@ -112,7 +125,7 @@ export function createTerminalProvider(env: TerminalEnv, opts: TerminalClientOpt
       const data = rec(body.data);
       const ref = str(data.shipment_id); const raw = str(data.status);
       if (!ref || !raw) return null;
-      return { providerRef: ref, rawStatus: raw, state: terminalState(raw), description: lastEvent(data), ...extras(data), carrier: str(data.carrier) ?? str(rec(data.carrier).name) };
+      return { providerRef: ref, rawStatus: raw, state: terminalState(raw), description: lastEvent(data), ...extras(data), carrier: carrierName(data) };
     },
   };
 }

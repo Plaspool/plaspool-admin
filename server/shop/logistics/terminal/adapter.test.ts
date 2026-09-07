@@ -175,6 +175,26 @@ describe('quote', () => {
     ]);
   });
 
+  it('drops a rate with no usable price instead of offering it for free, but keeps a numeric-string or fractional one', async () => {
+    const { fetchImpl } = terminalFetch([
+      OK({ shipment_id: 'SH-6' }),
+      OK([
+        { rate_id: 'RT-1', carrier_name: 'DHL', amount: null },
+        { rate_id: 'RT-2', carrier_name: 'DHL', amount: '' },
+        { rate_id: 'RT-3', carrier_name: 'DHL', amount: false },
+        { rate_id: 'RT-4', carrier_name: 'DHL', amount: [] },
+        { rate_id: 'RT-5', carrier_name: 'DHL', amount: '3500' },
+        { rate_id: 'RT-6', carrier_name: 'DHL', amount: 3500.5 },
+      ]),
+    ]);
+    const provider = createTerminalProvider(ENV, { fetchImpl });
+    const result = await provider.quote(parcel({ from: shipFrom(), packagingRef: 'PA-9' }));
+
+    expect(result.options.map((o) => o.id)).toEqual(['RT-5', 'RT-6']);
+    expect(result.options[0]!.amountMinor).toBe(350000);
+    expect(result.options[1]!.amountMinor).toBe(350050);
+  });
+
   it('refuses to quote without a ship-from address', async () => {
     const { fetchImpl, calls } = terminalFetch([]);
     const provider = createTerminalProvider(ENV, { fetchImpl });
@@ -194,12 +214,13 @@ describe('quote', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('refuses to quote when the recipient has no usable phone number', async () => {
-    const { fetchImpl } = terminalFetch([OK({ packaging_id: 'PA-1' })]);
+  it('refuses to quote when the recipient has no usable phone number, before any request is made', async () => {
+    const { fetchImpl, calls } = terminalFetch([]);
     const provider = createTerminalProvider(ENV, { fetchImpl });
     const err = await failureOf(provider.quote(parcel({ from: shipFrom(), to: { phone: null } })));
     expect(err.code).toBe('address_incomplete');
     expect(err.message).toBe('Terminal Africa needs a phone number for Jane Doe');
+    expect(calls).toHaveLength(0);
   });
 });
 
