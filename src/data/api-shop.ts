@@ -644,6 +644,11 @@ export interface ShopOrderLine {
 
 export type FulfillmentStatus = 'pending' | 'shipped' | 'delivered' | 'cancelled';
 
+export type CourierProviderId = 'manual' | 'fez' | 'terminal';
+export type CourierState =
+  | 'draft' | 'booked' | 'picked_up' | 'in_transit' | 'delivered'
+  | 'returned' | 'cancelled' | 'failed' | 'unknown';
+
 export interface ShopFulfillment {
   id: string;
   orderId: string;
@@ -655,6 +660,69 @@ export interface ShopFulfillment {
   createdAt: number;
   revision: number;
   lines: { id: string; orderLineId: string; qty: number }[];
+  /** Courier booking (migration 0980) — all absent on responses from before couriers shipped; read as null. */
+  provider?: Exclude<CourierProviderId, 'manual'> | null;
+  providerRef?: string | null;
+  providerStatus?: string | null;
+  courierState?: CourierState | null;
+  trackingUrl?: string | null;
+  labelUrl?: string | null;
+  providerCostMinor?: number | null;
+  providerSyncedAt?: number | null;
+  providerLastError?: string | null;
+}
+
+/**
+ * The delivery-courier surface (`server/shop/logistics/*`, migration 0980).
+ *
+ * `GET /shop/logistics/provider` is NOT under `BASE` — every signed-in role may
+ * ask which courier is switched on (the route is `requireAuth()` only, so the
+ * teammate packing a parcel gets an answer). Everything else here sits under
+ * `/shop/admin/logistics/*` (the `settings` permission) or
+ * `/shop/admin/fulfillments/:id/courier/*` (booking a parcel, gated `orders`).
+ */
+export interface ShopCourierProvider { provider: CourierProviderId; label: string }
+
+export interface ShopShipFrom {
+  name: string; phone: string; email?: string; line1: string; line2?: string;
+  city: string; region: string; postalCode: string; countryCode: 'NG';
+}
+export interface ShopCourierPackaging { name: string; lengthCm: number; widthCm: number; heightCm: number; weightKg: number }
+export interface ShopCourierProviderStatus { configured: boolean; environment: 'sandbox' | 'live'; webhookUrl: string }
+export interface ShopCourierWebhookRow {
+  id: string; provider: 'fez' | 'terminal'; providerRef: string | null; rawStatus: string | null;
+  verified: boolean; applied: 'applied' | 'ignored' | 'unmatched' | 'rejected'; receivedAt: number;
+}
+export interface ShopCourierSettings {
+  provider: CourierProviderId;
+  shipFrom: ShopShipFrom | null;
+  packaging: ShopCourierPackaging;
+  revision: number;
+  /** Rides along on every settings read (`settingsView` in the courier routes); tolerated, not yet shown. */
+  updatedAt: number;
+  providers: { fez: ShopCourierProviderStatus; terminal: ShopCourierProviderStatus };
+  variantsMissingWeight: number;
+  variantsTotal: number;
+  recentWebhooks: ShopCourierWebhookRow[];
+}
+export interface ShopCourierSettingsPatch {
+  expectedRevision: number;
+  provider?: CourierProviderId;
+  shipFrom?: ShopShipFrom | null;
+  packaging?: ShopCourierPackaging;
+}
+export interface ShopCourierOption {
+  id: string; carrier: string; label: string; amountMinor: number; currency: 'NGN'; eta?: string; pickupEta?: string;
+}
+export interface ShopCourierMissingWeight { orderLineId: string; variantId: string; sku: string; title: string }
+export interface ShopCourierQuote {
+  provider: 'fez' | 'terminal';
+  providerLabel: string;
+  weightKg: number;
+  quoteRef: string | null;
+  note: string | null;
+  options: ShopCourierOption[];
+  missingWeights: ShopCourierMissingWeight[];
 }
 
 export interface ShopTimelineEntry {
@@ -1550,6 +1618,36 @@ export const shopApi = {
     });
   },
 
+  // ------------------------------------------------------------ delivery courier
+  /** Which courier is switched on. Any signed-in role may ask; the order screen needs it. */
+  async getCourierProvider(signal?: AbortSignal): Promise<ShopCourierProvider> {
+    /* NOT under /shop/admin: every signed-in role may ask which courier is on. */
+    return shopFetch<ShopCourierProvider>('/shop/logistics/provider', { signal });
+  },
+
+  async getCourierSettings(signal?: AbortSignal): Promise<ShopCourierSettings> {
+    return shopFetch<ShopCourierSettings>(`${BASE}/logistics/settings`, { signal });
+  },
+
+  /** CAS on `expectedRevision`, like every settings PATCH here. A stale revision
+   *  answers 409 `stale_write` (not `conflict`, despite the name) — the caller
+   *  should treat the two alike. */
+  async saveCourierSettings(patch: ShopCourierSettingsPatch): Promise<ShopCourierSettings> {
+    return shopFetch<ShopCourierSettings>(`${BASE}/logistics/settings`, {
+      method: 'PATCH',
+      body: patch,
+      subject: 'Delivery courier',
+    });
+  },
+
+  async registerCourierWebhook(provider: 'fez' | 'terminal'): Promise<void> {
+    await shopFetch<{ ok: boolean }>(`${BASE}/logistics/webhooks/register`, {
+      method: 'POST',
+      body: { provider },
+      subject: 'Delivery courier',
+    });
+  },
+
   /**
    * PER-DISTRICT DELIVERY (migration 0300). Only the shop's OPINION about a
    * district — the districts themselves come from `marketingApi.listAreas`, and
@@ -1730,6 +1828,43 @@ export const shopApi = {
         subject: 'Fulfilment',
       },
     );
+  },
+
+  /** Asks the active courier for a price. 422 `weights_missing` carries the lines to fix. */
+  async quoteCourier(fulfillmentId: string): Promise<ShopCourierQuote> {
+    return shopFetch<ShopCourierQuote>(`${BASE}/fulfillments/${seg(fulfillmentId)}/courier/quote`, {
+      method: 'POST',
+      body: {},
+      id: fulfillmentId,
+      subject: 'Parcel',
+    });
+  },
+
+  async bookCourier(
+    fulfillmentId: string,
+    body: { optionId: string; quoteRef: string | null },
+  ): Promise<ShopFulfillment> {
+    const res = await shopFetch<{ fulfillment: ShopFulfillment }>(
+      `${BASE}/fulfillments/${seg(fulfillmentId)}/courier/book`,
+      { method: 'POST', body, id: fulfillmentId, subject: 'Parcel' },
+    );
+    return res.fulfillment;
+  },
+
+  async refreshCourier(fulfillmentId: string): Promise<ShopFulfillment> {
+    const res = await shopFetch<{ fulfillment: ShopFulfillment }>(
+      `${BASE}/fulfillments/${seg(fulfillmentId)}/courier/refresh`,
+      { method: 'POST', body: {}, id: fulfillmentId, subject: 'Parcel' },
+    );
+    return res.fulfillment;
+  },
+
+  async cancelCourier(fulfillmentId: string, reason?: string): Promise<ShopFulfillment> {
+    const res = await shopFetch<{ fulfillment: ShopFulfillment }>(
+      `${BASE}/fulfillments/${seg(fulfillmentId)}/courier/cancel`,
+      { method: 'POST', body: reason ? { reason } : {}, id: fulfillmentId, subject: 'Parcel' },
+    );
+    return res.fulfillment;
   },
 
   /**
