@@ -273,6 +273,8 @@ const BOOK = '/api/shop/admin/fulfillments/ful_1/courier/book';
 const REFRESH = '/api/shop/admin/fulfillments/ful_1/courier/refresh';
 const CANCEL_COURIER = '/api/shop/admin/fulfillments/ful_1/courier/cancel';
 const VARIANT = '/api/shop/admin/variants/var_1';
+/** Step ONE of the two — creating the parcel that a courier is then booked for. */
+const FULFIL = '/api/shop/admin/orders/ord_1/fulfillments';
 
 const fezQuote = {
   provider: 'fez', providerLabel: 'Fez Delivery', weightKg: 1, quoteRef: null, note: null,
@@ -625,5 +627,73 @@ describe('OrderDetail — courier booking', () => {
     expect(await screen.findByRole('button', { name: 'Book again' })).toBeTruthy();
     expect(screen.getByText('Cancelled')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Cancel courier' })).toBeNull();
+  });
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * THE FIRST SCREEN OF A TWO-STEP JOB MUST NOT ASK FOR THE SECOND STEP'S
+   * ANSWER.
+   *
+   * Reported from the live dev host: Terminal was switched on, an order came
+   * in, and the only thing offered was **Send out items** asking for a
+   * free-text *Carrier* and *Tracking number* — so the operator asked whether
+   * the booking had gone wrong. It had not. `Book with Terminal Africa` lives
+   * on a PARCEL ROW, and no parcel existed yet: creating one is step one,
+   * booking it is step two.
+   *
+   * Being asked to TYPE a carrier seconds before a courier is booked that
+   * fills that field in itself is a defect of its own — two people can now
+   * disagree about which carrier a parcel went with, on one row, and the one
+   * typed by hand is the one that is wrong. So with a courier on, the two
+   * fields are not rendered at all, `null` is sent for both, and the line
+   * above says which screen the booking happens on.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  it('does not ask for a carrier while a courier is switched on, and says where the booking happens', async () => {
+    const user = userEvent.setup();
+    withOrder(); // nothing packed yet — this is the state the owner hit.
+    when(PROVIDER, { provider: 'terminal', label: 'Terminal Africa' });
+    when(FULFIL, { fulfillment: parcel('pending') });
+    mount();
+    await loaded();
+
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Next step: Send out items…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Send out items' });
+
+    expect(within(dialog).queryByLabelText('Carrier')).toBeNull();
+    expect(within(dialog).queryByLabelText('Tracking number')).toBeNull();
+    expect(
+      within(dialog).getByText(/You'll book Terminal Africa for it on the next screen/),
+    ).toBeTruthy();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Create parcel' }));
+    await waitFor(() =>
+      expect(sent(FULFIL, 'POST')).toEqual({
+        lines: [{ orderLineId: 'line_1', qty: 2 }],
+        carrier: null,
+        trackingNumber: null,
+      }),
+    );
+  });
+
+  /* By hand is the screen exactly as it was — the two fields, and the sentence
+     about a part shipment. `OrderDetail.test.tsx` types into them; this pins
+     the same thing from the courier side, where the provider read SUCCEEDS and
+     answers `manual` rather than merely failing. */
+  it('still asks for a carrier when the shop ships by hand', async () => {
+    const user = userEvent.setup();
+    withOrder();
+    when(PROVIDER, { provider: 'manual', label: 'By hand' });
+    mount();
+    await loaded();
+
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Next step: Send out items…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Send out items' });
+
+    expect(within(dialog).getByLabelText('Carrier')).toBeTruthy();
+    expect(within(dialog).getByLabelText('Tracking number')).toBeTruthy();
+    expect(within(dialog).getByText(/Sending part of an order is normal/)).toBeTruthy();
   });
 });

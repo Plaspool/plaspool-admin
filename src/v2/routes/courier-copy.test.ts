@@ -23,4 +23,13 @@ describe('courier copy', () => {
       typeof v === 'string' ? [v] : v && typeof v === 'object' ? Object.values(v).flatMap(walk) : [];
     for (const s of walk(COURIER_COPY)) expect(s, s).not.toMatch(banned);
   });
+
+  /* The line that replaces "Carrier"/"Tracking number" when a courier is on:
+     it has to name the courier and say the booking is a SEPARATE step, or the
+     operator reads the modal as the whole job (which is what happened). */
+  it('tells the packer that the booking happens on the next screen, and names the courier', () => {
+    const line = COURIER_COPY.parcel.packFirst('Terminal Africa');
+    expect(line).toContain('Terminal Africa');
+    expect(line).toMatch(/next screen/);
+  });
 });

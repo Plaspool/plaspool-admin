@@ -94,6 +94,21 @@ export const COURIER_COPY = {
     courierCancelled: (index: number) => `Parcel ${index} courier cancelled`,
     cost: (amount: string) => `Cost ${amount}`,
     lastError: (msg: string) => `Courier problem: ${msg}`,
+    /**
+     * SEND OUT ITEMS, WITH A COURIER SWITCHED ON — the sentence that replaces
+     * the Carrier and Tracking number boxes.
+     *
+     * Packing and booking are two steps and the buttons for them live on two
+     * screens: Book sits on a PARCEL ROW, which does not exist until this
+     * modal has been through. Without this line the modal reads as the whole
+     * job, and the boxes it used to show invited an operator to type a carrier
+     * seconds before the courier filled that same field in itself.
+     *
+     * Carries the part-shipment fact the old line carried, because that is
+     * still what the quantity boxes are for.
+     */
+    packFirst: (label: string) =>
+      `Pack the items into a parcel first — whatever is left stays open for the next one. You'll book ${label} for it on the next screen.`,
   },
   dialog: {
     title: (label: string, index: number) => `Book Parcel ${index} with ${label}`,

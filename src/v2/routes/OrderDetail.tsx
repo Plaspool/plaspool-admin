@@ -580,7 +580,7 @@ export default function OrderDetail() {
       </div>
 
       {modal === 'fulfil' ? (
-        <FulfilModal orderId={order.id} lines={lines} onClose={() => setModal('none')} onDone={done} />
+        <FulfilModal orderId={order.id} lines={lines} courier={courier} onClose={() => setModal('none')} onDone={done} />
       ) : null}
       {modal === 'cancel' ? (
         <CancelModal order={data} onClose={() => setModal('none')} onDone={done} />
@@ -982,18 +982,41 @@ function ShipDialog({
   );
 }
 
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * SEND OUT ITEMS — STEP ONE OF TWO WHEN A COURIER IS SWITCHED ON.
+ *
+ * This modal makes the PARCEL. `Book with <courier>` lives on the parcel's own
+ * row and cannot exist until it does — so an operator with a courier on met
+ * this screen first, saw it asking for a free-text *Carrier* and *Tracking
+ * number*, and reasonably asked whether the booking had gone wrong.
+ *
+ * With a courier on, those two fields are not rendered AT ALL and `null` is
+ * sent for both. Not merely hidden and not defaulted: the courier fills both
+ * columns in itself the moment the parcel is booked, and a value typed here
+ * would be a second, human opinion about which carrier a parcel went with —
+ * on the same row, arriving first, and wrong whenever they disagree.
+ *
+ * By hand keeps the fields exactly as they were: there, they are the only way
+ * those columns ever get filled in.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
 function FulfilModal({
   orderId,
   lines,
+  courier,
   onClose,
   onDone,
 }: {
   orderId: string;
   lines: ShopOrderLine[];
+  /** Which courier the shop has switched on — `manual` is the screen as it was. */
+  courier: ShopCourierProvider;
   onClose: () => void;
   onDone: () => void;
 }) {
   const toast = useToast();
+  const courierOn = courier.provider !== 'manual';
   const open = useMemo(() => lines.filter((l) => l.fulfilledQty < l.qty), [lines]);
   const [qty, setQty] = useState<Record<string, string>>(() =>
     Object.fromEntries(open.map((l) => [l.id, String(l.qty - l.fulfilledQty)])),
@@ -1022,8 +1045,10 @@ function FulfilModal({
     try {
       await shopApi.createFulfillment(orderId, {
         lines: picked,
-        carrier: carrier.trim() || null,
-        trackingNumber: tracking.trim() || null,
+        /* Explicitly null with a courier on, rather than relying on two boxes
+           nobody could have typed into: the booking owns these columns. */
+        carrier: courierOn ? null : carrier.trim() || null,
+        trackingNumber: courierOn ? null : tracking.trim() || null,
       });
       toast.show('Parcel created');
       onDone();
@@ -1049,7 +1074,9 @@ function FulfilModal({
     >
       <div className="stack">
         <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.5 }}>
-          Sending part of an order is normal. Whatever is left stays open for the next parcel.
+          {courierOn
+            ? COURIER_COPY.parcel.packFirst(courier.label)
+            : 'Sending part of an order is normal. Whatever is left stays open for the next parcel.'}
         </p>
         {open.map((line) => (
           <div key={line.id} className="row" style={{ gap: 'var(--s3)', alignItems: 'center' }}>
@@ -1075,20 +1102,22 @@ function FulfilModal({
             />
           </div>
         ))}
-        <div className="row" style={{ gap: 'var(--s3)', alignItems: 'flex-start' }}>
-          <div style={{ flex: 1 }}>
-            <TextField label="Carrier" value={carrier} placeholder="Optional" onChange={(e) => setCarrier(e.target.value)} />
+        {courierOn ? null : (
+          <div className="row" style={{ gap: 'var(--s3)', alignItems: 'flex-start' }}>
+            <div style={{ flex: 1 }}>
+              <TextField label="Carrier" value={carrier} placeholder="Optional" onChange={(e) => setCarrier(e.target.value)} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <TextField
+                label="Tracking number"
+                value={tracking}
+                placeholder="Optional"
+                className="input mono"
+                onChange={(e) => setTracking(e.target.value)}
+              />
+            </div>
           </div>
-          <div style={{ flex: 1 }}>
-            <TextField
-              label="Tracking number"
-              value={tracking}
-              placeholder="Optional"
-              className="input mono"
-              onChange={(e) => setTracking(e.target.value)}
-            />
-          </div>
-        </div>
+        )}
         {error ? (
           <span className="field__error" role="alert">
             {error}
