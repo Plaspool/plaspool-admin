@@ -749,6 +749,59 @@ export interface ShopCourierRefresh {
   transitioned: 'shipped' | 'delivered' | null;
 }
 
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * COURIER DIAGNOSTICS — `POST /shop/admin/logistics/diagnostics`.
+ *
+ * The four questions that used to need a throwaway script: are the credentials
+ * good, will this courier price this address, can this admin hear a callback,
+ * and will the courier actually send one.
+ *
+ * A DISCRIMINATED UNION because the four checks take four different bodies and
+ * the server's Zod schema is `.strict()` — an extra key is a permanent 400, so
+ * a single wide optional-everything shape would let a caller assemble one that
+ * can never succeed and only find out at runtime.
+ *
+ * `provider_simulate` is `terminal` ALONE, mirroring `z.literal('terminal')` on
+ * the server: Fez has no simulator, so asking for one is a malformed request
+ * rather than an unlucky one, and the type says so before the request is made.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+export type ShopCourierDiagnosticRequest =
+  | { check: 'connection'; provider: 'fez' | 'terminal' }
+  | {
+      check: 'quote';
+      provider: 'fez' | 'terminal';
+      /** A made-up destination. No name and no phone: this check is about an ADDRESS —
+       *  the recipient is synthesised on the server from the shop's own ship-from. */
+      to: { line1: string; city: string; region: string; postalCode?: string };
+      /** Defaults to 1000 g on the server. */
+      weightGrams?: number;
+      }
+  | { check: 'webhook_self_test'; provider: 'fez' | 'terminal' }
+  | { check: 'provider_simulate'; provider: 'terminal'; shipmentId: string };
+
+/**
+ * One envelope for all four checks, and **`ok: false` arrives with a 200**.
+ *
+ * A courier refusing is what the operator pressed the button to find out, so it
+ * is an answer rather than a failure: `summary` then carries the courier's own
+ * words VERBATIM (paraphrasing "Invalid city, please select a city from the
+ * list of cities" throws away the finding) and `detail.accepted` carries the
+ * names it said it would take.
+ *
+ * `detail` IS DELIBERATELY UNTYPED. It is a different shape per check and per
+ * courier, every field of it is optional in practice, and the screen reads it
+ * defensively — a strict shape here would make an unfamiliar-but-useful answer
+ * a client crash instead of a rendered finding.
+ */
+export interface ShopCourierDiagnosticResult {
+  check: ShopCourierDiagnosticRequest['check'];
+  ok: boolean;
+  summary: string;
+  detail?: Record<string, unknown>;
+}
+
 export interface ShopTimelineEntry {
   id: string;
   type: string;
@@ -1672,6 +1725,27 @@ export const shopApi = {
     await shopFetch<{ ok: boolean }>(`${BASE}/logistics/webhooks/register`, {
       method: 'POST',
       body: { provider },
+      subject: 'Delivery courier',
+    });
+  },
+
+  /**
+   * Run ONE courier check. A courier's refusal comes back as a 200 with
+   * `ok: false` and is a normal return here, not a throw — only a request that
+   * cannot be run at all raises: 400 `bad_request`, 409
+   * `provider_not_configured`, 409 `ship_from_incomplete` (which carries
+   * `missing`).
+   *
+   * Books nothing and spends nothing. The one thing it can write is Terminal's
+   * cached packaging id, which Terminal mints during a quote whether we asked
+   * or not.
+   */
+  async runCourierDiagnostic(
+    body: ShopCourierDiagnosticRequest,
+  ): Promise<ShopCourierDiagnosticResult> {
+    return shopFetch<ShopCourierDiagnosticResult>(`${BASE}/logistics/diagnostics`, {
+      method: 'POST',
+      body,
       subject: 'Delivery courier',
     });
   },

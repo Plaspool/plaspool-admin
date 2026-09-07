@@ -76,6 +76,55 @@ export const COURIER_COPY = {
       cancel: 'Cancel',
       confirm: 'Switch to Terminal',
     },
+    /**
+     * TEST THIS COURIER — four buttons that replace four throwaway scripts.
+     *
+     * Each sentence here has to survive being read by somebody holding a
+     * parcel and a phone, so every one of them says what the button DOES and,
+     * where it matters, what it does not: nothing in this panel books
+     * anything or spends money, and the panel is worthless if an operator
+     * hesitates over that.
+     *
+     * The price check is the one that earns the panel. Terminal accepts 46
+     * cities in Lagos and 10 in Abuja and refuses every other name, so a real
+     * Abuja order is usually refused — and the only way to discover the list
+     * was to fail a live booking. `accepted` introduces the names it offered.
+     */
+    diagnostics: {
+      title: 'Test this courier',
+      hint: 'Four questions worth asking before a real parcel depends on the answers. Nothing here books anything or spends money.',
+      connection: 'Check the connection',
+      connectionHint: 'Whether the credentials on this server still work.',
+      quote: 'Ask for a test price',
+      quoteHint: 'A made-up delivery address, priced from the ship-from address above. Nothing is booked.',
+      selfTest: 'Send a test update to this admin',
+      selfTestHint: 'Signs an update the way this courier signs one and posts it at our own address, to prove the shop can hear back.',
+      simulate: 'Ask the courier to send one',
+      simulateHint: 'Ask for a test price first — this needs the draft that a price creates.',
+      /** Names each outcome region. Four live regions all called "result" are four regions called nothing. */
+      outcome: (name: string) => `${name} — result`,
+      accepted: 'It will accept these instead:',
+      addressLine: 'Test address line',
+      city: 'Test city',
+      region: 'Test state',
+      postalCode: 'Test postal code',
+      weight: 'Test weight in grams',
+      weightHint: 'Leave blank for 1 kg.',
+      addressIncomplete: 'An address line, a city and a state, please — that is what the courier prices.',
+      weightInvalid: 'Weight is grams — a whole number above 0.',
+      /* Both halves of the simulation, always, because they disagree: Terminal
+         answers "queued" and its own log then says nothing was delivered, and
+         either half alone reads as the opposite of the truth. */
+      simulateAsked: 'Asked to send one',
+      simulateLog: 'Their own delivery log',
+      simulateSilent: 'nothing at all',
+      legOk: 'Yes',
+      legBad: 'No',
+      /* Not an outcome — a request that could not be run. The fields it is
+         about are on this same screen, and they are marked when this shows. */
+      shipFromIncomplete: 'The courier prices from your ship-from address, and it is not complete. Fill in the fields marked above, save, then ask again.',
+      failed: 'Couldn’t ask the courier — try again.',
+    },
   },
   parcel: {
     book: (label: string) => `Book with ${label}`,

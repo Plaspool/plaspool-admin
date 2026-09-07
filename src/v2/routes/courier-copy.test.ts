@@ -32,4 +32,14 @@ describe('courier copy', () => {
     expect(line).toContain('Terminal Africa');
     expect(line).toMatch(/next screen/);
   });
+
+  /* Four outcome regions all called "result" are four regions called nothing —
+     a screen reader lands on them and cannot tell which button they belong to. */
+  it('names each courier test outcome region after its own button', () => {
+    const d = COURIER_COPY.settings.diagnostics;
+    const buttons = [d.connection, d.quote, d.selfTest, d.simulate];
+    const names = buttons.map((b) => d.outcome(b));
+    expect(new Set(names).size).toBe(4);
+    for (const [i, name] of names.entries()) expect(name).toContain(buttons[i]);
+  });
 });

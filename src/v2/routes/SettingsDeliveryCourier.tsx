@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useState, type InputHTMLAttributes } from 'react';
+import { useCallback, useEffect, useState, type InputHTMLAttributes, type ReactNode } from 'react';
 import { Lock, Settings as SettingsIcon, Truck } from 'lucide-react';
 import {
   shopApi,
   type CourierProviderId,
+  type ShopCourierDiagnosticRequest,
+  type ShopCourierDiagnosticResult,
+  type ShopCourierOption,
   type ShopCourierPackaging,
   type ShopCourierSettings,
   type ShopShipFrom,
@@ -10,7 +13,7 @@ import {
 import { ApiError } from '../../data/errors';
 import { getSession } from '../../data/session';
 import { hasDomain } from '../../../shared/roles';
-import { dateTime } from '../lib/format';
+import { dateTime, money } from '../lib/format';
 import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, EmptyState } from '../ui/primitives';
 import { Card } from '../ui/Card';
@@ -43,7 +46,186 @@ import { COURIER_COPY, PROVIDER_BLURB, PROVIDER_ENV, PROVIDER_LABEL } from './co
  */
 
 const C = COURIER_COPY.settings;
+const D = C.diagnostics;
 const PROVIDERS: CourierProviderId[] = ['manual', 'fez', 'terminal'];
+
+/* ═════════════════════════════════════════════════ TEST THIS COURIER ════ */
+
+/**
+ * WHY EVERY READ OF A `detail` HERE IS DEFENSIVE.
+ *
+ * `detail` is a different shape per check and per courier, and it is the half
+ * of the answer that carries the finding — the accepted city names, the two
+ * legs of a simulation, the draft id the next check needs. A strict read would
+ * turn "the courier answered something we have not seen before" into a blank
+ * screen with a stack trace behind it, which is exactly the situation this
+ * panel exists to get an operator out of. So each reader takes what it
+ * recognises and ignores the rest.
+ */
+const asRecord = (v: unknown): Record<string, unknown> =>
+  v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+
+/** The names the courier said it WOULD take. The reason the price check exists. */
+function readAccepted(detail: unknown): string[] {
+  const list = asRecord(detail).accepted;
+  return Array.isArray(list) ? list.filter((v): v is string => typeof v === 'string') : [];
+}
+
+function readOptions(detail: unknown): ShopCourierOption[] {
+  const list = asRecord(detail).options;
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((entry): ShopCourierOption[] => {
+    const o = asRecord(entry);
+    if (typeof o.id !== 'string' || typeof o.amountMinor !== 'number') return [];
+    return [
+      {
+        id: o.id,
+        carrier: typeof o.carrier === 'string' ? o.carrier : '',
+        label: typeof o.label === 'string' ? o.label : '',
+        amountMinor: o.amountMinor,
+        currency: 'NGN',
+        ...(typeof o.eta === 'string' ? { eta: o.eta } : {}),
+        ...(typeof o.pickupEta === 'string' ? { pickupEta: o.pickupEta } : {}),
+      },
+    ];
+  });
+}
+
+/** Terminal's draft, which is the only input `provider_simulate` takes. Null for Fez. */
+function readDraftId(detail: unknown): string | null {
+  const v = asRecord(detail).shipmentId;
+  return typeof v === 'string' && v !== '' ? v : null;
+}
+
+/** One half of a simulation: what they said when asked, and what their own log says. */
+function readLeg(detail: unknown, key: 'simulate' | 'deliveries'): { ok: boolean; message: string | null } | null {
+  const raw = asRecord(detail)[key];
+  if (raw === null || typeof raw !== 'object') return null;
+  const leg = asRecord(raw);
+  return { ok: leg.ok === true, message: typeof leg.message === 'string' ? leg.message : null };
+}
+
+type DiagnosticKey = ShopCourierDiagnosticRequest['check'];
+/** A finished check — the server's own envelope, or a refusal this screen decided. */
+type DiagnosticOutcome = Pick<ShopCourierDiagnosticResult, 'ok' | 'summary' | 'detail'>;
+
+/**
+ * A REQUEST THAT COULD NOT BE RUN, IN WORDS.
+ *
+ * Never `ApiError.message`: `src/data/api.ts` passes no message, so that is
+ * the server's CODE — an operator reading `ship_from_incomplete` on a courier
+ * screen learns nothing and cannot tell whether they broke it.
+ */
+function describeCheckFailure(cause: unknown, provider: 'fez' | 'terminal'): string {
+  if (cause instanceof ApiError) {
+    if (cause.code === 'ship_from_incomplete') return D.shipFromIncomplete;
+    if (cause.code === 'provider_not_configured') return C.notSetUp(PROVIDER_ENV[provider]);
+    return D.failed;
+  }
+  /* A network failure DOES carry a sentence, and it is the useful one. */
+  return cause instanceof Error && cause.message ? cause.message : D.failed;
+}
+
+/**
+ * ONE OUTCOME, WITH A NAME.
+ *
+ * The region exists before the answer does, because a live region announced
+ * into existence announces nothing, and it is named after its own button so
+ * that four of them on one card are four different places rather than four
+ * things called "result".
+ *
+ * A FAILED CHECK IS A NORMAL OUTCOME and gets a `warn` banner, never an error
+ * state: the courier refusing is the finding the operator pressed the button
+ * to get, and dressing it as a breakage would send them looking for a bug in
+ * this admin instead of reading the sentence.
+ */
+function Outcome({ name, result, children }: { name: string; result?: DiagnosticOutcome; children?: ReactNode }) {
+  return (
+    <div role="status" aria-label={D.outcome(name)}>
+      {result ? (
+        <div className="stack stack--tight">
+          {result.ok ? (
+            <p style={{ margin: 0, fontSize: 'var(--t-sm)' }}>{result.summary}</p>
+          ) : (
+            <Banner tone="warn">{result.summary}</Banner>
+          )}
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * WHAT A PRICE CHECK FOUND — the rates, or the names it would have taken.
+ *
+ * `detail.accepted` IS THE POINT OF THE WHOLE CHECK. Terminal answers an
+ * unknown city with the list it would have accepted; printing that list is how
+ * an operator learns that "Gwarinpa" is not a city Terminal knows and
+ * "Maitama" is, which until now could only be discovered by failing a live
+ * booking.
+ */
+function QuoteDetail({ result }: { result: DiagnosticOutcome }) {
+  const options = readOptions(result.detail);
+  const accepted = readAccepted(result.detail);
+  if (options.length === 0 && accepted.length === 0) return null;
+  return (
+    <div className="stack stack--tight">
+      {options.map((o) => (
+        <div key={o.id} className="row" style={{ gap: 'var(--s3)', alignItems: 'baseline', flexWrap: 'wrap' }}>
+          <span style={{ flex: 1, minWidth: '10rem' }}>
+            <span style={{ fontWeight: 'var(--w-medium)' }}>{o.label || o.carrier}</span>
+            {o.label && o.carrier && o.label !== o.carrier ? (
+              <span className="muted" style={{ fontSize: 'var(--t-sm)', display: 'block' }}>{o.carrier}</span>
+            ) : null}
+          </span>
+          <span style={{ fontWeight: 'var(--w-semi)' }}>{money(o.amountMinor, o.currency)}</span>
+          {o.eta ? <span className="muted" style={{ fontSize: 'var(--t-sm)' }}>{o.eta}</span> : null}
+          {o.pickupEta ? <span className="muted" style={{ fontSize: 'var(--t-sm)' }}>{o.pickupEta}</span> : null}
+        </div>
+      ))}
+      {accepted.length > 0 ? (
+        <>
+          <p style={{ margin: 0, fontSize: 'var(--t-sm)', fontWeight: 'var(--w-medium)' }}>{D.accepted}</p>
+          <div className="row" style={{ gap: 'var(--s2)', flexWrap: 'wrap' }}>
+            {accepted.map((name) => (
+              <Badge key={name}>{name}</Badge>
+            ))}
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * BOTH LEGS OF A SIMULATION, ALWAYS.
+ *
+ * Terminal's simulator answers "queued" and its own delivery log then reports
+ * an error — those two have been disagreeing in the sandbox all along, and
+ * either half alone reads as the opposite of the truth. The pair is what goes
+ * into the support ticket, so the pair is what gets rendered.
+ */
+function SimulateDetail({ result }: { result: DiagnosticOutcome }) {
+  const legs = (
+    [
+      [D.simulateAsked, readLeg(result.detail, 'simulate')],
+      [D.simulateLog, readLeg(result.detail, 'deliveries')],
+    ] as const
+  ).flatMap(([name, leg]) => (leg ? [{ name, leg }] : []));
+  if (legs.length === 0) return null;
+  return (
+    <div className="stack stack--tight">
+      {legs.map(({ name, leg }) => (
+        <div key={name} className="row" style={{ gap: 'var(--s2)', alignItems: 'baseline', flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 'var(--w-medium)' }}>{name}</span>
+          <Badge tone={leg.ok ? 'ok' : 'warn'}>{leg.ok ? D.legOk : D.legBad}</Badge>
+          <span className="muted" style={{ fontSize: 'var(--t-sm)' }}>{leg.message ?? D.simulateSilent}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 type ShipFromDraft = Record<keyof Omit<ShopShipFrom, 'countryCode'>, string>;
 const EMPTY_SHIP_FROM: ShipFromDraft = { name: '', phone: '', email: '', line1: '', line2: '', city: '', region: '', postalCode: '' };
@@ -91,6 +273,24 @@ export default function SettingsDeliveryCourier() {
   const [missing, setMissing] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [connecting, setConnecting] = useState<'fez' | 'terminal' | null>(null);
+
+  /* ── Test this courier ─────────────────────────────────────────────────
+     A busy flag and a result PER CHECK, not one of each: these four ask four
+     unrelated questions, and a single result slot would have the answer to
+     "can this admin hear back" quietly replace the list of city names the
+     operator is halfway through reading. */
+  const [diagBusy, setDiagBusy] = useState<Partial<Record<DiagnosticKey, boolean>>>({});
+  const [diagOut, setDiagOut] = useState<Partial<Record<DiagnosticKey, DiagnosticOutcome>>>({});
+  /**
+   * `region: null` means "follow the ship-from address", so the test state
+   * defaults to the one the shop actually ships from and keeps following it
+   * until somebody types a different one. Blank when there is no ship-from.
+   */
+  const [diagTo, setDiagTo] = useState<{ line1: string; city: string; region: string | null; postalCode: string; weightGrams: string }>(
+    { line1: '', city: '', region: null, postalCode: '', weightGrams: '' },
+  );
+  /** Terminal's draft from the last price that produced one — `provider_simulate`'s only input. */
+  const [draftId, setDraftId] = useState<string | null>(null);
 
   const adopt = useCallback((s: ShopCourierSettings) => {
     setSettings(s);
@@ -238,6 +438,67 @@ export default function SettingsDeliveryCourier() {
       setConnecting(null);
     }
   }
+
+  /**
+   * RUN ONE CHECK.
+   *
+   * A courier refusing arrives here as a normal RETURN (200, `ok: false`) and
+   * is rendered as the finding it is. The only throws are requests that could
+   * not be run at all, and the two that a person can fix from this screen get
+   * their own sentence — `ship_from_incomplete` also MARKS the fields it is
+   * about, because a sentence pointing at a card is weaker than the card
+   * pointing at itself.
+   */
+  async function runCheck(body: ShopCourierDiagnosticRequest) {
+    const key = body.check;
+    setDiagBusy((b) => ({ ...b, [key]: true }));
+    try {
+      const result = await shopApi.runCourierDiagnostic(body);
+      setDiagOut((o) => ({ ...o, [key]: result }));
+      /* Kept only when a price actually produced one: a refusal that minted no
+         draft must not disarm a button the previous price legitimately armed. */
+      const draft = result.check === 'quote' ? readDraftId(result.detail) : null;
+      if (draft) setDraftId(draft);
+    } catch (cause) {
+      setDiagOut((o) => ({ ...o, [key]: { ok: false, summary: describeCheckFailure(cause, body.provider) } }));
+      if (cause instanceof ApiError && cause.code === 'ship_from_incomplete') {
+        const detail = cause.body as { missing?: string[] } | undefined;
+        setMissing(detail?.missing ?? REQUIRED_SHIP_FROM);
+      }
+    } finally {
+      setDiagBusy((b) => ({ ...b, [key]: false }));
+    }
+  }
+
+  /** The price check's own guard, so a body the server's `.strict()` Zod would
+   *  reject with a code never leaves this screen. */
+  function askForPrice(p: 'fez' | 'terminal') {
+    const to = {
+      line1: diagTo.line1.trim(),
+      city: diagTo.city.trim(),
+      region: (diagTo.region ?? shipFrom.region).trim(),
+    };
+    const postalCode = diagTo.postalCode.trim();
+    const grams = diagTo.weightGrams.trim();
+    if (!to.line1 || !to.city || !to.region) {
+      setDiagOut((o) => ({ ...o, quote: { ok: false, summary: D.addressIncomplete } }));
+      return;
+    }
+    if (grams !== '' && (!/^\d+$/.test(grams) || Number(grams) <= 0)) {
+      setDiagOut((o) => ({ ...o, quote: { ok: false, summary: D.weightInvalid } }));
+      return;
+    }
+    void runCheck({
+      check: 'quote',
+      provider: p,
+      to: { ...to, ...(postalCode ? { postalCode } : {}) },
+      ...(grams ? { weightGrams: Number(grams) } : {}),
+    });
+  }
+
+  /** The courier the four checks would ask, or `null` when there is nobody to ask. */
+  const testable: 'fez' | 'terminal' | null =
+    provider !== 'manual' && settings !== null && settings.providers[provider].configured ? provider : null;
 
   const field = (
     key: keyof ShipFromDraft,
@@ -431,6 +692,120 @@ export default function SettingsDeliveryCourier() {
               </div>
             )}
           </Card>
+
+          {/*
+            TEST THIS COURIER — after the webhooks card, because two of the
+            four checks are about the address printed on it, and only for a
+            courier that is actually set up here: everything below asks the
+            server to talk to a courier, and with no credentials all four
+            would answer the same 409 the card above already explains.
+          */}
+          {testable ? (
+            <Card title={D.title}>
+              <p className="muted" style={{ fontSize: 'var(--t-sm)', margin: 0 }}>{D.hint}</p>
+
+              <div className="stack stack--tight">
+                <div className="row" style={{ gap: 'var(--s3)', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <Button
+                    busy={diagBusy.connection === true}
+                    onClick={() => void runCheck({ check: 'connection', provider: testable })}
+                  >
+                    {D.connection}
+                  </Button>
+                  <span className="field__hint">{D.connectionHint}</span>
+                </div>
+                <Outcome name={D.connection} result={diagOut.connection} />
+              </div>
+
+              <div className="stack stack--tight">
+                <p className="muted" style={{ fontSize: 'var(--t-sm)', margin: 0 }}>{D.quoteHint}</p>
+                <div className="row" style={{ gap: 'var(--s3)', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                  <div style={{ flex: 2, minWidth: '12rem' }}>
+                    <TextField
+                      label={D.addressLine}
+                      value={diagTo.line1}
+                      onChange={(e) => setDiagTo((d) => ({ ...d, line1: e.target.value }))}
+                    />
+                  </div>
+                  <div style={{ flex: 1, minWidth: '8rem' }}>
+                    <TextField
+                      label={D.city}
+                      value={diagTo.city}
+                      onChange={(e) => setDiagTo((d) => ({ ...d, city: e.target.value }))}
+                    />
+                  </div>
+                  <div style={{ flex: 1, minWidth: '8rem' }}>
+                    <TextField
+                      label={D.region}
+                      value={diagTo.region ?? shipFrom.region}
+                      onChange={(e) => setDiagTo((d) => ({ ...d, region: e.target.value }))}
+                    />
+                  </div>
+                  <div style={{ flex: 1, minWidth: '8rem' }}>
+                    <TextField
+                      label={D.postalCode}
+                      value={diagTo.postalCode}
+                      onChange={(e) => setDiagTo((d) => ({ ...d, postalCode: e.target.value }))}
+                    />
+                  </div>
+                  <div style={{ flex: 1, minWidth: '8rem' }}>
+                    <TextField
+                      label={D.weight}
+                      hint={D.weightHint}
+                      inputMode="numeric"
+                      value={diagTo.weightGrams}
+                      onChange={(e) => setDiagTo((d) => ({ ...d, weightGrams: e.target.value }))}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <Button busy={diagBusy.quote === true} onClick={() => askForPrice(testable)}>
+                    {D.quote}
+                  </Button>
+                </div>
+                <Outcome name={D.quote} result={diagOut.quote}>
+                  {diagOut.quote ? <QuoteDetail result={diagOut.quote} /> : null}
+                </Outcome>
+              </div>
+
+              <div className="stack stack--tight">
+                <div className="row" style={{ gap: 'var(--s3)', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <Button
+                    busy={diagBusy.webhook_self_test === true}
+                    onClick={() => void runCheck({ check: 'webhook_self_test', provider: testable })}
+                  >
+                    {D.selfTest}
+                  </Button>
+                  <span className="field__hint">{D.selfTestHint}</span>
+                </div>
+                <Outcome name={D.selfTest} result={diagOut.webhook_self_test} />
+              </div>
+
+              {/* Terminal alone: Fez has no simulator, so the button would be a
+                  request the server refuses by its schema rather than a check. */}
+              {testable === 'terminal' ? (
+                <div className="stack stack--tight">
+                  <div className="row" style={{ gap: 'var(--s3)', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <Button
+                      busy={diagBusy.provider_simulate === true}
+                      disabled={draftId === null}
+                      onClick={() =>
+                        draftId === null
+                          ? undefined
+                          : void runCheck({ check: 'provider_simulate', provider: 'terminal', shipmentId: draftId })
+                      }
+                    >
+                      {D.simulate}
+                    </Button>
+                    <span className="field__hint">{D.simulateHint}</span>
+                  </div>
+                  <Outcome name={D.simulate} result={diagOut.provider_simulate}>
+                    {diagOut.provider_simulate ? <SimulateDetail result={diagOut.provider_simulate} /> : null}
+                  </Outcome>
+                </div>
+              ) : null}
+            </Card>
+          ) : null}
 
           {error ? (
             <span className="field__error" role="alert">

@@ -141,6 +141,7 @@ afterEach(() => {
 
 const SETTINGS = '/api/shop/admin/logistics/settings';
 const REGISTER = '/api/shop/admin/logistics/webhooks/register';
+const DIAG = '/api/shop/admin/logistics/diagnostics';
 
 const baseSettings = {
   provider: 'manual',
@@ -350,6 +351,243 @@ describe('Settings → Delivery courier', () => {
     await waitFor(() => expect(bodiesOf(REGISTER, 'POST')).toEqual([{ provider: 'fez' }]));
     expect(await screen.findByText('ASAC27012319')).toBeTruthy();
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe(shipFrom.name);
+  });
+
+  /**
+   * ═════════════════════════════════════════════════════════════════════════
+   * TEST THIS COURIER — the four questions that used to need a throwaway
+   * script, as four buttons.
+   *
+   * `POST /admin/logistics/diagnostics` answers **200 for a refusal**: a
+   * courier saying no is what the operator pressed the button to find out, so
+   * every outcome below is rendered, none of them is an error banner about the
+   * request, and nothing here retries.
+   *
+   * The one that earns the panel is the price check. Terminal accepts 46
+   * cities in Lagos and 10 in Abuja and refuses every other name — so a real
+   * Abuja order is usually refused, and until now the only way to discover the
+   * list was to fail a live booking. The refusal is printed VERBATIM and the
+   * names Terminal offered are printed under it: that is how an operator
+   * learns "Gwarinpa" is not a city here and "Maitama" is.
+   * ═════════════════════════════════════════════════════════════════════════
+   */
+  describe('Test this courier', () => {
+    /** A saved, switched-on Terminal — the panel only appears for a courier that is set up. */
+    const onTerminal = { ...baseSettings, provider: 'terminal', shipFrom };
+
+    it('asks the courier whether the credentials work, and prints what it said', async () => {
+      const user = userEvent.setup();
+      when(SETTINGS, onTerminal);
+      when(DIAG, {
+        check: 'connection',
+        ok: true,
+        summary: 'Terminal Africa accepted the credentials (sandbox).',
+        detail: { provider: 'terminal', environment: 'sandbox', response: { probe: 'GET /webhooks', webhooks: 2 } },
+      });
+      mount();
+      await user.click(await screen.findByRole('button', { name: 'Check the connection' }));
+
+      await waitFor(() => expect(bodiesOf(DIAG, 'POST')).toHaveLength(1));
+      expect(bodiesOf(DIAG, 'POST')[0]).toEqual({ check: 'connection', provider: 'terminal' });
+      const out = await screen.findByRole('status', { name: 'Check the connection — result' });
+      await waitFor(() =>
+        expect(out.textContent).toContain('Terminal Africa accepted the credentials (sandbox).'),
+      );
+    });
+
+    it('prices a made-up address and lists what came back', async () => {
+      const user = userEvent.setup();
+      when(SETTINGS, onTerminal);
+      when(DIAG, {
+        check: 'quote',
+        ok: true,
+        summary: '2 options, cheapest ₦3,676.90 (GIG Logistics)',
+        detail: {
+          provider: 'terminal',
+          weightKg: 1.5,
+          shipmentId: 'SH-1',
+          options: [
+            { id: 'RT-1', carrier: 'GIG Logistics', label: 'GIG Logistics · Standard', amountMinor: 367690, currency: 'NGN', eta: '2 days' },
+            { id: 'RT-2', carrier: 'Kwik Delivery', label: 'Kwik Delivery · Same day', amountMinor: 520000, currency: 'NGN', eta: 'Today' },
+          ],
+        },
+      });
+      mount();
+      await user.type(await screen.findByLabelText('Test address line'), '1 Test Close');
+      await user.type(screen.getByLabelText('Test city'), 'Maitama');
+      await user.type(screen.getByLabelText('Test postal code'), '900001');
+      await user.type(screen.getByLabelText('Test weight in grams'), '1500');
+      await user.click(screen.getByRole('button', { name: 'Ask for a test price' }));
+
+      await waitFor(() => expect(bodiesOf(DIAG, 'POST')).toHaveLength(1));
+      /* The state defaults from the ship-from address the shop actually saved,
+         because that is the half of the pair the courier prices against. */
+      expect(bodiesOf(DIAG, 'POST')[0]).toEqual({
+        check: 'quote',
+        provider: 'terminal',
+        to: { line1: '1 Test Close', city: 'Maitama', region: 'FCT', postalCode: '900001' },
+        weightGrams: 1500,
+      });
+
+      const out = await screen.findByRole('status', { name: 'Ask for a test price — result' });
+      expect(await within(out).findByText('GIG Logistics · Standard')).toBeTruthy();
+      expect(within(out).getByText('₦3,676.90')).toBeTruthy();
+      expect(within(out).getByText('₦5,200.00')).toBeTruthy();
+      expect(within(out).getByText('2 days')).toBeTruthy();
+    });
+
+    it('prints a refusal in the courier’s own words, with the names it will accept', async () => {
+      const user = userEvent.setup();
+      when(SETTINGS, onTerminal);
+      when(DIAG, {
+        check: 'quote',
+        ok: false,
+        summary: 'Delivery Address - Invalid city, please select a city from the list of cities',
+        detail: {
+          provider: 'terminal',
+          weightGrams: 1000,
+          code: 'provider_rejected',
+          status: 400,
+          accepted: ['Abaji', 'Bwari', 'Gwagwalada', 'Maitama'],
+        },
+      });
+      mount();
+      await user.type(await screen.findByLabelText('Test address line'), '1 Test Close');
+      await user.type(screen.getByLabelText('Test city'), 'Gwarinpa');
+      await user.click(screen.getByRole('button', { name: 'Ask for a test price' }));
+
+      await waitFor(() => expect(bodiesOf(DIAG, 'POST')).toHaveLength(1));
+      expect(bodiesOf(DIAG, 'POST')[0]).toEqual({
+        check: 'quote',
+        provider: 'terminal',
+        to: { line1: '1 Test Close', city: 'Gwarinpa', region: 'FCT' },
+      });
+
+      const out = await screen.findByRole('status', { name: 'Ask for a test price — result' });
+      await waitFor(() =>
+        expect(out.textContent).toContain(
+          'Delivery Address - Invalid city, please select a city from the list of cities',
+        ),
+      );
+      /* THE WHOLE POINT OF THE CHECK: the names nobody could otherwise find. */
+      expect(within(out).getByText('Maitama')).toBeTruthy();
+      expect(within(out).getByText('Gwagwalada')).toBeTruthy();
+    });
+
+    it('signs an update the way the courier would and posts it at our own address', async () => {
+      const user = userEvent.setup();
+      when(SETTINGS, onTerminal);
+      when(DIAG, {
+        check: 'webhook_self_test',
+        ok: false,
+        summary: 'Your webhook address refused a correctly signed update (401 bad_signature).',
+        detail: { provider: 'terminal', url: 'https://admin.dev.plaspool.com/api/shop/logistics/terminal/webhook', status: 401 },
+      });
+      mount();
+      await user.click(await screen.findByRole('button', { name: 'Send a test update to this admin' }));
+
+      await waitFor(() => expect(bodiesOf(DIAG, 'POST')).toHaveLength(1));
+      expect(bodiesOf(DIAG, 'POST')[0]).toEqual({ check: 'webhook_self_test', provider: 'terminal' });
+      const out = await screen.findByRole('status', { name: 'Send a test update to this admin — result' });
+      await waitFor(() =>
+        expect(out.textContent).toContain(
+          'Your webhook address refused a correctly signed update (401 bad_signature).',
+        ),
+      );
+    });
+
+    /* `provider_simulate` names a draft shipment, and the only place to get one
+       is a price check that succeeded — so the button cannot be pressed before
+       there is something to press it about. */
+    it('keeps “Ask the courier to send one” disabled until a test price has produced a draft', async () => {
+      const user = userEvent.setup();
+      when(SETTINGS, onTerminal);
+      when(DIAG, (_url, init) =>
+        (JSON.parse(String(init.body)) as { check: string }).check === 'quote'
+          ? {
+              body: {
+                check: 'quote',
+                ok: true,
+                summary: '1 option, cheapest ₦3,500.00 (GIG Logistics)',
+                detail: {
+                  provider: 'terminal',
+                  shipmentId: 'SH-1',
+                  options: [{ id: 'RT-1', carrier: 'GIG Logistics', label: 'GIG Logistics · Standard', amountMinor: 350000, currency: 'NGN' }],
+                },
+              },
+            }
+          : {
+              body: {
+                check: 'provider_simulate',
+                ok: false,
+                summary: 'Terminal Africa queued the simulation, but its delivery log answered: An unknown error occurred, please try again',
+                detail: {
+                  provider: 'terminal',
+                  shipmentId: 'SH-1',
+                  simulate: { ok: true, message: 'Webhook simulation queued' },
+                  deliveries: { ok: false, message: 'An unknown error occurred, please try again', count: null },
+                },
+              },
+            },
+      );
+      mount();
+      const simulate = (await screen.findByRole('button', { name: 'Ask the courier to send one' })) as HTMLButtonElement;
+      expect(simulate.disabled).toBe(true);
+
+      await user.type(screen.getByLabelText('Test address line'), '1 Test Close');
+      await user.type(screen.getByLabelText('Test city'), 'Maitama');
+      await user.click(screen.getByRole('button', { name: 'Ask for a test price' }));
+      await waitFor(() => expect(simulate.disabled).toBe(false));
+
+      await user.click(simulate);
+      await waitFor(() => expect(bodiesOf(DIAG, 'POST')).toHaveLength(2));
+      expect(bodiesOf(DIAG, 'POST')[1]).toEqual({
+        check: 'provider_simulate',
+        provider: 'terminal',
+        shipmentId: 'SH-1',
+      });
+
+      /* BOTH LEGS. The pair — "queued" from the simulator and an error from
+         their own delivery log — is the evidence for the support ticket, and
+         either half alone reads as the opposite of the truth. */
+      const out = await screen.findByRole('status', { name: 'Ask the courier to send one — result' });
+      await waitFor(() => expect(out.textContent).toContain('Webhook simulation queued'));
+      expect(out.textContent).toContain('An unknown error occurred, please try again');
+    });
+
+    /* Not a diagnostic outcome at all — a request that cannot be run. The
+       fields it is about are on THIS screen, so it says so and marks them. */
+    it('points a price check with no ship-from address at the card above', async () => {
+      const user = userEvent.setup();
+      when(SETTINGS, { ...baseSettings, provider: 'terminal', shipFrom: { ...shipFrom, postalCode: '' } });
+      when(DIAG, () => ({ status: 409, body: { error: 'ship_from_incomplete', missing: ['postalCode'] } }));
+      mount();
+      await user.type(await screen.findByLabelText('Test address line'), '1 Test Close');
+      await user.type(screen.getByLabelText('Test city'), 'Maitama');
+      await user.click(screen.getByRole('button', { name: 'Ask for a test price' }));
+
+      const out = await screen.findByRole('status', { name: 'Ask for a test price — result' });
+      await waitFor(() => expect(out.textContent).toContain('ship-from address'));
+      /* Marked on the field itself, not merely named in a sentence. */
+      expect(screen.getByLabelText('Postal code').getAttribute('aria-invalid')).toBe('true');
+    });
+
+    it('names the missing env vars when the courier is not set up on this server', async () => {
+      const user = userEvent.setup();
+      when(SETTINGS, onTerminal);
+      when(DIAG, () => ({ status: 409, body: { error: 'provider_not_configured', provider: 'terminal' } }));
+      mount();
+      await user.click(await screen.findByRole('button', { name: 'Check the connection' }));
+      const out = await screen.findByRole('status', { name: 'Check the connection — result' });
+      await waitFor(() => expect(out.textContent).toContain('TERMINAL_SECRET_KEY'));
+    });
+
+    it('offers nothing to test while the shop ships by hand', async () => {
+      when(SETTINGS, baseSettings);
+      mount();
+      await screen.findByRole('radiogroup', { name: 'Courier' });
+      expect(screen.queryByRole('button', { name: 'Check the connection' })).toBeNull();
+    });
   });
 
   it('refuses a role without the settings domain', async () => {
