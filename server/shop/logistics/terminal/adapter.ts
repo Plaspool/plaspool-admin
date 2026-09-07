@@ -71,26 +71,44 @@ export function createTerminalProvider(env: TerminalEnv, opts: TerminalClientOpt
         if (!packagingRef) throw new LogisticsError('bad_response', 'Terminal Africa returned no packaging id');
         created = packagingRef;
       }
-      const shipment = await client.call('POST', '/shipments/quick', {
-        pickup_address: pickupAddress, delivery_address: deliveryAddress,
-        parcel: {
-          description: `Order ${input.orderNumber}`,
-          items: input.items.map((i) => ({ name: i.title, description: i.sku, currency: 'NGN', value: i.unitMinor / 100, quantity: i.qty, weight: terminalItemKg(i.weightGrams ?? 0) })),
-          packaging: packagingRef, weight_unit: 'kg',
-        },
-        shipment_purpose: 'commercial', metadata: { fulfillmentId: input.fulfillmentId, orderNumber: input.orderNumber },
-      });
-      const shipmentId = str(rec(shipment.data).shipment_id);
-      if (!shipmentId) throw new LogisticsError('bad_response', 'Terminal Africa returned no shipment id');
-      const rates = await client.call('GET', `/rates/shipment?shipment_id=${encodeURIComponent(shipmentId)}&currency=NGN`);
-      const list = Array.isArray(rates.data) ? (rates.data as Record<string, unknown>[]) : [];
-      const options: QuoteOption[] = list.flatMap((r) => {
-        const id = str(r.rate_id); const amountMinor = toMinor(r.amount);
-        if (!id || amountMinor === null) return [];
-        const carrier = str(r.carrier_name) ?? 'Courier';
-        return [{ id, carrier, label: str(r.carrier_rate_description) ? `${carrier} · ${r.carrier_rate_description as string}` : carrier, amountMinor, currency: 'NGN' as const, ...(str(r.delivery_time) ? { eta: r.delivery_time as string } : {}), ...(str(r.pickup_time) ? { pickupEta: r.pickup_time as string } : {}) }];
-      });
-      return { providerRef: shipmentId, options, weightKg: Math.round(totalGrams(input.items)) / 1000, note: null, ...(created ? { packagingRef: created } : {}) };
+      /*
+       * A PACKAGING RECORD WE MADE LEAVES BY BOTH DOORS.
+       *
+       * Everything past this point can fail — a state Terminal will not deliver
+       * to, a shipment it will not price — and the id would then be lost: not
+       * returned, not thrown, never cached, so the next attempt minted another
+       * and every failed quote leaked one record at Terminal. The failure is
+       * re-thrown UNCHANGED except for the receipt, so the caller still sees
+       * the code, message, status, detail and stack of whatever actually went
+       * wrong. `client.call` promises every failure below is a LogisticsError.
+       */
+      try {
+        const shipment = await client.call('POST', '/shipments/quick', {
+          pickup_address: pickupAddress, delivery_address: deliveryAddress,
+          parcel: {
+            description: `Order ${input.orderNumber}`,
+            items: input.items.map((i) => ({ name: i.title, description: i.sku, currency: 'NGN', value: i.unitMinor / 100, quantity: i.qty, weight: terminalItemKg(i.weightGrams ?? 0) })),
+            packaging: packagingRef, weight_unit: 'kg',
+          },
+          shipment_purpose: 'commercial', metadata: { fulfillmentId: input.fulfillmentId, orderNumber: input.orderNumber },
+        });
+        const shipmentId = str(rec(shipment.data).shipment_id);
+        if (!shipmentId) throw new LogisticsError('bad_response', 'Terminal Africa returned no shipment id');
+        const rates = await client.call('GET', `/rates/shipment?shipment_id=${encodeURIComponent(shipmentId)}&currency=NGN`);
+        const list = Array.isArray(rates.data) ? (rates.data as Record<string, unknown>[]) : [];
+        const options: QuoteOption[] = list.flatMap((r) => {
+          const id = str(r.rate_id); const amountMinor = toMinor(r.amount);
+          if (!id || amountMinor === null) return [];
+          const carrier = str(r.carrier_name) ?? 'Courier';
+          return [{ id, carrier, label: str(r.carrier_rate_description) ? `${carrier} · ${r.carrier_rate_description as string}` : carrier, amountMinor, currency: 'NGN' as const, ...(str(r.delivery_time) ? { eta: r.delivery_time as string } : {}), ...(str(r.pickup_time) ? { pickupEta: r.pickup_time as string } : {}) }];
+        });
+        return { providerRef: shipmentId, options, weightKg: Math.round(totalGrams(input.items)) / 1000, note: null, ...(created ? { packagingRef: created } : {}) };
+      } catch (err) {
+        /* Only when THIS call created it — a cached ref the caller already holds
+           is not news, and claiming it would be a write for nothing. */
+        if (created && err instanceof LogisticsError) err.packagingRef ??= created;
+        throw err;
+      }
     },
 
     async book(_input, optionId, quoteRef, chosen): Promise<BookingResult> {

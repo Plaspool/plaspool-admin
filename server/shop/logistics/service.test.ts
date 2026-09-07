@@ -17,7 +17,7 @@ import { storefrontOrigin } from '../storefront-url';
 import { BUILT_IN } from '../../email/system-templates';
 import { registerLogisticsDeps, resetLogisticsDeps, resolveLogisticsDeps } from './deps';
 import type { LogisticsCatalog } from './deps';
-import { PROVIDER_LABEL } from './port';
+import { LogisticsError, PROVIDER_LABEL } from './port';
 import type {
   BookingResult,
   LogisticsProvider,
@@ -107,6 +107,8 @@ let calls: Recorded;
 
 interface Behaviour {
   quote?: QuoteResult;
+  /** What `quote` rejects with instead of answering — a courier refusing the parcel. */
+  quoteError?: Error;
   book?: BookingResult;
   track?: TrackResult;
 }
@@ -122,6 +124,7 @@ function fakeProvider(id: ProviderId, b: Behaviour = {}): LogisticsProvider {
     label: PROVIDER_LABEL[id],
     quote: async (input) => {
       calls.quote.push(input);
+      if (b.quoteError) throw b.quoteError;
       if (!b.quote) throw new Error(`fake ${id}: quote is not driven by this case`);
       return b.quote;
     },
@@ -477,6 +480,45 @@ describe('quoteParcel', () => {
     expect(after.trackingNumber).toBeNull();
 
     expect((await getLogisticsSettings(ctx.db)).terminalPackagingId).toBe('PA-77');
+  });
+
+  /**
+   * A QUOTE THAT FAILED CAN STILL HAVE COST US A RECORD AT THE COURIER.
+   *
+   * Terminal creates the packaging record before it asks for a shipment, so a
+   * refusal after that point leaves one behind — and `LogisticsError` carries
+   * its id out for exactly this. Cache it before the failure travels on, or
+   * every retry of the quote an operator is most likely to retry (fix the
+   * address, quote again) mints another.
+   */
+  it('TERMINAL: caches the packaging record a failed quote created, and still fails', async () => {
+    const failed = new LogisticsError('provider_rejected', 'Invalid recipient state', { status: 400, packagingRef: 'PA-1' });
+    wire({ terminal: fakeProvider('terminal', { quoteError: failed }) });
+    await settings('terminal');
+    const order = await paidOrder();
+    const parcel = await oneMug(order);
+
+    await expect(quoteParcel(ctx.db, resolveLogisticsDeps(), parcel.id, NOW)).rejects.toBe(failed);
+    expect((await getLogisticsSettings(ctx.db)).terminalPackagingId).toBe('PA-1');
+    /* The failure is still a failure: no draft on the parcel, nothing promised. */
+    const after = await reread(parcel.id);
+    expect(after.provider).toBeNull();
+    expect(after.courierState).toBeNull();
+
+    /* And the next attempt is handed the cached id, so it creates nothing. */
+    wire({ terminal: fakeProvider('terminal', { quote: { ...TERMINAL_QUOTE, packagingRef: undefined } }) });
+    await quoteParcel(ctx.db, resolveLogisticsDeps(), parcel.id, NOW);
+    expect(calls.quote.at(-1)!.packagingRef).toBe('PA-1');
+  });
+
+  it('TERMINAL: a failed quote that created nothing caches nothing', async () => {
+    wire({ terminal: fakeProvider('terminal', { quoteError: new LogisticsError('provider_unavailable', 'Terminal Africa timed out') }) });
+    await settings('terminal');
+    const order = await paidOrder();
+    const parcel = await oneMug(order);
+
+    await expect(quoteParcel(ctx.db, resolveLogisticsDeps(), parcel.id, NOW)).rejects.toBeInstanceOf(LogisticsError);
+    expect((await getLogisticsSettings(ctx.db)).terminalPackagingId).toBeNull();
   });
 
   it('FEZ: missing weights are soft — reported, never refused, and nothing is stored', async () => {

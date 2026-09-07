@@ -222,6 +222,40 @@ describe('quote', () => {
     expect(err.message).toBe('Terminal Africa needs a phone number for Jane Doe');
     expect(calls).toHaveLength(0);
   });
+
+  /**
+   * A PACKAGING RECORD SURVIVES THE QUOTE THAT FAILED AFTER MAKING IT.
+   *
+   * The addresses are validated before `/packaging` precisely so a bad one
+   * creates nothing — but `/shipments/quick` is where Terminal judges the
+   * address it will actually deliver to, and that is past the point of no
+   * return. Losing the id there meant every retry of the quote an operator is
+   * most likely to retry minted another record at Terminal, forever.
+   */
+  it('carries the packaging id it just created out on the failure that followed', async () => {
+    const { fetchImpl } = terminalFetch([
+      OK({ packaging_id: 'PA-1' }),
+      { status: 400, json: { status: false, message: 'Invalid recipient state' } },
+    ]);
+    const err = await failureOf(createTerminalProvider(ENV, { fetchImpl }).quote(parcel({ from: shipFrom() })));
+
+    // The failure itself is untouched — same code, same message Terminal gave.
+    expect(err).toBeInstanceOf(LogisticsError);
+    expect(err.code).toBe('provider_rejected');
+    expect(err.message).toBe('Invalid recipient state');
+    expect(err.packagingRef).toBe('PA-1');
+  });
+
+  it('claims no packaging id on a failure when the ref was already cached', async () => {
+    const { fetchImpl, calls } = terminalFetch([
+      { status: 400, json: { status: false, message: 'Invalid recipient state' } },
+    ]);
+    const err = await failureOf(createTerminalProvider(ENV, { fetchImpl }).quote(parcel({ from: shipFrom(), packagingRef: 'PA-9' })));
+
+    expect(calls).toHaveLength(1); // no /packaging call: this quote created nothing
+    expect(err.code).toBe('provider_rejected');
+    expect(err.packagingRef).toBeUndefined();
+  });
 });
 
 describe('book', () => {

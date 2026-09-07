@@ -63,12 +63,34 @@ export class LogisticsError extends Error {
   readonly code: LogisticsErrorCode;
   readonly status: number | undefined;
   readonly detail: unknown;
-  constructor(code: LogisticsErrorCode, message: string, opts: { status?: number; detail?: unknown } = {}) {
+  /**
+   * A packaging record the adapter DID create before this call failed — the
+   * same id `QuoteResult.packagingRef` carries on the way out, taking the same
+   * way out when there is no result to carry it.
+   *
+   * Terminal's `quote` creates a packaging record and only then asks for a
+   * shipment and its rates. A failure after that point used to lose the id
+   * completely: not returned, not thrown, never cached, so the next attempt
+   * minted another and every failed quote leaked one record at Terminal.
+   *
+   * THE ONE FIELD HERE THAT IS NOT `readonly`, deliberately. `code`, `status`
+   * and `detail` are the classification, fixed the moment the failure is
+   * described. This is a receipt: what the call left behind, attached on the
+   * way out by the frame that knows a record was created, without restating
+   * — or losing the stack of — a failure something below already classified.
+   */
+  packagingRef: string | undefined;
+  constructor(
+    code: LogisticsErrorCode,
+    message: string,
+    opts: { status?: number; detail?: unknown; packagingRef?: string } = {},
+  ) {
     super(message);
     this.name = 'LogisticsError';
     this.code = code;
     this.status = opts.status;
     this.detail = opts.detail;
+    this.packagingRef = opts.packagingRef;
   }
 }
 

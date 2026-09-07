@@ -23,6 +23,7 @@ import type {
   ParcelLine,
   ProviderId,
   QuoteOption,
+  QuoteResult,
   TrackResult,
 } from './port';
 import { getLogisticsSettings, setTerminalPackagingId } from './repo';
@@ -277,7 +278,23 @@ export async function quoteParcel(
     return { refused: 'weights_missing', lines: missing.map(asMissing) };
   }
 
-  const quote = await provider.quote(input);
+  let quote: QuoteResult;
+  try {
+    quote = await provider.quote(input);
+  } catch (err) {
+    /*
+     * A FAILED QUOTE CAN STILL HAVE COST US A RECORD AT THE COURIER, and the
+     * quotes most likely to fail are exactly the ones an operator retries — a
+     * state Terminal will not deliver to, fixed and quoted again. Every one of
+     * those attempts used to mint a fresh packaging record and drop the id on
+     * the floor. Cache it, then let the failure carry on unchanged to the route
+     * that turns it into the operator's message.
+     */
+    if (err instanceof LogisticsError && err.packagingRef) {
+      await setTerminalPackagingId(db, err.packagingRef);
+    }
+    throw err;
+  }
   /* Terminal creates the packaging record on the first quote; caching it here
      is what stops the next quote creating a second one. */
   if (quote.packagingRef) await setTerminalPackagingId(db, quote.packagingRef);
