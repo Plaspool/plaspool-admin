@@ -48,7 +48,7 @@ const fixture = vi.hoisted(() => ({
       id: 'u_owner',
       email: 'o@test.local',
       displayName: 'An Owner',
-      role: 'owner' as 'owner' | 'writer',
+      role: 'owner' as import('../../../shared/roles').Role,
     },
   },
 }));
@@ -370,6 +370,45 @@ describe('OrderDetail — courier booking', () => {
     await user.click(gig);
     await user.click(within(dialog).getByRole('button', { name: 'Book' }));
     await waitFor(() => expect(sent(BOOK, 'POST')).toEqual({ optionId: 'RT-1', quoteRef: 'SH-1' }));
+  });
+
+  /**
+   * ═════════════════════════════════════════════════════════════════════════
+   * THE GATE CROSSES A DOMAIN, AND A `support` TEAMMATE FALLS INTO THE GAP.
+   *
+   * The courier routes are `orders` (that is why they live under
+   * `/admin/fulfillments/*`), but the way past the weights gate is a PATCH to
+   * `/admin/variants/:id`, which is `products`. Support holds the first and
+   * not the second — so this dialog opened, offered boxes, and answered the
+   * Save with the literal word `forbidden` and no way forward.
+   *
+   * The fix is to not offer the boxes at all: name the items, say who has to
+   * weigh them, and leave Cancel as the only button. Nothing is sent.
+   * ═════════════════════════════════════════════════════════════════════════
+   */
+  it('tells a teammate who cannot edit products who has to set the weights, and offers no Save', async () => {
+    const user = userEvent.setup();
+    fixture.session.user.role = 'support';
+    withOrder([parcel('pending')]);
+    when(PROVIDER, { provider: 'terminal', label: 'Terminal Africa' });
+    when(QUOTE, () => ({
+      status: 422,
+      body: { error: 'weights_missing', lines: [{ orderLineId: 'line_1', variantId: 'var_1', sku: 'SPL-RED', title: 'Recycled Spool' }] },
+    }));
+    mount();
+    await loaded();
+    await user.click(await screen.findByRole('button', { name: 'Book with Terminal Africa' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Book Parcel 1 with Terminal Africa' });
+
+    expect(await within(dialog).findByText(/who can edit products/)).toBeTruthy();
+    /* The items are still NAMED — that is the whole of what gets passed on. */
+    expect(within(dialog).getByText('Recycled Spool')).toBeTruthy();
+    expect(within(dialog).getByText('SPL-RED')).toBeTruthy();
+
+    expect(within(dialog).queryByLabelText('Weight of Recycled Spool')).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Save weights' })).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeTruthy();
+    expect(sentNothing(VARIANT)).toBe(true);
   });
 
   it('Terminal refuses to save a blank or zero weight', async () => {

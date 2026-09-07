@@ -8,6 +8,8 @@ import {
   type ShopOrder,
 } from '../../data/api-shop';
 import { ApiError } from '../../data/errors';
+import { getSession } from '../../data/session';
+import { hasDomain } from '../../../shared/roles';
 import { money, shortAddress } from '../lib/format';
 import { Banner, Button } from '../ui/primitives';
 import { AffixField, Radio } from '../ui/Field';
@@ -90,6 +92,11 @@ export function describeCourierError(cause: unknown, providerLabel: string): str
         return D.alreadyShipped;
       case 'provider_manual':
         return D.manual;
+      /* A 403 from the variants PATCH behind the weights step: this dialog is
+         `orders` and that write is `products`, so this code is reachable by a
+         teammate rather than only by a bug. */
+      case 'forbidden':
+        return D.forbidden;
       default:
         break;
     }
@@ -120,6 +127,27 @@ export function CourierDialog({
   onBooked: () => void;
 }) {
   const toast = useToast();
+  /**
+   * ═══════════════════════════════════════════════════════════════════════
+   * THE WEIGHTS STEP CROSSES A PERMISSION DOMAIN, AND THIS IS WHERE THAT IS
+   * NOTICED.
+   *
+   * Booking a courier is `orders` — that is why the four routes live under
+   * `/admin/fulfillments/*` rather than beside the courier settings, so the
+   * teammate who packs the box can book it. But the way PAST Terminal's
+   * weights gate is a PATCH to `/admin/variants/:id`, which is `products`,
+   * and Support and Marketing hold the first without the second.
+   *
+   * They used to reach a step whose only button answered `forbidden` — the
+   * server's word, printed at a person, with nothing to do next. Read the
+   * grant the same way every other screen does (`shared/roles.ts`) and offer
+   * the truth instead: here is what needs weighing, and here is who can.
+   * ═══════════════════════════════════════════════════════════════════════
+   */
+  const session = getSession();
+  const viewer = 'user' in session ? session.user : null;
+  const canWeigh = viewer !== null && hasDomain(viewer.role, 'products');
+
   const [phase, setPhase] = useState<Phase>({ kind: 'quoting' });
   const [weights, setWeights] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
@@ -251,6 +279,14 @@ export function CourierDialog({
     }
   }
 
+  /** The item on the left of a weights row — its title over its SKU. */
+  const itemName = (l: ShopCourierMissingWeight) => (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 'var(--t-md)', fontWeight: 'var(--w-medium)' }}>{l.title}</div>
+      <div className="muted mono" style={{ fontSize: 'var(--t-sm)' }}>{l.sku}</div>
+    </div>
+  );
+
   /* One grams box per line: the item on the left, the number on the right.
      The visible label is "Weight" — short enough to sit over a 9rem box —
      and the accessible name names the item, so a screen reader hears which
@@ -259,10 +295,7 @@ export function CourierDialog({
     <div className="stack stack--tight">
       {lines.map((l) => (
         <div key={l.variantId} className="row" style={{ gap: 'var(--s3)', alignItems: 'flex-end' }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 'var(--t-md)', fontWeight: 'var(--w-medium)' }}>{l.title}</div>
-            <div className="muted mono" style={{ fontSize: 'var(--t-sm)' }}>{l.sku}</div>
-          </div>
+          {itemName(l)}
           <div style={{ width: '9rem' }}>
             <AffixField
               label="Weight"
@@ -281,8 +314,25 @@ export function CourierDialog({
     </div>
   );
 
+  /* The same list with NO BOXES, for a viewer who cannot edit products. The
+     items are still named because naming them is the whole of what this
+     person can do with the screen: pass them to somebody who can weigh them. */
+  const itemList = (lines: ShopCourierMissingWeight[]) => (
+    <div className="stack stack--tight">
+      {lines.map((l) => (
+        <div key={l.variantId} className="row" style={{ gap: 'var(--s3)' }}>
+          {itemName(l)}
+        </div>
+      ))}
+    </div>
+  );
+
   const footer = (() => {
     if (phase.kind === 'weights') {
+      /* NO SAVE AT ALL WITHOUT THE `products` DOMAIN. The only action on this
+         step writes a variant, so a Save here is a button whose single
+         outcome is a 403 — Cancel is the honest whole of what is available. */
+      if (!canWeigh) return <Button onClick={onClose}>Cancel</Button>;
       return (
         <>
           <Button onClick={onClose}>Cancel</Button>
@@ -341,9 +391,9 @@ export function CourierDialog({
         {phase.kind === 'weights' ? (
           <>
             <Banner tone="warn" title={D.weightsTitle}>
-              {D.weightsBlocking}
+              {canWeigh ? D.weightsBlocking : D.weightsNoPermission}
             </Banner>
-            {weightInputs(phase.lines)}
+            {canWeigh ? weightInputs(phase.lines) : itemList(phase.lines)}
           </>
         ) : null}
 

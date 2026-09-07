@@ -96,6 +96,16 @@ export const COURIER_COPY = {
     quoting: 'Asking the courier for a price…',
     weightsTitle: 'Weights first',
     weightsBlocking: 'Terminal Africa needs a weight for every item in this parcel. Set them here — they are saved on the product.',
+    /**
+     * THE SAME GATE, FOR SOMEBODY WHO CANNOT OPEN IT.
+     *
+     * A weight is saved on the VARIANT, which is the `products` domain, while
+     * booking a courier is `orders` — so Support and Marketing reach this step
+     * with no way past it. Names the one thing they can do (hand it on) rather
+     * than offering boxes whose Save the server would 403.
+     */
+    weightsNoPermission:
+      'Terminal Africa needs a weight for every item below, and a weight is saved on the product — which your role cannot edit. Ask somebody who can edit products to weigh these, then book this parcel again.',
     weightsSoft: (n: number, kg: number) =>
       `${n} item${n === 1 ? ' has' : 's have'} no weight. Fez will be told ${kg} kg. You can set weights now or book anyway.`,
     weightLabel: (title: string) => `Weight of ${title}`,
@@ -119,6 +129,10 @@ export const COURIER_COPY = {
        reader of both, and it reads every other sentence from this table. */
     alreadyShipped: 'This parcel has already gone out. Refresh to see where it is.',
     manual: 'Courier booking is switched off. Turn it on under Settings → Delivery courier.',
+    /* A 403 that reached the screen anyway. `forbidden` is the server's word,
+       not a sentence, and this dialog spans two permission domains — so the
+       code was reachable by a person rather than only by a bug. */
+    forbidden: 'Your role cannot make that change. Ask an owner or a developer.',
   },
 } as const;
 
