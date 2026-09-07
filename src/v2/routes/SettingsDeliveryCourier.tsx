@@ -112,6 +112,42 @@ export default function SettingsDeliveryCourier() {
     }
   }, [adopt]);
 
+  /**
+   * WHAT CONNECT WEBHOOK IS ALLOWED TO RE-READ, AND WHAT IT MUST NOT TOUCH.
+   *
+   * Registering a webhook changes exactly one thing this screen shows: the
+   * list of inbound updates (and, in time, the connected flags). Re-adopting
+   * the whole settings response would ALSO reset `provider`, `shipFrom` and
+   * `packaging` from the server — silently throwing away every edit the
+   * operator has typed and not saved, which on this screen is usually the
+   * ship-from address they came here to fill in before connecting.
+   *
+   * `revision` is deliberately NOT adopted either: it is the base of the next
+   * save's compare-and-swap, and quietly moving it forward would let this tab
+   * overwrite a change another person made while this form sat open.
+   */
+  const refreshWebhookLog = useCallback(async () => {
+    try {
+      const fresh = await shopApi.getCourierSettings();
+      setSettings((current) =>
+        current === null
+          ? current
+          : {
+              ...current,
+              providers: fresh.providers,
+              recentWebhooks: fresh.recentWebhooks,
+              variantsMissingWeight: fresh.variantsMissingWeight,
+              variantsTotal: fresh.variantsTotal,
+              updatedAt: fresh.updatedAt,
+            },
+      );
+    } catch {
+      /* The webhook IS registered — the toast already said so. A failed
+         re-read of the log is not worth a second, contradicting message; the
+         list catches up on the next load. */
+    }
+  }, []);
+
   useEffect(() => {
     if (!scoped) return;
     const controller = new AbortController();
@@ -195,7 +231,7 @@ export default function SettingsDeliveryCourier() {
     try {
       await shopApi.registerCourierWebhook(p);
       toast.show(C.connected_toast(PROVIDER_LABEL[p]));
-      void load();
+      void refreshWebhookLog();
     } catch (cause) {
       toast.show(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.', 'critical');
     } finally {

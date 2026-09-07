@@ -295,6 +295,33 @@ describe('Settings → Delivery courier', () => {
     expect(await screen.findByText('Fez Delivery will now send updates here')).toBeTruthy();
   });
 
+  it('keeps what you have typed when you connect a webhook, and still refreshes the list', async () => {
+    const user = userEvent.setup();
+    /* The second read carries a row the first did not: pressing Connect has
+       to pick that up WITHOUT re-adopting the form the operator is mid-way
+       through — the ship-from address is usually the reason they came here. */
+    let reads = 0;
+    when(SETTINGS, () => ({
+      body:
+        reads++ === 0
+          ? baseSettings
+          : {
+              ...baseSettings,
+              recentWebhooks: [
+                { id: 'wh_1', provider: 'fez', providerRef: 'ASAC27012319', rawStatus: 'Dispatched', verified: true, applied: 'applied', receivedAt: 1_757_000_000_000 },
+              ],
+            },
+    }));
+    when(REGISTER, { ok: true });
+    mount();
+    await user.type(await screen.findByLabelText('Name'), shipFrom.name);
+    await user.click(screen.getByRole('button', { name: 'Connect webhook for Fez Delivery' }));
+
+    await waitFor(() => expect(bodiesOf(REGISTER, 'POST')).toEqual([{ provider: 'fez' }]));
+    expect(await screen.findByText('ASAC27012319')).toBeTruthy();
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe(shipFrom.name);
+  });
+
   it('refuses a role without the settings domain', async () => {
     sessionFixture.session = { ...sessionFixture.session, user: { ...sessionFixture.session.user, role: 'supply_chain' as never } };
     when(SETTINGS, baseSettings);
