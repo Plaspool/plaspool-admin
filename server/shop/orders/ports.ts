@@ -126,6 +126,33 @@ export type RefundIssuer = (
   },
 ) => Promise<RefundOutcome>;
 
+/**
+ * Ask every courier with a parcel in flight where it has got to, and report how
+ * that went.
+ *
+ * STRUCTURAL, LIKE `PaymentDrain` AND `RefundIssuer` ABOVE, AND FOR THE SAME
+ * RULE: `GET /admin/sweep` is Orders' route, and Orders does not import
+ * Logistics — not even a type, since a type-only import is still an import. The
+ * shape is declared here and the composition root (`server/index.ts`) is the one
+ * place allowed to know that the real implementation is
+ * `shop/logistics/sync.ts#syncCourierStatuses`.
+ *
+ * WHY IT IS IN THE SWEEP AT ALL. The couriers' webhooks are the mechanism; a
+ * callback can be lost to a deploy, a cold start, a 500 answered while the
+ * database was asleep, or a URL nobody registered. Without a scheduled second
+ * ask, a parcel delivered on Tuesday still reads "Pending Pick-Up" in the admin
+ * on Friday and its customer never got a shipment email — the same class of
+ * silence `drainPayments` exists for, one subsystem over.
+ *
+ * IT NEVER THROWS FOR A COURIER BEING DOWN. The failure is recorded per parcel
+ * and counted in `failed`, because a courier's bad afternoon must not stop the
+ * sweep that also settles payments.
+ */
+export type CourierSync = (
+  db: Db,
+  now: number,
+) => Promise<{ checked: number; changed: number; transitioned: number; failed: number }>;
+
 export interface OrdersDeps {
   customer?: CustomerResolver;
   payments?: PaymentPort<Db> | null;
@@ -201,6 +228,18 @@ export interface OrdersDeps {
    * was requested and this is absent.
    */
   refund?: RefundIssuer;
+  /**
+   * ASK THE COURIERS WHERE THE PARCELS ARE, on the schedule. See
+   * {@link CourierSync}. Wired at the composition root to
+   * `syncCourierStatuses`.
+   *
+   * ABSENT MEANS THE SWEEP SIMPLY DOES NOT ASK, and `runSweep` reports
+   * `couriers: null` rather than a zeroed summary — a deployment with no
+   * couriers wired is a different thing from one that looked and found nothing
+   * to do, and an operator reading the sweep's answer has to be able to tell
+   * them apart.
+   */
+  syncCouriers?: CourierSync;
 }
 
 export interface ResolvedDeps {
@@ -211,6 +250,8 @@ export interface ResolvedDeps {
   drainPayments: PaymentDrain;
   redemption?: (db: Db) => PointsRedemptionPort;
   refund: RefundIssuer | null;
+  /** `null` when no courier subsystem is wired — see {@link OrdersDeps.syncCouriers}. */
+  syncCouriers: CourierSync | null;
 }
 
 /**
@@ -299,6 +340,7 @@ export function resolveDeps(deps: OrdersDeps = {}): ResolvedDeps {
     drainPayments: merged.drainPayments ?? NO_PAYMENT_DRAIN,
     redemption: merged.redemption,
     refund: merged.refund ?? null,
+    syncCouriers: merged.syncCouriers ?? null,
   };
 }
 
