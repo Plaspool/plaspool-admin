@@ -1,4 +1,5 @@
 import { sql, type SQL } from 'drizzle-orm';
+import { DbError } from '../../../db/client';
 import type { Db } from '../../../db/client';
 import { NotFoundError } from '../../../repo/errors';
 import { ID, newId } from '../ids';
@@ -22,17 +23,32 @@ import {
  * Zero rows back means someone got there first, which the route reports as
  * 409 already_booked rather than as a stale write.
  *
- * `revision` still moves on every write, because the admin's optimistic reads
- * and the ship/deliver CAS in `fulfillments.ts` are keyed on it — a courier
- * write that left it alone would let a stale ship dialog win a race it should
- * have lost.
+ * `revision` moves on every write that changes something a stale reader would
+ * care about, because the admin's optimistic reads and the ship/deliver CAS in
+ * `fulfillments.ts` are keyed on it — a courier write that left it alone would
+ * let a stale ship dialog win a race it should have lost. The one write that
+ * deliberately does NOT move it unconditionally is a snapshot replay — see
+ * `recordCourierSnapshot`.
  */
 export class CourierConflictError extends Error {
   readonly code = 'already_booked' as const;
 
-  constructor(id: string) {
-    super(`parcel ${id} already has a courier`);
+  /**
+   * `already_booked` (the default): this PARCEL already has a live booking.
+   * `ref_in_use`: the (provider, provider_ref) pair belongs to ANOTHER parcel —
+   * `shop_fulfillments_provider_ref_uq` fired, which means two parcels are
+   * racing to claim the same waybill rather than one parcel being rebooked.
+   */
+  readonly reason: 'already_booked' | 'ref_in_use';
+
+  constructor(id: string, reason: 'already_booked' | 'ref_in_use' = 'already_booked') {
+    super(
+      reason === 'ref_in_use'
+        ? `parcel ${id}: that provider reference is already booked on another parcel`
+        : `parcel ${id} already has a courier`,
+    );
     this.name = 'CourierConflictError';
+    this.reason = reason;
   }
 }
 
@@ -55,6 +71,9 @@ export async function readFulfillmentByProviderRef(
   return row ? rowToFulfillment(row) : null;
 }
 
+/** The partial unique index a booking/draft can collide with — see `guardedUpdate`. */
+const PROVIDER_REF_UNIQUE_CONSTRAINT = 'shop_fulfillments_provider_ref_uq';
+
 async function guardedUpdate(
   db: Db,
   id: string,
@@ -69,9 +88,26 @@ async function guardedUpdate(
       RETURNING ${sql.raw(returning())})`,
   ];
   if (timeline) ctes.push(timeline);
-  const res = await db.execute(sql`WITH ${sql.join(ctes, sql`, `)} SELECT ${sql.raw(returning())}, ${LINES} FROM ful`);
-  const row = res.rows[0];
-  return row ? rowToFulfillment(row) : null;
+  try {
+    const res = await db.execute(sql`WITH ${sql.join(ctes, sql`, `)} SELECT ${sql.raw(returning())}, ${LINES} FROM ful`);
+    const row = res.rows[0];
+    return row ? rowToFulfillment(row) : null;
+  } catch (err) {
+    /*
+     * A retried booking the courier answered twice, or two admins racing the
+     * same waybill, lands here as a raw 23505 — `server/middleware/errors.ts`
+     * has no row for it, so left unclassified it would answer
+     * `{"error":"internal"}` and be retried five times for a request whose
+     * answer can never change. Classified into the same conflict family as
+     * the courier_state guard above, but tagged `ref_in_use` so a caller can
+     * tell "this parcel is spoken for" apart from "that reference belongs to
+     * someone else".
+     */
+    if (err instanceof DbError && err.constraint === PROVIDER_REF_UNIQUE_CONSTRAINT) {
+      throw new CourierConflictError(id, 'ref_in_use');
+    }
+    throw err;
+  }
 }
 
 const timelineRow = (type: string, message: string, now: number, actorId: string | null): SQL => sql`timeline AS (
@@ -142,6 +178,11 @@ export async function recordCourierBooking(
  * webhook or an idle poll adds nothing. Links are COALESCEd: a courier that
  * stops sending a URL it once sent does not erase it.
  *
+ * `revision` moves under the SAME condition as the timeline row — an idle poll
+ * or a redelivered webhook that reports the status we already have must not
+ * bump it, or it would invalidate a concurrently open admin view (and the
+ * ship/deliver CAS in `fulfillments.ts`) for a change that never happened.
+ *
  * NO REBOOKABLE GUARD, deliberately — a snapshot is the courier telling us what
  * happened, not us asking for something. The only condition is that a booking
  * exists to be updated, so a parcel shipped by hand cannot be moved by a
@@ -170,7 +211,7 @@ export async function recordCourierSnapshot(
         tracking_url = COALESCE(${a.trackingUrl ?? null}::text, f.tracking_url),
         label_url = COALESCE(${a.labelUrl ?? null}::text, f.label_url),
         carrier = COALESCE(${a.carrier ?? null}::text, f.carrier),
-        revision = f.revision + 1
+        revision = f.revision + CASE WHEN f.provider_status IS DISTINCT FROM ${a.rawStatus}::text THEN 1 ELSE 0 END
        FROM prev WHERE f.id = prev.id AND f.provider_ref IS NOT NULL
       RETURNING ${sql.raw(returning('f'))}, (prev.provider_status IS DISTINCT FROM ${a.rawStatus}::text) AS changed),
     timeline AS (
@@ -183,6 +224,25 @@ export async function recordCourierSnapshot(
   return { fulfillment: rowToFulfillment(row), changed: row.changed === true };
 }
 
+/**
+ * Call off a courier that is not coming, and take back every promise made in
+ * its name.
+ *
+ * CLEARS `carrier`, `tracking_number`, `tracking_url` AND `label_url` —
+ * everything a later ship-by-hand would otherwise mail to the customer
+ * unchanged, quoting a courier that will never show up. `provider` and
+ * `provider_ref` are the two columns this does NOT touch: a webhook already in
+ * flight when the operator cancelled must still be able to find this parcel by
+ * them.
+ *
+ * GUARDED BY `status = 'pending' AND provider_ref IS NOT NULL`, not just the
+ * second half: there is no courier to call off before one was ever booked, and
+ * a parcel that has already shipped has a shipment email out the door quoting
+ * whatever it quoted — cancelling the courier after the fact would make the
+ * row disagree with what the customer was told. Zero rows back is a
+ * `CourierConflictError` when the parcel exists in either of those states, and
+ * a `NotFoundError` only when it does not exist at all.
+ */
 export async function recordCourierCancelled(
   db: Db,
   id: string,
@@ -191,12 +251,14 @@ export async function recordCourierCancelled(
   const row = await guardedUpdate(
     db,
     id,
-    sql`courier_state = 'cancelled', provider_status = 'Cancelled', provider_synced_at = ${a.now}, provider_last_error = NULL`,
-    sql`provider_ref IS NOT NULL`,
+    sql`carrier = NULL, tracking_number = NULL, tracking_url = NULL, label_url = NULL,
+        courier_state = 'cancelled',
+        -- "Cancelled" is our own label for this state; it is not a status the courier sent us.
+        provider_status = 'Cancelled', provider_synced_at = ${a.now}, provider_last_error = NULL`,
+    sql`status = 'pending' AND provider_ref IS NOT NULL`,
     timelineRow('courier_cancelled', a.message, a.now, a.actorId),
   );
-  if (!row) throw new NotFoundError(id);
-  return row;
+  return row ?? conflictOrMissing(db, id);
 }
 
 export async function recordCourierSyncError(
@@ -205,7 +267,8 @@ export async function recordCourierSyncError(
   a: { now: number; message: string },
 ): Promise<void> {
   await db.execute(sql`
-    UPDATE shop_fulfillments SET provider_last_error = left(${a.message}::text, 500), provider_synced_at = ${a.now}
+    UPDATE shop_fulfillments
+       SET provider_last_error = left(${a.message}::text, 500), provider_synced_at = ${a.now}, revision = revision + 1
      WHERE id = ${id}`);
 }
 
