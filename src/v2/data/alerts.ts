@@ -87,6 +87,15 @@ export function markAllRead(alerts: OpsAlert[]) {
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
+/**
+ * How long a queued email may sit before it is somebody's problem.
+ *
+ * Thirty minutes because the sweep runs every ten (CLAUDE.md §1), so anything
+ * older has missed at least two passes — comfortably past a slow one, and well
+ * short of the hours a person would otherwise take to notice.
+ */
+const STALE_MAIL_MS = 30 * 60_000;
+
 export async function fetchAlerts(signal?: AbortSignal): Promise<OpsAlert[]> {
   /* Reviews ride along best-effort: a moderation outage must not blank the
      whole bell, because the stuck-email alert is the one that matters most.
@@ -119,6 +128,71 @@ export async function fetchAlerts(signal?: AbortSignal): Promise<OpsAlert[]> {
       at: stats.generatedAt,
       to: '/emails/outbox',
       signature: String(n),
+    });
+  }
+
+  /* ═══ MAIL THAT IS WAITING, WHICH IS NOT THE SAME FACT AS MAIL THAT FAILED ══
+     The alert above is about intents OUT OF ATTEMPTS: something tried and the
+     provider refused. This one is about intents nothing has tried at all, and
+     until 2026-09-08 there was no alert for it, which is precisely how a
+     preview host sat with three unsent messages — including a customer's own
+     order confirmation — and said nothing anywhere.
+
+     KEYED ON AGE, NEVER ON THE COUNT. `pending` rises after every order and
+     falls on the next sweep, so a count-based alert fires on the happy path and
+     is trained away within a day. Half an hour is well past the ten-minute
+     cadence the sweep is set to, so anything still here has missed at least one
+     pass and something is actually wrong.
+
+     `oldestPendingAt` is read defensively — a deployment older than the field
+     omits it, and this alert simply does not exist for those rather than
+     treating a missing number as an ancient one. */
+  /* ═══ NOTIFICATIONS THAT CANNOT ARRIVE, WHICH NOTHING ELSE WILL SAY ═════════
+     The bell's own opt-in row handles the ordinary case — permission not yet
+     asked for — and then HIDES ITSELF once the answer is in, including when the
+     answer was no. So a person who pressed Block, or whose browser blocked it
+     for them, has a bell that looks entirely healthy, a Notifications screen
+     they have no reason to visit, and no notification ever again.
+
+     This is the only surface that says so. It is deliberately NOT raised for
+     `default` (the opt-in row is right there) or for a browser that has no
+     Notification API at all (nothing to fix, and nagging about it is noise).
+
+     `at: generatedAt` rather than a time of its own: it is a standing state
+     with no moment, and dating it by the poll keeps it beside its neighbours
+     rather than pinned to the top forever. The signature never changes, so
+     dismissing it settles it for good — a blocked permission is a decision
+     somebody may have made on purpose, and re-ringing would be nagging. */
+  if (typeof Notification !== 'undefined' && Notification.permission === 'denied') {
+    alerts.push({
+      id: 'notifications-blocked',
+      source: 'Notifications',
+      tone: 'warn',
+      title: 'Notifications are blocked on this device',
+      body: 'Orders will still reach you by email and show up here, but nothing will pop up. Your browser’s site settings are the only place that can undo it.',
+      at: stats?.generatedAt ?? Date.now(),
+      to: '/settings/notifications',
+      signature: 'denied',
+    });
+  }
+
+  const oldestPending = stats?.emails.oldestPendingAt ?? null;
+  const waitedMs = oldestPending === null ? 0 : stats!.generatedAt - oldestPending;
+  if (stats && stats.emails.pending > 0 && waitedMs > STALE_MAIL_MS) {
+    const n = stats.emails.pending;
+    alerts.push({
+      id: 'emails-waiting',
+      source: 'Emails',
+      tone: 'warn',
+      title: `${n} ${plural(n, 'email is', 'emails are')} waiting to send`,
+      body: `Nothing has tried to send ${plural(n, 'it', 'them')} for over ${Math.floor(
+        waitedMs / 60_000,
+      )} minutes. Open Sent emails and press Send queued now.`,
+      at: oldestPending ?? stats.generatedAt,
+      to: '/emails/outbox',
+      /* The count AND the rounded age, so a queue that keeps growing rings
+         again while one that is merely still stuck does not. */
+      signature: `${n}:${Math.floor(waitedMs / 600_000)}`,
     });
   }
 

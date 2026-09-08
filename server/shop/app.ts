@@ -27,7 +27,7 @@ import { SHOP_CURRENCY } from './currency';
 import { shopAdminRoutes } from './admin/routes';
 import { shippingZoneRoutes } from './cart/checkout/shipping-zones-routes';
 import { deliverySettingsRoutes } from './settings/routes';
-import { notificationSettingsRoutes } from './notifications/routes';
+import { notificationSettingsRoutes, pushRoutes } from './notifications/routes';
 import { ShippingZonePreconditionFailedError } from './cart/checkout/shipping-zones-repo';
 
 /**
@@ -359,6 +359,11 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
    * an email — so there is nothing to mount above `sessionMiddleware`.
    */
   shop.route('/', notificationSettingsRoutes);
+  /* Web Push device registration (migration 1040). A SEPARATE router from the
+     settings beside it because its permissions prefix is different — `orders`,
+     not `settings`: whether a packer's own phone buzzes is not an owner-only
+     decision. See `server/middleware/permissions.ts`. */
+  shop.route('/', pushRoutes);
 
   /*
    * THE DASHBOARD'S READ SURFACE — `/admin/stats`, `/admin/customers`,

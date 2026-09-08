@@ -15,6 +15,7 @@ import {
   showAlertNotification,
   type NotifyPermission,
 } from '../data/notify';
+import { enablePush } from '../data/push';
 import { Button } from '../ui/primitives';
 
 /**
@@ -310,7 +311,24 @@ export function AlertsBell() {
                 onClick={() => {
                   /* Called straight out of the click: every browser refuses a
                      permission request that is not inside a user gesture. */
-                  void requestNotifyPermission().then(setPermission);
+                  void requestNotifyPermission().then((next) => {
+                    setPermission(next);
+                    /*
+                     * AND REGISTER THE DEVICE FOR PUSH IN THE SAME BREATH, so
+                     * one tap buys both halves. The two are one grant — a
+                     * browser that has allowed notifications does not prompt
+                     * again for `pushManager.subscribe` — so this raises no
+                     * second dialog, and asking twice for what is really one
+                     * permission is how people end up denying it.
+                     *
+                     * Best-effort and its result discarded: push may be
+                     * unconfigured, unsupported, or unavailable in dev where no
+                     * worker is registered, and none of those should undo the
+                     * permission they just granted. The Notifications screen is
+                     * where the device's real state is shown and fixed.
+                     */
+                    if (next === 'granted') void enablePush();
+                  });
                 }}
               >
                 Get a notification when an order comes in

@@ -12,6 +12,7 @@ import { TagInput } from '../ui/TagInput';
 import { useToast } from '../ui/Toast';
 import { getSession } from '../../data/session';
 import { hasDomain } from '../../../shared/roles';
+import { disablePush, enablePush, pushState, type PushState } from '../data/push';
 
 /**
  * ORDER NOTIFICATIONS — `/settings/notifications`: who is emailed when an
@@ -84,6 +85,17 @@ export default function SettingsNotifications() {
   /* Set only by a lost CAS, and cleared by the next edit or the next save:
      the banner it draws is about one refusal, not a standing condition. */
   const [beaten, setBeaten] = useState(false);
+  /* What THIS browser can do about push. Starts `unsupported` rather than `off`
+     so the card offers nothing until the real answer is in — a button that
+     appears and then vanishes is worse than one that arrives a moment late. */
+  const [push, setPush] = useState<PushState>('unsupported');
+  const [pushBusy, setPushBusy] = useState(false);
+
+  useEffect(() => {
+    const stop = new AbortController();
+    void pushState(stop.signal).then(setPush);
+    return () => stop.abort();
+  }, []);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -270,11 +282,61 @@ export default function SettingsNotifications() {
         </Card>
       )}
 
+      {/*
+        THIS DEVICE, AND ONLY THIS DEVICE. Everything in the card above is a
+        shop-wide setting the owner decides; this is one browser on one machine,
+        and it is deliberately not a Toggle — a switch implies the app can turn
+        it on, and only the browser's own permission dialog can. What the person
+        presses is a request.
+      */}
+      <Card title="This device">
+        <span className="field__hint">
+          {push === 'on'
+            ? 'This device buzzes when an order is paid, even with the admin closed.'
+            : push === 'blocked'
+              ? 'Notifications are blocked for this site. Your browser’s site settings are the only place that can undo it.'
+              : push === 'not-configured'
+                ? 'Notifications to a closed app are not set up on this deployment yet.'
+                : push === 'unsupported'
+                  ? 'This browser cannot show notifications when the admin is closed.'
+                  : 'Get a notification the moment an order is paid, even with the admin closed.'}
+        </span>
+        {push === 'off' ? (
+          <Button
+            tone="primary"
+            busy={pushBusy}
+            onClick={() => {
+              setPushBusy(true);
+              /* Straight out of the click: the browser refuses a permission
+                 request that is not inside a user gesture, and subscribing is
+                 that request. */
+              void enablePush()
+                .then(setPush)
+                .finally(() => setPushBusy(false));
+            }}
+          >
+            Turn on for this device
+          </Button>
+        ) : push === 'on' ? (
+          <Button
+            tone="plain"
+            busy={pushBusy}
+            onClick={() => {
+              setPushBusy(true);
+              void disablePush()
+                .then(setPush)
+                .finally(() => setPushBusy(false));
+            }}
+          >
+            Turn off for this device
+          </Button>
+        ) : null}
+      </Card>
+
       {row !== null ? (
         <p className="page__learn">
           Last changed {dateTime(row.updatedAt)}. An order also shows up in the bell at the top of
-          this page, and can pop up on your screen while the admin is open — both of those are set
-          up from the bell itself and need nothing here.
+          this page while the admin is open — that needs nothing here.
         </p>
       ) : null}
 

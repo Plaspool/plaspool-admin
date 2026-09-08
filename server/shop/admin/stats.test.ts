@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { sql } from 'drizzle-orm';
 import { freshDb } from '../../test/harness';
 import type { TestCtx } from '../../test/harness';
 import { resetOrderTables } from '../orders/test/harness';
@@ -237,11 +238,65 @@ describe('the email backlog', () => {
     await seedEmailIntent(ctx.db, order.id, { sentAt: NOW, attempts: 1 });
 
     const { emails } = await stats();
-    expect(emails).toEqual({ pending: 2, stuck: 1, sent: 1 });
+    // Every seeded intent shares S0, so the oldest pending one IS S0.
+    expect(emails).toEqual({ pending: 2, stuck: 1, sent: 1, oldestPendingAt: S0 });
   });
 
-  it('is three zeros when nothing has ever been queued', async () => {
-    expect((await stats()).emails).toEqual({ pending: 0, stuck: 0, sent: 0 });
+  it('is zeros and no age when nothing has ever been queued', async () => {
+    /* `oldestPendingAt` is NULL rather than 0 with an empty queue: an empty set
+       has no oldest member, and 0 would read as 1970 — an age of fifty years,
+       which is exactly the shape the waiting-mail alert fires on. */
+    expect((await stats()).emails).toEqual({
+      pending: 0,
+      stuck: 0,
+      sent: 0,
+      oldestPendingAt: null,
+    });
+  });
+
+  it('dates the queue by its OLDEST member, which is what says it is not moving', async () => {
+    /*
+     * THE PROPERTY THE WAITING-MAIL ALERT RESTS ON. A count cannot distinguish
+     * a queue drained every ten minutes from one nothing drains at all — both
+     * read "2 waiting" — so the alert is keyed on age, and age has to mean the
+     * oldest thing still stuck rather than the newest thing added. Reporting
+     * the newest would reset the clock on every fresh order and the alert would
+     * never fire on a host where the sweep is dead, which is the exact case it
+     * was written for.
+     *
+     * Raw INSERTs rather than `seedEmailIntent`, which pins created_at to S0.
+     */
+    const order = await seedOrder(ctx.db);
+    const old = S0 - 3 * HOUR;
+    await ctx.db.execute(sql`
+      INSERT INTO shop_order_email_intents
+        (id, order_id, kind, to_email, subject, body, created_at, attempts, dedupe_key)
+      VALUES ('em_old',   ${order.id}, 'confirmation', 'a@example.test', 's', 'b', ${old}, 0, 'k_old'),
+             ('em_fresh', ${order.id}, 'confirmation', 'b@example.test', 's', 'b', ${S0},  0, 'k_fresh')`);
+
+    const { emails } = await stats();
+    expect(emails.pending).toBe(2);
+    expect(emails.oldestPendingAt).toBe(old);
+  });
+
+  it('ignores sent and dismissed rows when dating the queue', async () => {
+    /* The age must describe what the sweeper would still pick up. An old
+       message that already went out, or one an operator ruled on, is not a
+       queue that has stopped moving — counting either would make the alert
+       permanent and therefore worthless. */
+    const order = await seedOrder(ctx.db);
+    await ctx.db.execute(sql`
+      INSERT INTO shop_order_email_intents
+        (id, order_id, kind, to_email, subject, body, created_at, sent_at,
+         dismissed_at, attempts, dedupe_key)
+      VALUES ('em_gone', ${order.id}, 'confirmation', 'a@example.test', 's', 'b',
+              ${S0 - 5 * HOUR}, ${S0}, NULL, 1, 'k_gone'),
+             ('em_hushed', ${order.id}, 'confirmation', 'b@example.test', 's', 'b',
+              ${S0 - 4 * HOUR}, NULL, ${S0}, 0, 'k_hushed')`);
+
+    const { emails } = await stats();
+    expect(emails.pending).toBe(0);
+    expect(emails.oldestPendingAt).toBeNull();
   });
 });
 

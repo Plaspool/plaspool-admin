@@ -55,6 +55,18 @@ const RULES: readonly Rule[] = [
   { prefix: '/api/shop/admin/delivery-areas', domain: 'settings' },
   { prefix: '/api/shop/admin/delivery-settings', domain: 'settings' },
   { prefix: '/api/shop/admin/notification-settings', domain: 'settings' },
+  /*
+   * `orders` AND NOT `settings`, unlike the line above it, because these two
+   * prefixes answer different questions for different people. The settings say
+   * who the SHOP tells when an order is paid — an owner's decision. These say
+   * whether THIS person's own phone buzzes, which belongs to everyone who packs
+   * a parcel: making it owner-only would leave the packer, the one actually
+   * carrying the phone, unable to turn their own notifications on.
+   *
+   * It must sit above the `/api/shop/admin/` catch-all below or it inherits
+   * `danger` and works for the owner alone, silently.
+   */
+  { prefix: '/api/shop/admin/push', domain: 'orders' },
   { prefix: '/api/shop/admin/products', domain: 'products' },
   { prefix: '/api/shop/admin/variants', domain: 'products' },
   { prefix: '/api/shop/admin/inventory', domain: 'products' },
