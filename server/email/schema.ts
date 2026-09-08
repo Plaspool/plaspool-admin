@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { bigint, check, index, integer, pgTable, text, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { bigint, check, index, integer, pgTable, primaryKey, text, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 
 /**
  * The email-marketing tables (HANDOFF §2 A6), declared in a file this subsystem
@@ -142,6 +142,17 @@ export const emailBroadcasts = pgTable(
     /** Provenance only. The three snapshot columns below are the authority, which
      * is why the migration can afford `ON DELETE SET NULL` here. */
     templateId: uuid('template_id'),
+    /**
+     * WHO this broadcast was for (migration 0980). `all_subscribers` is every
+     * non-suppressed row in `email_subscribers` — the only thing a broadcast
+     * could mean before the "Not bought yet" screen existed, which is why it is
+     * the DEFAULT and why no existing row had to be touched. `picked` reads its
+     * addresses from `email_broadcast_audience`.
+     */
+    audienceKind: text('audience_kind')
+      .$type<'all_subscribers' | 'picked'>()
+      .notNull()
+      .default('all_subscribers'),
     subject: text('subject').notNull(),
     html: text('html').notNull(),
     text: text('text').notNull(),
@@ -164,6 +175,10 @@ export const emailBroadcasts = pgTable(
     check(
       'email_broadcasts_status_ck',
       sql`${t.status} IN ('draft','sending','sent','failed')`,
+    ),
+    check(
+      'email_broadcasts_audience_kind_ck',
+      sql`${t.audienceKind} IN ('all_subscribers','picked')`,
     ),
     check('email_broadcasts_subject_ck', sql`${t.subject} <> ''`),
     check('email_broadcasts_bodies_ck', sql`${t.html} <> '' AND ${t.text} <> ''`),
@@ -189,7 +204,7 @@ export const emailBroadcastRecipients = pgTable(
     id: uuid('id').primaryKey(),
     broadcastId: uuid('broadcast_id').notNull(),
     subscriberId: uuid('subscriber_id').notNull(),
-    status: text('status').$type<'pending' | 'sent' | 'failed'>().notNull(),
+    status: text('status').$type<'pending' | 'sent' | 'failed' | 'skipped'>().notNull(),
     /** The CAS column. Two drains both read `attempts = n`, both try
      * `SET attempts = n + 1 WHERE attempts = n`, and exactly one matches — the
      * property a lease column is usually added for, from a column that had to
@@ -202,7 +217,7 @@ export const emailBroadcastRecipients = pgTable(
     uniqueIndex('email_broadcast_recipients_dedupe_uq').on(t.broadcastId, t.subscriberId),
     check(
       'email_broadcast_recipients_status_ck',
-      sql`${t.status} IN ('pending','sent','failed')`,
+      sql`${t.status} IN ('pending','sent','failed','skipped')`,
     ),
     check('email_broadcast_recipients_attempts_ck', sql`${t.attempts} >= 0`),
     /*
@@ -216,7 +231,30 @@ export const emailBroadcastRecipients = pgTable(
   ],
 );
 
+/**
+ * The addresses a `picked` broadcast was aimed at (migration 0980).
+ *
+ * EMAIL AND NOT `subscriber_id` — see the migration header. At pick time most of
+ * these people have no subscriber row; one is created at SEND time, by
+ * `addSubscriber`, which is what mints their unsubscribe token.
+ */
+export const emailBroadcastAudience = pgTable(
+  'email_broadcast_audience',
+  {
+    broadcastId: uuid('broadcast_id').notNull(),
+    email: text('email').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.broadcastId, t.email] }),
+    check(
+      'email_broadcast_audience_email_ck',
+      sql`${t.email} <> '' AND ${t.email} = lower(${t.email})`,
+    ),
+  ],
+);
+
 export type DbEmailTemplate = typeof emailTemplates.$inferSelect;
 export type DbEmailSubscriber = typeof emailSubscribers.$inferSelect;
 export type DbEmailBroadcast = typeof emailBroadcasts.$inferSelect;
 export type DbEmailBroadcastRecipient = typeof emailBroadcastRecipients.$inferSelect;
+export type DbEmailBroadcastAudience = typeof emailBroadcastAudience.$inferSelect;
