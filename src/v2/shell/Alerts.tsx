@@ -15,7 +15,8 @@ import {
   showAlertNotification,
   type NotifyPermission,
 } from '../data/notify';
-import { enablePush } from '../data/push';
+import { enablePush, pushState } from '../data/push';
+import { playChime, unlockChime } from '../data/chime';
 import { Button } from '../ui/primitives';
 
 /**
@@ -106,15 +107,59 @@ export function AlertsBell() {
       const seen = seenOrders.current;
       seenOrders.current = new Set(orders.map((alert) => alert.id));
       if (seen !== null) {
-        for (const order of orders) {
-          if (!seen.has(order.id)) void showAlertNotification(order);
-        }
+        const fresh = orders.filter((order) => !seen.has(order.id));
+        for (const order of fresh) void showAlertNotification(order);
+        /*
+         * AND A SOUND, ONCE, however many orders landed in one poll.
+         *
+         * This is the half people mean by "loud like WhatsApp": that ping is an
+         * open tab playing audio, not a notification — the Notifications API
+         * has no sound parameter at all, so the pop-up's tone is the operating
+         * system's and cannot be set from here. Two orders arriving together
+         * are one event to a person in a room, so it plays once rather than
+         * overlapping with itself.
+         */
+        if (fresh.length > 0) playChime();
       }
     } catch {
       setFailed(true);
     } finally {
       inFlight.current = false;
     }
+  }, []);
+
+  /*
+   * SOMEBODY WHO ALREADY SAID YES MUST NOT BE LEFT UNSUBSCRIBED.
+   *
+   * The opt-in row below shows only while the permission is `default`, and
+   * calls `enablePush` only on a FRESH grant — so everyone who allowed
+   * notifications before Web Push existed was never offered it, was never
+   * registered, and had no way to find out. They are the people most likely to
+   * want it, and the ones least likely to go looking in Settings.
+   *
+   * Registering silently is the right call here rather than another prompt:
+   * `Notification.requestPermission` and `pushManager.subscribe` ask for ONE
+   * grant, and they have already given it. Asking twice for the same
+   * permission is how people end up denying it.
+   *
+   * Once per app load, and only when `pushState` says this device is genuinely
+   * unregistered — which costs one request and settles the question.
+   */
+  useEffect(() => {
+    /* Called, not compared — `notifyPermission` is a function, and it is passed
+       to `useState` above as a LAZY INITIALISER, which is why that line reads
+       as though it were a value. */
+    if (notifyPermission() !== 'granted') return;
+    let cancelled = false;
+    void pushState()
+      .then((state) => {
+        if (!cancelled && state === 'off') return enablePush();
+        return undefined;
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -311,6 +356,12 @@ export function AlertsBell() {
                 onClick={() => {
                   /* Called straight out of the click: every browser refuses a
                      permission request that is not inside a user gesture. */
+                  /* Unlocks the chime from inside this very click — browsers refuse audio
+
+                     until a gesture, and this is the gesture. */
+
+                  unlockChime();
+
                   void requestNotifyPermission().then((next) => {
                     setPermission(next);
                     /*

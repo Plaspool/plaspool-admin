@@ -13,6 +13,7 @@ import { useToast } from '../ui/Toast';
 import { getSession } from '../../data/session';
 import { hasDomain } from '../../../shared/roles';
 import { disablePush, enablePush, pushState, type PushState } from '../data/push';
+import { unlockChime } from '../data/chime';
 
 /**
  * ORDER NOTIFICATIONS — `/settings/notifications`: who is emailed when an
@@ -68,6 +69,34 @@ const MAX_LENGTH = 320;
  * a copy of its answer, moved to where the typing happens.
  */
 const PLAUSIBLE = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+
+/** What the card says about this browser, one line per state. A `Record` rather
+ *  than a chain of ternaries so a new state is a compile error here instead of
+ *  quietly falling through to the wrong sentence. */
+const DEVICE_COPY: Record<PushState, string> = {
+  on: 'This device buzzes when an order is paid, even with the admin closed.',
+  off: 'Get a notification the moment an order is paid, even with the admin closed.',
+  'no-worker':
+    'Almost ready — this page is still starting up in the background. Press the button, or reload if it does not take.',
+  blocked:
+    'Notifications are blocked for this site. Your browser’s site settings are the only place that can undo it.',
+  'not-configured': 'Notifications to a closed app are not set up on this deployment yet.',
+  'needs-install':
+    'On iPhone and iPad, notifications only work once PlaSpool is on your home screen. It takes three taps:',
+  unsupported: 'This browser cannot show notifications when the admin is closed.',
+};
+
+/** Why a press did not turn it on. Every one of these used to be silence. */
+const FAILED_COPY: Record<PushState, string> = {
+  on: '',
+  off: 'Could not turn it on. Reload the page and try once more.',
+  'no-worker': 'The app is still starting up. Give it a moment and try again.',
+  blocked:
+    'Your browser blocked it. Allow notifications for this site in its settings, then try again.',
+  'not-configured': 'Notifications are not set up on this deployment yet.',
+  'needs-install': 'Add PlaSpool to your home screen first, then open it from there.',
+  unsupported: 'This browser cannot show notifications when the admin is closed.',
+};
 
 export default function SettingsNotifications() {
   const toast = useToast();
@@ -291,28 +320,40 @@ export default function SettingsNotifications() {
         presses is a request.
       */}
       <Card title="This device">
-        <span className="field__hint">
-          {push === 'on'
-            ? 'This device buzzes when an order is paid, even with the admin closed.'
-            : push === 'blocked'
-              ? 'Notifications are blocked for this site. Your browser’s site settings are the only place that can undo it.'
-              : push === 'not-configured'
-                ? 'Notifications to a closed app are not set up on this deployment yet.'
-                : push === 'unsupported'
-                  ? 'This browser cannot show notifications when the admin is closed.'
-                  : 'Get a notification the moment an order is paid, even with the admin closed.'}
-        </span>
-        {push === 'off' ? (
+        <span className="field__hint">{DEVICE_COPY[push]}</span>
+        {push === 'needs-install' ? (
+          /* iOS in a browser tab. There is no button that can help — Apple gives
+             Web Push only to a site on the Home Screen — so the steps ARE the
+             offer, exactly as the install panel in the top bar does it. */
+          <ol className="install__steps">
+            <li>Tap Share in Safari’s toolbar.</li>
+            <li>Choose Add to Home Screen.</li>
+            <li>Open PlaSpool from the new icon, then come back here.</li>
+          </ol>
+        ) : null}
+        {push === 'off' || push === 'no-worker' ? (
           <Button
             tone="primary"
             busy={pushBusy}
             onClick={() => {
               setPushBusy(true);
+              /* Unlocks the chime from inside this very click. Browsers refuse
+                 audio until a page has had a gesture, and this press is the
+                 one that means "notify me" — so it is the honest place to take
+                 the permission for the sound as well as for the pop-up. */
+              unlockChime();
               /* Straight out of the click: the browser refuses a permission
                  request that is not inside a user gesture, and subscribing is
                  that request. */
               void enablePush()
-                .then(setPush)
+                .then((next) => {
+                  setPush(next);
+                  /* IT SAYS SOMETHING WHEN IT FAILS, which is the whole repair.
+                     This used to set the state and stop — and when the state it
+                     came back with was the one it started in, the press produced
+                     no notification, no error and no visible change. */
+                  if (next !== 'on') toast.show(FAILED_COPY[next], 'critical');
+                })
                 .finally(() => setPushBusy(false));
             }}
           >
