@@ -17,6 +17,7 @@
     "lint": "oxlint",
     "test": "vitest run",
     "preview": "vite preview",
+    "probe:fez": "tsx --env-file-if-exists=.fez.env scripts/probe-fez.ts",
     "deploy:prod": "tsx scripts/deploy.ts --prod",
     "deploy:dev": "tsx scripts/deploy.ts --dev"
   },
