@@ -256,6 +256,33 @@ export function servesRegion(
   return servedRegions.some((served) => normalizeRegion(served) === folded);
 }
 
+/**
+ * The served country list as the column will hold it: trimmed, uppercased,
+ * de-duplicated, order preserved.
+ *
+ * NORMALISED HERE RATHER THAN REFUSED, `normalizeServedRegions`' precedent — an
+ * owner who types " ng " has said something correct. What IS refused is a list
+ * that empties out, because the CHECK forbids an empty array and a raw `23514`
+ * is a 500 for input a person typed. The SHAPE (two letters) is refused by the
+ * route's schema, where a bad value can be named to the person who typed it.
+ */
+export function normalizeServedCountries(countries: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of countries) {
+    const value = normalizeCountry(raw);
+    if (value === '') continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  /* Unlike regions there is no `null` to fall back to: "we ship nowhere" is not
+   * a state this shop can be in, so an empty result is the owner's mistake and
+   * is named as one. */
+  if (out.length === 0) throw new BadRequestError('servedCountries');
+  return out;
+}
+
 /** Fold a country code the way `zoneFor` folds one: case and edge whitespace out. */
 export function normalizeCountry(countryCode: string): string {
   return countryCode.trim().toUpperCase();
@@ -357,6 +384,13 @@ export interface DeliverySettingsPatch {
    * refuses the whole statement with `42P18`.
    */
   servedRegions?: readonly string[] | null;
+  /**
+   * `undefined` LEAVES IT ALONE. There is no `null` here, unlike
+   * `servedRegions`: clearing the country list is not a meaningful act, it is
+   * closing the shop, so the only two things an owner can say are "change it to
+   * this" and "do not change it".
+   */
+  servedCountries?: readonly string[];
 }
 
 export interface DeliverySettingsWriteOptions {
@@ -388,11 +422,14 @@ export async function patchDeliverySettings(
   const modeGiven = patch.addressMode !== undefined;
   const locationGiven = patch.locationOffered !== undefined;
   const regionsGiven = patch.servedRegions !== undefined;
+  const countriesGiven = patch.servedCountries !== undefined;
 
   /* Normalised BEFORE the statement so a refusal is a 400 naming the field
    * rather than a CHECK violation surfacing as a 500. */
   const regions =
     patch.servedRegions == null ? null : normalizeServedRegions(patch.servedRegions);
+  const countries =
+    patch.servedCountries === undefined ? null : normalizeServedCountries(patch.servedCountries);
 
   const res = await db.execute(sql`
     UPDATE shop_delivery_settings SET
@@ -405,6 +442,9 @@ export async function patchDeliverySettings(
       served_regions = CASE WHEN ${regionsGiven}
                             THEN ${regions === null ? sql`NULL::text[]` : textArray(regions)}
                             ELSE served_regions END,
+      served_countries = CASE WHEN ${countriesGiven}
+                              THEN ${countries === null ? sql`served_countries` : textArray(countries)}
+                              ELSE served_countries END,
       revision = revision + 1,
       updated_at = ${opts.now},
       updated_by = ${opts.actorId}::uuid
