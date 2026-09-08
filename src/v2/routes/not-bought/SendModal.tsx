@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Send } from 'lucide-react';
-import { emailApi, type EmailTemplate } from '../../../data/api-email';
+import { emailApi, isSystemTemplate, type EmailTemplate } from '../../../data/api-email';
 import { shopApi, type ShopProspect } from '../../../data/api-shop';
 import { hasUnsubscribeVariable, needsBasket } from '../../../../shared/email/variables';
 import { useAsync } from '../../lib/useAsync';
@@ -75,7 +75,11 @@ export function SendModal({
      has to finish or abandon the draft under Newsletters, not retry here. */
   const [stranded, setStranded] = useState(false);
 
-  const list = templates.data ?? [];
+  // Marketing sends never offer a system (transactional) template — one of
+  // them carries `{{unsubscribe_url}}` in both parts, so it CAN be picked
+  // here, and mass-sending an order confirmation as a nudge is exactly the
+  // mistake this filter exists to rule out.
+  const list = (templates.data ?? []).filter((t) => !isSystemTemplate(t));
   const template = list.find((t) => t.id === templateId) ?? null;
 
   /**

@@ -2,7 +2,7 @@
 --
 -- WARNING (2026-09-08): the dev database's ledger high-water was measured at
 -- 1786600005400 the same day this migration's journal entry was corrected to
--- 1786600005200 -- BELOW that mark. Drizzle only applies a journal entry above
+-- 1786600005300 -- BELOW that mark. Drizzle only applies a journal entry above
 -- the ledger's high-water mark, so a plain db:migrate run against dev will
 -- SILENTLY SKIP this migration: no error, no output saying so. Apply it to dev
 -- BY HAND -- split this file on the statement-breakpoint marker comment and

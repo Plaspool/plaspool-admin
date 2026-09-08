@@ -1187,9 +1187,12 @@ export async function markRecipientFailed(
  * Not delivered, and not a failure either — a nudge whose basket emptied
  * between the pick and the batch that reached it (`server/email/send.ts`).
  *
- * `attempts` IS NOT TOUCHED. A skip never reached the provider, so unlike
- * `markRecipientFailed` — which moves this same row through a CAS on that
- * column — a skip is not an attempt at delivery.
+ * THIS FUNCTION DOES NOT TOUCH `attempts` — unlike `markRecipientFailed`, it
+ * writes no CAS on that column. But `drainBroadcast` claims a row with
+ * `claimRecipient` (which does increment `attempts`) BEFORE it decides to
+ * skip it, so in practice a row this function has skipped through the drain
+ * reads `attempts = 1`, not `0`. A caller that skips without claiming first
+ * would leave it at `0`, but nothing in this codebase does that today.
  *
  * No broadcast-level counter moves here, unlike `markRecipientSent` and
  * `markRecipientFailed`: `email_broadcasts` has no `skipped_count` (migration

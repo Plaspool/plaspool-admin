@@ -109,6 +109,17 @@ const noExit = {
   text: 'Hello {{name}}',
 };
 
+/** A system (transactional) template — the realistic worst case is mass-
+ *  sending this one as a nudge, since it is the only system template that
+ *  carries `{{unsubscribe_url}}` in both parts. Marketing sends must not
+ *  offer it at all. */
+const systemWelcome = {
+  ...plain,
+  id: 'tpl_sys',
+  name: 'Welcome to PlaSpool',
+  systemKey: 'welcome',
+};
+
 const person = (over: Partial<ShopProspect> & { email: string }): ShopProspect => ({
   displayName: null,
   hasBasket: true,
@@ -132,7 +143,7 @@ const empty = person({ email: 'd@x.test', hasBasket: false, basketItems: 0, bask
 beforeEach(() => {
   handlers.clear();
   calls = [];
-  when(TEMPLATES, { items: [plain, withBasket, noExit] });
+  when(TEMPLATES, { items: [plain, withBasket, noExit, systemWelcome] });
   when('/api/shop/admin/customers/prospects/a%40x.test', { basket: null, sends: [] });
   vi.stubGlobal(
     'fetch',
@@ -196,6 +207,12 @@ describe('SendModal', () => {
        `drainBroadcast` skips people for. */
     await choose('Your basket');
     expect(await screen.findByText(/1 has no basket and will be skipped/)).toBeTruthy();
+  });
+
+  it('does not offer a system template as a nudge', async () => {
+    mount([subscribed]);
+    await screen.findByLabelText(/message/i);
+    expect(screen.queryByRole('option', { name: 'Welcome to PlaSpool' })).toBeNull();
   });
 
   it('refuses to send a template with no unsubscribe link', async () => {

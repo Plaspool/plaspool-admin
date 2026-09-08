@@ -23,6 +23,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migratedDb } from '../test/harness';
 import {
   addSubscriber,
+  claimRecipient,
   createBroadcast,
   enqueueAudience,
   listBroadcastAudience,
@@ -190,7 +191,7 @@ describe('enqueueAudience branches on audience_kind', () => {
 });
 
 describe('markRecipientSkipped', () => {
-  it('marks the row skipped, records the reason, and does not count it as an attempt', async () => {
+  it('marks the row skipped and records the reason; attempts reads 1 because drainBroadcast claims before it skips', async () => {
     await addSubscriber(db, { email: 'ada@example.test', source: 'manual' }, NOW);
     const b = await createBroadcast(db, snapshot({}), actor, NOW);
     await enqueueAudience(db, b.id);
@@ -198,13 +199,18 @@ describe('markRecipientSkipped', () => {
       SELECT id FROM email_broadcast_recipients WHERE broadcast_id = ${b.id}::uuid`);
     const id = String(before.rows[0].id);
 
+    // drainBroadcast always claims (CAS on attempts) before it decides to
+    // skip a row, so a row that markRecipientSkipped ever sees in production
+    // has already been claimed once.
+    expect(await claimRecipient(db, id, 0)).toBe(true);
+
     await markRecipientSkipped(db, id, b.id, 'basket_empty');
 
     const row = await db.execute(sql`
       SELECT status, last_error, attempts FROM email_broadcast_recipients WHERE id = ${id}::uuid`);
     expect(String(row.rows[0].status)).toBe('skipped');
     expect(String(row.rows[0].last_error)).toBe('basket_empty');
-    expect(Number(row.rows[0].attempts)).toBe(0);
+    expect(Number(row.rows[0].attempts)).toBe(1);
   });
 
   it('does not touch a row that has already left pending', async () => {
