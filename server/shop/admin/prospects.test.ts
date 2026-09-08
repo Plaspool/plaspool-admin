@@ -222,14 +222,22 @@ async function placeOrder(db: Db, email: string): Promise<void> {
 
 let broadcasts = 0;
 
-/** One finished send. Both bodies are non-empty because the schema insists. */
-async function seedBroadcast(db: Db): Promise<string> {
+/**
+ * One finished send. Both bodies are non-empty because the schema insists.
+ *
+ * `createdAt` defaults to `S0` for every caller that does not care about
+ * `sendsFor`'s ordering — but a test that DOES care must pass distinct
+ * values, or every broadcast ties on `created_at` and the assertion is
+ * actually resting on the query's `r.id ASC` tiebreak (a random UUID)
+ * instead of the column under test.
+ */
+async function seedBroadcast(db: Db, createdAt: number = S0): Promise<string> {
   broadcasts += 1;
   const id = randomUUID();
   await db.execute(sql`
     INSERT INTO email_broadcasts (id, subject, html, text, status, created_at)
     VALUES (${id}::uuid, ${`Broadcast ${broadcasts}`}, ${'<p>hi</p>'}, ${'hi'},
-            'sent', ${S0})`);
+            'sent', ${createdAt})`);
   return id;
 }
 
@@ -372,8 +380,11 @@ describe('sendsFor', () => {
   it('orders newest broadcast first, and folds the address', async () => {
     const db = ctx.db;
     await giveSubscription(db, 'ada@example.test');
-    const older = await seedBroadcast(db);
-    const newer = await seedBroadcast(db);
+    // Distinct created_at values, so this actually exercises `b.created_at`
+    // ordering rather than resting on the query's `r.id ASC` tiebreak (which
+    // is all that would decide it if both broadcasts tied on created_at).
+    const older = await seedBroadcast(db, S0);
+    const newer = await seedBroadcast(db, S0 + DAY);
     await seedRecipient(db, older, 'ada@example.test', { status: 'sent', sentAt: S0 });
     await seedRecipient(db, newer, 'ada@example.test', { status: 'sent', sentAt: S0 + DAY });
 
@@ -398,6 +409,33 @@ describe('sendsFor', () => {
       sentAt: null,
       lastError: 'basket_empty',
     });
+  });
+
+  /**
+   * THE DISCRIMINATOR. A `pending` row sorts by its broadcast's `created_at`
+   * — chronologically BETWEEN two `sent` broadcasts — never at either
+   * extreme. That is the one shape that fails under both wrong orderings:
+   * `ORDER BY r.sent_at DESC` puts a null `sent_at` FIRST under Postgres's
+   * default NULLS FIRST, and `... NULLS LAST` would put it LAST — this
+   * seeds it in the middle by `created_at`, so either wrong ordering moves
+   * it to the wrong end and the assertion below catches it either way.
+   */
+  it('sorts a still-queued row by ITS broadcast\'s created_at, not to either end', async () => {
+    const db = ctx.db;
+    await giveSubscription(db, 'ada@example.test');
+    const older = await seedBroadcast(db, S0);
+    const middle = await seedBroadcast(db, S0 + DAY);
+    const newer = await seedBroadcast(db, S0 + 2 * DAY);
+    // Sent times deliberately out of step with created_at order, so a pass
+    // here cannot be an accident of the sent_at values happening to agree.
+    await seedRecipient(db, older, 'ada@example.test', { status: 'sent', sentAt: S0 + 6 * DAY });
+    await seedRecipient(db, newer, 'ada@example.test', { status: 'sent', sentAt: S0 + 5 * DAY });
+    await seedRecipient(db, middle, 'ada@example.test', { status: 'pending' });
+
+    const sends = await sendsFor(db, 'ada@example.test');
+    expect(sends.map((s) => s.broadcastId)).toEqual([newer, middle, older]);
+    expect(sends[1].status).toBe('pending');
+    expect(sends[1].sentAt).toBeNull();
   });
 
   it('is null-safe for a blank address', async () => {
