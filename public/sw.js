@@ -275,6 +275,28 @@ self.addEventListener('push', (event) => {
       renotify: Boolean(payload.tag),
       icon: '/brand/icon-192.png',
       badge: '/brand/icon-192.png',
+      /*
+       * IT STAYS ON SCREEN UNTIL SOMEBODY DEALS WITH IT.
+       *
+       * Without this a desktop notification fades after a few seconds, so an
+       * order that lands while the packer is making tea is one nobody ever
+       * sees — the notification technically arrived and did no work at all.
+       * An order is worth an interruption that waits; it is the whole reason
+       * this channel exists.
+       *
+       * Ignored on Android, where the system tray already holds notifications
+       * until they are cleared, so this costs nothing there.
+       */
+      requireInteraction: true,
+      /*
+       * THE ONLY LOUDNESS THE WEB ACTUALLY OFFERS. There is no sound parameter
+       * in the Notifications API — none, in any browser — so the tone is the
+       * operating system's to choose and cannot be set from here. A vibration
+       * pattern is the one thing a page can ask for, and on a phone in a
+       * pocket it is what gets noticed. Two short buzzes and a longer one, so
+       * it reads as deliberate rather than as another message.
+       */
+      vibrate: [180, 90, 180, 90, 360],
       /* Read by the notificationclick handler above. */
       data: { url: url },
     }),

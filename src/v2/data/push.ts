@@ -26,10 +26,24 @@ import { shopApi } from '../../data/api-shop';
 
 /** What this device can do about push, as one word the UI can switch on. */
 export type PushState =
-  /** This browser has no service worker or no PushManager. Nothing to offer. */
+  /** This browser has no service worker or no PushManager. On iOS that means
+   *  "not from a Safari tab" rather than "never" — see `isIosBrowser`. */
   | 'unsupported'
+  /** iOS, in a browser tab. Web Push exists there ONLY for a site added to the
+   *  Home Screen, so this is a step away rather than a dead end — and it needs
+   *  its own state because the instructions are completely different. */
+  | 'needs-install'
   /** The deployment has no VAPID keys. The owner sets three variables. */
   | 'not-configured'
+  /** No service worker is registered, so there is nothing to subscribe THROUGH.
+   *
+   *  ITS OWN STATE BECAUSE IT USED TO BE SILENT, and that silence is what made
+   *  the button look broken on production: `enablePush` returned 'off' — the
+   *  state it started in — so the screen reported nothing at all, and the
+   *  person pressed a button that by every visible sign did nothing. The
+   *  worker registers on the window `load` event, so pressing quickly enough
+   *  after a cold load lands exactly here. */
+  | 'no-worker'
   /** Available, and this device is not registered. */
   | 'off'
   /** Registered — the shop can reach this device. */
@@ -61,6 +75,64 @@ async function registration(): Promise<ServiceWorkerRegistration | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * The registration, REGISTERING IT IF NOBODY HAS YET.
+ *
+ * THE FIX FOR A BUTTON THAT DID NOTHING. `main.tsx` registers the worker on the
+ * window `load` event, so there is a window after a cold load in which
+ * `getRegistration()` is legitimately empty — and pressing "Turn on for this
+ * device" inside it used to return the state it started in, so the screen said
+ * nothing and the button looked broken. It looked broken on production
+ * specifically, because a host somebody visits rarely is the one whose worker
+ * has not settled, while a host they hammer all day always has one.
+ *
+ * `register()` rather than awaiting `navigator.serviceWorker.ready`: `ready`
+ * never settles when nothing has been registered, so waiting on it turns a
+ * missing worker into a hang with no error. `register` is idempotent — handed
+ * a URL that is already registered it resolves with the existing registration —
+ * so this closes the race instead of racing it.
+ *
+ * PROD ONLY, matching `main.tsx`. A worker in dev serves yesterday's bundle
+ * back to Vite and fights HMR, and quietly installing one from a settings
+ * screen would be a genuinely confusing way to discover that.
+ */
+async function ensureRegistration(): Promise<ServiceWorkerRegistration | null> {
+  const existing = await registration();
+  if (existing !== null) return existing;
+  if (!import.meta.env.PROD) return null;
+  try {
+    return await navigator.serviceWorker.register('/sw.js');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * iOS, in a browser tab rather than an installed app.
+ *
+ * EVERY BROWSER ON iOS IS SAFARI UNDERNEATH, so Chrome and Firefox there behave
+ * identically — and none of them exposes `PushManager` to a tab. Apple gives
+ * Web Push only to a site added to the Home Screen. That makes "unsupported"
+ * the wrong word: the capability is one step away, and the step is nothing like
+ * the one every other platform needs.
+ *
+ * iPadOS reports itself as a Mac deliberately, so the user agent alone sends
+ * every iPad down the desktop branch; a touch screen is what separates them.
+ */
+function isIosBrowser(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent;
+  const ios = /iphone|ipad|ipod/i.test(ua) || (/macintosh/i.test(ua) && navigator.maxTouchPoints > 1);
+  if (!ios) return false;
+  /* Already installed? Then it is not this case — an installed iOS app DOES get
+     push, and telling somebody to install what they are standing in is absurd. */
+  const standalone = (navigator as Navigator & { standalone?: boolean }).standalone === true;
+  const displayMode =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(display-mode: standalone)').matches;
+  return !standalone && !displayMode;
 }
 
 /**
@@ -102,6 +174,10 @@ function currentPermission(): NotificationPermission {
  *  exists at all, so a deployment with no keys says so rather than offering a
  *  button that cannot work. */
 export async function pushState(signal?: AbortSignal): Promise<PushState> {
+  /* iOS FIRST, because on a Safari tab `supported()` is false and would answer
+     "this browser cannot", which is untrue and unhelpful — the browser can, as
+     soon as the site is on the Home Screen. */
+  if (isIosBrowser()) return 'needs-install';
   if (!supported()) return 'unsupported';
   if (currentPermission() === 'denied') return 'blocked';
 
@@ -116,8 +192,10 @@ export async function pushState(signal?: AbortSignal): Promise<PushState> {
   }
   if (!configured) return 'not-configured';
 
+  /* READ-ONLY here — this runs on every mount and must not install a worker as
+     a side effect of looking. `enablePush` is where a press may create one. */
   const reg = await registration();
-  if (reg === null) return 'off';
+  if (reg === null) return 'no-worker';
   const existing = await reg.pushManager.getSubscription();
   return existing === null ? 'off' : 'on';
 }
@@ -136,6 +214,7 @@ export async function pushState(signal?: AbortSignal): Promise<PushState> {
  * on the next call, because `subscribe()` returns the existing one.
  */
 export async function enablePush(): Promise<PushState> {
+  if (isIosBrowser()) return 'needs-install';
   if (!supported()) return 'unsupported';
   if (currentPermission() === 'denied') return 'blocked';
 
@@ -143,11 +222,12 @@ export async function enablePush(): Promise<PushState> {
     const { publicKey, configured } = await shopApi.pushKey();
     if (!configured || publicKey === null) return 'not-configured';
 
-    const reg = await registration();
-    /* No worker means no push, and in dev there is deliberately none — the
-       registration in `main.tsx` is PROD-only so a stale worker cannot fight
-       Vite's HMR. Reported honestly rather than papered over. */
-    if (reg === null) return 'off';
+    /* REGISTERS ONE IF THERE IS NONE, rather than giving up. This is the line
+       that used to return 'off' — the state the caller was already in — which
+       is how a press produced no notification, no error and no change on
+       screen. See `ensureRegistration`. */
+    const reg = await ensureRegistration();
+    if (reg === null) return 'no-worker';
 
     const subscription =
       (await reg.pushManager.getSubscription()) ??

@@ -539,3 +539,52 @@ describe('a push arrives with no page running', () => {
     ]);
   });
 });
+
+describe('a push that is hard to miss', () => {
+  function pushEvent(payload: unknown): FakeEvent {
+    return {
+      data: { json: () => payload },
+      respondWith: vi.fn(),
+      waitUntil: () => {},
+    } as unknown as FakeEvent;
+  }
+
+  it('stays on screen until it is dealt with, and buzzes a phone', async () => {
+    /*
+     * WITHOUT `requireInteraction` A DESKTOP NOTIFICATION FADES after a few
+     * seconds, so an order arriving while the packer is making tea is one
+     * nobody ever sees — it technically arrived and did no work at all.
+     *
+     * `vibrate` is the ONLY loudness the web offers. There is no sound
+     * parameter in the Notifications API, in any browser, so the tone belongs
+     * to the operating system; a vibration pattern is the one thing a page can
+     * ask for, and it is what gets noticed in a pocket.
+     */
+    const w = loadWorker();
+    w.listeners.get('push')!(pushEvent({ title: 'New order', body: 'x', url: '/', tag: 't' }));
+    await flush();
+
+    const [, options] = w.showNotification.mock.calls[0] as unknown as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(options.requireInteraction).toBe(true);
+    expect(Array.isArray(options.vibrate)).toBe(true);
+    expect((options.vibrate as number[]).length).toBeGreaterThan(1);
+  });
+
+  it('keeps those on the fallback notification too, when the payload is junk', async () => {
+    /* The degraded message is the one most likely to matter — something went
+       wrong AND an order may be sitting there. It must not be the quiet one. */
+    const w = loadWorker();
+    w.listeners.get('push')!(pushEvent(null));
+    await flush();
+
+    const [, options] = w.showNotification.mock.calls[0] as unknown as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(options.requireInteraction).toBe(true);
+    expect(Array.isArray(options.vibrate)).toBe(true);
+  });
+});
