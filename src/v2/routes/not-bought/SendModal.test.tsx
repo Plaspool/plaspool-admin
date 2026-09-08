@@ -161,11 +161,14 @@ afterEach(() => {
 });
 
 function mount(picked: ShopProspect[], onSent = vi.fn()) {
+  /* `ToastHost` has to be an ANCESTOR of `SendModal`, not a sibling — its
+     toast context is React context, and a sibling never receives it. A
+     sibling `ToastHost` renders, but `useToast()` inside `SendModal` then
+     resolves to the no-op default and every `toast.show()` vanishes silently. */
   render(
-    <>
+    <ToastHost>
       <SendModal picked={picked} onClose={() => {}} onSent={onSent} />
-      <ToastHost />
-    </>,
+    </ToastHost>,
   );
   return onSent;
 }
@@ -222,6 +225,43 @@ describe('SendModal', () => {
       audience: { kind: 'picked', emails: ['a@x.test', 'b@x.test'] },
     });
     await waitFor(() => expect(onSent).toHaveBeenCalled());
+  });
+
+  it('reports a failed draft as retryable — nothing was created', async () => {
+    when(BROADCASTS, { error: 'internal', requestId: 'req_test' }, 500);
+    const onSent = mount([subscribed, neverAsked, unsubscribed]);
+    await choose('A plain nudge');
+    await userEvent.click(screen.getByRole('button', { name: /send/i }));
+
+    await waitFor(() => expect(callTo('POST', BROADCASTS)).toBeTruthy());
+    expect(callTo('POST', `${BROADCASTS}/bc_1/send`)).toBeFalsy();
+    expect(await screen.findByText(/internal/i)).toBeTruthy();
+    expect(onSent).not.toHaveBeenCalled();
+
+    /* Nothing was created — Send stays enabled and retryable. */
+    const button = screen.getByRole('button', { name: /send/i }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+  });
+
+  it('reports a failed send as a stranded draft — and refuses to re-arm', async () => {
+    when(BROADCASTS, { broadcast: { id: 'bc_1', recipientCount: 2, status: 'draft' } }, 201);
+    when(`${BROADCASTS}/bc_1/send`, { error: 'internal', requestId: 'req_test' }, 500);
+    const onSent = mount([subscribed, neverAsked, unsubscribed]);
+    await choose('A plain nudge');
+    await userEvent.click(screen.getByRole('button', { name: /send/i }));
+
+    await waitFor(() => expect(callTo('POST', `${BROADCASTS}/bc_1/send`)).toBeTruthy());
+    /* The operator is told the draft exists and where to finish it — not just
+       handed the server's raw message. */
+    expect(await screen.findByText(/draft created but the send didn't start/i)).toBeTruthy();
+    expect(screen.getByText(/newsletters/i)).toBeTruthy();
+    expect(onSent).not.toHaveBeenCalled();
+
+    /* A draft with this audience already exists — pressing Send again would
+       mint a second one over the same addresses, so the button must not
+       re-arm for this selection. */
+    const button = screen.getByRole('button', { name: /send/i }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
   });
 
   it('does not send when nobody picked is mailable', async () => {

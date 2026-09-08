@@ -66,6 +66,14 @@ export function SendModal({
   const templates = useAsync((signal) => emailApi.listTemplates(signal), []);
   const [templateId, setTemplateId] = useState('');
   const [sending, setSending] = useState(false);
+  /* Set the moment `createBroadcast` resolves, and never cleared. A failure
+     AFTER this point means a draft exists with the picked audience already
+     attached — pressing Send again would mint a SECOND draft over the same
+     addresses, and because the server drains a first batch before responding
+     (`server/routes/email.ts`), a "failed" send can mean mail already went
+     out. So this flag, once true, disables the button for good — the operator
+     has to finish or abandon the draft under Newsletters, not retry here. */
+  const [stranded, setStranded] = useState(false);
 
   const list = templates.data ?? [];
   const template = list.find((t) => t.id === templateId) ?? null;
@@ -114,8 +122,10 @@ export function SendModal({
   async function send() {
     if (template === null || emails.length === 0 || blocked) return;
     setSending(true);
+    let draftId: string | null = null;
     try {
       const draft = await emailApi.createBroadcast(template.id, { kind: 'picked', emails });
+      draftId = draft.id;
       const sent = await emailApi.sendBroadcast(draft.id);
       toast.show(
         sent.status === 'sent'
@@ -124,11 +134,20 @@ export function SendModal({
       );
       onSent();
     } catch (cause) {
-      toast.show(
-        cause instanceof Error && cause.message ? cause.message : 'Something went wrong.',
-        'critical',
-      );
-      setSending(false);
+      const message = cause instanceof Error && cause.message ? cause.message : 'Something went wrong.';
+      if (draftId !== null) {
+        /* The draft exists. Pressing Send again would mint a second one over
+           the same addresses, and may duplicate mail that already went out —
+           so this is NOT a retry. Say where to finish it and leave the button
+           disabled for this selection. */
+        toast.show(`Draft created but the send didn't start — finish it under Newsletters. ${message}`, 'critical');
+        setStranded(true);
+        setSending(false);
+      } else {
+        /* Nothing was created. Safe to retry from here. */
+        toast.show(message, 'critical');
+        setSending(false);
+      }
     }
   }
 
@@ -149,7 +168,7 @@ export function SendModal({
           <Button
             tone="primary"
             busy={sending}
-            disabled={template === null || blocked || n === 0}
+            disabled={template === null || blocked || n === 0 || stranded}
             onClick={() => void send()}
           >
             <Send aria-hidden="true" />
