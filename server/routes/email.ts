@@ -699,11 +699,21 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
      * BROADCAST IS BRAND NEW. `setBroadcastAudience` also answers 0 when every
      * address was ALREADY on the list, which cannot be true a statement after
      * the row was created — there is no re-pick path on this route. Naming the
-     * field rather than leaving behind a draft that can never reach anybody.
+     * field AND deleting the broadcast just created, rather than leaving
+     * behind a draft that can never reach anybody.
+     *
+     * THE DELETE IS SAFE TO CALL UNCONDITIONALLY HERE: `setBroadcastAudience`
+     * returns 0 BEFORE its INSERT when every address folds to nothing (see
+     * its own comment), so no `email_broadcast_audience` row exists yet for
+     * `deleteBroadcast`'s recipient sweep to reconcile with — there is
+     * nothing to conflict with a row that was never written.
      */
     if (body.audience) {
       const recorded = await setBroadcastAudience(db, broadcast.id, body.audience.emails);
-      if (recorded === 0) throw new BadRequestError('audience');
+      if (recorded === 0) {
+        await deleteBroadcast(db, broadcast.id);
+        throw new BadRequestError('audience');
+      }
     }
 
     return c.json({ broadcast }, 201);

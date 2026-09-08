@@ -832,6 +832,32 @@ describe('a picked audience', () => {
     expect((await json<{ detail: string }>(res)).detail).toBe('audience');
   });
 
+  it('leaves no orphaned draft behind when the picked audience folds to nothing', async () => {
+    /*
+     * The broadcast is created two statements before `recorded === 0` fires.
+     * A refused create must clean that row up itself — otherwise every empty
+     * or all-blank pick left a `status = 'draft'` row behind that could never
+     * reach anybody, and an operator would find it as a mystery empty draft
+     * in their Newsletters list.
+     */
+    const template = await createTemplate();
+    const res = await owner.post('/api/admin/email/broadcasts', {
+      templateId: template.id,
+      audience: { kind: 'picked', emails: [] },
+    });
+    expect(res.status).toBe(400);
+
+    const list = await json<{ items: BroadcastRow[] }>(
+      await owner.get('/api/admin/email/broadcasts'),
+    );
+    expect(list.items).toEqual([]);
+
+    // Belt and braces: the list route caps at 100 and could theoretically
+    // hide a leak behind other rows in a busier suite; a direct count cannot.
+    const count = await ctx.db.execute(sql`SELECT count(*) AS n FROM email_broadcasts`);
+    expect(Number(count.rows[0].n)).toBe(0);
+  });
+
   it('caps the picked list, so one request cannot become an unbounded enrolment', async () => {
     /*
      * Task 5's `enqueueAudience` enrols a picked audience with one sequential
