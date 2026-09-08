@@ -856,6 +856,24 @@ export interface ShopEmailIntent {
 /** The outbox screen's slices. Disjoint, and together they cover the table. */
 export type OutboxBucket = 'attention' | 'queued' | 'sent' | 'dismissed';
 
+/**
+ * What one run of the sweep moved.
+ *
+ * COPIED OFF `runSweep`'s OWN RETURN (`server/shop/orders/routes.ts`), field by
+ * field, because `shopFetch<T>` is an unchecked assertion — nothing compares T
+ * to the payload at runtime, so a shape written from memory is a screen reading
+ * `undefined` with no type error anywhere. Both halves of this were guessed
+ * wrong on the first attempt: payments answers `count`, not settled/failed, and
+ * the event drain answers applied/ignored/parked, not processed.
+ */
+export interface SweepRun {
+  payments: { count: number };
+  events: { applied: number; ignored: number; parked: number; passes: number };
+  emails: { sent: number; failed: number; skipped: number };
+  seeded: number;
+  passes: number;
+}
+
 /** An intent joined with the order number the list screen links through. */
 export interface ShopOutboxItem extends ShopEmailIntent {
   orderNumber: string;
@@ -986,6 +1004,15 @@ export interface EmailBacklog {
   stuck: number;
   /** Handed to a mailer. Counted so "0 pending" can be told from "no email ever". */
   sent: number;
+  /**
+   * When the oldest still-waiting intent was written, or `null` if none is.
+   *
+   * OPTIONAL ON THE WIRE, and read defensively for it: a deployment serving a
+   * bundle older than the field answers without it, and a strict read would
+   * make the bell treat an ordinary response as broken. Same rule the frozen
+   * totals learned twice.
+   */
+  oldestPendingAt?: number | null;
 }
 
 /** A row of `GET /shop/admin/inventory`, which `stats` reuses for low stock. */
@@ -1053,6 +1080,86 @@ export interface ShopBuyer {
 }
 
 /**
+ * "Not bought yet" — people with a basket, an account or a subscription who
+ * have never ordered, and the basket each of them left. Mirrors
+ * `server/shop/admin/prospects.ts` field for field; see that file for why the
+ * tabs are disjoint, why the address is folded, and why a basket is quoted
+ * live rather than frozen.
+ */
+export type SubscribeState = 'subscribed' | 'never_asked' | 'unsubscribed';
+
+/** The four tabs `listProspects` filters on — `'all'` is their union. */
+export type ProspectTab = 'basket' | 'account' | 'subscriber' | 'all';
+
+export interface ShopBasketLine {
+  variantId: string;
+  productId: string;
+  /** The PRODUCT's title. A shopper recognises "PLA Basic", not a SKU. */
+  title: string;
+  optionValues: Record<string, string>;
+  sku: string;
+  qty: number;
+  unitMinor: number;
+  lineMinor: number;
+  /** The variant's own photograph, falling back to the product cover. Normalised. */
+  imageId: string | null;
+}
+
+export interface ShopBasket {
+  cartId: string;
+  status: 'open' | 'converting' | 'converted' | 'abandoned';
+  currency: string;
+  updatedAt: number;
+  expiresAt: number | null;
+  lines: ShopBasketLine[];
+  totalMinor: number;
+  discountCode: string | null;
+  addOnChoices: unknown | null;
+  redemptionPoints: number | null;
+}
+
+/** One broadcast a prospect was queued for. Mirrors `Send` in
+ * `server/shop/admin/prospects.ts` field for field. */
+export interface ShopSend {
+  broadcastId: string;
+  subject: string;
+  /** 'pending' | 'sent' | 'failed' | 'skipped' */
+  status: string;
+  sentAt: number | null;
+  lastError: string | null;
+}
+
+export interface ShopProspect {
+  /** The folded address. It is this row's identity, and the cursor's id. */
+  email: string;
+  displayName: string | null;
+  hasBasket: boolean;
+  hasAccount: boolean;
+  isSubscriber: boolean;
+  subscribeState: SubscribeState;
+  /** Units in the basket, summed over its lines. Zero when there is none. */
+  basketItems: number;
+  /** MINOR UNITS, quoted live. Zero when there is no basket. */
+  basketMinor: number;
+  /** What `basketMinor` is denominated in. EMPTY when there is no basket. */
+  currency: string;
+  /** Cart last touched, else account created, else subscribed. Never null. */
+  lastSeenAt: number;
+  /** When a broadcast last actually reached them, or null. */
+  lastNudgeAt: number | null;
+}
+
+export interface ShopProspectPage {
+  items: ShopProspect[];
+  nextCursor: string | null;
+  /**
+   * Carts with lines that resolve to no address at all. NOT affected by the
+   * tab or the search query — a property of the shop, not of the page.
+   */
+  unreachableBaskets: number;
+}
+
+/**
  * One row of the categories surface — the UNION of the managed
  * `shop_categories` table and the values still sitting in
  * `shop_products.category` as free text (migration 0200).
@@ -1116,6 +1223,22 @@ export interface ShopShippingOption {
   amountMinor: number;
   estimate: string;
   position: number;
+}
+
+/**
+ * `shop_delivery_settings`, the whole row (migrations 0760 and 1060).
+ *
+ * `servedCountries` is where the shop will send a parcel it arranges ITSELF —
+ * the manual method. It is never empty and there is no "everywhere": a country
+ * nobody named falls to the catch-all zone, which is the fail-safe rate.
+ */
+export interface ShopDeliverySettings {
+  addressMode: 'district' | 'simple';
+  locationOffered: boolean;
+  servedRegions: string[] | null;
+  servedCountries: string[];
+  revision: number;
+  updatedAt: number;
 }
 
 export interface ShopShippingZone {
@@ -1301,6 +1424,100 @@ export const shopApi = {
   /** Stop counting an unsent intent at the operator. Retry undoes it. */
   async dismissEmailIntent(id: string): Promise<{ ok: true }> {
     return shopFetch(`${BASE}/emails/${seg(id)}/dismiss`, { method: 'POST', id });
+  },
+
+  /**
+   * Run the sweep now — settle payments, drain commerce events, send the queued
+   * mail — instead of waiting for whatever is scheduled to call it.
+   *
+   * ON PRODUCTION THIS IS A NUDGE. An external cron already holds the
+   * `CRON_SECRET` and calls `GET /admin/sweep` on a schedule, so the queue is
+   * normally seconds old and pressing this changes little.
+   *
+   * ON A PREVIEW HOST IT IS THE ONLY DRAINER THERE IS, which is the reason it
+   * exists. Vercel's own cron entries fire for the PRODUCTION deployment only,
+   * and the external service authenticates with production's secret, which the
+   * Preview scope does not share — so on `admin.dev.plaspool.com` nothing calls
+   * the sweep at all. An order still reaches `paid` there, because the
+   * storefront's checkout-complete page resolves the capture from Paystack
+   * directly, which is exactly what makes the silence confusing: the order
+   * moves and the outbox does not. Measured 2026-09-08, three intents stuck at
+   * `attempts = 0` with no error anywhere.
+   *
+   * `requireAdmin()` on the server — owner and developers.
+   */
+  async sweepNow(): Promise<SweepRun> {
+    return shopFetch<SweepRun>(`${BASE}/sweep`, { method: 'POST', body: {} });
+  },
+
+  // ------------------------------------------------------------------ push
+
+  /**
+   * The VAPID public key a browser needs before it can subscribe.
+   *
+   * OVER THE WIRE RATHER THAN BAKED INTO THE BUNDLE, deliberately. A `VITE_`
+   * variable is read at BUILD time, so an owner who sets the keys and reloads
+   * would see nothing change until the next deploy — and would reasonably
+   * conclude the feature was broken. `configured` is false when the deployment
+   * has no keys, which is a state the UI shows rather than an error.
+   *
+   * The key is not a secret; it is published to every subscribing browser.
+   *
+   * `orders` domain, not `settings`: whether a person's own phone buzzes is not
+   * an owner-only decision.
+   */
+  async pushKey(signal?: AbortSignal): Promise<{ publicKey: string | null; configured: boolean }> {
+    return shopFetch(`${BASE}/push/key`, { signal });
+  },
+
+  /** How many devices the CALLER has registered, and whether push works here. */
+  async pushDevices(signal?: AbortSignal): Promise<{ configured: boolean; devices: number }> {
+    return shopFetch(`${BASE}/push/devices`, { signal });
+  },
+
+  /** Register this browser, or refresh the keys of one already registered.
+   *  Idempotent on the endpoint — re-subscribing must not deliver twice. */
+  async pushSubscribe(body: {
+    endpoint: string;
+    keys: { p256dh: string; auth: string };
+    userAgent?: string;
+  }): Promise<{ ok: true; configured: boolean }> {
+    return shopFetch(`${BASE}/push/subscribe`, {
+      method: 'POST',
+      subject: 'Notifications',
+      body,
+    });
+  },
+
+  /**
+   * Push a test to the CALLER's own devices and say how many took it.
+   *
+   * `devices` is counted before the send, so `devices: 1, sent: 0` is a
+   * different story from `devices: 0` — one is a browser that dropped its
+   * subscription, the other is a device that was never registered. The screen
+   * says which; without the pair it could only say "nothing happened".
+   */
+  async pushTest(): Promise<{
+    ok: true;
+    configured: boolean;
+    devices: number;
+    sent: number;
+  }> {
+    return shopFetch(`${BASE}/push/test`, {
+      method: 'POST',
+      subject: 'Notifications',
+      body: {},
+    });
+  },
+
+  /** Forget this browser. `ok` even when no row existed — unsubscribing twice
+   *  has got what it asked for. */
+  async pushUnsubscribe(endpoint: string): Promise<{ ok: true; removed: number }> {
+    return shopFetch(`${BASE}/push/unsubscribe`, {
+      method: 'POST',
+      subject: 'Notifications',
+      body: { endpoint },
+    });
   },
 
   /** The full low-stock list the overview only shows the head of. */
@@ -1723,6 +1940,36 @@ export const shopApi = {
   },
 
   /** Every shipping zone with its options, for the admin screen. */
+  /**
+   * The delivery settings row (migration 0760) — of which the admin uses ONE
+   * field today, `servedCountries` (migration 1060).
+   *
+   * The row also carries `addressMode`, `servedRegions` and `locationOffered`,
+   * and no screen has ever edited them; 0760's card was never built. They ride
+   * along here because the endpoint returns the whole row and a patch that
+   * omits a key leaves it alone, so reading them costs nothing and inventing a
+   * narrower endpoint would cost a migration's worth of confusion later.
+   */
+  async getDeliverySettings(signal?: AbortSignal): Promise<ShopDeliverySettings> {
+    const res = await shopFetch<{ settings: ShopDeliverySettings }>(
+      `${BASE}/delivery-settings`,
+      { signal },
+    );
+    return res.settings;
+  },
+
+  /** CAS on `expectedRevision`, like every other settings write here. */
+  async saveDeliverySettings(
+    expectedRevision: number,
+    patch: { servedCountries?: string[] },
+  ): Promise<ShopDeliverySettings> {
+    const res = await shopFetch<{ settings: ShopDeliverySettings }>(
+      `${BASE}/delivery-settings`,
+      { method: 'PATCH', subject: 'Delivery settings', body: { expectedRevision, ...patch } },
+    );
+    return res.settings;
+  },
+
   async listShippingZones(signal?: AbortSignal): Promise<ShopShippingZone[]> {
     const res = await shopFetch<{ items: ShopShippingZone[] }>(`${BASE}/shipping-zones`, {
       signal,
@@ -2156,6 +2403,39 @@ export const shopApi = {
     signal?: AbortSignal,
   ): Promise<Page<ShopBuyer>> {
     return shopFetch<Page<ShopBuyer>>(`${BASE}/customers`, { query: { ...query }, signal });
+  },
+
+  /**
+   * "Not bought yet" — people with a basket, an account or a subscription and
+   * no order at all (`server/shop/admin/prospects.ts`). `tab` defaults to
+   * `'basket'` server-side when it is absent, so it is optional here too.
+   */
+  async listProspects(
+    query: { tab?: ProspectTab; cursor?: string; limit?: number; query?: string } = {},
+    signal?: AbortSignal,
+  ): Promise<ShopProspectPage> {
+    return shopFetch<ShopProspectPage>(`${BASE}/customers/prospects`, {
+      query: { ...query },
+      signal,
+    });
+  },
+
+  /**
+   * One prospect's basket, read by the same statement the broadcast drain
+   * reads it with (`basketFor`'s own header explains why one serves both), and
+   * what the shop has emailed them, newest first. `basket` is `null` for
+   * somebody with nothing in it any more; `sends` is `[]` for somebody never
+   * mailed — the ordinary case today, since production has sent no broadcasts.
+   *
+   * `seg`, NOT A BARE TEMPLATE INTERPOLATION: the address is a path segment
+   * containing `@` and `.`, and the server decodes it once (`pathParam`), so
+   * this encodes exactly once.
+   */
+  async getProspect(
+    email: string,
+    signal?: AbortSignal,
+  ): Promise<{ basket: ShopBasket | null; sends: ShopSend[] }> {
+    return shopFetch(`${BASE}/customers/prospects/${seg(email)}`, { signal });
   },
 };
 

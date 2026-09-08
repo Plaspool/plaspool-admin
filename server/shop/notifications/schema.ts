@@ -57,3 +57,50 @@ export const shopNotificationSettings = pgTable(
 );
 
 export type DbShopNotificationSettings = typeof shopNotificationSettings.$inferSelect;
+
+/**
+ * The devices Web Push may reach (migration 1040).
+ *
+ * ONE ROW PER DEVICE. A subscription is minted by one browser on one machine
+ * and its `endpoint` is that device's identity, so the UNIQUE sits there rather
+ * than on `userId` — the same person's phone and laptop are two rows and both
+ * are meant to buzz. Re-subscribing therefore upserts on `endpoint`; keyed on
+ * the person instead, a second device would silently replace the first.
+ *
+ * NOTHING HERE IS A SECRET OF OURS. `p256dh` and `auth` are the BROWSER's
+ * public key and a per-subscription salt, minted client-side and inert without
+ * the endpoint they belong to. The key that proves the shop sent a message is
+ * `VAPID_PRIVATE_KEY`, an environment variable, and it is never stored.
+ *
+ * Same two caveats as the table above: drizzle-kit has never seen this, and the
+ * DDL in `1040_push_subscriptions.sql` is what actually made it.
+ */
+export const shopPushSubscriptions = pgTable(
+  'shop_push_subscriptions',
+  {
+    id: text('id').primaryKey(),
+    /** Whose device it is. CASCADE on the FK: an account that is gone has no
+     *  devices, and an orphan row would push to somebody who has left. */
+    userId: uuid('user_id').notNull(),
+    /** The push service's URL for this device — its identity. */
+    endpoint: text('endpoint').notNull(),
+    p256dh: text('p256dh').notNull(),
+    auth: text('auth').notNull(),
+    /** Free text from the browser, shown so a person can tell one device from
+     *  another. Never parsed. */
+    userAgent: text('user_agent'),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    /** When a push to it last succeeded; NULL until one does. */
+    lastSuccessAt: bigint('last_success_at', { mode: 'number' }),
+  },
+  (t) => [
+    check(
+      'shop_push_subscriptions_endpoint_ck',
+      sql`${t.endpoint} LIKE 'https://%' AND length(${t.endpoint}) BETWEEN 12 AND 2000`,
+    ),
+    check('shop_push_subscriptions_p256dh_ck', sql`length(${t.p256dh}) BETWEEN 16 AND 255`),
+    check('shop_push_subscriptions_auth_ck', sql`length(${t.auth}) BETWEEN 8 AND 255`),
+  ],
+);
+
+export type DbShopPushSubscription = typeof shopPushSubscriptions.$inferSelect;

@@ -75,7 +75,12 @@ export const NAV: NavEntry[] = [
       { to: '/products/reviews', label: 'Reviews' },
     ],
   },
-  { to: '/customers', label: 'Customers', icon: <Users /> },
+  {
+    to: '/customers',
+    label: 'Customers',
+    icon: <Users />,
+    children: [{ to: '/customers/not-bought', label: 'Not bought yet' }],
+  },
   { to: '/discounts', label: 'Discounts', icon: <TicketPercent /> },
   {
     to: '/content',

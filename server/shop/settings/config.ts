@@ -120,13 +120,34 @@ export interface DeliveryConfig {
 }
 
 /**
- * ONE COUNTRY, PINNED. `shop_addresses_country_ck` demands `^[A-Z]{2}$` and
- * every shipping zone this shop has ever had is Nigerian — a country selector
- * offering places with no zone is a selector whose every other choice quotes
- * the catch-all rate. `locked` tells the storefront to render it as text, not
- * a dropdown.
+ * WHERE THE SHOP SHIPS, FROM THE ROW — `shop_delivery_settings.served_countries`.
+ *
+ * THIS WAS A PINNED CONSTANT UNTIL MIGRATION 1060, and the constant was the
+ * whole reason international checkout was impossible: the storefront gates
+ * Continue on `allowed`, so a hardcoded `['NG']` refused every foreign address
+ * no matter what zones existed. It is a column now, so opening a country is a
+ * setting an owner changes — not a deploy of two repositories.
+ *
+ * `locked` AND `default` ARE DERIVED, NEVER STORED. One country renders as
+ * text and is necessarily its own default; several render a dropdown, and the
+ * owner's ordering decides what it pre-selects. Storing either alongside the
+ * list would be storing something that can disagree with it.
+ *
+ * WHAT THIS DOES NOT DO IS PRICE ANYTHING. Adding a country here does not
+ * create a zone for it — `zoneFor` will hand an unzoned country the catch-all
+ * rate, which is the ₦50,000 fail-safe. Set the zone's rate FIRST; the admin
+ * card says so, and it is why the two live on the same screen.
  */
-const COUNTRY = { default: 'NG', allowed: ['NG'] as const, locked: true };
+function countryFor(servedCountries: readonly string[]): DeliveryConfig['country'] {
+  return {
+    /* The CHECK guarantees at least one element, so the head is total. A row
+     * hand-edited past the constraint would render an empty selector, which is
+     * visibly broken rather than silently permissive — the right way round. */
+    default: servedCountries[0],
+    allowed: servedCountries,
+    locked: servedCountries.length === 1,
+  };
+}
 
 /**
  * The limits, mirroring `Address` in `server/shop/cart/routes/checkout.ts`.
@@ -395,7 +416,7 @@ export function deliveryConfigFor(
   return {
     mode: settings.addressMode,
     revision: settings.revision,
-    country: COUNTRY,
+    country: countryFor(settings.servedCountries),
     fields: simple ? simpleFields(routingCity) : districtFields(routingCity),
     districts: simple
       ? null

@@ -6,6 +6,7 @@ import './styles/base.css';
 import './styles/ui.css';
 import './styles/page.css';
 import './styles/add-ons.css';
+import './styles/shipping.css';
 import './styles/shell.css';
 
 import { getSession, initSession, startSessionWatch, subscribe } from '../data/session';
@@ -25,6 +26,7 @@ import Categories from './routes/Categories';
 import AddOns from './routes/AddOns';
 import AddOnDetail from './routes/AddOnDetail';
 import Customers from './routes/Customers';
+import NotBought from './routes/NotBought';
 import Featured from './routes/Featured';
 import Banners from './routes/Banners';
 import Spools from './routes/Spools';
@@ -206,6 +208,7 @@ const router = createHashRouter([
 
       /* ── customers, discounts ────────────────────────────────────────── */
       { path: '/customers', element: <Customers /> },
+      { path: '/customers/not-bought', element: <NotBought /> },
       { path: '/discounts', element: <Discounts /> },
       { path: '/discounts/new', element: <DiscountNew /> },
 

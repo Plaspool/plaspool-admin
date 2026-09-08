@@ -222,3 +222,83 @@ self.addEventListener('notificationclick', (event) => {
       }),
   );
 });
+
+/**
+ * A PUSH FROM THE SHOP — the one notification that arrives with every tab shut.
+ *
+ * The page raises its own notifications while somebody is looking at the admin
+ * (`src/v2/data/notify.ts`); this is the other half, and the reason Web Push
+ * exists at all: a worker is woken by the browser's push service with no page
+ * running anywhere.
+ *
+ * SHOWING SOMETHING IS NOT OPTIONAL. Chrome and Firefox both enforce a
+ * "userVisibleOnly" bargain — a push that resolves without calling
+ * showNotification spends the permission silently, and browsers respond by
+ * showing their own "this site was updated in the background" notice or, after
+ * enough of them, revoking the subscription. So the catch below still shows a
+ * message rather than returning quietly: a vague notification is recoverable,
+ * a revoked subscription is not.
+ *
+ * `self.registration`, `self.clients` — never the bare globals. src/sw.test.ts
+ * evaluates this file inside a scriptable global that injects exactly self,
+ * caches, fetch, Response and URL by name, so any other worker global read at
+ * MODULE scope throws ReferenceError before a single listener registers.
+ */
+self.addEventListener('push', (event) => {
+  /* Everything the payload decides has a fallback, because the payload comes
+     off the network and a malformed one must still notify: the whole point of
+     this channel is the case where nobody is watching a screen. */
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch (err) {
+    payload = {};
+  }
+  /*
+   * A VALID JSON PAYLOAD OF `null` IS NOT AN OBJECT, and reading `.title` off
+   * it throws OUTSIDE the try above — which loses the notification entirely and
+   * spends the permission, the one failure this handler must not have. `typeof
+   * null === 'object'`, so the truthiness check has to come first.
+   */
+  if (!payload || typeof payload !== 'object') payload = {};
+
+  const title = payload.title || 'PlaSpool';
+  const body = payload.body || 'Something needs your attention in the admin.';
+  const url = payload.url || '/';
+
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      /* Same tag replaces rather than stacks — a redelivered push must not
+         leave two identical rows on a lock screen. */
+      tag: payload.tag || 'plaspool',
+      renotify: Boolean(payload.tag),
+      icon: '/brand/icon-192.png',
+      badge: '/brand/icon-192.png',
+      /*
+       * IT STAYS ON SCREEN UNTIL SOMEBODY DEALS WITH IT.
+       *
+       * Without this a desktop notification fades after a few seconds, so an
+       * order that lands while the packer is making tea is one nobody ever
+       * sees — the notification technically arrived and did no work at all.
+       * An order is worth an interruption that waits; it is the whole reason
+       * this channel exists.
+       *
+       * Ignored on Android, where the system tray already holds notifications
+       * until they are cleared, so this costs nothing there.
+       */
+      requireInteraction: true,
+      /*
+       * THE ONLY LOUDNESS THE WEB ACTUALLY OFFERS. There is no sound parameter
+       * in the Notifications API — none, in any browser — so the tone is the
+       * operating system's to choose and cannot be set from here. A vibration
+       * pattern is the one thing a page can ask for, and on a phone in a
+       * pocket it is what gets noticed. Two short buzzes and a longer one, so
+       * it reads as deliberate rather than as another message.
+       */
+      vibrate: [180, 90, 180, 90, 360],
+      /* Read by the notificationclick handler above. */
+      data: { url: url },
+    }),
+  );
+});

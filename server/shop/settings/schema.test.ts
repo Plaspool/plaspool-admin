@@ -63,6 +63,7 @@ describe('shop_delivery_settings (migration 0760)', () => {
         'id',
         'location_offered',
         'revision',
+        'served_countries',
         'served_regions',
         'updated_at',
         'updated_by',
@@ -77,6 +78,7 @@ describe('shop_delivery_settings (migration 0760)', () => {
 
   it('carries a check on every enum-ish column', async () => {
     expect(await checkNames('shop_delivery_settings')).toEqual([
+      'shop_delivery_settings_countries_ck',
       'shop_delivery_settings_id_ck',
       'shop_delivery_settings_mode_ck',
       'shop_delivery_settings_regions_ck',

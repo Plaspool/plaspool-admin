@@ -94,7 +94,8 @@ export const BRAND = {
 } as const;
 
 /**
- * Where the logo is fetched from.
+ * Where the logo — and every other asset this deployment serves unauthenticated,
+ * including `/api/public/images/…` — is fetched from.
  *
  * `brand.url` in `src/brand.ts`, which is the admin app's own origin — and that
  * is correct even though these messages are about the STOREFRONT, because
@@ -104,8 +105,17 @@ export const BRAND = {
  *
  * Overridable, because the one thing that would break every logo at once is this
  * host moving.
+ *
+ * EXPORTED so a caller that needs this exact origin — `server/email/
+ * basket-block.ts`'s `basketBlock`, so far — can default to it rather than
+ * re-deriving it (or worse, passing the storefront's origin by mistake: that
+ * Worker carries no `/api/public/images/…` route at all). `server/shop/
+ * orders/mailer.ts` keeps its own private `storefrontAssetOrigin()` doing the
+ * same lookup; left alone here rather than folded into this one, since neither
+ * that file's behaviour nor this one's needed to change to fix the caller that
+ * actually had the bug.
  */
-function assetOrigin(): string {
+export function assetOrigin(): string {
   const configured = process.env.BRAND_ASSET_ORIGIN?.trim();
   return (configured || 'https://blog-admin-app-gold.vercel.app').replace(/\/+$/, '');
 }

@@ -22,6 +22,7 @@ import { checkoutPaymentsPort } from './payments/port';
 import { orders } from './orders/routes';
 import { CourierConflictError } from './orders/repo/courier';
 import { drainCommerceEvents } from './orders/repo/consumer';
+import { adoptGuestOrders } from './orders/repo/orders';
 import { cartShopRoutes } from './cart/routes';
 import { resolveShopCustomer } from './cart/identity/customers';
 import { SHOP_CURRENCY } from './currency';
@@ -31,7 +32,7 @@ import { deliverySettingsRoutes } from './settings/routes';
 import { logisticsRoutes } from './logistics/routes';
 import { registerLogisticsDefaults } from './logistics/deps';
 import { logisticsCatalogPort } from './catalog/logistics-port';
-import { notificationSettingsRoutes } from './notifications/routes';
+import { notificationSettingsRoutes, pushRoutes } from './notifications/routes';
 import { ShippingZonePreconditionFailedError } from './cart/checkout/shipping-zones-repo';
 
 /**
@@ -321,6 +322,18 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
        */
       redemption,
       /*
+       * GUEST ORDERS FOLLOW THEIR BUYER INTO AN ACCOUNT (2026-09-08).
+       *
+       * The same seam as `sweepEvents` above and for the same reason: signing in
+       * is CART's route, `shop_orders` is ORDERS' table, and this file is the
+       * only one allowed to know both. Neither subsystem imports the other.
+       *
+       * Before this line a shopper who checked out as a guest and signed in
+       * later had an empty order history for ever — the order kept
+       * `customer_id NULL` and the list query has always been scoped by id.
+       */
+      adoptOrders: adoptGuestOrders,
+      /*
        * ═══════════════════════════════════════════════════════════════════════
        * PAYMENTS → CART, SO A FROZEN CHECKOUT CAN BE UNFROZEN.
        *
@@ -414,6 +427,11 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
    * an email — so there is nothing to mount above `sessionMiddleware`.
    */
   shop.route('/', notificationSettingsRoutes);
+  /* Web Push device registration (migration 1040). A SEPARATE router from the
+     settings beside it because its permissions prefix is different — `orders`,
+     not `settings`: whether a packer's own phone buzzes is not an owner-only
+     decision. See `server/middleware/permissions.ts`. */
+  shop.route('/', pushRoutes);
 
   /*
    * THE DASHBOARD'S READ SURFACE — `/admin/stats`, `/admin/customers`,

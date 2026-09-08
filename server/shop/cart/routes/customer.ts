@@ -90,6 +90,27 @@ export function customerRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     }
 
     const customer = await findOrCreateCustomerByEmail(shopDb(c), assertion.email);
+
+    /*
+     * ADOPT WHAT THIS PERSON BOUGHT AS A GUEST (2026-09-08).
+     *
+     * `assertion.email` is verified upstream and has just been spent, so this is
+     * the one moment in the application where an address is known to belong to
+     * the caller. `adoptGuestOrders` binds it against `customer_id IS NULL`
+     * only, so it can never take an order off somebody else and a second
+     * exchange adopts nothing.
+     *
+     * BEST-EFFORT, DELIBERATELY. The session below is the thing the caller
+     * asked for; order history is a convenience on top of it. An adoption that
+     * failed must not turn a successful sign-in into a 500 the client retries,
+     * and the next sign-in will pick the orphans up anyway.
+     */
+    if (customer.email) {
+      await deps
+        .adoptOrders?.(shopDb(c), customer.id, customer.email)
+        .catch(() => undefined);
+    }
+
     const session = await createCustomerSession(shopDb(c), customer.id);
     setShopSessionCookie(c, session.token, session.expiresAt);
     return c.json({ customer });

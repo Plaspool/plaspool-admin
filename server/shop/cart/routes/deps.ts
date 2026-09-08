@@ -131,6 +131,28 @@ export interface ShopCartDeps {
    * preview sends [], and the choice route answers 501.
    */
   addOns?: AddOnPort<Db>;
+
+  /**
+   * LINK THE GUEST ORDERS AN ARRIVING CUSTOMER ALREADY PLACED (2026-09-08).
+   *
+   * A guest checkout leaves `shop_orders.customer_id NULL` and keeps only the
+   * typed email; the exchange route mints a customer row keyed by a VERIFIED
+   * address. Nothing joined the two, so a shopper who bought first and signed
+   * in afterwards saw an empty order history — measured on a real order, with
+   * both rows present and nothing between them.
+   *
+   * INJECTED, NOT IMPORTED, for the reason `sweepEvents` gives above:
+   * `shop_orders` is ORDERS' table, and Cart reaching into it directly is the
+   * cross-subsystem coupling the ports exist to prevent. `server/shop/app.ts`
+   * is the composition point and hands Orders' `adoptGuestOrders` in.
+   *
+   * ABSENT MEANS TODAY'S BEHAVIOUR: the exchange mints the session and adopts
+   * nothing, which is what every Cart-only suite expects and what the route did
+   * before this landed. It is a convenience, never a credential — a failure to
+   * adopt must not cost the customer their sign-in, so the route treats it as
+   * best-effort.
+   */
+  adoptOrders?: (db: Db, customerId: string, email: string) => Promise<number>;
 }
 
 /** What the injected commerce drain reports back. Counts only — the per-event
@@ -154,5 +176,6 @@ export function resolveShopCartDeps(partial: Partial<ShopCartDeps> = {}): ShopCa
     discounts: partial.discounts,
     payments: partial.payments,
     addOns: partial.addOns,
+    adoptOrders: partial.adoptOrders,
   };
 }

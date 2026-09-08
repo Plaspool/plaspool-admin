@@ -12,6 +12,8 @@ import { TagInput } from '../ui/TagInput';
 import { useToast } from '../ui/Toast';
 import { getSession } from '../../data/session';
 import { hasDomain } from '../../../shared/roles';
+import { disablePush, enablePush, pushState, type PushState } from '../data/push';
+import { unlockChime } from '../data/chime';
 
 /**
  * ORDER NOTIFICATIONS — `/settings/notifications`: who is emailed when an
@@ -68,6 +70,34 @@ const MAX_LENGTH = 320;
  */
 const PLAUSIBLE = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
 
+/** What the card says about this browser, one line per state. A `Record` rather
+ *  than a chain of ternaries so a new state is a compile error here instead of
+ *  quietly falling through to the wrong sentence. */
+const DEVICE_COPY: Record<PushState, string> = {
+  on: 'This device buzzes when an order is paid, even with the admin closed.',
+  off: 'Get a notification the moment an order is paid, even with the admin closed.',
+  'no-worker':
+    'Almost ready — this page is still starting up in the background. Press the button, or reload if it does not take.',
+  blocked:
+    'Notifications are blocked for this site. Your browser’s site settings are the only place that can undo it.',
+  'not-configured': 'Notifications to a closed app are not set up on this deployment yet.',
+  'needs-install':
+    'On iPhone and iPad, notifications only work once PlaSpool is on your home screen. It takes three taps:',
+  unsupported: 'This browser cannot show notifications when the admin is closed.',
+};
+
+/** Why a press did not turn it on. Every one of these used to be silence. */
+const FAILED_COPY: Record<PushState, string> = {
+  on: '',
+  off: 'Could not turn it on. Reload the page and try once more.',
+  'no-worker': 'The app is still starting up. Give it a moment and try again.',
+  blocked:
+    'Your browser blocked it. Allow notifications for this site in its settings, then try again.',
+  'not-configured': 'Notifications are not set up on this deployment yet.',
+  'needs-install': 'Add PlaSpool to your home screen first, then open it from there.',
+  unsupported: 'This browser cannot show notifications when the admin is closed.',
+};
+
 export default function SettingsNotifications() {
   const toast = useToast();
   /* The settings domain is owner/developer territory (shared/roles.ts) — the
@@ -84,6 +114,18 @@ export default function SettingsNotifications() {
   /* Set only by a lost CAS, and cleared by the next edit or the next save:
      the banner it draws is about one refusal, not a standing condition. */
   const [beaten, setBeaten] = useState(false);
+  /* What THIS browser can do about push. Starts `unsupported` rather than `off`
+     so the card offers nothing until the real answer is in — a button that
+     appears and then vanishes is worse than one that arrives a moment late. */
+  const [push, setPush] = useState<PushState>('unsupported');
+  const [pushBusy, setPushBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  useEffect(() => {
+    const stop = new AbortController();
+    void pushState(stop.signal).then(setPush);
+    return () => stop.abort();
+  }, []);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -270,11 +312,121 @@ export default function SettingsNotifications() {
         </Card>
       )}
 
+      {/*
+        THIS DEVICE, AND ONLY THIS DEVICE. Everything in the card above is a
+        shop-wide setting the owner decides; this is one browser on one machine,
+        and it is deliberately not a Toggle — a switch implies the app can turn
+        it on, and only the browser's own permission dialog can. What the person
+        presses is a request.
+      */}
+      <Card title="This device">
+        <span className="field__hint">{DEVICE_COPY[push]}</span>
+        {push === 'needs-install' ? (
+          /* iOS in a browser tab. There is no button that can help — Apple gives
+             Web Push only to a site on the Home Screen — so the steps ARE the
+             offer, exactly as the install panel in the top bar does it. */
+          <ol className="install__steps">
+            <li>Tap Share in Safari’s toolbar.</li>
+            <li>Choose Add to Home Screen.</li>
+            <li>Open PlaSpool from the new icon, then come back here.</li>
+          </ol>
+        ) : null}
+        {push === 'off' || push === 'no-worker' ? (
+          <Button
+            tone="primary"
+            busy={pushBusy}
+            onClick={() => {
+              setPushBusy(true);
+              /* Unlocks the chime from inside this very click. Browsers refuse
+                 audio until a page has had a gesture, and this press is the
+                 one that means "notify me" — so it is the honest place to take
+                 the permission for the sound as well as for the pop-up. */
+              unlockChime();
+              /* Straight out of the click: the browser refuses a permission
+                 request that is not inside a user gesture, and subscribing is
+                 that request. */
+              void enablePush()
+                .then((next) => {
+                  setPush(next);
+                  /* IT SAYS SOMETHING WHEN IT FAILS, which is the whole repair.
+                     This used to set the state and stop — and when the state it
+                     came back with was the one it started in, the press produced
+                     no notification, no error and no visible change. */
+                  if (next !== 'on') toast.show(FAILED_COPY[next], 'critical');
+                })
+                .finally(() => setPushBusy(false));
+            }}
+          >
+            Turn on for this device
+          </Button>
+        ) : push === 'on' ? (
+          <div className="row">
+            {/*
+              THE TEST IS THE PRIMARY ACTION HERE, not turning it off. The only
+              other way to find out whether any of this works is to place a real
+              order — slow, involves money, and when nothing arrives it cannot
+              say which of the four links broke.
+            */}
+            <Button
+              tone="primary"
+              busy={testing}
+              onClick={() => {
+                setTesting(true);
+                void shopApi
+                  .pushTest()
+                  .then((res) => {
+                    /* REPORTED FROM THE COUNT, never from the 200. The request
+                       succeeding says nothing about a notification arriving,
+                       and "Sent!" over silence is the exact failure this button
+                       exists to end. */
+                    if (res.sent > 0) {
+                      toast.show(
+                        res.sent === 1
+                          ? 'Sent — it should appear in a moment'
+                          : `Sent to ${res.sent} devices`,
+                      );
+                    } else if (res.devices > 0) {
+                      toast.show(
+                        'Your browser has dropped its subscription. Turn it off and on again here.',
+                        'critical',
+                      );
+                    } else {
+                      toast.show('This device is not registered yet.', 'critical');
+                    }
+                  })
+                  .catch((cause: unknown) => {
+                    toast.show(
+                      cause instanceof Error && cause.message
+                        ? cause.message
+                        : 'Something went wrong.',
+                      'critical',
+                    );
+                  })
+                  .finally(() => setTesting(false));
+              }}
+            >
+              Send a test notification
+            </Button>
+            <Button
+              tone="plain"
+              busy={pushBusy}
+              onClick={() => {
+                setPushBusy(true);
+                void disablePush()
+                  .then(setPush)
+                  .finally(() => setPushBusy(false));
+              }}
+            >
+              Turn off for this device
+            </Button>
+          </div>
+        ) : null}
+      </Card>
+
       {row !== null ? (
         <p className="page__learn">
           Last changed {dateTime(row.updatedAt)}. An order also shows up in the bell at the top of
-          this page, and can pop up on your screen while the admin is open — both of those are set
-          up from the bell itself and need nothing here.
+          this page while the admin is open — that needs nothing here.
         </p>
       ) : null}
 

@@ -18,7 +18,7 @@ import {
   zoneFor,
 } from './shipping';
 import type { ShippingZone } from './shipping';
-import { DEFAULT_DELIVERY_RULES, servesRegion } from '../../settings/repo';
+import { DEFAULT_DELIVERY_RULES, serviceRefusal } from '../../settings/repo';
 import type { DeliveryRules } from '../../settings/repo';
 import type { CatalogPort } from '../catalog-port';
 import type { Reservation, Shortfall } from '../reservations/repo';
@@ -477,20 +477,33 @@ function rulesOf(config: CheckoutConfig): DeliveryRules {
 }
 
 /**
- * Is this address outside the regions the shop serves (migration 0760)?
+ * Will the shop deliver here at all — and if not, WHICH fact refused it?
+ * `'country'` (migration 1060), `'region'` (0760), or `null` for yes.
  *
  * CHECKED WHEREVER THE DISTRICT REFUSAL IS CHECKED — the address, the options,
  * the shipping choice and the freeze — because it is the same kind of fact and
  * carries the same hazard. `putAddresses` refuses at the door where the message
- * is cheapest, and the freeze refuses again because an owner can ADD a
- * restriction while a cart sits at the payment step. A cart addressed before
- * that moment would otherwise sail through to a charge for a delivery the shop
- * has just said it will not make, and the answer after the freeze is a refund.
+ * is cheapest, and the freeze refuses again because an owner can NARROW either
+ * list while a cart sits at the payment step. A cart addressed before that
+ * moment would otherwise sail through to a charge for a delivery the shop has
+ * just said it will not make, and the answer after the freeze is a refund.
  *
- * `null` — the seeded value — serves everywhere and costs nothing.
+ * THE RULE ITSELF LIVES IN `settings/repo.ts`, not here — including the one
+ * about a region list stopping at the border — so the four call sites below
+ * cannot disagree with each other about it.
  */
-function outsideServiceRegion(config: CheckoutConfig, address: AddressSnapshot): boolean {
-  return !servesRegion(rulesOf(config).servedRegions, address.region);
+function serviceRefusalFor(
+  config: CheckoutConfig,
+  address: AddressSnapshot,
+): 'country' | 'region' | null {
+  return serviceRefusal(rulesOf(config), address.countryCode, address.region);
+}
+
+/** The wire code for a refusal, so every call site names it the same way. */
+function refusalError(reason: 'country' | 'region'): BadRequestError {
+  return new BadRequestError(
+    reason === 'country' ? 'outside_service_country' : 'outside_service_region',
+  );
 }
 
 /**
@@ -600,9 +613,8 @@ export async function putAddresses(
    * is no list here. "We don't deliver to Kano yet" and "we don't deliver to
    * Gwarinpa" need different sentences and different next steps.
    */
-  if (outsideServiceRegion(config, a.shipping)) {
-    throw new BadRequestError('outside_service_region');
-  }
+  const addressRefusal = serviceRefusalFor(config, a.shipping);
+  if (addressRefusal) throw refusalError(addressRefusal);
 
   const zone = zoneFor(config.zones, a.shipping.countryCode, a.shipping.region);
   /*
@@ -694,7 +706,7 @@ export async function shippingOptionsForCart(
   // AND NONE OUTSIDE THE SERVED REGIONS, for the same reason: the restriction
   // can be added while a cart is mid-checkout, and an empty list is the honest
   // answer until the shopper changes the address.
-  if (outsideServiceRegion(config, address)) return [];
+  if (serviceRefusalFor(config, address)) return [];
   return shippingOptionsFor(
     zoneFor(config.zones, address.countryCode, address.region),
     config.storeCurrency,
@@ -710,9 +722,8 @@ export async function setShipping(
   if (!address) throw new BadRequestError('shipping_address');
   const ruling = await districtRuling(db, config, address.district ?? null);
   if (ruling.refused) throw new BadRequestError('outside_delivery_area');
-  if (outsideServiceRegion(config, address)) {
-    throw new BadRequestError('outside_service_region');
-  }
+  const shippingRefusal = serviceRefusalFor(config, address);
+  if (shippingRefusal) throw refusalError(shippingRefusal);
   const zone = zoneFor(config.zones, address.countryCode, address.region);
   const option = shippingOptionById(zone, config.storeCurrency, a.optionId);
   // An option from ANOTHER zone is refused rather than honoured: accepting the
@@ -873,6 +884,11 @@ type PriceOutcome =
    *  that one names a district the customer picked from a list, and in simple
    *  mode there is no list. */
   | { ok: false; reason: 'outside_service_region' }
+  /** The address's country is outside `served_countries` (migration 1060). Its
+   *  own reason for the same reason again: "we don't ship to Canada" and "we
+   *  don't deliver to Kano yet" are different sentences with different next
+   *  steps, and only one of them is fixed by editing the address. */
+  | { ok: false; reason: 'outside_service_country' }
   | { ok: false; reason: 'unresolved_lines'; variantIds: string[] }
   /**
    * The cart's discount code no longer applies (admin#100 Part B).
@@ -939,11 +955,16 @@ async function priceCart(
   // answer would be a refund.
   const districts = await districtRuling(db, config, address.district ?? null);
   if (districts.refused) return { ok: false, reason: 'outside_delivery_area' };
-  // AND THE REGION RESTRICTION, ruled on again for the identical reason: an
-  // owner can add one while this cart sits at the payment step, and the freeze
-  // is the last instant a refusal costs nothing rather than a refund.
-  if (outsideServiceRegion(config, address)) {
-    return { ok: false, reason: 'outside_service_region' };
+  // AND WHERE THE SHOP SHIPS, ruled on again for the identical reason: an owner
+  // can narrow the country or region list while this cart sits at the payment
+  // step, and the freeze is the last instant a refusal costs nothing rather
+  // than a refund.
+  const refusal = serviceRefusalFor(config, address);
+  if (refusal) {
+    return {
+      ok: false,
+      reason: refusal === 'country' ? 'outside_service_country' : 'outside_service_region',
+    };
   }
 
   const zone = zoneFor(config.zones, address.countryCode, address.region);
