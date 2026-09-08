@@ -929,6 +929,17 @@ export interface ShopBasket {
   redemptionPoints: number | null;
 }
 
+/** One broadcast a prospect was queued for. Mirrors `Send` in
+ * `server/shop/admin/prospects.ts` field for field. */
+export interface ShopSend {
+  broadcastId: string;
+  subject: string;
+  /** 'pending' | 'sent' | 'failed' | 'skipped' */
+  status: string;
+  sentAt: number | null;
+  lastError: string | null;
+}
+
 export interface ShopProspect {
   /** The folded address. It is this row's identity, and the cursor's id. */
   email: string;
@@ -1877,14 +1888,19 @@ export const shopApi = {
 
   /**
    * One prospect's basket, read by the same statement the broadcast drain
-   * reads it with (`basketFor`'s own header explains why one serves both).
-   * `null` is the ordinary answer for somebody with nothing in it any more.
+   * reads it with (`basketFor`'s own header explains why one serves both), and
+   * what the shop has emailed them, newest first. `basket` is `null` for
+   * somebody with nothing in it any more; `sends` is `[]` for somebody never
+   * mailed — the ordinary case today, since production has sent no broadcasts.
    *
    * `seg`, NOT A BARE TEMPLATE INTERPOLATION: the address is a path segment
    * containing `@` and `.`, and the server decodes it once (`pathParam`), so
    * this encodes exactly once.
    */
-  async getProspect(email: string, signal?: AbortSignal): Promise<{ basket: ShopBasket | null }> {
+  async getProspect(
+    email: string,
+    signal?: AbortSignal,
+  ): Promise<{ basket: ShopBasket | null; sends: ShopSend[] }> {
     return shopFetch(`${BASE}/customers/prospects/${seg(email)}`, { signal });
   },
 };

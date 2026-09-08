@@ -6,7 +6,7 @@ import type { TestCtx } from '../../test/harness';
 import type { Db } from '../../db/client';
 import { resetOrderTables } from '../orders/test/harness';
 import { seedOrder } from './test/seed';
-import { basketFor, listProspects } from './prospects';
+import { basketFor, listProspects, sendsFor } from './prospects';
 
 /**
  * People who have not bought, and the baskets they left.
@@ -339,6 +339,70 @@ describe('basketFor', () => {
     const db = await seedShop();
     expect(await basketFor(db, 'nobody@example.test')).toBeNull();
     expect(await basketFor(db, '   ')).toBeNull();
+  });
+});
+
+/**
+ * Gives `seedRecipient` a `skipped` status and a `last_error`, which its own
+ * `o` shape (built for `lastNudgeAt`, which only ever cares about `sent`)
+ * does not carry. A second insert helper rather than widening that one, so a
+ * change here cannot alter what `listProspects`'s own tests seed.
+ */
+async function seedSkippedRecipient(
+  db: Db,
+  broadcastId: string,
+  email: string,
+  lastError: string,
+): Promise<void> {
+  const res = await db.execute(sql`
+    INSERT INTO email_broadcast_recipients (id, broadcast_id, subscriber_id, status, last_error)
+    SELECT ${randomUUID()}::uuid, ${broadcastId}::uuid, s.id, 'skipped', ${lastError}
+      FROM email_subscribers s
+     WHERE s.email = ${email.toLowerCase()}
+    RETURNING id`);
+  expect(res.rows).toHaveLength(1);
+}
+
+describe('sendsFor', () => {
+  it('is empty for somebody never mailed', async () => {
+    const db = ctx.db;
+    expect(await sendsFor(db, 'nobody@example.test')).toEqual([]);
+  });
+
+  it('orders newest broadcast first, and folds the address', async () => {
+    const db = ctx.db;
+    await giveSubscription(db, 'ada@example.test');
+    const older = await seedBroadcast(db);
+    const newer = await seedBroadcast(db);
+    await seedRecipient(db, older, 'ada@example.test', { status: 'sent', sentAt: S0 });
+    await seedRecipient(db, newer, 'ada@example.test', { status: 'sent', sentAt: S0 + DAY });
+
+    // Folded exactly like basketFor: a padded, mixed-case lookup finds the
+    // same history a plain one finds.
+    const sends = await sendsFor(db, '  ADA@Example.test ');
+    expect(sends.map((s) => s.broadcastId)).toEqual([newer, older]);
+    expect(sends[0].status).toBe('sent');
+    expect(sends[0].sentAt).toBe(S0 + DAY);
+  });
+
+  it('carries a skipped row and its reason, with no sentAt', async () => {
+    const db = ctx.db;
+    await giveSubscription(db, 'ada@example.test');
+    const broadcastId = await seedBroadcast(db);
+    await seedSkippedRecipient(db, broadcastId, 'ada@example.test', 'basket_empty');
+
+    const sends = await sendsFor(db, 'ada@example.test');
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toMatchObject({
+      status: 'skipped',
+      sentAt: null,
+      lastError: 'basket_empty',
+    });
+  });
+
+  it('is null-safe for a blank address', async () => {
+    const db = ctx.db;
+    expect(await sendsFor(db, '   ')).toEqual([]);
   });
 });
 

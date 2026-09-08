@@ -1,22 +1,54 @@
-import { shopApi, type ShopBasketLine } from '../../../data/api-shop';
+import { shopApi, type ShopBasketLine, type ShopSend } from '../../../data/api-shop';
 import { marketingApi } from '../../../data/api-marketing';
 import { useAsync } from '../../lib/useAsync';
 import { money, dateTime } from '../../lib/format';
 import { Modal } from '../../ui/Modal';
 import { StoredImg } from '../../ui/Img';
+import { Timeline, type TimelineEvent } from '../../ui/Timeline';
 import { Badge, Banner, Spinner, type BadgeTone } from '../../ui/primitives';
 
 /**
  * The person modal on "Not bought yet" — what they actually left in the
  * basket, quoted live (`shopApi.getProspect`), plus their points balance
- * (`marketingApi.getCustomer`, the same route the customer screen reads).
- *
- * Send history (`email_broadcast_recipients` joined to `email_broadcasts`) has
- * no client API yet — nothing in `src/data/api-marketing.ts` or `api-shop.ts`
- * reaches it, and this is a UI task, so that section is left out rather than
- * wired to a route invented here. Production has zero broadcasts today
- * either way.
+ * (`marketingApi.getCustomer`, the same route the customer screen reads) and
+ * what the shop has emailed them (also `shopApi.getProspect`, `sends`, added
+ * by task 10b once the server route existed to read it).
  */
+
+/** Display strings for `Send['status']` — the wire values (`pending`, `sent`,
+ *  `failed`, `skipped`) do not move. */
+const SEND_STATE: Record<string, { label: string; tone: 'neutral' | 'ok' | 'critical' | 'info' }> = {
+  pending: { label: 'Queued', tone: 'neutral' },
+  sent: { label: 'Sent', tone: 'ok' },
+  failed: { label: 'Failed', tone: 'critical' },
+  skipped: { label: 'Not sent', tone: 'neutral' },
+};
+
+/** Plain words for why a send was skipped. `basket_empty` is the ordinary
+ *  one — their basket emptied between the pick and the batch. */
+function skipReason(lastError: string | null): string {
+  if (lastError === 'basket_empty') return 'Their basket was empty by the time it went out.';
+  if (lastError === 'unsubscribed') return 'They had already unsubscribed.';
+  return lastError ?? 'It did not go out.';
+}
+
+function sendToEvent(send: ShopSend): TimelineEvent {
+  const state = SEND_STATE[send.status] ?? { label: send.status, tone: 'neutral' as const };
+  const when = send.sentAt ? dateTime(send.sentAt) : null;
+  return {
+    id: send.broadcastId,
+    message: send.subject,
+    meta: (
+      <span className="row" style={{ gap: 'var(--s2)', alignItems: 'center' }}>
+        <Badge tone={state.tone}>{state.label}</Badge>
+        {when ? <span>{when}</span> : null}
+        {send.status === 'skipped' ? <span>{skipReason(send.lastError)}</span> : null}
+        {send.status === 'failed' && send.lastError ? <span>{send.lastError}</span> : null}
+      </span>
+    ),
+    tone: state.tone,
+  };
+}
 
 /** Display strings only — the wire values (`open`, `converting`, `converted`,
  *  `abandoned`) do not move. `converting` gets its own line because it is the
@@ -64,6 +96,7 @@ export function PersonModal({ email, onClose }: { email: string; onClose: () => 
   const points = useAsync((signal) => marketingApi.getCustomer(email, signal), [email]);
 
   const basket = data?.basket ?? null;
+  const sends = data?.sends ?? [];
   const state = basket ? (CART_STATE[basket.status] ?? { label: basket.status, tone: 'neutral' as BadgeTone }) : null;
 
   return (
@@ -128,6 +161,17 @@ export function PersonModal({ email, onClose }: { email: string; onClose: () => 
               <span className="defs__label">Points history</span>
               <span className="defs__value">{points.data.balance}</span>
             </div>
+          </div>
+        ) : null}
+
+        {!loading ? (
+          <div className="stack stack--tight">
+            <strong>Sent to them</strong>
+            {sends.length > 0 ? (
+              <Timeline events={sends.map(sendToEvent)} />
+            ) : (
+              <p className="meta">We haven’t sent them anything yet.</p>
+            )}
           </div>
         ) : null}
       </div>

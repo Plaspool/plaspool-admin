@@ -556,4 +556,78 @@ describe('the person modal', () => {
     expect(screen.queryByRole('img')).toBeNull();
     expect(screen.getAllByText(/2,500/).length).toBeGreaterThan(0);
   });
+
+  it('says nothing has been sent when the fixture carries no sends, and a missing field reads the same', async () => {
+    const user = userEvent.setup();
+    withList();
+    // No `sends` key at all — the shape `getProspect` answered before task
+    // 10b, and the one every fixture above in this file still uses. The
+    // modal has to read that the same way it reads an explicit `[]`.
+    when('/api/shop/admin/customers/prospects/ada%40example.test', { basket: basketFixture() });
+    when('/api/marketing/customers/ada%40example.test', {
+      email: 'ada@example.test',
+      customerId: null,
+      displayName: 'Ada Okoye',
+      balance: 0,
+      lifetimeEarned: 0,
+      openReturn: null,
+    });
+    mount();
+
+    await screen.findByText('ada@example.test');
+    await user.click(rowFor('ada@example.test'));
+
+    await screen.findByText('PLA Basic');
+    expect(await screen.findByText('We haven’t sent them anything yet.')).toBeTruthy();
+  });
+
+  it('shows their send history newest first, and reads a skipped send in plain words', async () => {
+    const user = userEvent.setup();
+    withList();
+    when('/api/shop/admin/customers/prospects/ada%40example.test', {
+      basket: basketFixture(),
+      sends: [
+        {
+          broadcastId: 'bc_2',
+          subject: 'Still there?',
+          status: 'skipped',
+          sentAt: null,
+          lastError: 'basket_empty',
+        },
+        {
+          broadcastId: 'bc_1',
+          subject: 'Come back',
+          status: 'sent',
+          sentAt: NOW - 3_600_000,
+          lastError: null,
+        },
+      ],
+    });
+    when('/api/marketing/customers/ada%40example.test', {
+      email: 'ada@example.test',
+      customerId: null,
+      displayName: 'Ada Okoye',
+      balance: 0,
+      lifetimeEarned: 0,
+      openReturn: null,
+    });
+    mount();
+
+    await screen.findByText('ada@example.test');
+    await user.click(rowFor('ada@example.test'));
+
+    await screen.findByText('PLA Basic');
+    expect(await screen.findByText('Still there?')).toBeTruthy();
+    expect(await screen.findByText('Come back')).toBeTruthy();
+    /* The ordinary reason, in plain words rather than the wire value —
+       'basket_empty' never appears on screen. */
+    expect(
+      await screen.findByText('Their basket was empty by the time it went out.'),
+    ).toBeTruthy();
+    expect(screen.queryByText('basket_empty')).toBeNull();
+
+    // Newest broadcast first: the skipped send's message precedes the sent one's.
+    const messages = screen.getAllByText(/^(Still there\?|Come back)$/).map((el) => el.textContent);
+    expect(messages).toEqual(['Still there?', 'Come back']);
+  });
 });

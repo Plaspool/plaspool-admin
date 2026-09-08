@@ -9,7 +9,7 @@ import { listAudit } from './audit';
 import { listShopTags } from './tags';
 import { listBuyers } from './customers';
 import { listInventory } from './inventory';
-import { basketFor, listProspects, type ProspectTab } from './prospects';
+import { basketFor, listProspects, sendsFor, type ProspectTab } from './prospects';
 import { shopStats } from './stats';
 import { ANALYTICS_RANGES, shopAnalytics } from './analytics';
 
@@ -175,7 +175,11 @@ shopAdminRoutes.get('/admin/customers/prospects', auth, async (c) => {
 
 /**
  * One person's basket, read the same way the broadcast drain reads it
- * (`basketFor`'s own header explains why one statement serves both).
+ * (`basketFor`'s own header explains why one statement serves both), plus what
+ * the shop has emailed them (`sendsFor`) — the history the owner asked to see
+ * alongside a prospect's basket. A cross-domain read of `email_*` tables, not a
+ * write and not a new surface, so it stays gated by the existing `customers`
+ * permission rule rather than earning one of its own.
  *
  * `pathParam`, NOT A BARE `c.req.param` — the boundary `server/nul-bytes.test.ts`
  * walks every route to enforce, so a NUL in the segment is a 400 rather than a
@@ -187,7 +191,9 @@ shopAdminRoutes.get('/admin/customers/prospects', auth, async (c) => {
 shopAdminRoutes.get('/admin/customers/prospects/:email', auth, async (c) => {
   const email = pathParam(c, 'email');
   if (email.trim() === '') throw new BadRequestError('email');
-  return c.json({ basket: await basketFor(currentDb(c), email) });
+  const db = currentDb(c);
+  const [basket, sends] = await Promise.all([basketFor(db, email), sendsFor(db, email)]);
+  return c.json({ basket, sends });
 });
 
 shopAdminRoutes.get('/admin/inventory', auth, async (c) => {

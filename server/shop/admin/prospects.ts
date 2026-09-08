@@ -70,6 +70,24 @@ export interface Basket {
   redemptionPoints: number | null;
 }
 
+/**
+ * One broadcast this person was queued for, newest first.
+ *
+ * `status` carries the four values `email_broadcast_recipients_status_ck`
+ * admits since migration 0980: `pending` (queued, drain has not reached it
+ * yet), `sent`, `failed`, and `skipped` — a recipient the drain refused to
+ * mail, almost always because their basket had emptied by the time the batch
+ * ran (`lastError: 'basket_empty'`); `'unsubscribed'` is the other value that
+ * lands there.
+ */
+export interface Send {
+  broadcastId: string;
+  subject: string;
+  status: string;
+  sentAt: number | null;
+  lastError: string | null;
+}
+
 export type ProspectTab = 'basket' | 'account' | 'subscriber' | 'all';
 
 /**
@@ -330,6 +348,45 @@ export async function basketFor(db: Db, email: string): Promise<Basket | null> {
     redemptionPoints:
       head.redemption_points == null ? null : Number(head.redemption_points),
   };
+}
+
+// ----------------------------------------------------------------- sendsFor
+
+/**
+ * What the shop has emailed this person, newest first, capped at 20.
+ *
+ * FOLDED THE SAME WAY `basketFor` FOLDS — this is the whole point of the fold
+ * living in one place. `email_subscribers` is the only table here that carries
+ * the address at all (`emailBroadcastRecipients` deliberately snapshots none,
+ * per its own header), so a padded or mixed-case address that found a basket
+ * has to find its history too, or the modal would show one without the other
+ * for the exact same person.
+ *
+ * ORDERED BY THE BROADCAST'S `created_at`, not `sent_at` — only `sent` rows
+ * carry a `sent_at` at all, and a `pending` or `skipped` row has to sort
+ * sensibly among sent ones rather than collapsing to the top or bottom by
+ * virtue of a null.
+ */
+export async function sendsFor(db: Db, email: string): Promise<Send[]> {
+  const folded = rejectNul(foldEmail(email), 'email');
+  if (folded === '') return [];
+
+  const res = await db.execute(sql`
+    SELECT b.id AS broadcast_id, b.subject, r.status, r.sent_at, r.last_error
+      FROM email_broadcast_recipients r
+      JOIN email_broadcasts b ON b.id = r.broadcast_id
+      JOIN email_subscribers s ON s.id = r.subscriber_id
+     WHERE ${SUB_ADDRESS} = ${folded}
+     ORDER BY b.created_at DESC, r.id ASC
+     LIMIT 20`);
+
+  return res.rows.map((row) => ({
+    broadcastId: String(row.broadcast_id),
+    subject: String(row.subject),
+    status: String(row.status),
+    sentAt: toEpochMsOrNull(row.sent_at),
+    lastError: row.last_error == null ? null : String(row.last_error),
+  }));
 }
 
 // ------------------------------------------------------------ listProspects
