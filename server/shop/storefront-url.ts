@@ -87,3 +87,27 @@ export function orderUrl(orderNumber: string, token: string): string {
     `?token=${encodeURIComponent(token)}`
   );
 }
+
+/**
+ * The storefront's basket page — where `{{basket_url}}` sends the reader of a
+ * "not bought yet" nudge.
+ *
+ * THE PATH IS `/cart`. Verified against the deployed storefront rather than
+ * assumed, 2026-09-08: `https://plaspool.com/cart` is a 200; `/basket` and
+ * `/bag` are both 404. Same discipline `orderUrl` above records for its own
+ * path, and for the same reason — a mail already delivered cannot be
+ * corrected, so this is centralised HERE, the one place that knows it, rather
+ * than guessed per caller.
+ *
+ * DOES NOT RESTORE THIS PERSON'S SPECIFIC BASKET. The storefront has no
+ * resume-a-cart token today — unlike `orderUrl`, which carries one — so this
+ * is the generic basket page. A shopper whose cart is still live in that
+ * browser sees it because the storefront keeps its own cart state there; one
+ * reading the nudge from a different device, or after clearing storage, sees
+ * an empty basket. Inventing a resume token here would be admin code writing
+ * a storefront contract it does not own, so this function does not claim to
+ * do more than it does.
+ */
+export function basketUrl(): string {
+  return `${storefrontOrigin()}/cart`;
+}

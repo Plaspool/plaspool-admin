@@ -36,6 +36,7 @@ import {
   listTemplates,
   parseSubscriberCsv,
   recipientCounts,
+  setBroadcastAudience,
   startBroadcast,
   tokenForEmail,
   unsubscribeByToken,
@@ -56,6 +57,7 @@ import {
   unsubscribeUrl,
 } from '../email/send';
 import { ensureSystemTemplates, renderSystem } from '../email/system-templates';
+import { basketFor } from '../shop/admin/prospects';
 import { storefrontOrigin } from '../shop/storefront-url';
 import { baseUrl } from './public';
 import { currentDb, currentUser } from '../app-env';
@@ -216,12 +218,43 @@ const ImportBody = z.union([
     .strict(),
 ]);
 
+/**
+ * How many addresses one picked send may name. The composer's own list is a
+ * page of at most a few dozen; this is the ceiling on a hand-written body, and
+ * it exists so a caller cannot turn one request into an unbounded enrolment —
+ * Task 5's `enqueueAudience` enrols a picked audience with one sequential
+ * `addSubscriber` call per address, so N here is N round trips to Neon on the
+ * eventual send, not one.
+ */
+const MAX_PICKED = 2_000;
+
 const BroadcastBody = z
   .object({
     templateId: str().min(1).max(64),
     /** An override for this send only. The template is not touched — the whole
      * point of the snapshot columns. */
     subject: str().min(1).max(400).optional(),
+    /**
+     * ABSENT MEANS EVERY SUBSCRIBER, which is what a broadcast meant before the
+     * "Not bought yet" screen existed and what every existing caller still
+     * means. Spelled as an object rather than a bare array so a second audience
+     * kind later is a new literal rather than a new field.
+     *
+     * `emails` CARRIES NO `.min(1)`. An empty (or all-blank) list is refused by
+     * the ROUTE, after folding — see the `recorded === 0` check below — so
+     * there is exactly one refusal for "nothing usable here" and it always
+     * names the field as `audience`, never `audience.emails`: a schema-level
+     * `.min(1)` would catch the pure-`[]` case itself and report the nested
+     * path instead, which is a second, differently-worded 400 for the same
+     * mistake.
+     */
+    audience: z
+      .object({
+        kind: z.literal('picked'),
+        emails: z.array(str().min(3).max(320)).max(MAX_PICKED),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -647,10 +680,42 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
 
     const broadcast = await createBroadcast(
       db,
-      { templateId: template.id, subject, html: template.html, text: template.text },
+      {
+        templateId: template.id,
+        subject,
+        html: template.html,
+        text: template.text,
+        audienceKind: body.audience ? 'picked' : 'all_subscribers',
+      },
       currentUser(c).id,
       Date.now(),
     );
+
+    /*
+     * THE AUDIENCE IS RECORDED AFTER THE BROADCAST EXISTS, so it has a row to
+     * point at — `email_broadcast_audience.broadcast_id` is a foreign key.
+     *
+     * `recorded === 0` READ AS "NOTHING USABLE", SAFELY, ONLY BECAUSE THIS
+     * BROADCAST IS BRAND NEW. `setBroadcastAudience` also answers 0 when every
+     * address was ALREADY on the list, which cannot be true a statement after
+     * the row was created — there is no re-pick path on this route. Naming the
+     * field AND deleting the broadcast just created, rather than leaving
+     * behind a draft that can never reach anybody.
+     *
+     * THE DELETE IS SAFE TO CALL UNCONDITIONALLY HERE: `setBroadcastAudience`
+     * returns 0 BEFORE its INSERT when every address folds to nothing (see
+     * its own comment), so no `email_broadcast_audience` row exists yet for
+     * `deleteBroadcast`'s recipient sweep to reconcile with — there is
+     * nothing to conflict with a row that was never written.
+     */
+    if (body.audience) {
+      const recorded = await setBroadcastAudience(db, broadcast.id, body.audience.emails);
+      if (recorded === 0) {
+        await deleteBroadcast(db, broadcast.id);
+        throw new BadRequestError('audience');
+      }
+    }
+
     return c.json({ broadcast }, 201);
   });
 
@@ -782,10 +847,28 @@ export function createEmailRoutes(deps: EmailRouteDeps = {}): Hono<AppEnv> {
      * present.
      */
     const token = (await tokenForEmail(db, user.email)) ?? 'test-send-not-a-subscriber';
+    /*
+     * THE CALLER'S OWN BASKET, RESOLVED THE SAME WAY THE DRAIN RESOLVES A
+     * RECIPIENT'S — `basketFor`, by email, right before rendering
+     * (`server/email/send.ts`). Without this a test send of a "not bought yet"
+     * template called `renderMessage` with three arguments and the operator
+     * saw the literal `{{basket}}` braces instead of a basket — the one thing
+     * a test send exists to prove looks right.
+     *
+     * `null` WHEN THE CALLER HAS NO BASKET OF THEIR OWN, and left unguarded:
+     * a DB failure here fails this request exactly as a failure in
+     * `tokenForEmail` a line up already does, rather than gaining its own
+     * try/catch. `TemplateValues` leaves an absent basket's placeholders
+     * VISIBLE rather than blank — this codebase's documented rule for a value
+     * nobody supplied — so an owner with an empty cart previewing a nudge
+     * sees exactly that: braces, not a page that quietly looks finished.
+     */
+    const basket = await basketFor(db, user.email);
     const message = renderMessage(
       broadcast,
       { email: user.email, name: user.displayName, token },
       origin,
+      basket,
     );
 
     /*

@@ -918,6 +918,86 @@ export interface ShopBuyer {
 }
 
 /**
+ * "Not bought yet" — people with a basket, an account or a subscription who
+ * have never ordered, and the basket each of them left. Mirrors
+ * `server/shop/admin/prospects.ts` field for field; see that file for why the
+ * tabs are disjoint, why the address is folded, and why a basket is quoted
+ * live rather than frozen.
+ */
+export type SubscribeState = 'subscribed' | 'never_asked' | 'unsubscribed';
+
+/** The four tabs `listProspects` filters on — `'all'` is their union. */
+export type ProspectTab = 'basket' | 'account' | 'subscriber' | 'all';
+
+export interface ShopBasketLine {
+  variantId: string;
+  productId: string;
+  /** The PRODUCT's title. A shopper recognises "PLA Basic", not a SKU. */
+  title: string;
+  optionValues: Record<string, string>;
+  sku: string;
+  qty: number;
+  unitMinor: number;
+  lineMinor: number;
+  /** The variant's own photograph, falling back to the product cover. Normalised. */
+  imageId: string | null;
+}
+
+export interface ShopBasket {
+  cartId: string;
+  status: 'open' | 'converting' | 'converted' | 'abandoned';
+  currency: string;
+  updatedAt: number;
+  expiresAt: number | null;
+  lines: ShopBasketLine[];
+  totalMinor: number;
+  discountCode: string | null;
+  addOnChoices: unknown | null;
+  redemptionPoints: number | null;
+}
+
+/** One broadcast a prospect was queued for. Mirrors `Send` in
+ * `server/shop/admin/prospects.ts` field for field. */
+export interface ShopSend {
+  broadcastId: string;
+  subject: string;
+  /** 'pending' | 'sent' | 'failed' | 'skipped' */
+  status: string;
+  sentAt: number | null;
+  lastError: string | null;
+}
+
+export interface ShopProspect {
+  /** The folded address. It is this row's identity, and the cursor's id. */
+  email: string;
+  displayName: string | null;
+  hasBasket: boolean;
+  hasAccount: boolean;
+  isSubscriber: boolean;
+  subscribeState: SubscribeState;
+  /** Units in the basket, summed over its lines. Zero when there is none. */
+  basketItems: number;
+  /** MINOR UNITS, quoted live. Zero when there is no basket. */
+  basketMinor: number;
+  /** What `basketMinor` is denominated in. EMPTY when there is no basket. */
+  currency: string;
+  /** Cart last touched, else account created, else subscribed. Never null. */
+  lastSeenAt: number;
+  /** When a broadcast last actually reached them, or null. */
+  lastNudgeAt: number | null;
+}
+
+export interface ShopProspectPage {
+  items: ShopProspect[];
+  nextCursor: string | null;
+  /**
+   * Carts with lines that resolve to no address at all. NOT affected by the
+   * tab or the search query — a property of the shop, not of the page.
+   */
+  unreachableBaskets: number;
+}
+
+/**
  * One row of the categories surface — the UNION of the managed
  * `shop_categories` table and the values still sitting in
  * `shop_products.category` as free text (migration 0200).
@@ -1975,6 +2055,39 @@ export const shopApi = {
     signal?: AbortSignal,
   ): Promise<Page<ShopBuyer>> {
     return shopFetch<Page<ShopBuyer>>(`${BASE}/customers`, { query: { ...query }, signal });
+  },
+
+  /**
+   * "Not bought yet" — people with a basket, an account or a subscription and
+   * no order at all (`server/shop/admin/prospects.ts`). `tab` defaults to
+   * `'basket'` server-side when it is absent, so it is optional here too.
+   */
+  async listProspects(
+    query: { tab?: ProspectTab; cursor?: string; limit?: number; query?: string } = {},
+    signal?: AbortSignal,
+  ): Promise<ShopProspectPage> {
+    return shopFetch<ShopProspectPage>(`${BASE}/customers/prospects`, {
+      query: { ...query },
+      signal,
+    });
+  },
+
+  /**
+   * One prospect's basket, read by the same statement the broadcast drain
+   * reads it with (`basketFor`'s own header explains why one serves both), and
+   * what the shop has emailed them, newest first. `basket` is `null` for
+   * somebody with nothing in it any more; `sends` is `[]` for somebody never
+   * mailed — the ordinary case today, since production has sent no broadcasts.
+   *
+   * `seg`, NOT A BARE TEMPLATE INTERPOLATION: the address is a path segment
+   * containing `@` and `.`, and the server decodes it once (`pathParam`), so
+   * this encodes exactly once.
+   */
+  async getProspect(
+    email: string,
+    signal?: AbortSignal,
+  ): Promise<{ basket: ShopBasket | null; sends: ShopSend[] }> {
+    return shopFetch(`${BASE}/customers/prospects/${seg(email)}`, { signal });
   },
 };
 
