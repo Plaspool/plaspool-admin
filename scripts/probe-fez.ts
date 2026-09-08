@@ -60,12 +60,38 @@
  * else, so supplying one only pins it — which is worth doing when you want to
  * prove the exact key a deployment would carry.
  *
+ * ═══ PUTTING THEM ON VERCEL: `--push` ═══
+ *
+ *   npm run probe:fez -- --prod --push
+ *
+ * Adds FEZ_USER_ID, FEZ_PASSWORD, FEZ_BASE_URL (and FEZ_SECRET_KEY if you
+ * pinned one) to the Vercel project — but ONLY AFTER the probe above signed in
+ * and priced a parcel, so a credential that does not work can never be stored.
+ * That ordering is the whole reason this lives in the probe rather than in a
+ * script of its own.
+ *
+ * WHERE THEY LAND FOLLOWS WHICH FEZ YOU PROVED:
+ *
+ *   --prod  →  Vercel `production`
+ *   --dev   →  Vercel `preview` + `development`
+ *
+ * and never both sides, so a live courier credential cannot end up where a PR
+ * preview would pick it up and book a real dispatch rider.
+ *
+ * `--push-check` prints what it would set and writes nothing. Values go to the
+ * CLI on stdin, never in `argv`, so nothing reaches shell history or `ps`.
+ * Vercel bakes env vars AT BUILD TIME, so a push changes nothing until the
+ * next deploy.
+ *
  * Other flags: `--state=Abuja`, `--weight=2.5`, `--states` (print every state
  * Fez ships to rather than just the count).
  *
  * Exit code is 0 when Fez accepted the credentials, 1 when it did not — so it
  * is usable as a check and not only as something to read.
  */
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { createFezProvider } from '../server/shop/logistics/fez/adapter';
 import { FEZ_LIVE_URL, FEZ_SANDBOX_URL, type FezEnv } from '../server/shop/logistics/config';
 import { LogisticsError, type LogisticsProvider, type QuoteOption } from '../server/shop/logistics/port';
@@ -218,7 +244,119 @@ async function main(): Promise<void> {
   else console.log(`    ${names.slice(0, 6).join(', ')}${names.length > 6 ? ', …  (--states for all)' : ''}`);
 
   console.log('');
-  console.log(`These credentials work against ${where}.`);
+  console.log(`These credentials work against ${where === 'live' ? 'PROD' : 'dev'}.`);
+
+  if (has('push')) await push(fez, where);
+  else if (has('push-check')) await push(fez, where, true);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * PUTTING THE CREDENTIALS ON VERCEL — ONLY ONES THAT JUST WORKED.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/** deploy.ts's rule 3, for the same reason: the CLI does not resolve
+ *  `.vercel/project.json`'s orgId to this slug on its own, and WRITES fail
+ *  without it while READS succeed — so the `Not authorized` you get looks like
+ *  a broken session and is not. */
+const SCOPE = 'nattys-projects-05ebc986';
+
+/**
+ * WHICH VERCEL ENVIRONMENTS EACH FEZ HOST GOES TO.
+ *
+ * Live goes to `production` ALONE, and sandbox to `preview` and `development`
+ * — never both sides. That mapping is the whole safety property here: it makes
+ * it impossible to put a live courier credential where a preview build will
+ * pick it up, which is the mistake that ends with a PR preview booking a real
+ * dispatch rider. `admin.dev.plaspool.com` is a Preview deployment, so the dev
+ * host reads the sandbox pair, which is what it should.
+ */
+const TARGETS: Record<'live' | 'sandbox', string[]> = {
+  live: ['production'],
+  sandbox: ['preview', 'development'],
+};
+
+/**
+ * The linked root. `.vercel/` is gitignored, so THIS WORKTREE HAS NONE and a
+ * `vercel env add` run from here would prompt to create a new project rather
+ * than write to ours. deploy.ts copies the directory into its clone; there is
+ * nothing to clone here, so we simply run the CLI from the main checkout,
+ * which is where the link lives.
+ */
+function linkedRoot(): string {
+  const gitDir = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+    encoding: 'utf8',
+  }).trim();
+  const root = path.dirname(gitDir);
+  if (!existsSync(path.join(root, '.vercel', 'project.json'))) {
+    throw new Error(`No .vercel/project.json under ${root} — that tree is not linked to the Vercel project.`);
+  }
+  return root;
+}
+
+/**
+ * One `vercel env add`. THE VALUE GOES IN ON STDIN AND NEVER INTO `argv`,
+ * which is the point: an argument is visible in shell history and to anyone
+ * who can run `ps`, and a Fez password reaching either of those is the thing
+ * that made this run necessary in the first place.
+ */
+function vercelEnv(args: string[], cwd: string, value?: string): { ok: boolean; out: string } {
+  const res = spawnSync('npx', ['vercel', 'env', ...args, '--scope', SCOPE], {
+    cwd,
+    input: value === undefined ? undefined : `${value}\n`,
+    encoding: 'utf8',
+    shell: process.platform === 'win32',
+  });
+  return { ok: res.status === 0, out: `${res.stdout ?? ''}${res.stderr ?? ''}`.trim() };
+}
+
+async function push(fez: FezEnv, where: 'live' | 'sandbox', dryRun = false): Promise<void> {
+  const targets = TARGETS[where];
+  const root = linkedRoot();
+
+  /* FEZ_BASE_URL IS PUSHED EXPLICITLY AND IS NOT OPTIONAL, because its default
+     is the sandbox: a production deployment missing this variable talks to the
+     sandbox and says nothing about it, which is the quietest possible way for
+     a courier integration to be wrong. */
+  const vars: { name: string; value: string; secret: boolean }[] = [
+    { name: 'FEZ_USER_ID', value: fez.userId, secret: false },
+    { name: 'FEZ_PASSWORD', value: fez.password, secret: true },
+    { name: 'FEZ_BASE_URL', value: fez.baseUrl, secret: false },
+  ];
+  /* Only when one was PINNED. Fez hands the org's key back at sign-in, so
+     pushing a learned one would store a copy of something the client already
+     fetches for itself — a second place to rotate, for nothing. */
+  if (fez.secretKey) vars.push({ name: 'FEZ_SECRET_KEY', value: fez.secretKey, secret: true });
+
+  console.log('');
+  console.log(`${dryRun ? 'Would set' : 'Setting'} on Vercel — ${targets.join(' + ')}:`);
+  for (const v of vars) console.log(`  ${v.name.padEnd(16)} ${v.secret ? '••••••' : v.value}`);
+  if (dryRun) {
+    console.log('\n--push-check only. Re-run with --push to write.');
+    return;
+  }
+
+  for (const target of targets) {
+    for (const v of vars) {
+      /* `vercel env add` REFUSES a name that already exists rather than
+         replacing it, so a re-run after a rotation would do nothing and report
+         nothing worth reading. Removing first makes this idempotent; the
+         removal is allowed to fail, because "it was not there" is the ordinary
+         first-run case and not an error. */
+      vercelEnv(['rm', v.name, target, '--yes'], root);
+      const add = vercelEnv(['add', v.name, target], root, v.value);
+      if (!add.ok) {
+        /* NEVER the value, and never `add.out` blindly — the CLI echoes what
+           it was given on some failures. The name and the target are enough to
+           act on. */
+        throw new Error(`vercel env add ${v.name} ${target} failed. Run it by hand from ${root}.`);
+      }
+      console.log(`  ✓ ${v.name} → ${target}`);
+    }
+  }
+
+  console.log('');
+  console.log('Set. NOTHING CHANGES UNTIL THE NEXT DEPLOY — Vercel bakes env vars at build');
+  console.log(`time, so ${where === 'live' ? 'npm run deploy:prod' : 'npm run deploy:dev'} is what makes these take effect.`);
 }
 
 /**
