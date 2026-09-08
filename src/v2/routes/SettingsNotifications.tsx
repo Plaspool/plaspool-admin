@@ -90,6 +90,7 @@ export default function SettingsNotifications() {
      appears and then vanishes is worse than one that arrives a moment late. */
   const [push, setPush] = useState<PushState>('unsupported');
   const [pushBusy, setPushBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
 
   useEffect(() => {
     const stop = new AbortController();
@@ -318,18 +319,66 @@ export default function SettingsNotifications() {
             Turn on for this device
           </Button>
         ) : push === 'on' ? (
-          <Button
-            tone="plain"
-            busy={pushBusy}
-            onClick={() => {
-              setPushBusy(true);
-              void disablePush()
-                .then(setPush)
-                .finally(() => setPushBusy(false));
-            }}
-          >
-            Turn off for this device
-          </Button>
+          <div className="row">
+            {/*
+              THE TEST IS THE PRIMARY ACTION HERE, not turning it off. The only
+              other way to find out whether any of this works is to place a real
+              order — slow, involves money, and when nothing arrives it cannot
+              say which of the four links broke.
+            */}
+            <Button
+              tone="primary"
+              busy={testing}
+              onClick={() => {
+                setTesting(true);
+                void shopApi
+                  .pushTest()
+                  .then((res) => {
+                    /* REPORTED FROM THE COUNT, never from the 200. The request
+                       succeeding says nothing about a notification arriving,
+                       and "Sent!" over silence is the exact failure this button
+                       exists to end. */
+                    if (res.sent > 0) {
+                      toast.show(
+                        res.sent === 1
+                          ? 'Sent — it should appear in a moment'
+                          : `Sent to ${res.sent} devices`,
+                      );
+                    } else if (res.devices > 0) {
+                      toast.show(
+                        'Your browser has dropped its subscription. Turn it off and on again here.',
+                        'critical',
+                      );
+                    } else {
+                      toast.show('This device is not registered yet.', 'critical');
+                    }
+                  })
+                  .catch((cause: unknown) => {
+                    toast.show(
+                      cause instanceof Error && cause.message
+                        ? cause.message
+                        : 'Something went wrong.',
+                      'critical',
+                    );
+                  })
+                  .finally(() => setTesting(false));
+              }}
+            >
+              Send a test notification
+            </Button>
+            <Button
+              tone="plain"
+              busy={pushBusy}
+              onClick={() => {
+                setPushBusy(true);
+                void disablePush()
+                  .then(setPush)
+                  .finally(() => setPushBusy(false));
+              }}
+            >
+              Turn off for this device
+            </Button>
+          </div>
         ) : null}
       </Card>
 

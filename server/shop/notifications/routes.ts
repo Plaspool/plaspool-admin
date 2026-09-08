@@ -11,7 +11,9 @@ import {
   pushConfigured,
   pushPublicKey,
   savePushSubscription,
+  sendPushToUsers,
 } from './push';
+import { adminOrigin } from '../../admin-url';
 import type { AppEnv } from '../../app-env';
 
 /**
@@ -197,4 +199,43 @@ pushRoutes.post('/admin/push/unsubscribe', auth, async (c) => {
   /* `ok` regardless of whether a row existed. A browser unsubscribing twice, or
      one whose row a 410 already pruned, has got what it asked for. */
   return c.json({ ok: true, removed });
+});
+
+/**
+ * Send this person a real push, right now, to prove the chain works.
+ *
+ * WITHOUT THIS THE ONLY TEST IS A REAL ORDER, which is a poor way to find out
+ * that a device never registered: it is slow, it involves money, and when
+ * nothing arrives it cannot say which of the four links broke — the
+ * subscription, the keys, the push service, or the worker.
+ *
+ * IT REPORTS A COUNT AND NEVER PRETENDS. `sendPushToUsers` returns how many
+ * devices actually accepted the message, so zero here means zero arrived, and
+ * the screen can say "this device is not registered" instead of "sent!" over
+ * silence. `devices` is read BEFORE the send, so a subscription the push
+ * service has just pruned shows up as `devices: 1, sent: 0` — which is the
+ * difference between "you never turned it on" and "your browser dropped it".
+ *
+ * ONLY EVER TO THE CALLER'S OWN DEVICES. It takes no user id and no endpoint;
+ * a test that could be aimed at a colleague is a way to buzz somebody else's
+ * phone at will.
+ */
+pushRoutes.post('/admin/push/test', auth, async (c) => {
+  const db = currentDb(c);
+  const user = currentUser(c);
+  const devices = await countPushSubscriptions(db, user.id);
+  const sent = await sendPushToUsers(
+    db,
+    [user.id],
+    {
+      title: 'PlaSpool notifications work',
+      body: 'This is a test. A real order will look like this.',
+      url: `${adminOrigin()}/#/settings/notifications`,
+      /* A fixed tag so pressing the button twice replaces the first rather than
+         stacking two identical rows on a lock screen. */
+      tag: 'plaspool-test',
+    },
+    Date.now(),
+  );
+  return c.json({ ok: true, configured: pushConfigured(), devices, sent });
 });
