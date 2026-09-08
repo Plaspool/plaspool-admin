@@ -248,9 +248,10 @@ export async function drainBroadcast(
   /*
    * A PROPERTY OF THE SNAPSHOT, SO IT IS ANSWERED ONCE. Whether this broadcast
    * needs a basket resolved cannot vary by recipient, and asking per recipient
-   * would scan both bodies four thousand times for one answer. It also decides
-   * whether anybody's basket is read at all: an ordinary newsletter must not pay
-   * a per-recipient query for a placeholder it does not contain.
+   * would scan the subject and both bodies four thousand times for one answer.
+   * It also decides whether anybody's basket is read at all: an ordinary
+   * newsletter must not pay a per-recipient query for a placeholder it does not
+   * contain.
    *
    * THE PREDICATE IS `needsBasket`, NOT `usesBasket` — true for `{{basket_total}}`
    * and `{{basket_url}}` as well as for the `{{basket}}` block itself. A template
@@ -259,8 +260,23 @@ export async function drainBroadcast(
    * be skipped for a basket that has since emptied, and the reader would see
    * literal `{{basket_total}}` braces instead of a value. See the predicate's own
    * comment in `shared/email/variables.ts`.
+   *
+   * `broadcast.subject` IS SCANNED TOO, NOT ONLY THE TWO BODIES. `renderSubject`
+   * substitutes `basket_total` and `basket_url` into the subject exactly as it
+   * substitutes them into either body — it drops only `blocks`, so `{{basket}}`
+   * itself never renders there, but the two scalars do — and `checkedTemplate`
+   * (`server/routes/email.ts`) validates a subject against the same closed
+   * `TEMPLATE_VARIABLES` the bodies are validated against, so a subject carrying
+   * `{{basket_total}}` and nothing else is ordinary and saveable through the
+   * composer. Reading only the two bodies here would miss it: nobody would be
+   * skipped for a basket that has since emptied, and the reader would see
+   * literal `{{basket_total}}` braces in the one field a mail client shows
+   * before the message is even opened.
    */
-  const needsBasket = templateNeedsBasket(broadcast.html) || templateNeedsBasket(broadcast.text);
+  const needsBasket =
+    templateNeedsBasket(broadcast.subject) ||
+    templateNeedsBasket(broadcast.html) ||
+    templateNeedsBasket(broadcast.text);
   const candidates = await claimableRecipients(db, broadcast.id, limit);
 
   for (const candidate of candidates) {

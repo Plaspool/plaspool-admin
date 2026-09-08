@@ -98,6 +98,14 @@ function bodied(body: string): typeof SNAPSHOT {
   return { ...SNAPSHOT, html: body, text: body };
 }
 
+/** The default snapshot with a SUBJECT of the caller's choosing, body left at
+ *  `SNAPSHOT`'s own — `{{name}}` and `{{unsubscribe_url}}`, nothing basket-
+ *  shaped — for the one case where a basket scalar lives in the subject and
+ *  nowhere else. */
+function subjected(subject: string): typeof SNAPSHOT {
+  return { ...SNAPSHOT, subject };
+}
+
 let baskets = 0;
 
 /**
@@ -424,6 +432,61 @@ describe('a template that mentions the basket total or link, but never the block
     expect(message.text).toContain('5000.00 NGN');
     expect(message.html).not.toContain('{{basket_total}}');
     expect(message.text).not.toContain('{{basket_total}}');
+  });
+});
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE HOLE FIX ROUND 2 CLOSES: the local `needsBasket` above the claim loop
+ * scanned only `broadcast.html` and `broadcast.text` — never
+ * `broadcast.subject`. But `renderSubject` substitutes `basket_total` and
+ * `basket_url` into the subject exactly as it substitutes them into either
+ * body (it drops only `blocks`, so `{{basket}}` itself is the one name that
+ * never renders there), and `checkedTemplate` (`server/routes/email.ts`)
+ * validates a subject against the same closed `TEMPLATE_VARIABLES` the
+ * bodies are validated against — so a subject carrying `{{basket_total}}`
+ * and nothing else was ordinary and saveable through the composer, and it
+ * reopened exactly the hole the fix above closed: nobody's basket was ever
+ * looked up, nobody was skipped, and a reader who had already paid would
+ * receive a subject line reading the literal `{{basket_total}}` braces.
+ * Both cases here use `SNAPSHOT`'s own body — nothing but `{{name}}` and
+ * `{{unsubscribe_url}}` — and put the basket scalar in the SUBJECT alone.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+describe('a template that mentions the basket total only in the SUBJECT', () => {
+  it('skips a recipient whose basket has emptied, even with the subject the only place it appears', async () => {
+    const broadcast = await started(
+      ['ada@test.local'],
+      subjected('Still thinking about your {{basket_total}} basket?'),
+    );
+    const mailer = new Recorder();
+    // No cart at all for Ada: she bought, or emptied it, after she was picked.
+
+    const summary = await drainBroadcast(db, broadcast, mailer, ORIGIN, NOW);
+
+    expect(mailer.sent).toHaveLength(0);
+    expect(summary.emptyBasket).toBe(1);
+    expect(summary.sent).toBe(0);
+    const row = await recipientRow(broadcast.id);
+    expect(row.status).toBe('skipped');
+    expect(row.last_error).toBe('basket_empty');
+  });
+
+  it('substitutes the real total into the subject for a recipient who does have a basket', async () => {
+    await giveBasket('ada@test.local', [{ title: 'PLA Basic', qty: 2, unitMinor: 250_000 }]);
+    const broadcast = await started(
+      ['ada@test.local'],
+      subjected('Still thinking about your {{basket_total}} basket?'),
+    );
+    const mailer = new Recorder();
+
+    const summary = await drainBroadcast(db, broadcast, mailer, ORIGIN, NOW);
+
+    expect(summary.sent).toBe(1);
+    expect(summary.emptyBasket).toBe(0);
+    const [message] = mailer.sent;
+    expect(message.subject).toBe('Still thinking about your 5000.00 NGN basket?');
+    expect(message.subject).not.toContain('{{basket_total}}');
   });
 });
 

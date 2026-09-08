@@ -137,18 +137,34 @@ export function usesBasket(source: string): boolean {
 }
 
 /**
+ * The one BLOCK name populated from the same per-recipient lookup as the two
+ * scalars below — kept apart from `TEMPLATE_BLOCKS` above ON PURPOSE.
+ * `TEMPLATE_BLOCKS` is EVERY block this server knows how to render, `basket`
+ * today; `BASKET_VARIABLE_NAMES` below must only ever widen with a
+ * basket-shaped name, never with every future block regardless of what it is
+ * about. The day a `{{products}}` or `{{recommendations}}` block joins
+ * `TEMPLATE_BLOCKS`, deriving `BASKET_VARIABLE_NAMES` from that array instead
+ * of from this one would silently make `needsBasket` true for a template that
+ * never mentions a basket at all — and because a skip is TERMINAL
+ * (`markRecipientSkipped`, `server/email/repo.ts`), every recipient with an
+ * empty basket would be skipped from a message that had nothing to do with
+ * their basket, and never mailed at all.
+ */
+export const BASKET_BLOCKS = ['basket'] as const;
+
+/**
  * The two SCALAR names populated from the same per-recipient lookup as
  * `basket`, even though neither one is a block — see `TemplateValues` in
  * `server/email/render.ts`. Named here, once, so `needsBasket` below is a
  * list-membership test rather than three hard-coded string comparisons: a
- * later basket variable joins this array (or `TEMPLATE_BLOCKS`, if it is a
- * block) and `needsBasket` widens with it, rather than staying narrow the way
- * three separate `=== '…'` checks would if a name were added to
+ * later basket variable joins this array (or `BASKET_BLOCKS` above, if it is
+ * a block) and `needsBasket` widens with it, rather than staying narrow the
+ * way three separate `=== '…'` checks would if a name were added to
  * `TEMPLATE_VARIABLES` above and simply forgotten here.
  */
 export const BASKET_SCALARS = ['basket_total', 'basket_url'] as const;
 
-const BASKET_VARIABLE_NAMES: readonly string[] = [...TEMPLATE_BLOCKS, ...BASKET_SCALARS];
+const BASKET_VARIABLE_NAMES: readonly string[] = [...BASKET_BLOCKS, ...BASKET_SCALARS];
 
 /**
  * True if a body needs a recipient's basket resolved for it AT ALL — every
@@ -168,10 +184,12 @@ const BASKET_VARIABLE_NAMES: readonly string[] = [...TEMPLATE_BLOCKS, ...BASKET_
  * exists to prevent — NOBODY IS SKIPPED, so a person who has already paid
  * still receives a message about the basket they left behind.
  *
- * DERIVED FROM `TEMPLATE_BLOCKS` PLUS `BASKET_SCALARS` ABOVE, not from three
- * hard-coded comparisons, so a later basket variable cannot silently reopen
- * this hole the way this one opened it: add the name to one of those two
- * lists and this function widens with it.
+ * DERIVED FROM `BASKET_BLOCKS` PLUS `BASKET_SCALARS` ABOVE — NEVER FROM
+ * `TEMPLATE_BLOCKS`, which is every block this server knows, not only the
+ * basket one — so a later basket variable cannot silently reopen this hole
+ * the way this one opened it: add the name to `BASKET_BLOCKS` (if it is a
+ * block) or `BASKET_SCALARS` (if it is a scalar) and this function widens
+ * with it.
  *
  * WHITESPACE-TOLERANT, for the reason `usesBasket` and `hasUnsubscribeVariable`
  * both are: `{{ basket_total }}` depends on the basket exactly as much as
