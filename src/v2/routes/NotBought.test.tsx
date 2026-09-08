@@ -54,6 +54,17 @@ vi.mock('../../data/session', () => ({
   logout: vi.fn(),
 }));
 
+/* The person modal's basket lines render through `StoredImg`, which acquires
+   an object URL from IndexedDB — absent in jsdom. Stubbed exactly as
+   `Img.test.tsx` does, so a real photograph resolves without ever touching
+   Dexie. */
+vi.mock('../../data/images', () => ({
+  acquireImageURL: vi.fn(async () => 'blob:test'),
+  releaseImageURL: vi.fn(),
+  storeImageFile: vi.fn(),
+  ImageError: class ImageError extends Error {},
+}));
+
 import { ToastHost } from '../ui/Toast';
 import type { ShopProspect } from '../../data/api-shop';
 import NotBought from './NotBought';
@@ -418,5 +429,131 @@ describe('the not-bought-yet list', () => {
        that starts a basket leaves this tab for the first one. */
     expect(await screen.findByText('No accounts waiting')).toBeTruthy();
     expect(screen.getByText(/moves to Has a basket/)).toBeTruthy();
+  });
+});
+
+// ============================================================================
+
+describe('the person modal', () => {
+  /** A minimal but shaped basket — every field `PersonModal` reads. */
+  function basketFixture(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      cartId: 'cart_1',
+      status: 'open',
+      currency: 'NGN',
+      updatedAt: NOW - 1_800_000,
+      expiresAt: NOW + 3_600_000,
+      lines: [
+        {
+          variantId: 'var_1',
+          productId: 'prod_1',
+          title: 'PLA Basic',
+          optionValues: { Colour: 'Black' },
+          sku: 'PLA-BLK',
+          qty: 2,
+          unitMinor: 125_000,
+          lineMinor: 250_000,
+          imageId: 'img_1',
+        },
+      ],
+      totalMinor: 250_000,
+      discountCode: null,
+      addOnChoices: null,
+      redemptionPoints: null,
+      ...overrides,
+    };
+  }
+
+  it('opens a person and asks for their basket by encoded address', async () => {
+    const user = userEvent.setup();
+    withList();
+    when('/api/shop/admin/customers/prospects/ada%40example.test', { basket: basketFixture() });
+    when('/api/marketing/customers/ada%40example.test', {
+      email: 'ada@example.test',
+      customerId: null,
+      displayName: 'Ada Okoye',
+      balance: 40,
+      lifetimeEarned: 40,
+      openReturn: null,
+    });
+    mount();
+
+    await screen.findByText('ada@example.test');
+    await user.click(rowFor('ada@example.test'));
+
+    await screen.findByText('PLA Basic');
+    /* Encoded exactly once — `seg` does it, a template interpolation would
+       double it (`%2540`). */
+    expect(calls.map((c) => c.path)).toContainEqual(
+      expect.stringContaining('/customers/prospects/ada%40example.test'),
+    );
+  });
+
+  it('calls a converting cart "Started checkout"', async () => {
+    const user = userEvent.setup();
+    withList();
+    when('/api/shop/admin/customers/prospects/ada%40example.test', {
+      basket: basketFixture({ status: 'converting' }),
+    });
+    when('/api/marketing/customers/ada%40example.test', {
+      email: 'ada@example.test',
+      customerId: null,
+      displayName: 'Ada Okoye',
+      balance: 0,
+      lifetimeEarned: 0,
+      openReturn: null,
+    });
+    mount();
+
+    await screen.findByText('ada@example.test');
+    await user.click(rowFor('ada@example.test'));
+
+    /* The highest-intent state on the whole screen — somebody who reached the
+       payment step and stopped. Lumping it in with "open" hides the best
+       group an operator has. */
+    expect(await screen.findByText('Started checkout')).toBeTruthy();
+    expect(screen.queryByText('Basket open')).toBeNull();
+  });
+
+  it('shows a line with no photograph without a broken image', async () => {
+    const user = userEvent.setup();
+    withList();
+    when('/api/shop/admin/customers/prospects/ada%40example.test', {
+      basket: basketFixture({
+        lines: [
+          {
+            variantId: 'var_2',
+            productId: 'prod_2',
+            title: 'PLA Basic',
+            optionValues: {},
+            sku: '',
+            qty: 1,
+            unitMinor: 250_000,
+            lineMinor: 250_000,
+            imageId: null,
+          },
+        ],
+        totalMinor: 250_000,
+      }),
+    });
+    when('/api/marketing/customers/ada%40example.test', {
+      email: 'ada@example.test',
+      customerId: null,
+      displayName: 'Ada Okoye',
+      balance: 0,
+      lifetimeEarned: 0,
+      openReturn: null,
+    });
+    mount();
+
+    await screen.findByText('ada@example.test');
+    await user.click(rowFor('ada@example.test'));
+
+    await screen.findByText('PLA Basic');
+    /* No broken image AND no grey placeholder box — a placeholder is
+       indistinguishable from an image that failed to load, so the emails
+       already decided this renders nothing at all. */
+    expect(screen.queryByRole('img')).toBeNull();
+    expect(screen.getAllByText(/2,500/).length).toBeGreaterThan(0);
   });
 });

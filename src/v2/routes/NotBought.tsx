@@ -9,6 +9,7 @@ import { AnalyticsBar, AnalyticsMenuItem, PageHeader, useAnalyticsBar, type Metr
 import { Badge, Banner, Button, EmptyState, type BadgeTone } from '../ui/primitives';
 import { PeopleArt } from '../ui/illustrations';
 import { DataTable, IdCell, TablePager, type BulkConfig, type Column } from '../ui/DataTable';
+import { PersonModal } from './not-bought/PersonModal';
 
 /**
  * NOT BOUGHT YET — `/customers/not-bought`.
@@ -106,6 +107,9 @@ export default function NotBought() {
      and nothing else until then; the handler is deliberately without a visible
      effect for one task rather than being a second, throwaway modal. */
   const [, setSending] = useState<string[] | null>(null);
+
+  /** The row a click opened — its basket, quoted live. */
+  const [opened, setOpened] = useState<string | null>(null);
 
   /** Back to page one — a cursor measured against the old list is meaningless
    *  the moment the tab or the search changes. Identity-stable when it is
@@ -292,6 +296,7 @@ export default function NotBought() {
         columns={columns}
         rows={rows}
         rowKey={(p) => p.email}
+        onRowClick={(p) => setOpened(p.email)}
         /* THE SKELETON ON EVERY FETCH, not only the first. The four tabs are
            disjoint populations, so holding the old rows up while the next tab
            loads shows people who are, by definition, not on the tab whose name
@@ -341,6 +346,8 @@ export default function NotBought() {
           />
         }
       />
+
+      {opened ? <PersonModal email={opened} onClose={() => setOpened(null)} /> : null}
     </div>
   );
 }
