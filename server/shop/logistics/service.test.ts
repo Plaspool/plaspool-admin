@@ -1032,6 +1032,163 @@ describe('accessLinkFor', () => {
   });
 });
 
+// ======================================================= routing-city override
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * STAFF RESCUING AN ORDER WHOSE CITY THE COURIER WILL NOT RECOGNISE.
+ *
+ * Every order placed before migration 1020 carries no routing city at all, and
+ * Terminal accepts only ten place names inside the FCT — so most of them are
+ * refused with nothing on screen to do about it. The override is the way
+ * through: the booking calls take a zone, `buildParcelInput` prefers it, and
+ * THE CUSTOMER'S OWN ADDRESS IS NEVER REWRITTEN.
+ *
+ * THREE STEPS, AND ALL THREE ARE ASSERTED HERE: the override beats the stored
+ * zone, the stored zone beats nothing, and nothing leaves `routingCity` null —
+ * which is where the adapters' own `routingCity ?? city` takes over (pinned in
+ * `terminal/adapter.test.ts`, deliberately unread in `fez/adapter.test.ts`).
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+describe('the routing-city override', () => {
+  /** The same buyer, having picked a zone at checkout. */
+  const TO_WITH_ZONE = { ...TO, routingCity: 'Wuse' };
+
+  const parcelInput = async (order: OrderRead, parcel: Fulfillment, routingCity?: string) =>
+    (
+      await buildParcelInput(
+        ctx.db,
+        resolveLogisticsDeps(),
+        order,
+        parcel,
+        await getLogisticsSettings(ctx.db),
+        routingCity,
+      )
+    ).input;
+
+  it('prefers the override over the zone stored on the order', async () => {
+    wire({ terminal: fakeProvider('terminal') });
+    await settings('terminal');
+    const order = await paidOrder(TO_WITH_ZONE);
+    const parcel = await oneMug(order);
+
+    const input = await parcelInput(order, parcel, 'Maitama');
+    expect(input.to.routingCity).toBe('Maitama');
+    /* THE POINT OF THE WHOLE FEATURE: what the customer typed is untouched. */
+    expect(input.to.city).toBe('Wuse 2');
+    expect(input.to.line1).toBe('1 Test Street');
+    expect(input.to.line2).toBe('Flat 2');
+  });
+
+  it('falls back to the zone stored on the order when no override is given', async () => {
+    wire({ terminal: fakeProvider('terminal') });
+    await settings('terminal');
+    const order = await paidOrder(TO_WITH_ZONE);
+    const parcel = await oneMug(order);
+
+    expect((await parcelInput(order, parcel)).to.routingCity).toBe('Wuse');
+  });
+
+  it('carries null when there is neither — the adapters fall back to the real city', async () => {
+    wire({ terminal: fakeProvider('terminal') });
+    await settings('terminal');
+    /* An order placed before 1020: no `routingCity` key at all. */
+    const order = await paidOrder();
+    const parcel = await oneMug(order);
+
+    const input = await parcelInput(order, parcel);
+    expect(input.to.routingCity).toBeNull();
+    expect(input.to.city).toBe('Wuse 2');
+  });
+
+  /* A blank box is not a zone. Without this, an operator who cleared the field
+     would send `""` and Terminal would refuse an empty city instead of falling
+     back to the one it was going to refuse anyway. */
+  it('treats a blank override as no override at all', async () => {
+    wire({ terminal: fakeProvider('terminal') });
+    await settings('terminal');
+    const order = await paidOrder(TO_WITH_ZONE);
+    const parcel = await oneMug(order);
+
+    expect((await parcelInput(order, parcel, '   ')).to.routingCity).toBe('Wuse');
+    expect((await parcelInput(order, parcel, '  Maitama ')).to.routingCity).toBe('Maitama');
+  });
+
+  it('quoteParcel hands the override to the courier', async () => {
+    wire({ terminal: fakeProvider('terminal', { quote: TERMINAL_QUOTE }) });
+    await settings('terminal');
+    const order = await paidOrder(TO_WITH_ZONE);
+    const parcel = await oneMug(order);
+
+    await quoteParcel(ctx.db, resolveLogisticsDeps(), parcel.id, NOW, 'Maitama');
+    expect(calls.quote).toHaveLength(1);
+    expect(calls.quote[0].to.routingCity).toBe('Maitama');
+    expect(calls.quote[0].to.city).toBe('Wuse 2');
+  });
+
+  it('bookParcel hands the override to the courier, on the re-quote AND the booking', async () => {
+    wire({ fez: fakeProvider('fez', { quote: FEZ_QUOTE, book: FEZ_BOOKING }) });
+    await settings('fez');
+    const order = await paidOrder(TO_WITH_ZONE);
+    const parcel = await oneMug(order);
+
+    await bookParcel(ctx.db, resolveLogisticsDeps(), parcel.id, {
+      optionId: 'fez',
+      quoteRef: null,
+      actorId: ctx.users.owner.id,
+      now: NOW,
+      routingCity: 'Maitama',
+    });
+
+    /* Fez is re-quoted to learn the price before it is booked, and BOTH calls
+       have to carry the zone — a booking priced against one zone and shipped
+       against another is a bill nobody can reconcile. */
+    expect(calls.quote.at(-1)!.to.routingCity).toBe('Maitama');
+    expect(calls.book).toHaveLength(1);
+    expect(calls.book[0].input.to.routingCity).toBe('Maitama');
+  });
+
+  /**
+   * NOTHING IS PERSISTED, AND THAT IS THE WHOLE DESIGN.
+   *
+   * The shipment goes out with a zone the courier accepts and the customer's
+   * address stays the words they wrote. A "helpful" write here would rewrite
+   * somebody's home address to a district they do not live in, on an order
+   * they have already paid for.
+   */
+  it('writes the override nowhere — the customer’s address is byte-identical afterwards', async () => {
+    wire({ fez: fakeProvider('fez', { quote: FEZ_QUOTE, book: FEZ_BOOKING }) });
+    await settings('fez');
+    const order = await paidOrder(TO_WITH_ZONE);
+    const parcel = await oneMug(order);
+
+    const storedAddress = async (): Promise<unknown> =>
+      (
+        await ctx.db.execute(sql`
+          SELECT shipping_address FROM shop_orders WHERE id = ${order.order.id}`)
+      ).rows[0]!.shipping_address;
+    const before = await storedAddress();
+
+    await quoteParcel(ctx.db, resolveLogisticsDeps(), parcel.id, NOW, 'Maitama');
+    await bookParcel(ctx.db, resolveLogisticsDeps(), parcel.id, {
+      optionId: 'fez',
+      quoteRef: null,
+      actorId: ctx.users.owner.id,
+      now: NOW,
+      routingCity: 'Maitama',
+    });
+
+    expect(await storedAddress()).toEqual(before);
+    expect((before as { routingCity?: string }).routingCity).toBe('Wuse');
+    /* And not into the checkout's own address table either. This harness makes
+       its order from an event and writes no `shop_addresses` row at all; the
+       count is what keeps it that way. */
+    const rows = await ctx.db.execute(sql`
+      SELECT count(*)::int AS n FROM shop_addresses WHERE routing_city IS NOT NULL`);
+    expect(rows.rows[0]!.n).toBe(0);
+  });
+});
+
 /**
  * A guard against the one refusal that must never be silent: an order whose
  * address a courier cannot collect at.

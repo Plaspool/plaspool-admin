@@ -129,6 +129,13 @@ function sent(pathname: string, method: string): Record<string, unknown> {
   return JSON.parse(String(call.init.body)) as Record<string, unknown>;
 }
 
+/** Every body sent to a path with this method, oldest first — for the cases
+ *  where the number of requests is itself the assertion. */
+const bodies = (pathname: string, method: string): Record<string, unknown>[] =>
+  calls
+    .filter((c) => c.path.split('?')[0] === pathname && (c.init.method ?? 'GET') === method)
+    .map((c) => JSON.parse(String(c.init.body)) as Record<string, unknown>);
+
 /** No write has gone to this path yet — the refusal held. */
 function sentNothing(pathname: string): boolean {
   return !calls.some((c) => c.path.split('?')[0] === pathname && (c.init.method ?? 'GET') !== 'GET');
@@ -523,6 +530,114 @@ describe('OrderDetail — courier booking', () => {
     expect((await within(dialog).findByRole('alert')).textContent).toBe(
       'Fez Delivery said: Invalid recipient state',
     );
+  });
+
+  /**
+   * ═════════════════════════════════════════════════════════════════════════
+   * AN ADDRESS THE COURIER WILL NOT RECOGNISE IS TWO CLICKS, NOT A DEAD END.
+   *
+   * Terminal accepts ten place names in the whole FCT and this customer lives
+   * in Gwarinpa, which is not one of them — and every order placed before the
+   * checkout learned to ask for a zone is in exactly this state. The refusal
+   * carries the names Terminal WOULD take, so the dialog offers them: picking
+   * one re-quotes against that zone and the booking goes out with it.
+   *
+   * NOTHING ABOUT THE ORDER CHANGES. The zone travels on the two requests and
+   * is stored nowhere, which is the reason this is safe to offer at all —
+   * rewriting somebody's home address to a district they do not live in would
+   * not be.
+   * ═════════════════════════════════════════════════════════════════════════
+   */
+  const REFUSED_CITY = {
+    status: 422,
+    body: {
+      error: 'provider_rejected',
+      message: 'Delivery Address - Invalid city, please select a city from the list of cities',
+      accepted: ['Abaji', 'Gwagwalada', 'Maitama'],
+    },
+  };
+
+  it('offers the courier’s own list when it refuses the city, and sends nothing until one is picked', async () => {
+    const user = userEvent.setup();
+    withOrder([parcel('pending')]);
+    when(PROVIDER, { provider: 'terminal', label: 'Terminal Africa' });
+    when(QUOTE, () => REFUSED_CITY);
+    mount();
+    await loaded();
+
+    await user.click(await screen.findByRole('button', { name: 'Book with Terminal Africa' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Book Parcel 1 with Terminal Africa' });
+
+    const chooser = await within(dialog).findByRole('group', { name: 'Delivery zone' });
+    /* The courier's own words, so the operator knows what was refused... */
+    expect(
+      within(dialog).getByText(/Invalid city, please select a city from the list of cities/),
+    ).toBeTruthy();
+    /* ...and the city the customer actually wrote, so they can judge which of
+       the courier's names is nearest to it. */
+    expect(within(dialog).getByText(/The customer wrote Gwarinpa/)).toBeTruthy();
+    expect(within(chooser).getByRole('button', { name: 'Maitama' })).toBeTruthy();
+    expect(within(chooser).getByRole('button', { name: 'Gwagwalada' })).toBeTruthy();
+
+    /* No rates to click through while the address is unusable, and no second
+       request until somebody has actually chosen. */
+    expect(within(dialog).queryByRole('radio')).toBeNull();
+    expect(bodies(QUOTE, 'POST')).toEqual([{}]);
+    expect(sentNothing(BOOK)).toBe(true);
+  });
+
+  it('re-quotes with the picked zone, and books with the same one', async () => {
+    const user = userEvent.setup();
+    withOrder([parcel('pending')]);
+    when(PROVIDER, { provider: 'terminal', label: 'Terminal Africa' });
+    when(QUOTE, (_url, init) =>
+      (JSON.parse(String(init.body)) as { routingCity?: string }).routingCity
+        ? { body: terminalQuote }
+        : REFUSED_CITY,
+    );
+    when(BOOK, { fulfillment: { ...booked, provider: 'terminal', carrier: 'GIG Logistics', trackingNumber: 'GIG123', providerRef: 'SH-1' } });
+    mount();
+    await loaded();
+
+    await user.click(await screen.findByRole('button', { name: 'Book with Terminal Africa' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Book Parcel 1 with Terminal Africa' });
+    await user.click(await within(dialog).findByRole('button', { name: 'Maitama' }));
+
+    await waitFor(() => expect(bodies(QUOTE, 'POST')).toEqual([{}, { routingCity: 'Maitama' }]));
+
+    await user.click(await within(dialog).findByRole('radio', { name: /GIG Logistics/ }));
+    await user.click(within(dialog).getByRole('button', { name: 'Book' }));
+    /* THE BOOKING CARRIES IT TOO. A parcel priced against one zone and booked
+       against another is a price nobody agreed to. */
+    await waitFor(() =>
+      expect(sent(BOOK, 'POST')).toEqual({
+        optionId: 'RT-1',
+        quoteRef: 'SH-1',
+        routingCity: 'Maitama',
+      }),
+    );
+  });
+
+  /* A courier that refuses without naming anything has nothing to offer, so
+     nothing is offered: its own sentence, and no chooser to click at. */
+  it('shows only the courier’s words when the refusal names nothing to pick from', async () => {
+    const user = userEvent.setup();
+    withOrder([parcel('pending')]);
+    when(PROVIDER, { provider: 'terminal', label: 'Terminal Africa' });
+    when(QUOTE, () => ({
+      status: 422,
+      body: { error: 'provider_rejected', message: 'Delivery Address - Invalid state' },
+    }));
+    mount();
+    await loaded();
+
+    await user.click(await screen.findByRole('button', { name: 'Book with Terminal Africa' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Book Parcel 1 with Terminal Africa' });
+    expect((await within(dialog).findByRole('alert')).textContent).toBe(
+      'Terminal Africa said: Delivery Address - Invalid state',
+    );
+    expect(within(dialog).queryByRole('group', { name: 'Delivery zone' })).toBeNull();
+    expect(bodies(QUOTE, 'POST')).toEqual([{}]);
   });
 
   it('a booked parcel shows carrier, tracking link, waybill, courier status, refresh and cancel', async () => {

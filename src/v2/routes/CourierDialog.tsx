@@ -107,6 +107,11 @@ export function describeCourierError(cause: unknown, providerLabel: string): str
 type Phase =
   | { kind: 'quoting' }
   | { kind: 'weights'; lines: ShopCourierMissingWeight[] }
+  /**
+   * The courier refused the address AND named what it would take instead.
+   * `message` is its own sentence about the refusal; `accepted` is the list.
+   */
+  | { kind: 'zone'; accepted: string[]; message: string }
   | { kind: 'options'; quote: ShopCourierQuote; chosen: string | null }
   | { kind: 'failed'; message: string };
 
@@ -150,6 +155,16 @@ export function CourierDialog({
 
   const [phase, setPhase] = useState<Phase>({ kind: 'quoting' });
   const [weights, setWeights] = useState<Record<string, string>>({});
+  /**
+   * THE DELIVERY ZONE THIS DIALOG IS WORKING WITH, and the reason it is state
+   * rather than a local: it is chosen on the refusal step, spent on the
+   * re-quote, and must still be there when Book is pressed several renders
+   * later — a parcel priced against one zone and booked against another is a
+   * price nobody agreed to. `null` is the ordinary case: the order's own zone
+   * (or, for orders placed before there was one, the courier's fallback to the
+   * real city) is used and nothing is overridden.
+   */
+  const [zone, setZone] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -173,6 +188,35 @@ export function CourierDialog({
     return null;
   }
 
+  /**
+   * The place names a courier said it WOULD accept, or `null` if this failure
+   * was not that.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   * WHY THIS EXISTS AT ALL. Terminal validates the city against its own list
+   * and takes ten names in the whole FCT — "Maitama" yes, "Gwarinpa" no — and
+   * every order placed before the checkout learned to ask for a delivery zone
+   * carries none. So the ordinary Abuja order was a dead end: a refusal in the
+   * courier's own words, and nothing on screen to do about it. The refusal
+   * carries the list (`server/shop/logistics/routes.ts#providerFailure`), and
+   * the list is what turns that into two clicks.
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * READ DEFENSIVELY, like every other courier `detail` in this admin: the
+   * names come from a third party's error body, so an unfamiliar shape has to
+   * fall back to today's behaviour — their words in a warn line — rather than
+   * blank the dialog over a parcel somebody needs to send.
+   */
+  function zoneRefused(cause: unknown): string[] | null {
+    if (!(cause instanceof ApiError) || cause.code !== 'provider_rejected') return null;
+    const list = (cause.body as { accepted?: unknown } | undefined)?.accepted;
+    if (!Array.isArray(list)) return null;
+    const names = list.filter((v): v is string => typeof v === 'string' && v.trim() !== '');
+    /* An empty list is not a chooser — it is the plain refusal, and offering
+       nought buttons under "pick one" would read as a broken screen. */
+    return names.length > 0 ? names : null;
+  }
+
   /** Seed a box per line, keeping anything already typed. */
   function askForWeights(lines: ShopCourierMissingWeight[]) {
     setWeights((w) => ({ ...Object.fromEntries(lines.map((l) => [l.variantId, ''])), ...w }));
@@ -191,11 +235,20 @@ export function CourierDialog({
     return false;
   }
 
-  async function quote() {
+  /**
+   * Ask the courier what this parcel costs.
+   *
+   * `picked` IS THE DELIVERY ZONE TO ASK ABOUT, and it DEFAULTS TO THE ONE
+   * ALREADY IN HAND — so every other door back into this function (Try again,
+   * and the re-quote after weights are saved) keeps the zone that got past the
+   * refusal instead of walking straight back into it.
+   */
+  async function quote(picked: string | null = zone) {
     setPhase({ kind: 'quoting' });
     setError(null);
+    setZone(picked);
     try {
-      const answer = await shopApi.quoteCourier(parcel.id);
+      const answer = await shopApi.quoteCourier(parcel.id, picked ?? undefined);
       /* `shopFetch<T>` is an unchecked assertion, and this dialog is the one
          place a missing key would be a blank screen over a parcel somebody
          needs to send — so the two lists are read defensively, once, here. */
@@ -222,6 +275,11 @@ export function CourierDialog({
         return;
       }
       if (adopted(cause)) return;
+      const accepted = zoneRefused(cause);
+      if (accepted) {
+        setPhase({ kind: 'zone', accepted, message: describe(cause) });
+        return;
+      }
       setPhase({ kind: 'failed', message: describe(cause) });
     }
   }
@@ -262,7 +320,14 @@ export function CourierDialog({
     setBusy(true);
     setError(null);
     try {
-      const f = await shopApi.bookCourier(parcel.id, { optionId, quoteRef: q.quoteRef });
+      const f = await shopApi.bookCourier(parcel.id, {
+        optionId,
+        quoteRef: q.quoteRef,
+        /* THE ZONE THIS PRICE WAS QUOTED AGAINST, or nothing at all. Omitted
+           rather than sent as null, so an ordinary booking is byte-identical
+           to the one this dialog has always sent. */
+        ...(zone ? { routingCity: zone } : {}),
+      });
       toast.show(D.booked(q.providerLabel, f.trackingNumber ?? f.providerRef ?? ''));
       onBooked();
     } catch (cause) {
@@ -275,9 +340,27 @@ export function CourierDialog({
         askForWeights(missing);
         return;
       }
+      /* And the same for an address the courier will not take. The server
+         re-asks every question at booking time rather than trusting the quote,
+         so this door has to lead to the same step the first one does. */
+      const accepted = zoneRefused(cause);
+      if (accepted) {
+        setPhase({ kind: 'zone', accepted, message: describe(cause) });
+        return;
+      }
       setError(describe(cause));
     }
   }
+
+  /**
+   * The city the CUSTOMER wrote, read defensively out of the opaque address
+   * snapshot. Shown beside the courier's list so staff can judge which of its
+   * names is nearest — a chooser with no reference point is a guess.
+   */
+  const customerCity = ((): string | null => {
+    const raw = (order.shippingAddress as { city?: unknown }).city;
+    return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : null;
+  })();
 
   /** The item on the left of a weights row — its title over its SKU. */
   const itemName = (l: ShopCourierMissingWeight) => (
@@ -397,6 +480,39 @@ export function CourierDialog({
               {canWeigh ? D.weightsBlocking : D.weightsNoPermission}
             </Banner>
             {canWeigh ? weightInputs(phase.lines) : itemList(phase.lines)}
+          </>
+        ) : null}
+
+        {/*
+          THE COURIER'S OWN LIST, AS BUTTONS. Pressing one re-quotes against
+          that zone straight away — the whole point is that a refused address
+          costs two clicks rather than a support conversation, and a chooser
+          with a separate "apply" step would be three. Nothing is sent until
+          one is pressed.
+        */}
+        {phase.kind === 'zone' ? (
+          <>
+            <Banner tone="warn" title={D.zoneTitle}>
+              {phase.message}
+            </Banner>
+            <p style={{ margin: 0 }}>{D.zoneAsk}</p>
+            {customerCity ? (
+              <p className="muted" style={{ fontSize: 'var(--t-sm)', margin: 0 }}>
+                {D.zoneCustomer(customerCity)}
+              </p>
+            ) : null}
+            <div
+              className="row"
+              role="group"
+              aria-label={D.zoneLegend}
+              style={{ gap: 'var(--s2)', flexWrap: 'wrap' }}
+            >
+              {phase.accepted.map((name) => (
+                <Button key={name} onClick={() => void quote(name)}>
+                  {name}
+                </Button>
+              ))}
+            </div>
           </>
         ) : null}
 

@@ -171,6 +171,9 @@ export function accessLinkFor(order: OrderRead, now: number): AccessLink | null 
  * exactly the case the "set weights and re-quote" step exists for. An absent
  * key means an absent variant and is carried as `null`, never as zero — a
  * parcel booked as weightless is a parcel the courier reprices on the doorstep.
+ *
+ * `routingCity` IS AN OVERRIDE FOR THIS ONE REQUEST — see the three steps at
+ * the call site below.
  */
 export async function buildParcelInput(
   db: Db,
@@ -178,6 +181,7 @@ export async function buildParcelInput(
   order: OrderRead,
   f: Fulfillment,
   settings: LogisticsSettings,
+  routingCity?: string | null,
 ): Promise<{ input: ParcelInput; missing: ParcelLine[] }> {
   const lines = order.lines.filter((line) => f.lines.some((fl) => fl.orderLineId === line.id));
   const weights = await deps.catalog.weightsFor(db, lines.map((line) => line.variantId));
@@ -193,12 +197,36 @@ export async function buildParcelInput(
   }));
 
   const to = readShippingAddress(order.order.shippingAddress);
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * WHICH DELIVERY ZONE THE COURIER IS TOLD — THREE STEPS, IN THIS ORDER.
+   *
+   *   1. `routingCity`, the zone a staff member picked in the booking dialog
+   *      from the courier's own list of acceptable names. The way through an
+   *      order the courier will not recognise — and PERSISTED NOWHERE: the
+   *      shipment goes out priced to a zone the courier accepts, and the
+   *      customer's address stays the words they actually typed.
+   *   2. else the zone the SHOPPER picked at checkout (migration 1020), which
+   *      is null on every order placed before it — which is most of them, and
+   *      is why step 1 exists at all.
+   *   3. else nothing, and each adapter falls back to the REAL city for itself:
+   *      `terminal/adapter.ts` sends `routingCity ?? city`, and Fez reads
+   *      neither because Fez validates no city.
+   *
+   * A BLANK OVERRIDE IS STEP 2, NOT AN EMPTY ZONE. An operator who cleared the
+   * box has picked nothing; sending `""` would make the courier refuse an empty
+   * city rather than fall back to the one it was going to refuse anyway.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  const zone = routingCity != null && routingCity.trim() !== '' ? routingCity.trim() : null;
+
   const input: ParcelInput = {
     fulfillmentId: f.id,
     orderNumber: order.order.orderNumber,
     /* The order's address is the fallback for the one field a courier needs to
        notify anybody — plenty of checkouts carry no address-level email. */
-    to: { ...to, email: to.email ?? order.order.email },
+    to: { ...to, email: to.email ?? order.order.email, routingCity: zone ?? to.routingCity },
     from: settings.shipFrom,
     items,
     valueMinor: items.reduce((sum, item) => sum + item.unitMinor * item.qty, 0),
@@ -271,18 +299,23 @@ async function preflight(
  * repository's own guard lets a later booking overwrite. Fez prices a state
  * and a weight and holds nothing, so a Fez quote leaves the row untouched and
  * a second quote costs nothing.
+ *
+ * `routingCity` re-asks the price for a DIFFERENT ZONE without touching the
+ * order — the second half of the dialog's rescue, after the courier has named
+ * the values it would accept.
  */
 export async function quoteParcel(
   db: Db,
   deps: ResolvedLogisticsDeps,
   fulfillmentId: string,
   now: number,
+  routingCity?: string | null,
 ): Promise<QuoteResponse | Refusal | null> {
   const pre = await preflight(db, deps, fulfillmentId);
   if (pre === null || 'refused' in pre) return pre;
   const { settings, providerId, provider, f, order } = pre;
 
-  const { input, missing } = await buildParcelInput(db, deps, order, f, settings);
+  const { input, missing } = await buildParcelInput(db, deps, order, f, settings, routingCity);
   /*
    * THE OWNER'S RULE, AND IT IS CHECKED BEFORE THE COURIER IS CALLED AT ALL.
    * Terminal prices per item by weight, so a line with none is a shipment
@@ -353,18 +386,29 @@ export async function quoteParcel(
  * a quote and a booking are two requests with an operator between them: the
  * courier can have been switched off, the parcel booked from another tab, or
  * a weight deleted since the dialog opened.
+ *
+ * `routingCity` MUST BE THE ONE THE QUOTE WAS ASKED WITH, and the client sends
+ * it back for exactly that reason: this parcel is priced again below (Fez) or
+ * booked against a draft built from it (Terminal), and a booking made against
+ * a different zone from the one that was quoted is a price nobody agreed to.
  */
 export async function bookParcel(
   db: Db,
   deps: ResolvedLogisticsDeps,
   fulfillmentId: string,
-  a: { optionId: string; quoteRef: string | null; actorId: string; now: number },
+  a: {
+    optionId: string;
+    quoteRef: string | null;
+    actorId: string;
+    now: number;
+    routingCity?: string | null;
+  },
 ): Promise<Fulfillment | Refusal | null> {
   const pre = await preflight(db, deps, fulfillmentId);
   if (pre === null || 'refused' in pre) return pre;
   const { settings, providerId, provider, f, order } = pre;
 
-  const { input, missing } = await buildParcelInput(db, deps, order, f, settings);
+  const { input, missing } = await buildParcelInput(db, deps, order, f, settings, a.routingCity);
   if (providerId === 'terminal' && missing.length > 0) {
     return { refused: 'weights_missing', lines: missing.map(asMissing) };
   }

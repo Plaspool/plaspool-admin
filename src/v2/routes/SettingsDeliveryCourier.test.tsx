@@ -142,6 +142,7 @@ afterEach(() => {
 const SETTINGS = '/api/shop/admin/logistics/settings';
 const REGISTER = '/api/shop/admin/logistics/webhooks/register';
 const DIAG = '/api/shop/admin/logistics/diagnostics';
+const PLACES = '/api/shop/admin/logistics/places/refresh';
 
 const baseSettings = {
   provider: 'manual',
@@ -582,11 +583,60 @@ describe('Settings → Delivery courier', () => {
       await waitFor(() => expect(out.textContent).toContain('TERMINAL_SECRET_KEY'));
     });
 
+    /**
+     * ═══════════════════════════════════════════════════════════════════════
+     * REFRESH PLACE LISTS — the button that fills the cache everything else
+     * reads.
+     *
+     * Terminal validates `state` AND `city` against its own per-country lists,
+     * so a shop cannot offer a shopper a zone the courier will take until that
+     * list has been fetched. It costs one call plus one per state, which is
+     * fine for an operator pressing a button and impossible inside a checkout —
+     * hence a button, and hence the counts coming back in words rather than a
+     * silent success.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    it('refreshes the place lists and says how many came back', async () => {
+      const user = userEvent.setup();
+      when(SETTINGS, onTerminal);
+      when(PLACES, {
+        country: 'NG',
+        provider: 'terminal',
+        regions: 37,
+        cities: 774,
+        updatedAt: 1_757_000_000_000,
+      });
+      mount();
+      await user.click(await screen.findByRole('button', { name: 'Refresh place lists' }));
+
+      await waitFor(() => expect(bodiesOf(PLACES, 'POST')).toEqual([{}]));
+      const out = await screen.findByRole('status', { name: 'Refresh place lists — result' });
+      await waitFor(() =>
+        expect(out.textContent).toContain(
+          'Terminal Africa listed 37 states and 774 places inside them.',
+        ),
+      );
+    });
+
+    it('says so when the courier publishes no list at all', async () => {
+      const user = userEvent.setup();
+      when(SETTINGS, { ...baseSettings, provider: 'fez', shipFrom });
+      when(PLACES, () => ({ status: 409, body: { error: 'places_unsupported', provider: 'fez' } }));
+      mount();
+      await user.click(await screen.findByRole('button', { name: 'Refresh place lists' }));
+      const out = await screen.findByRole('status', { name: 'Refresh place lists — result' });
+      await waitFor(() =>
+        expect(out.textContent).toContain('Fez Delivery does not publish a list of places'),
+      );
+    });
+
     it('offers nothing to test while the shop ships by hand', async () => {
       when(SETTINGS, baseSettings);
       mount();
       await screen.findByRole('radiogroup', { name: 'Courier' });
       expect(screen.queryByRole('button', { name: 'Check the connection' })).toBeNull();
+      /* Including the place lists: there is no courier to ask. */
+      expect(screen.queryByRole('button', { name: 'Refresh place lists' })).toBeNull();
     });
   });
 

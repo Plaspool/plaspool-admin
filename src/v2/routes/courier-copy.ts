@@ -124,6 +124,28 @@ export const COURIER_COPY = {
          about are on this same screen, and they are marked when this shows. */
       shipFromIncomplete: 'The courier prices from your ship-from address, and it is not complete. Fill in the fields marked above, save, then ask again.',
       failed: 'Couldn’t ask the courier — try again.',
+      /**
+       * REFRESH PLACE LISTS — the one button on this screen that fills a cache
+       * everything else reads.
+       *
+       * Terminal checks the state AND the city against its own lists and
+       * refuses anything else outright, so until the list has been fetched
+       * there is nothing to offer a shopper at checkout and nothing to offer
+       * staff when a booking is refused. It costs one call plus one per state,
+       * which is fine for somebody pressing a button and impossible inside a
+       * checkout — so it is a button, and it answers in counts rather than
+       * succeeding silently.
+       */
+      refreshPlaces: 'Refresh place lists',
+      refreshPlacesHint: 'Ask this courier which states and places it will accept, and keep the answer. Those are the names a shopper picks from at checkout, and the ones offered here when a courier will not recognise an address.',
+      /* A courier with no city list is not a smaller answer, it is a different
+         one — it means a shopper may type whatever they like below the state,
+         and saying "0 places" would read as "nowhere is acceptable". */
+      placesRefreshed: (label: string, regions: number, cities: number) =>
+        cities === 0
+          ? `${label} listed ${regions} state${regions === 1 ? '' : 's'}, and checks no place names below them.`
+          : `${label} listed ${regions} state${regions === 1 ? '' : 's'} and ${cities} place${cities === 1 ? '' : 's'} inside them.`,
+      placesUnsupported: (label: string) => `${label} does not publish a list of places, so there is nothing to keep.`,
     },
   },
   parcel: {
@@ -192,6 +214,29 @@ export const COURIER_COPY = {
     optionsTitle: 'Pick a delivery',
     optionsOne: 'Price',
     optionsEmpty: 'The courier returned no options for this address.',
+    /**
+     * ═══════════════════════════════════════════════════════════════════════
+     * THE COURIER WILL NOT RECOGNISE THE CITY, AND IT NAMED THE ONES IT WOULD.
+     *
+     * Terminal accepts ten place names in the whole FCT — "Maitama" is one,
+     * "Gwarinpa" is not — and every order placed before the checkout learned to
+     * ask for a zone carries no zone at all. That was a dead end: a refusal in
+     * the courier's own words and nothing to press.
+     *
+     * The copy has one job beyond naming the list: to say plainly that
+     * PICKING ONE DOES NOT REWRITE THE CUSTOMER'S ADDRESS. Somebody choosing
+     * "Maitama" for a parcel going to Gwarinpa needs to know they are naming a
+     * delivery area for the courier and not correcting where a person lives —
+     * otherwise the honest ones will hesitate and the rest will assume the
+     * worst has already happened.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    zoneTitle: 'This courier does not know that city',
+    zoneAsk: 'Pick the closest place it does know. That is the delivery area the courier is given for this parcel — the address on the order stays exactly as the customer wrote it.',
+    zoneCustomer: (city: string) => `The customer wrote ${city}.`,
+    /** Names the row of choices, so a screen reader reaches a group rather than
+     *  a loose handful of buttons in the middle of a dialog. */
+    zoneLegend: 'Delivery zone',
     confirmTitle: 'Confirm booking',
     recipient: 'To',
     weight: (kg: number) => `${kg} kg`,

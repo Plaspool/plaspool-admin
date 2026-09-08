@@ -8,10 +8,11 @@ import type { AppEnv } from '../../app-env';
 import { adminOrigin } from '../../admin-url';
 import { NotFoundError } from '../../repo/errors';
 import { loadTemplates } from '../../email/system-templates';
+import { ADDRESS_MAX_LENGTHS } from '../settings/config';
 import { shipFromMissing } from './address';
 import { FEZ_LIVE_URL, TERMINAL_LIVE_URL, environmentOf, logisticsEnv } from './config';
 import { resolveLogisticsDeps } from './deps';
-import { DiagnosticsBody, runDiagnostic } from './diagnostics';
+import { DiagnosticsBody, acceptedNames, runDiagnostic } from './diagnostics';
 import { PLACES_DEFAULT_COUNTRY, refreshPlaces } from './places';
 import { LogisticsError, PROVIDER_LABEL } from './port';
 import type { ProviderId } from './port';
@@ -460,8 +461,26 @@ function providerFailure(c: Context<AppEnv>, err: unknown): Response {
   switch (err.code) {
     case 'not_configured':
       return c.json({ error: 'provider_not_configured', message: err.message }, 409);
-    case 'provider_rejected':
-      return c.json({ error: 'provider_rejected', message: err.message }, 422);
+    case 'provider_rejected': {
+      /*
+       * THE NAMES THE COURIER SAID IT WOULD TAKE, WHERE IT LISTED ANY.
+       *
+       * Terminal answers an unknown city with its own list of acceptable ones
+       * (`acceptedNames` digs them out — the same reader the diagnostics bench
+       * uses, so one refusal reads as one thing wherever it surfaces). Without
+       * them the booking dialog can only quote the refusal at somebody holding
+       * a parcel; with them it can offer the list and re-quote against a pick.
+       *
+       * ABSENT WHEN THE COURIER NAMED NONE, never `[]` — an empty array would
+       * claim the courier said "nothing is acceptable", which is a different
+       * and much worse thing than saying nothing.
+       */
+      const accepted = acceptedNames(err.detail);
+      return c.json(
+        { error: 'provider_rejected', message: err.message, ...(accepted ? { accepted } : {}) },
+        422,
+      );
+    }
     /* The one refusal that names the boxes to go and fill in — an order whose
        delivery address a courier cannot collect at. */
     case 'address_incomplete':
@@ -476,17 +495,40 @@ function providerFailure(c: Context<AppEnv>, err: unknown): Response {
 
 /** No body at all is the ordinary call; an unknown key is still a 400. */
 const Empty = z.object({}).strict();
+
+/**
+ * THE ZONE A STAFF MEMBER PICKED, FOR THIS REQUEST ONLY.
+ *
+ * Every order placed before migration 1020 carries no routing city, and
+ * Terminal accepts ten place names in the whole FCT — so most of them are
+ * refused with nothing on screen to do about it. The dialog offers the courier's
+ * own list and sends the pick back here.
+ *
+ * OPTIONAL, AND WRITTEN NOWHERE. `service.ts#buildParcelInput` prefers it over
+ * the zone stored on the order and the order is not touched: the shipment goes
+ * out priced to something the courier accepts and the customer's address stays
+ * the words they typed. `min(1)` because a blank string is a request to send an
+ * empty city, which no courier wants; the length is the ADDRESS FORM'S limit for
+ * the same field, so the admin cannot pick a name the storefront could not.
+ */
+const RoutingCity = str().min(1).max(ADDRESS_MAX_LENGTHS.routingCity).optional();
+
+const QuoteBody = z.object({ routingCity: RoutingCity }).strict();
 const BookBody = z
-  .object({ optionId: str().min(1).max(200), quoteRef: str().max(200).nullable().optional() })
+  .object({
+    optionId: str().min(1).max(200),
+    quoteRef: str().max(200).nullable().optional(),
+    routingCity: RoutingCity,
+  })
   .strict();
 const CancelBody = z.object({ reason: str().max(255).optional() }).strict();
 
 logisticsRoutes.post('/admin/fulfillments/:id/courier/quote', auth, async (c) => {
-  await readJsonOrEmpty(c, Empty);
+  const body = await readJsonOrEmpty(c, QuoteBody);
   const id = pathParam(c, 'id');
   const deps = resolveLogisticsDeps();
   try {
-    const out = await quoteParcel(currentDb(c), deps, id, deps.now());
+    const out = await quoteParcel(currentDb(c), deps, id, deps.now(), body.routingCity ?? null);
     if (out === null) throw new NotFoundError(id);
     if ('refused' in out) return refusal(c, out);
     return c.json(out);
@@ -505,6 +547,7 @@ logisticsRoutes.post('/admin/fulfillments/:id/courier/book', auth, async (c) => 
       quoteRef: body.quoteRef ?? null,
       actorId: currentUser(c).id,
       now: deps.now(),
+      routingCity: body.routingCity ?? null,
     });
     if (out === null) throw new NotFoundError(id);
     if ('refused' in out) return refusal(c, out);

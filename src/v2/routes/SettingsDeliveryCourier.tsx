@@ -120,6 +120,9 @@ function describeCheckFailure(cause: unknown, provider: 'fez' | 'terminal'): str
   if (cause instanceof ApiError) {
     if (cause.code === 'ship_from_incomplete') return D.shipFromIncomplete;
     if (cause.code === 'provider_not_configured') return C.notSetUp(PROVIDER_ENV[provider]);
+    /* Nothing is broken and retrying cannot change it — this courier simply
+       publishes no list of places. Its own sentence, not a failure. */
+    if (cause.code === 'places_unsupported') return D.placesUnsupported(PROVIDER_LABEL[provider]);
     return D.failed;
   }
   /* A network failure DOES carry a sentence, and it is the useful one. */
@@ -291,6 +294,12 @@ export default function SettingsDeliveryCourier() {
   );
   /** Terminal's draft from the last price that produced one — `provider_simulate`'s only input. */
   const [draftId, setDraftId] = useState<string | null>(null);
+  /* Refreshing the place lists is not one of the four checks — it WRITES a
+     cache rather than asking a question — so it keeps its own busy flag and its
+     own outcome instead of borrowing a `DiagnosticKey` slot it would then have
+     to be excluded from everywhere. */
+  const [placesBusy, setPlacesBusy] = useState(false);
+  const [placesOut, setPlacesOut] = useState<DiagnosticOutcome | undefined>(undefined);
 
   const adopt = useCallback((s: ShopCourierSettings) => {
     setSettings(s);
@@ -467,6 +476,36 @@ export default function SettingsDeliveryCourier() {
       }
     } finally {
       setDiagBusy((b) => ({ ...b, [key]: false }));
+    }
+  }
+
+  /**
+   * ASK THE COURIER WHICH PLACES IT WILL ACCEPT, AND KEEP THE ANSWER.
+   *
+   * The only control in this panel that writes anything, and it writes a cache
+   * rather than a setting: the courier's own states and the places inside them,
+   * which the checkout address form offers a shopper and the booking screen
+   * offers staff when a courier refuses an address. It costs one call plus one
+   * per state — fine for somebody pressing a button, impossible on a request
+   * path, which is why it is a button at all.
+   *
+   * THE COUNTS ARE THE ANSWER, so they go on screen rather than into a toast
+   * that scrolls away: "37 states and 774 places" is how an operator knows the
+   * fetch actually reached the courier, and a silent success is
+   * indistinguishable from a no-op.
+   */
+  async function refreshPlaces(p: 'fez' | 'terminal') {
+    setPlacesBusy(true);
+    try {
+      const out = await shopApi.refreshCourierPlaces();
+      setPlacesOut({
+        ok: true,
+        summary: D.placesRefreshed(PROVIDER_LABEL[p], out.regions, out.cities),
+      });
+    } catch (cause) {
+      setPlacesOut({ ok: false, summary: describeCheckFailure(cause, p) });
+    } finally {
+      setPlacesBusy(false);
     }
   }
 
@@ -715,6 +754,18 @@ export default function SettingsDeliveryCourier() {
                   <span className="field__hint">{D.connectionHint}</span>
                 </div>
                 <Outcome name={D.connection} result={diagOut.connection} />
+              </div>
+
+              {/* Before the price check on purpose: the list this fills is
+                  where the city below is supposed to come from. */}
+              <div className="stack stack--tight">
+                <div className="row" style={{ gap: 'var(--s3)', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <Button busy={placesBusy} onClick={() => void refreshPlaces(testable)}>
+                    {D.refreshPlaces}
+                  </Button>
+                  <span className="field__hint">{D.refreshPlacesHint}</span>
+                </div>
+                <Outcome name={D.refreshPlaces} result={placesOut} />
               </div>
 
               <div className="stack stack--tight">

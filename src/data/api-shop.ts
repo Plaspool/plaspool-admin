@@ -723,6 +723,23 @@ export interface ShopCourierSettingsPatch {
   shipFrom?: ShopShipFrom | null;
   packaging?: ShopCourierPackaging;
 }
+/**
+ * What `POST /shop/admin/logistics/places/refresh` answers — the courier's own
+ * lists of states and the places inside them, re-fetched and cached.
+ *
+ * `cities` IS EVERY PLACE ACROSS EVERY STATE, not the number of states that
+ * have any, and it is `0` for a courier that checks no place names at all
+ * (Fez). Zero and "none acceptable" are not the same claim, which is why the
+ * screen says the two differently.
+ */
+export interface ShopCourierPlaces {
+  country: string;
+  provider: CourierProviderId;
+  regions: number;
+  cities: number;
+  updatedAt: number;
+}
+
 export interface ShopCourierOption {
   id: string; carrier: string; label: string; amountMinor: number; currency: 'NGN'; eta?: string; pickupEta?: string;
 }
@@ -1751,6 +1768,25 @@ export const shopApi = {
   },
 
   /**
+   * Ask the ACTIVE courier which places it will accept, and cache the answer.
+   *
+   * DOZENS OF CALLS AT A COURIER — one for the states and one per state — so it
+   * is an operator pressing a button and never anything on a request path.
+   * `country` is omitted for the shop's own, which is the only one today.
+   *
+   * Throws 409 `provider_not_configured` (ships by hand, or no credentials
+   * here) and 409 `places_unsupported` (that courier publishes no list —
+   * nothing is broken, and retrying cannot change it).
+   */
+  async refreshCourierPlaces(country?: string): Promise<ShopCourierPlaces> {
+    return shopFetch<ShopCourierPlaces>(`${BASE}/logistics/places/refresh`, {
+      method: 'POST',
+      body: country ? { country } : {},
+      subject: 'Delivery courier',
+    });
+  },
+
+  /**
    * PER-DISTRICT DELIVERY (migration 0300). Only the shop's OPINION about a
    * district — the districts themselves come from `marketingApi.listAreas`, and
    * `ShopDeliveryAreas.tsx` joins the two on `areaKey`. A district with no row
@@ -1932,19 +1968,30 @@ export const shopApi = {
     );
   },
 
-  /** Asks the active courier for a price. 422 `weights_missing` carries the lines to fix. */
-  async quoteCourier(fulfillmentId: string): Promise<ShopCourierQuote> {
+  /**
+   * Asks the active courier for a price. 422 `weights_missing` carries the
+   * lines to fix; 422 `provider_rejected` carries `accepted` — the place names
+   * the courier said it WOULD take — when it named any.
+   *
+   * `routingCity` IS A DELIVERY ZONE FOR THIS REQUEST ONLY. It is what the
+   * courier is told to deliver to, in place of the city on the order, and it is
+   * stored nowhere: the customer's address is never rewritten. Omitted (rather
+   * than sent as null) so an ordinary quote is still the empty body the route
+   * has always taken.
+   */
+  async quoteCourier(fulfillmentId: string, routingCity?: string): Promise<ShopCourierQuote> {
     return shopFetch<ShopCourierQuote>(`${BASE}/fulfillments/${seg(fulfillmentId)}/courier/quote`, {
       method: 'POST',
-      body: {},
+      body: routingCity ? { routingCity } : {},
       id: fulfillmentId,
       subject: 'Parcel',
     });
   },
 
+  /** `routingCity` must be the zone the quote was asked with — see `quoteCourier`. */
   async bookCourier(
     fulfillmentId: string,
-    body: { optionId: string; quoteRef: string | null },
+    body: { optionId: string; quoteRef: string | null; routingCity?: string },
   ): Promise<ShopFulfillment> {
     const res = await shopFetch<{ fulfillment: ShopFulfillment }>(
       `${BASE}/fulfillments/${seg(fulfillmentId)}/courier/book`,

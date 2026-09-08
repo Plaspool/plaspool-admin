@@ -17,6 +17,7 @@ import { LogisticsError, PROVIDER_LABEL } from './port';
 import type {
   BookingResult,
   LogisticsProvider,
+  ParcelInput,
   ProviderId,
   QuoteResult,
   ShipFrom,
@@ -94,6 +95,15 @@ interface Behaviour {
  */
 let cancelled: { ref: string; reason: string }[] = [];
 
+/**
+ * Every parcel this suite actually described to a courier, in order.
+ *
+ * WHAT THE COURIER WAS TOLD is the assertion the routing-city override needs:
+ * the value never reaches the database, so the only place it can be observed is
+ * the request that left.
+ */
+let described: { method: 'quote' | 'book'; input: ParcelInput }[] = [];
+
 function fakeProvider(id: ProviderId, b: Behaviour = {}): LogisticsProvider {
   const unused = (method: string) => (): never => {
     throw new Error(`fake ${id}: ${method} is not driven by this case`);
@@ -106,8 +116,14 @@ function fakeProvider(id: ProviderId, b: Behaviour = {}): LogisticsProvider {
   return {
     id,
     label: PROVIDER_LABEL[id],
-    quote: async () => answer(b.quote, 'quote'),
-    book: async () => answer(b.book, 'book'),
+    quote: async (input) => {
+      described.push({ method: 'quote', input });
+      return answer(b.quote, 'quote');
+    },
+    book: async (input) => {
+      described.push({ method: 'book', input });
+      return answer(b.book, 'book');
+    },
     track: async () => answer(b.track, 'track'),
     cancel: async (ref: string, reason: string) => {
       if (b.fails) throw b.fails;
@@ -230,6 +246,7 @@ afterAll(async () => {
 beforeEach(async () => {
   http.clearCookies();
   cancelled = [];
+  described = [];
   resetLogisticsDeps();
   await resetOrderTables(ctx.db);
   await ctx.db.execute(sql`DELETE FROM sessions`);
@@ -472,6 +489,93 @@ describe('POST courier/cancel', () => {
   });
 });
 
+// ======================================================= routing-city override
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE WAY THROUGH AN ADDRESS THE COURIER WILL NOT RECOGNISE.
+ *
+ * Both booking calls take an optional `routingCity`, and it goes exactly one
+ * place: into the request that leaves for the courier. Nothing about the
+ * customer's order changes, which is why every case below asserts what was SENT
+ * rather than what was saved — there is nothing saved to assert.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+describe('a routing city sent with the booking calls', () => {
+  const zoned = { ...TO, routingCity: 'Wuse' };
+  const sentTo = (method: 'quote' | 'book') =>
+    described.filter((d) => d.method === method).map((d) => d.input.to);
+
+  it('quote sends the override, and leaves the customer’s own city alone', async () => {
+    fezReady();
+    const { parcel } = await scene(zoned);
+    await settings('fez');
+
+    const res = await http.post(courier(parcel, 'quote'), { routingCity: 'Maitama' });
+    expect(res.status).toBe(200);
+    expect(sentTo('quote')[0]).toMatchObject({ routingCity: 'Maitama', city: 'Wuse 2' });
+  });
+
+  it('quote with no override sends the zone stored on the order', async () => {
+    fezReady();
+    const { parcel } = await scene(zoned);
+    await settings('fez');
+
+    expect((await http.post(courier(parcel, 'quote'))).status).toBe(200);
+    expect(sentTo('quote')[0]).toMatchObject({ routingCity: 'Wuse', city: 'Wuse 2' });
+  });
+
+  it('quote with neither sends none, and the adapter falls back to the real city', async () => {
+    fezReady();
+    /* An order placed before migration 1020 — the case this whole task exists
+       for, and the one Terminal refuses. */
+    const { parcel } = await scene();
+    await settings('fez');
+
+    expect((await http.post(courier(parcel, 'quote'))).status).toBe(200);
+    expect(sentTo('quote')[0]).toMatchObject({ routingCity: null, city: 'Wuse 2' });
+  });
+
+  it('book sends the override too, and persists it NOWHERE', async () => {
+    fezReady();
+    const { order, parcel } = await scene(zoned);
+    await settings('fez');
+
+    const before = await ctx.db.execute(sql`
+      SELECT shipping_address FROM shop_orders WHERE id = ${order.order.id}`);
+
+    const res = await http.post(courier(parcel, 'book'), {
+      optionId: 'fez',
+      routingCity: 'Maitama',
+    });
+    expect(res.status).toBe(200);
+    expect(sentTo('book')[0]).toMatchObject({ routingCity: 'Maitama', city: 'Wuse 2' });
+
+    /* THE CUSTOMER'S ADDRESS IS WHAT IT WAS. A shipment went out priced to a
+       zone the courier accepts; nobody's home address was rewritten to it. */
+    const after = await ctx.db.execute(sql`
+      SELECT shipping_address FROM shop_orders WHERE id = ${order.order.id}`);
+    expect(after.rows[0]!.shipping_address).toEqual(before.rows[0]!.shipping_address);
+    const addresses = await ctx.db.execute(sql`
+      SELECT count(*)::int AS n FROM shop_addresses WHERE routing_city IS NOT NULL`);
+    expect(addresses.rows[0]!.n).toBe(0);
+  });
+
+  it('400s an unknown key and an over-long zone — the bodies are still strict', async () => {
+    fezReady();
+    const { parcel } = await scene(zoned);
+    await settings('fez');
+
+    expect((await http.post(courier(parcel, 'quote'), { routing_city: 'Maitama' })).status).toBe(400);
+    expect((await http.post(courier(parcel, 'quote'), { routingCity: 'x'.repeat(121) })).status).toBe(400);
+    expect(
+      (await http.post(courier(parcel, 'book'), { optionId: 'fez', routingCity: 'x'.repeat(121) })).status,
+    ).toBe(400);
+    /* Nothing left for a courier on any of the three. */
+    expect(described).toEqual([]);
+  });
+});
+
 // ====================================================================== guards
 
 describe('the guards', () => {
@@ -523,6 +627,48 @@ describe('a courier that will not play', () => {
       error: 'provider_rejected',
       message: 'Invalid state',
     });
+  });
+
+  /**
+   * ═════════════════════════════════════════════════════════════════════════
+   * A REFUSAL THAT NAMES WHAT THE COURIER *WOULD* TAKE CARRIES THE NAMES.
+   *
+   * Terminal answers an unknown city with the list it accepts. On the
+   * diagnostics bench those names already reach the screen; on the booking path
+   * they used to be thrown away, leaving an operator holding a parcel with a
+   * verbatim refusal and nothing to do about it. The list is what turns that
+   * dead end into a chooser.
+   * ═════════════════════════════════════════════════════════════════════════
+   */
+  it('a refusal that names acceptable values carries them out with it', async () => {
+    failing(
+      new LogisticsError(
+        'provider_rejected',
+        'Delivery Address - Invalid city, please select a city from the list of cities',
+        { status: 400, detail: { data: [{ name: 'Maitama' }, { name: 'Wuse' }, 'Kuje'] } },
+      ),
+    );
+    const { parcel } = await scene();
+    await settings('fez');
+
+    const res = await http.post(courier(parcel, 'quote'));
+    expect(res.status).toBe(422);
+    expect(await json(res)).toMatchObject({
+      error: 'provider_rejected',
+      message: 'Delivery Address - Invalid city, please select a city from the list of cities',
+      accepted: ['Maitama', 'Wuse', 'Kuje'],
+    });
+  });
+
+  it('a refusal that names none carries no list — absent, not empty', async () => {
+    failing(new LogisticsError('provider_rejected', 'Invalid state'));
+    const { parcel } = await scene();
+    await settings('fez');
+
+    const body = await json<Record<string, unknown>>(await http.post(courier(parcel, 'quote')));
+    /* `[]` would be a courier saying "nothing is acceptable", which is a
+       different and much worse claim than "it did not say". */
+    expect('accepted' in body).toBe(false);
   });
 
   it('an outage is 502 provider_error — the one answer worth retrying', async () => {
