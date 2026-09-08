@@ -19,7 +19,7 @@
  * throughout the bug's entire life.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { DEFAULT_STOREFRONT_ORIGIN, orderUrl, storefrontOrigin } from './storefront-url';
+import { DEFAULT_STOREFRONT_ORIGIN, basketUrl, orderUrl, storefrontOrigin } from './storefront-url';
 
 const ADMIN_ORIGIN = 'https://blog-admin-app-gold.vercel.app';
 
@@ -122,5 +122,32 @@ describe('orderUrl', () => {
     const url = orderUrl('2026-000007-E', 'tok123');
     expect(url).not.toContain('/shop/orders/');
     expect(url).toBe('https://shop.test/account/orders/2026-000007-E?token=tok123');
+  });
+});
+
+describe('basketUrl', () => {
+  it('builds the storefront basket page at /cart', () => {
+    process.env.STOREFRONT_ORIGIN = 'https://shop.test';
+    expect(basketUrl()).toBe('https://shop.test/cart');
+  });
+
+  it('is /cart, VERIFIED against the deployed storefront rather than guessed', () => {
+    /*
+     * Checked live 2026-09-08: `https://plaspool.com/cart` is a 200; `/basket`
+     * and `/bag` are both 404. This is the regression pin for that measurement,
+     * `orderUrl`'s own tests above pin theirs the same way — a mail already
+     * delivered cannot be corrected, so the shape is worth asserting on the
+     * literal string rather than trusting a comment to stay true.
+     */
+    process.env.STOREFRONT_ORIGIN = 'https://shop.test';
+    const url = basketUrl();
+    expect(url).not.toContain('/basket');
+    expect(url).not.toContain('/bag');
+    expect(url).toBe('https://shop.test/cart');
+  });
+
+  it('defaults to the real storefront, same as orderUrl', () => {
+    delete process.env.STOREFRONT_ORIGIN;
+    expect(basketUrl()).toBe(`${DEFAULT_STOREFRONT_ORIGIN}/cart`);
   });
 });

@@ -228,6 +228,14 @@ export type BroadcastStatus = 'draft' | 'sending' | 'sent' | 'failed';
 export interface EmailBroadcast {
   id: string;
   templateId: string;
+  /**
+   * WHO this broadcast was for (migration 1000). `'all_subscribers'` is
+   * every non-suppressed row in `email_subscribers` — what every broadcast
+   * meant before the "Not bought yet" screen existed, and still the default:
+   * every existing call to `createBroadcast` sends no `audience` and gets
+   * this. `'picked'` means an explicit address list was named instead.
+   */
+  audienceKind: 'all_subscribers' | 'picked';
   subject: string;
   html: string;
   text: string;
@@ -389,11 +397,20 @@ export const emailApi = {
    * behind a separate confirmation. The two are split precisely so the screen
    * can show a real recipient count for this exact broadcast before anybody
    * agrees to anything.
+   *
+   * `audience` IS OPTIONAL AND MUST STAY THAT WAY. Absent, the server enrols
+   * every subscriber — the path every broadcast this shop has ever sent has
+   * taken, and every existing caller still takes it unchanged. Naming one
+   * picks the "Not bought yet" screen's own selection instead, capped at 2000
+   * addresses server-side.
    */
-  async createBroadcast(templateId: string): Promise<EmailBroadcast> {
+  async createBroadcast(
+    templateId: string,
+    audience?: { kind: 'picked'; emails: string[] },
+  ): Promise<EmailBroadcast> {
     const res = await apiFetch<{ broadcast: EmailBroadcast }>('/admin/email/broadcasts', {
       method: 'POST',
-      body: { templateId },
+      body: { templateId, ...(audience ? { audience } : {}) },
       subject: 'Broadcast',
     });
     return res.broadcast;

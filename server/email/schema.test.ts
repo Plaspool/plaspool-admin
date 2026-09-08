@@ -357,3 +357,29 @@ describe('broadcasts', () => {
     expect(String(res.rows[0].subject)).toBe('March news');
   });
 });
+
+describe('migration 1000 is applied', () => {
+  it('email_broadcast_audience matches its declaration', async () => {
+    const res = await db.execute(sql`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_name = 'email_broadcast_audience'
+       ORDER BY column_name`);
+    expect(res.rows.map((r) => String(r.column_name))).toEqual(['broadcast_id', 'email']);
+  });
+
+  it('email_broadcasts carries audience_kind, defaulted to all_subscribers', async () => {
+    const res = await db.execute(sql`
+      SELECT column_default, is_nullable FROM information_schema.columns
+       WHERE table_name = 'email_broadcasts' AND column_name = 'audience_kind'`);
+    expect(res.rows).toHaveLength(1);
+    expect(String(res.rows[0].column_default)).toContain('all_subscribers');
+    expect(String(res.rows[0].is_nullable)).toBe('NO');
+  });
+
+  it('a recipient may be skipped', async () => {
+    const res = await db.execute(sql`
+      SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+       WHERE conname = 'email_broadcast_recipients_status_ck'`);
+    expect(String(res.rows[0].def)).toContain('skipped');
+  });
+});

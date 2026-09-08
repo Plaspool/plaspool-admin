@@ -421,6 +421,13 @@
                         "when":  1786600005200,
                         "tag":  "0980_order_notifications",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  60,
+                        "version":  "7",
+                        "when":  1786600005300,
+                        "tag":  "1000_broadcast_audience",
+                        "breakpoints":  true
                     }
                 ]
 }
