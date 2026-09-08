@@ -183,6 +183,38 @@ describe('the basket block channel', () => {
     expect(renderText('Total: {{basket_total}}', VALUES)).toBe('Total: {{basket_total}}');
     expect(renderText('See {{basket_url}}', VALUES)).toBe('See {{basket_url}}');
   });
+
+  it('leaves inherited Object.prototype keys VISIBLE even when blocks IS present', () => {
+    /*
+     * `values.blocks?.[name]` is a raw `Record` index into a plain object, and a
+     * plain object inherits `constructor`/`toString`/`valueOf`/`hasOwnProperty`
+     * (and, in most engines, `__proto__` as an accessor) from `Object.prototype`
+     * — every one of those resolves to a truthy value with no guard at all. Once
+     * `blocks` is present — i.e. every nudge that actually resolved a basket —
+     * an unguarded `block !== undefined` check would pass for each of these
+     * names, and `block.html`/`block.text` (a function, not a string) would
+     * stringify to the literal word "undefined" in the message: "Hi undefined!"
+     * The test above this one, `leaves an unknown placeholder VISIBLE if one
+     * ever reaches the renderer`, proves NOTHING about this — its fixture
+     * carries no `blocks` at all, so `values.blocks?.[name]` is `undefined` for
+     * every placeholder regardless of whether the guard this test exists for is
+     * even present. This fixture supplies `blocks`, which is the only way to
+     * exercise the prototype-chain hazard at all.
+     */
+    const values = {
+      name: 'Ada',
+      unsubscribeUrl: 'https://x.test/u',
+      blocks: { basket: { html: '<table></table>', text: 'lines' } },
+    };
+    expect(renderText('Hi {{constructor}}!', values)).toBe('Hi {{constructor}}!');
+    expect(renderText('Hi {{toString}}!', values)).toBe('Hi {{toString}}!');
+    expect(renderText('Hi {{valueOf}}!', values)).toBe('Hi {{valueOf}}!');
+    expect(renderText('Hi {{hasOwnProperty}}!', values)).toBe('Hi {{hasOwnProperty}}!');
+    expect(renderText('Hi {{__proto__}}!', values)).toBe('Hi {{__proto__}}!');
+    // The guard narrows to the closed set — it must not also break the one name
+    // that legitimately belongs in it.
+    expect(renderHtml('{{basket}}', values)).toBe('<table></table>');
+  });
 });
 
 describe('hasUnsubscribeVariable', () => {

@@ -1,4 +1,4 @@
-import { lineTable, type LineRow } from '../mail/brand';
+import { assetOrigin, lineTable, type LineRow } from '../mail/brand';
 import { textLines } from '../mail/transactional';
 import { formatAmount } from '../shop/orders/mailer';
 import { publicImageUrl } from '../repo/public-projection';
@@ -35,16 +35,25 @@ import type { Basket } from '../shop/admin/prospects';
  *     an operator or a catalogue import typed, not anything a customer's
  *     request supplies directly to this function.
  *
- * `origin` IS THE ADMIN'S OWN ASSET ORIGIN, NOT THE STOREFRONT'S. Product
- * photographs are served from THIS deployment's `/api/public/images/…`,
- * unauthenticated — the storefront is a separate Worker that carries no such
- * route. Passing `storefrontOrigin()` here would build a link that 404s on
- * every image in the basket; pass the same origin `server/mail/brand.ts`'s
- * `assetOrigin()` and `server/shop/orders/mailer.ts`'s `storefrontAssetOrigin()`
- * already use for exactly this reason (`BRAND_ASSET_ORIGIN`, confusingly named
- * for what it is used for rather than what it is).
+ * `origin` DEFAULTS TO THE ADMIN'S OWN ASSET ORIGIN, NOT THE STOREFRONT'S, AND
+ * THAT DEFAULT IS THE POINT, NOT A CONVENIENCE. Product photographs are served
+ * from THIS deployment's `/api/public/images/…`, unauthenticated — the
+ * storefront is a separate Worker that carries no such route. A bare
+ * `origin: string` parameter type-checks identically whether a caller passes
+ * this deployment's origin or `storefrontOrigin()` from `storefront-url.ts`;
+ * only the second one 404s every photograph in the basket, silently, in a
+ * delivered email no test ever renders. Defaulting to `assetOrigin()` — the
+ * same lookup `server/mail/brand.ts` exports and `server/shop/orders/
+ * mailer.ts`'s private `storefrontAssetOrigin()` duplicates for exactly this
+ * reason (`BRAND_ASSET_ORIGIN`, confusingly named for what it is used for
+ * rather than what it is) — means a caller has to go out of their way, past
+ * the default, to supply the wrong one. The parameter stays so a test can
+ * still pass an explicit origin.
  */
-export function basketBlock(basket: Basket, origin: string): { html: string; text: string } {
+export function basketBlock(
+  basket: Basket,
+  origin: string = assetOrigin(),
+): { html: string; text: string } {
   const rows: LineRow[] = basket.lines.map((line) => ({
     title: line.title,
     sku: line.sku,

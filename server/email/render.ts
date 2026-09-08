@@ -1,5 +1,5 @@
 import { BadRequestError } from '../repo/errors';
-import { isTemplateVariable, placeholderPattern } from '../../shared/email/variables';
+import { isTemplateBlock, isTemplateVariable, placeholderPattern } from '../../shared/email/variables';
 
 /**
  * Variable substitution, SERVER-SIDE (HANDOFF §2 A6).
@@ -164,9 +164,23 @@ function substitute(
      * server built a moment ago; `html`/`text` on it are already the two shapes
      * the two parts need, chosen by `part` rather than run through the scalar
      * escaping path.
+     *
+     * GATED ON `isTemplateBlock(name)` BEFORE THE LOOKUP, NOT ON
+     * `values.blocks?.[name] !== undefined` ALONE. `blocks` is a plain object,
+     * so once it is present at all — every nudge that resolved a basket —
+     * `{{constructor}}`, `{{toString}}`, `{{valueOf}}`, `{{__proto__}}` and
+     * `{{hasOwnProperty}}` each resolve to a truthy INHERITED value from
+     * `Object.prototype`, and an unguarded index would pass `block !==
+     * undefined` and then stringify `block.html` (itself a function, not a
+     * string) as the literal word "undefined" into the message. Checking
+     * membership in the closed set FIRST is what makes `TEMPLATE_BLOCKS` in
+     * `shared/email/variables.ts` an ENFORCED contract rather than an
+     * aspirational comment — only `basket` can ever reach the index below.
      */
-    const block = values.blocks?.[name];
-    if (block !== undefined) return part === 'html' ? block.html : block.text;
+    if (isTemplateBlock(name)) {
+      const block = values.blocks?.[name];
+      if (block !== undefined) return part === 'html' ? block.html : block.text;
+    }
 
     if (name === 'name') return encode(values.name);
     if (name === 'unsubscribe_url') return encode(values.unsubscribeUrl);

@@ -9,6 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { basketBlock, basketTotal } from './basket-block';
+import { assetOrigin } from '../mail/brand';
 import { formatAmount } from '../shop/orders/mailer';
 import type { Basket, BasketLine } from '../shop/admin/prospects';
 
@@ -83,6 +84,28 @@ describe('basketBlock', () => {
   it('builds an ABSOLUTE image URL from the sending origin, never a relative one', () => {
     const block = basketBlock(fixture({ imageId: 'img_1' }), 'https://admin.plaspool.com');
     expect(block.html).toContain('https://admin.plaspool.com/api/public/images/img_1');
+  });
+
+  it('defaults the image origin to the admin asset origin when none is given', () => {
+    /*
+     * The bug this guards: `basketBlock(basket, storefrontOrigin())` type-checks
+     * perfectly and 404s every photograph in the basket, silently, because the
+     * storefront is a separate Worker that carries no `/api/public/images/…`
+     * route. Calling with no third argument at all must resolve to the SAME
+     * origin `assetOrigin()` itself returns — asserted against that function's
+     * own return value, not a hardcoded literal, so this stays true whether or
+     * not BRAND_ASSET_ORIGIN is set in whatever environment runs it.
+     */
+    const block = basketBlock(fixture({ imageId: 'img_1' }));
+    expect(block.html).toContain(`${assetOrigin()}/api/public/images/img_1`);
+  });
+
+  it('still accepts an explicit origin, which wins over the default', () => {
+    // The parameter stays specifically so a test — or a future caller with a
+    // genuine reason — can supply a different origin and have it win.
+    const block = basketBlock(fixture({ imageId: 'img_1' }), 'https://explicit.test');
+    expect(block.html).toContain('https://explicit.test/api/public/images/img_1');
+    expect(block.html).not.toContain(assetOrigin());
   });
 
   it('renders no image cell at all for a line with no photograph', () => {
