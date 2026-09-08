@@ -382,6 +382,11 @@ export const shopOrderEmailIntents = pgTable(
         /** Review lifecycle mail (migration 0640). */
         | 'review_invite'
         | 'review_approved'
+        /** "An order came in" — to STAFF, not to the customer (migration 0980).
+         * The only kind on this table whose `to_email` is a colleague's, so
+         * anything reading the outbox as "what we told the buyer" must exclude
+         * it. */
+        | 'staff_new_order'
       >()
       .notNull(),
     toEmail: text('to_email').notNull(),
@@ -406,7 +411,8 @@ export const shopOrderEmailIntents = pgTable(
     check(
       'shop_order_email_intents_kind_ck',
       sql`${t.kind} IN ('placed', 'confirmation', 'shipment', 'delivered', 'cancellation',
-                        'refund', 'refund_failed', 'review_invite', 'review_approved')`,
+                        'refund', 'refund_failed', 'review_invite', 'review_approved',
+                        'staff_new_order')`,
     ),
   ],
 );
@@ -542,3 +548,17 @@ export * from '../shop/reviews/schema';
 // against a migrated database by `server/shop/settings/schema.test.ts`.
 // ============================================================================
 export * from '../shop/settings/schema';
+
+// ============================================================================
+// NOTIFICATION SETTINGS — owned by `server/shop/notifications/` (migration
+// range 0980–0999). RE-EXPORTED FROM A FILE THAT SUBSYSTEM OWNS EXCLUSIVELY,
+// for the reason every block above records: a declaration made here is one a
+// wholesale overwrite deletes silently, while a lost `export *` is one line
+// `tsc` names immediately.
+//
+// `shop_notification_settings` — the CHECK-pinned singleton that decides who
+// the shop emails when an order is paid. Its counterpart change is one column
+// over: `shopOrderEmailIntents.kind` gained `staff_new_order`, which is the
+// first kind on that table whose reader is staff rather than a customer.
+// ============================================================================
+export * from '../shop/notifications/schema';

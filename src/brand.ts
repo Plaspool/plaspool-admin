@@ -7,11 +7,21 @@
  *   1. Drop your files into `public/brand/`, keeping the filenames below.
  *      They are plain paths, not imports, so swapping a PNG needs no rebuild
  *      knowledge and no code change — replace the file and reload.
+ *      `public/sw.js` fetches `/brand/*` and the manifest from the network
+ *      before it looks in its own cache, exactly so that stays true for
+ *      somebody who already has the app installed: everything else the worker
+ *      stores is content-hashed by the build, so a new build changes the NAME
+ *      and the old copy is never asked for again, and these files have no such
+ *      protection — they are replaced in place, under the name they had.
  *   2. Edit the strings in `brand` below.
- *   3. Update the matching block in `index.html`. That is the ONE duplicate,
- *      and it exists because social crawlers do not run JavaScript — see the
- *      note on `syncDocumentBrand` at the bottom. `src/brand.test.tsx` fails if
- *      the two ever disagree, so the duplication cannot silently rot.
+ *   3. Update the matching block in `index.html` and the matching fields in
+ *      `public/manifest.webmanifest`. Those are the TWO duplicates, and both
+ *      exist because something reads them without ever running this app: a
+ *      social crawler fetches the HTML (see the note on `syncDocumentBrand` at
+ *      the bottom), and the browser reads the manifest to decide what the
+ *      installed app is called and which icon its launcher draws.
+ *      `src/brand.test.tsx` fails if any of the three disagree, so the
+ *      duplication cannot silently rot.
  *
  * NAMING: assets are named for the background they sit ON, not for the colour
  * of their ink. `logo-dark.png` is the logo you put on a DARK surface, so its
@@ -60,6 +70,29 @@ export interface Brand {
     /** Favicon and app icon. Square, with its own background baked in. */
     icon: string;
     /**
+     * The launcher icons, listed in `public/manifest.webmanifest`.
+     *
+     * TWO EXACT SIZES RATHER THAN THE 1024² `icon` ABOVE — and NOT to save
+     * bytes, which is what this note claimed until somebody weighed the files.
+     * Measured: `icon.png` is 24 KB, `icon-512.png` 22 KB and
+     * `icon-192.png` 7 KB, so the large tile saves about two kilobytes and
+     * only the small one saves anything worth a sentence.
+     *
+     * What earns the extra files is the manifest itself. An entry declares the
+     * pixel size it IS, and the browser chooses between candidates on those
+     * numbers rather than by decoding each one — so a file listed at a size it
+     * is not gets picked for tiles it does not fit. The second reason is the
+     * paragraph below: only padded artwork may be declared maskable.
+     *
+     * The 512 is declared `any maskable`, which one image can only serve
+     * because the artwork is a solid square with the mark well inside the
+     * safe circle. A logo that runs to its own edges must NOT be declared
+     * maskable: Android crops it to whatever shape the launcher uses and
+     * takes the corners of the wordmark with it.
+     */
+    icon192: string;
+    icon512: string;
+    /**
      * Social share image. A square icon works as a `summary` card; a purpose-made
      * 1200×630 works as `summary_large_image` and looks considerably better.
      * Whichever you use, set `socialCard` to match.
@@ -94,6 +127,10 @@ export const brand: Brand = {
     logomarkLight: '/brand/logomark-light.png',
     logomarkDark: '/brand/logomark-dark.png',
     icon: '/brand/icon.png',
+    // Downscaled from `icon.png`, so a re-brand that replaces one file has to
+    // replace all three — there is no build step generating these.
+    icon192: '/brand/icon-192.png',
+    icon512: '/brand/icon-512.png',
     // The supplied icon is 1024² — square, so `summary` is the honest card type.
     // Replace with a 1200×630 and switch to `summary_large_image` for a banner.
     ogImage: '/brand/icon.png',

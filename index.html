@@ -12,6 +12,12 @@
       only ones it will ever see. `src/brand.test.tsx` compares the two and fails
       if they drift, which is what stops that duplication from rotting.
 
+      Since the PWA work there is a THIRD copy: `public/manifest.webmanifest`,
+      which the browser reads to decide what an installed PlaSpool is called and
+      what its icon looks like. JSON holds no comments, so the reason it exists
+      is written here and in `src/brand.ts`, and the same test parses it and
+      compares its name, description, theme colour and icons with the other two.
+
       Per-POST share cards (a card that shows the article's own title and cover)
       cannot be done here at all — one static file cannot describe every post.
       That needs server-rendered meta and is written up in ARCHITECTURE.md
@@ -24,7 +30,22 @@
       content="Everything the shop needs in one place: products and orders, rewards, returns and campaigns, and the blog that brings people to them."
     />
     <link rel="icon" href="/brand/icon.png" />
+    <!-- apple-touch-icon stays on the same file as the favicon rather than on
+         the 512 the manifest lists, and the reason is not inertia. iOS scales
+         whatever it is handed, the two PNGs weigh 24 KB and 22 KB so there is
+         nothing to save, and this href is `brand.assets.icon` — the one value
+         `src/brand.test.tsx` already compares against `src/brand.ts`. A
+         hardcoded /brand/icon-512.png here would be the first path in this
+         block that nothing guards against drift. -->
     <link rel="apple-touch-icon" href="/brand/icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- iOS READS NEITHER OF THE MANIFEST FIELDS THESE REPEAT. Safari ignores
+         `display` and `name` when someone adds the site to their home screen,
+         so without these two an installed PlaSpool opens inside Safari's
+         chrome, labelled with the <title> — "PlaSpool — Ecommerce platform",
+         truncated to something like "PlaSpool — Ecomm…" under the icon. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="PlaSpool" />
     <!-- Tints the browser chrome on mobile. Brand accent, one per theme. -->
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="#231c50" />
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14140f" />

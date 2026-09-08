@@ -27,6 +27,7 @@ import { SHOP_CURRENCY } from './currency';
 import { shopAdminRoutes } from './admin/routes';
 import { shippingZoneRoutes } from './cart/checkout/shipping-zones-routes';
 import { deliverySettingsRoutes } from './settings/routes';
+import { notificationSettingsRoutes } from './notifications/routes';
 import { ShippingZonePreconditionFailedError } from './cart/checkout/shipping-zones-repo';
 
 /**
@@ -346,6 +347,18 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
    * split `server/shop/reviews/public.ts` makes and for the same reason.
    */
   shop.route('/', deliverySettingsRoutes);
+
+  /*
+   * WHO THE SHOP TELLS WHEN AN ORDER IS PAID — `/admin/notification-settings`
+   * (migration 0980). Beside the delivery settings because it is the same kind
+   * of object: a CHECK-pinned singleton on the `settings` domain, guarded per
+   * route inside its own router.
+   *
+   * IT HAS NO PUBLIC HALF AT ALL, unlike the delivery settings above. Nothing a
+   * shopper renders depends on this row — it decides which of OUR addresses get
+   * an email — so there is nothing to mount above `sessionMiddleware`.
+   */
+  shop.route('/', notificationSettingsRoutes);
 
   /*
    * THE DASHBOARD'S READ SURFACE — `/admin/stats`, `/admin/customers`,

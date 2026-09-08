@@ -1026,6 +1026,48 @@ export interface ShopShippingOptionPatch {
   position?: number;
 }
 
+/**
+ * WHO IS TOLD WHEN AN ORDER IS PAID FOR — a CHECK-pinned singleton row, so
+ * there is no create, no delete and no id anywhere in this shape.
+ *
+ * THE DEFAULTS ARE ON, AND AN EMPTY `orderRecipients` IS A LEGITIMATE STATE
+ * rather than a broken one: the migration seeds `notifyTeam` and
+ * `notifyOnOrder` true with no hand-typed addresses at all, because the owner
+ * asked for notifications that work the moment they deploy. So a screen that
+ * renders the empty list as "nobody is being told" would be wrong — the team
+ * roster is where the addresses come from until somebody types one.
+ *
+ * Every field below is read off the pinned contract rather than remembered:
+ * `shopFetch<T>` is an UNCHECKED ASSERTION (see the header of this file and
+ * `safeFormatMinor`'s), so a name misspelt here is `undefined` at runtime with
+ * nothing anywhere to say so.
+ */
+export interface ShopNotificationSettings {
+  /** Extra addresses somebody typed by hand — a shared inbox, a warehouse. */
+  orderRecipients: string[];
+  /** Also mail everyone on the team who handles orders. */
+  notifyTeam: boolean;
+  /** The master switch. Off means nobody is emailed at all. */
+  notifyOnOrder: boolean;
+  revision: number;
+  updatedAt: number;
+  /** The account that last saved. `null` for the migration's own seed. */
+  updatedBy: string | null;
+}
+
+/**
+ * The CAS patch. `expectedRevision` is REQUIRED, as on every settings patch in
+ * this codebase — a save without one is two tabs quietly overwriting each
+ * other, and the losing one never finds out. Everything else is optional and
+ * absent means "leave it alone".
+ */
+export interface ShopNotificationSettingsPatch {
+  expectedRevision: number;
+  orderRecipients?: string[];
+  notifyTeam?: boolean;
+  notifyOnOrder?: boolean;
+}
+
 /** One row of the tag vocabulary — canonical spelling per case-fold group. */
 export interface ShopTag {
   name: string;
@@ -1616,6 +1658,50 @@ export const shopApi = {
       id,
       subject: 'Shipping option',
     });
+  },
+
+  // -------------------------------------------------- order notifications
+  /**
+   * READ AND WRITE ARE BOTH `settings`, which only the owner and developers
+   * hold. `permissions.ts` matches on the PREFIX and is method-agnostic, so
+   * the one rule over `/api/shop/admin/notification-settings` closes the GET
+   * to every other role exactly as it closes the PATCH — there is no
+   * "everybody may look" half, and writing this block as though there were is
+   * how a screen ends up rendering controls that each come back a 403. The
+   * screen gates itself on `hasDomain(role, 'settings')` for that reason and
+   * says so rather than calling the read.
+   *
+   * `requireAdmin` on the PATCH is a SECOND lock on the half that changes
+   * where money-shaped news is sent; the domain gate has already refused
+   * everyone without `settings` by the time it runs.
+   */
+  async getNotificationSettings(signal?: AbortSignal): Promise<ShopNotificationSettings> {
+    const res = await shopFetch<{ settings: ShopNotificationSettings }>(
+      `${BASE}/notification-settings`,
+      { subject: 'Notification settings', signal },
+    );
+    return res.settings;
+  },
+
+  /**
+   * CAS. A lost race is a 409 `stale_write`, which `api.ts` maps to
+   * `StaleWriteError` carrying `expected` and `actual` — the settings screen
+   * re-reads off that rather than retrying, because the other tab's change is
+   * a real change and overwriting it silently is the failure the revision
+   * exists to prevent.
+   *
+   * `subject` IS NAMED for the reason `NotFoundError` carries one at all: the
+   * default is `'Post'`, and a route that is not deployed yet would otherwise
+   * tell an owner "Post not found" about their notification settings.
+   */
+  async saveNotificationSettings(
+    patch: ShopNotificationSettingsPatch,
+  ): Promise<ShopNotificationSettings> {
+    const res = await shopFetch<{ settings: ShopNotificationSettings }>(
+      `${BASE}/notification-settings`,
+      { method: 'PATCH', body: patch, subject: 'Notification settings' },
+    );
+    return res.settings;
   },
 
   /**

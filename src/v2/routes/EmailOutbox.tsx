@@ -45,6 +45,13 @@ const KIND_LABELS: Record<string, string> = {
   refund_failed: 'Refund failed',
   review_invite: 'Review invitation',
   review_approved: 'Review approved',
+  /* The one row addressed to US rather than to a customer (migration 0980),
+     and the label says so for the reason `SYSTEM_TEMPLATE_STAGES` prefixes its
+     twin `Staff — `: on a list of recipients and subjects there is nothing
+     else to tell them apart. The wording follows the template's own name in
+     `server/mail/defaults.ts`, so the outbox row and the template a reader
+     goes on to edit say the same thing. */
+  staff_new_order: 'New order — staff alert',
 };
 
 function kindLabel(kind: string): string {
