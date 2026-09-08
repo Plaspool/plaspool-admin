@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  Bell,
   ChevronRight,
   MapPin,
   MapPinned,
@@ -40,6 +41,12 @@ const DOORS: SettingsDoor[] = [
     icon: <Truck />,
     title: 'Shipping',
     body: 'What each part of the country pays for delivery, and how much tax is added.',
+  },
+  {
+    to: '/settings/notifications',
+    icon: <Bell />,
+    title: 'Notifications',
+    body: 'Who gets an email when an order comes in.',
   },
   {
     to: '/settings/team',

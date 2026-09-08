@@ -98,7 +98,7 @@ export interface EmailBroadcast {
   id: string;
   templateId: string | null;
   /**
-   * WHO this broadcast was for (migration 0980). `all_subscribers` is every
+   * WHO this broadcast was for (migration 1000). `all_subscribers` is every
    * non-suppressed row in `email_subscribers`, and is what every broadcast
    * meant before the "Not bought yet" screen existed — the default, so no
    * existing caller of `createBroadcast` had to change. `picked` reads its
@@ -973,7 +973,7 @@ export async function setBroadcastAudience(
  * of `email_broadcast_recipients`. Someone unsubscribed, or never subscribed
  * and could not be enrolled, still belongs on this list; the gap between it
  * and the recipient queue is exactly what an operator needs to see (migration
- * 0980's header). `enqueueAudience` also uses this to drive enrolment.
+ * 1000's header). `enqueueAudience` also uses this to drive enrolment.
  */
 export async function listBroadcastAudience(db: Db, broadcastId: string): Promise<string[]> {
   const res = await db.execute(sql`
@@ -1193,7 +1193,7 @@ export async function markRecipientFailed(
  *
  * No broadcast-level counter moves here, unlike `markRecipientSent` and
  * `markRecipientFailed`: `email_broadcasts` has no `skipped_count` (migration
- * 0980 did not add one), so the tally for a batch lives only in the drain's
+ * 1000 did not add one), so the tally for a batch lives only in the drain's
  * own `DrainSummary`.
  *
  * `broadcastId` scopes the guard defensively alongside `id`, even though `id`

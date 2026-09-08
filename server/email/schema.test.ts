@@ -358,7 +358,7 @@ describe('broadcasts', () => {
   });
 });
 
-describe('migration 0980 is applied', () => {
+describe('migration 1000 is applied', () => {
   it('email_broadcast_audience matches its declaration', async () => {
     const res = await db.execute(sql`
       SELECT column_name FROM information_schema.columns

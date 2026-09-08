@@ -74,7 +74,7 @@ export interface Basket {
  * One broadcast this person was queued for, newest first.
  *
  * `status` carries the four values `email_broadcast_recipients_status_ck`
- * admits since migration 0980: `pending` (queued, drain has not reached it
+ * admits since migration 1000: `pending` (queued, drain has not reached it
  * yet), `sent`, `failed`, and `skipped` — a recipient the drain refused to
  * mail, almost always because their basket had emptied by the time the batch
  * ran (`lastError: 'basket_empty'`); `'unsubscribed'` is the other value that

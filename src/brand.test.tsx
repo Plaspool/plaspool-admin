@@ -2,11 +2,14 @@
 /**
  * The brand contract, enforced.
  *
- * Two things can silently break a re-brand, and neither shows up by looking at
- * the app: `index.html` drifting from `src/brand.ts` (the app looks right, the
- * share card is stale), and an accent that reads on one theme but not the other
- * (the app looks right to whoever picked the colour, and is unreadable for
- * everyone on the other setting). Both are measured here.
+ * Three things can silently break a re-brand, and none of them shows up by
+ * looking at the app: `index.html` drifting from `src/brand.ts` (the app looks
+ * right, the share card is stale), `public/manifest.webmanifest` drifting from
+ * both (the app looks right, and the icon somebody installed on their phone
+ * two months ago still carries the old name), and an accent that reads on one
+ * theme but not the other (the app looks right to whoever picked the colour,
+ * and is unreadable for everyone on the other setting). All three are measured
+ * here.
  */
 import { describe, expect, it } from 'vitest';
 import { brand, brandAssetUrl, syncDocumentBrand, type AccentRamp } from './brand';
@@ -15,6 +18,7 @@ import { brand, brandAssetUrl, syncDocumentBrand, type AccentRamp } from './bran
 // them would be wrong anyway, since nothing in `src/` runs in Node. `?raw` is
 // declared by vite/client and reads the real file at transform time.
 import html from '../index.html?raw';
+import manifestSource from '../public/manifest.webmanifest?raw';
 
 /** Pull a meta tag's content out of the raw HTML, whitespace-tolerant. */
 function meta(attr: 'name' | 'property', key: string): string | null {
@@ -64,6 +68,83 @@ describe('index.html carries the same brand as src/brand.ts', () => {
   it('no leftover default branding', () => {
     // The old hardcoded name must not linger anywhere in the shipped shell.
     expect(html).not.toMatch(/Blog Admin/);
+  });
+});
+
+describe('the manifest carries the same brand as src/brand.ts', () => {
+  /** Only the fields this file is the guard for. */
+  interface ManifestIcon {
+    src: string;
+    sizes: string;
+    type: string;
+    purpose?: string;
+  }
+  interface Manifest {
+    name: string;
+    short_name: string;
+    description: string;
+    start_url: string;
+    theme_color: string;
+    background_color: string;
+    display: string;
+    icons: ManifestIcon[];
+    shortcuts?: { name: string; url: string; icons?: ManifestIcon[] }[];
+  }
+
+  // Parsed once. A manifest that is not valid JSON is not "a failing
+  // assertion" in any browser — it is a manifest the browser drops on the
+  // floor with the install prompt still missing and nothing said about it.
+  const manifest = JSON.parse(manifestSource) as Manifest;
+  const iconAt = (size: string) => manifest.icons.find((i) => i.sizes === size);
+
+  it('names the app the same thing', () => {
+    expect(manifest.name).toBe(brand.name);
+    // `short_name` is what fits under a launcher icon. Same word here because
+    // the brand is one word; a longer name would need a real abbreviation.
+    expect(manifest.short_name).toBe(brand.name);
+  });
+
+  it('describes it the same way as the meta description', () => {
+    expect(manifest.description).toBe(brand.description);
+  });
+
+  it('tints the app with the light accent, the same value index.html sends', () => {
+    if (!brand.accent) return;
+    expect(manifest.theme_color).toBe(brand.accent.light.accent);
+    expect(meta('name', 'theme-color')).toBe(brand.accent.light.accent);
+    // The splash screen behind the launching app. Same navy, so the hand-off
+    // from launcher to first paint has no flash of white in it.
+    expect(manifest.background_color).toBe(brand.accent.light.accent);
+  });
+
+  it('points at the two launcher icons the brand declares', () => {
+    expect(iconAt('192x192')?.src).toBe(brand.assets.icon192);
+    expect(iconAt('512x512')?.src).toBe(brand.assets.icon512);
+  });
+
+  it('declares the large icon maskable, which only the padded artwork earns', () => {
+    // Android crops a maskable icon to the launcher's own shape. Claiming it
+    // for artwork that runs to its edges loses the corners of the mark, and
+    // NOT claiming it puts the whole square on a white plate instead.
+    expect(iconAt('512x512')?.purpose).toContain('maskable');
+  });
+
+  it('starts at a hash route, because the app is hash-routed', () => {
+    // `/` alone is a legal start_url and would still work — it lands on the
+    // index, which redirects. An installed app would then spend its first
+    // frame on a redirect every launch.
+    expect(manifest.start_url).toBe('/#/home');
+    expect(manifest.display).toBe('standalone');
+  });
+
+  it('every shortcut goes to a hash route too', () => {
+    for (const shortcut of manifest.shortcuts ?? []) {
+      expect(shortcut.url.startsWith('/#/')).toBe(true);
+    }
+  });
+
+  it('no leftover default branding', () => {
+    expect(manifestSource).not.toMatch(/Blog Admin/);
   });
 });
 

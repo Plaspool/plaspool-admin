@@ -68,6 +68,10 @@ export const SYSTEM_TEMPLATE_STAGES: Record<string, string> = {
   'order.cancellation': 'Ends the order — cancelled',
   'order.refund': 'Ends the order — refunded',
   'order.refund_failed': 'Refund failed — needs a manual refund',
+  /* Staff-facing, like `catalog.export` at the foot of this map, and prefixed
+     the same way: an operator scanning the list has no other way to tell a
+     message that emails US from one that emails a customer. */
+  'order.staff_alert': 'Staff — new order to pack',
   'account.welcome': 'Account — new subscriber',
   'account.invite': 'Account — invited to the admin',
   /* `account.password_reset` had a label here until Clerk became the only
@@ -225,7 +229,7 @@ export interface EmailBroadcast {
   id: string;
   templateId: string;
   /**
-   * WHO this broadcast was for (migration 0980). `'all_subscribers'` is
+   * WHO this broadcast was for (migration 1000). `'all_subscribers'` is
    * every non-suppressed row in `email_subscribers` — what every broadcast
    * meant before the "Not bought yet" screen existed, and still the default:
    * every existing call to `createBroadcast` sends no `audience` and gets

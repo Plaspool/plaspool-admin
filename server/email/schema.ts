@@ -143,7 +143,7 @@ export const emailBroadcasts = pgTable(
      * is why the migration can afford `ON DELETE SET NULL` here. */
     templateId: uuid('template_id'),
     /**
-     * WHO this broadcast was for (migration 0980). `all_subscribers` is every
+     * WHO this broadcast was for (migration 1000). `all_subscribers` is every
      * non-suppressed row in `email_subscribers` — the only thing a broadcast
      * could mean before the "Not bought yet" screen existed, which is why it is
      * the DEFAULT and why no existing row had to be touched. `picked` reads its
@@ -232,7 +232,7 @@ export const emailBroadcastRecipients = pgTable(
 );
 
 /**
- * The addresses a `picked` broadcast was aimed at (migration 0980).
+ * The addresses a `picked` broadcast was aimed at (migration 1000).
  *
  * EMAIL AND NOT `subscriber_id` — see the migration header. At pick time most of
  * these people have no subscriber row; one is created at SEND time, by
