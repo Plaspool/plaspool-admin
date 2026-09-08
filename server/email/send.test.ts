@@ -25,6 +25,8 @@ import {
   startBroadcast,
 } from './repo';
 import { drainAll, drainBroadcast, unsubscribeUrl } from './send';
+import { basketUrl, storefrontOrigin } from '../shop/storefront-url';
+import { assetOrigin } from '../mail/brand';
 import type { EmailBroadcast } from './repo';
 import type { Db } from '../db/client';
 import type { Mailer } from '../mail/port';
@@ -66,16 +68,136 @@ afterAll(() => close());
 beforeEach(async () => {
   await db.execute(sql`TRUNCATE email_subscribers, email_broadcasts,
                                 email_broadcast_recipients CASCADE`);
+  /*
+   * The basket half of this suite writes real carts. DELETE and not TRUNCATE,
+   * for the reason `server/shop/admin/prospects.test.ts` gives: TRUNCATE refuses
+   * a table another one references unless every referencing table is named in
+   * the same statement. Carts go first so their lines go with them, freeing the
+   * variants the products then take with them.
+   */
+  await db.execute(sql`DELETE FROM shop_carts`);
+  await db.execute(sql`DELETE FROM shop_products`);
 });
 
-async function started(subscribers: string[]): Promise<EmailBroadcast> {
+async function started(
+  subscribers: string[],
+  snapshot: typeof SNAPSHOT = SNAPSHOT,
+): Promise<EmailBroadcast> {
   for (const email of subscribers) {
     await addSubscriber(db, { email, source: 'manual' }, NOW);
   }
-  const draft = await createBroadcast(db, SNAPSHOT, actor, NOW);
+  const draft = await createBroadcast(db, snapshot, actor, NOW);
   const sending = await startBroadcast(db, draft.id, NOW);
   await enqueueAudience(db, draft.id);
   return sending!;
+}
+
+/** The default snapshot with a body of the caller's choosing, in BOTH parts —
+ *  the drain decides whether to resolve a basket by reading each of them. */
+function bodied(body: string): typeof SNAPSHOT {
+  return { ...SNAPSHOT, html: body, text: body };
+}
+
+let baskets = 0;
+
+/**
+ * A live cart with lines, addressed to `email` — the shape `basketFor` reads.
+ *
+ * A PRODUCT, A VARIANT AND A CURRENT PRICE PER LINE, because that is where a
+ * basket's money actually comes from: `shop_cart_lines` deliberately stores no
+ * price, so a fixture that skipped `shop_prices` would quote every line at zero
+ * and the total assertions below would pass against nothing.
+ */
+async function giveBasket(
+  email: string,
+  lines: { title: string; qty: number; unitMinor: number; imageId?: string }[],
+): Promise<void> {
+  baskets += 1;
+  const cartId = `cart_${baskets}`;
+  await db.execute(sql`
+    INSERT INTO shop_carts (id, customer_id, currency, status, email,
+                            created_at, updated_at, expires_at, revision)
+    VALUES (${cartId}, NULL, 'NGN', 'open', ${email}, ${NOW}, ${NOW}, ${NOW + 86_400_000}, 1)`);
+
+  for (const [index, line] of lines.entries()) {
+    const tag = `${baskets}_${index}`;
+    await db.execute(sql`
+      INSERT INTO shop_products (id, slug, title, description, description_text,
+                                 status, category, cover_image_id,
+                                 created_at, updated_at, author_id, revision)
+      VALUES (${`prd_${tag}`}, ${`prd-${tag}`}, ${line.title},
+              ${'{"type":"doc","content":[]}'}::jsonb, ${''},
+              'active', 'test', NULL, ${NOW}, ${NOW}, ${actor}::uuid, 1)`);
+    await db.execute(sql`
+      INSERT INTO shop_variants (id, product_id, sku, option_values, position,
+                                 status, image_id, created_at, updated_at)
+      VALUES (${`var_${tag}`}, ${`prd_${tag}`}, ${`SKU-${tag}`}, ${'{"Colour":"Red"}'}::jsonb,
+              0, 'active', ${line.imageId ?? null}, ${NOW}, ${NOW})`);
+    /* `effective_to` left NULL: that is what "current" means, and the partial
+       unique index `shop_prices_current_uq` is what makes it at most one. */
+    await db.execute(sql`
+      INSERT INTO shop_prices (id, variant_id, amount, currency, effective_from, created_at)
+      VALUES (${`prc_${tag}`}, ${`var_${tag}`}, ${line.unitMinor}, 'NGN', ${NOW}, ${NOW})`);
+    await db.execute(sql`
+      INSERT INTO shop_cart_lines (id, cart_id, variant_id, qty, added_at)
+      VALUES (${`ln_${tag}`}, ${cartId}, ${`var_${tag}`}, ${line.qty}, ${NOW})`);
+  }
+}
+
+/** The one recipient row of a one-person broadcast. */
+async function recipientRow(
+  broadcastId: string,
+): Promise<{ status: string; last_error: string | null; attempts: number }> {
+  const res = await db.execute(sql`
+    SELECT status, last_error, attempts FROM email_broadcast_recipients
+     WHERE broadcast_id = ${broadcastId}::uuid`);
+  const row = res.rows[0];
+  return {
+    status: String(row.status),
+    last_error: row.last_error == null ? null : String(row.last_error),
+    attempts: Number(row.attempts),
+  };
+}
+
+/** Opt out AFTER the audience was enqueued — the mid-drain sequence. */
+async function unsubscribeNow(email: string): Promise<void> {
+  await db.execute(sql`
+    UPDATE email_subscribers SET unsubscribed_at = ${NOW} WHERE email = ${email}`);
+}
+
+/**
+ * The static text of a drizzle statement: its `sql` chunks, with the bound
+ * parameters left out. Enough to tell one statement from another.
+ */
+function statementText(query: unknown): string {
+  const node = query as { queryChunks?: unknown[]; value?: unknown };
+  if (Array.isArray(node?.value)) return node.value.join('');
+  if (!Array.isArray(node?.queryChunks)) return '';
+  return node.queryChunks.map(statementText).join(' ');
+}
+
+/**
+ * A `Db` whose BASKET READ fails and whose every other statement works.
+ *
+ * FAULT-INJECTED AT THE HANDLE RATHER THAN BY MOCKING THE MODULE, so the drain
+ * runs the real `basketFor` against a database that refuses it — which is the
+ * shape of the production failure (a dropped connection, a statement timeout,
+ * a NUL in an address) rather than an invented one. The same proxy construction
+ * `guardDb` uses, and for the same reason: `db` is a class instance whose
+ * methods have to keep their own `this`.
+ */
+function dbThatCannotReadBaskets(): Db {
+  return new Proxy(db, {
+    get(target, prop) {
+      const value: unknown = Reflect.get(target, prop);
+      if (prop !== 'execute' || typeof value !== 'function') return value;
+      const method = value as (...args: unknown[]) => unknown;
+      return (query: unknown, ...rest: unknown[]) =>
+        statementText(query).includes('shop_cart_lines')
+          ? Promise.reject(new Error('connection terminated unexpectedly'))
+          : method.apply(target, [query, ...rest]);
+    },
+  }) as Db;
 }
 
 describe('two concurrent drains deliver once, because the claim is a CAS', () => {
@@ -98,7 +220,7 @@ describe('two concurrent drains deliver once, because the claim is a CAS', () =>
     expect(mailer.sent).toHaveLength(1);
     expect(first.sent + second.sent).toBe(1);
     expect(first.skipped + second.skipped).toBe(1);
-    expect(await recipientCounts(db, broadcast.id)).toEqual({ pending: 0, sent: 1, failed: 0 });
+    expect(await recipientCounts(db, broadcast.id)).toEqual({ pending: 0, sent: 1, failed: 0, skipped: 0 });
   });
 });
 
@@ -115,7 +237,7 @@ describe('one bad address does not stop the rest of the queue', () => {
 
     const summary = await drainBroadcast(db, broadcast, flaky, ORIGIN, NOW);
     expect(summary).toMatchObject({ sent: 2, retryable: 1, failed: 0 });
-    expect(await recipientCounts(db, broadcast.id)).toEqual({ pending: 1, sent: 2, failed: 0 });
+    expect(await recipientCounts(db, broadcast.id)).toEqual({ pending: 1, sent: 2, failed: 0, skipped: 0 });
   });
 });
 
@@ -179,6 +301,232 @@ describe('a broadcast nobody can be sent', () => {
       SELECT status FROM email_broadcasts WHERE id = ${broadcast.id}::uuid`);
     // Zero sent and zero failed is not a failure — there was nobody to send to.
     expect(String(row.rows[0].status)).toBe('sent');
+  });
+});
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE BASKET IS RESOLVED AT THE MOMENT OF SENDING, AND AN EMPTY ONE IS NOT
+ * MAILED.
+ *
+ * The window between the pick and the batch that reaches it is minutes wide on
+ * a real send, and "you left these behind" to somebody who has just paid is the
+ * single most likely embarrassment in this whole feature. Every case here
+ * asserts on THE MAILER as well as on the row: a test that only read the status
+ * would pass against a drain that sent the message and then relabelled it.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+describe('a nudge whose basket emptied before the batch reached it', () => {
+  it('is not mailed, and is recorded as skipped rather than failed', async () => {
+    const broadcast = await started(['ada@test.local'], bodied('{{basket}} {{unsubscribe_url}}'));
+    const mailer = new Recorder();
+    // No cart at all for Ada: she bought, or emptied it, after she was picked.
+
+    const summary = await drainBroadcast(db, broadcast, mailer, ORIGIN, NOW);
+
+    expect(mailer.sent).toHaveLength(0);
+    expect(summary.emptyBasket).toBe(1);
+    expect(summary.sent).toBe(0);
+    // NOT `failed`, and NOT `suppressed`: nothing went wrong and nobody opted out.
+    expect(summary.failed).toBe(0);
+    expect(summary.suppressed).toBe(0);
+
+    const row = await recipientRow(broadcast.id);
+    expect(row.status).toBe('skipped');
+    expect(row.last_error).toBe('basket_empty');
+    /*
+     * ONE ATTEMPT, AND THAT IS CORRECT. The claim is a CAS that moves `attempts`
+     * before the drain can know anything about the basket — it has to be, or the
+     * row would sit pending for every future drain to decide about again.
+     */
+    expect(row.attempts).toBe(1);
+  });
+
+  it('still counts in the queue, so the buckets add up to the audience', async () => {
+    // The reason `recipientCounts` grew a fourth bucket: without it this person
+    // is simply missing from a detail view that is meant to account for everyone.
+    const broadcast = await started(['ada@test.local'], bodied('{{basket}} {{unsubscribe_url}}'));
+    await drainBroadcast(db, broadcast, new Recorder(), ORIGIN, NOW);
+
+    expect(await recipientCounts(db, broadcast.id)).toEqual({
+      pending: 0,
+      sent: 0,
+      failed: 0,
+      skipped: 1,
+    });
+  });
+
+  it('does not stop the batch: everyone else in it is still sent to', async () => {
+    const broadcast = await started(
+      ['ada@test.local', 'bob@test.local'],
+      bodied('{{basket}} {{unsubscribe_url}}'),
+    );
+    await giveBasket('bob@test.local', [{ title: 'PLA Basic', qty: 1, unitMinor: 250_000 }]);
+    const mailer = new Recorder();
+
+    const summary = await drainBroadcast(db, broadcast, mailer, ORIGIN, NOW);
+
+    expect(mailer.sent.map((m) => m.to)).toEqual(['bob@test.local']);
+    expect(summary).toMatchObject({ sent: 1, emptyBasket: 1, failed: 0 });
+  });
+});
+
+describe('a broadcast that asks for no basket asks the database for none', () => {
+  it('sends to somebody with no basket at all', async () => {
+    const broadcast = await started(['ada@test.local'], bodied('Hello {{name}} {{unsubscribe_url}}'));
+    const mailer = new Recorder();
+
+    const summary = await drainBroadcast(db, broadcast, mailer, ORIGIN, NOW);
+
+    expect(summary.sent).toBe(1);
+    expect(summary.emptyBasket).toBe(0);
+    expect(mailer.sent).toHaveLength(1);
+  });
+
+  it('sends even when the basket read itself is broken, because it never runs', async () => {
+    /*
+     * The cost half of `needsBasket`, asserted rather than described: an ordinary
+     * newsletter must not pay a per-recipient basket query for a placeholder it
+     * does not contain. A handle that fails every basket read is how that becomes
+     * observable — if the drain looked one up anyway, this send would fail.
+     */
+    const broadcast = await started(['ada@test.local'], bodied('Hi {{name}} {{unsubscribe_url}}'));
+    const mailer = new Recorder();
+
+    const summary = await drainBroadcast(dbThatCannotReadBaskets(), broadcast, mailer, ORIGIN, NOW);
+
+    expect(summary).toMatchObject({ sent: 1, emptyBasket: 0, retryable: 0 });
+    expect(mailer.sent).toHaveLength(1);
+  });
+});
+
+describe('the message carries the reader’s own basket', () => {
+  it('puts the lines, the total and the basket link in both parts', async () => {
+    await giveBasket('ada@test.local', [{ title: 'PLA Basic', qty: 2, unitMinor: 250_000 }]);
+    const broadcast = await started(
+      ['ada@test.local'],
+      bodied('{{basket}} {{basket_total}} {{basket_url}} {{unsubscribe_url}}'),
+    );
+    const mailer = new Recorder();
+
+    await drainBroadcast(db, broadcast, mailer, ORIGIN, NOW);
+
+    const [message] = mailer.sent;
+    expect(message.html).toContain('PLA Basic');
+    /*
+     * `5000.00 NGN`, NOT `₦5,000`. `basketBlock` prints money with the order
+     * mailer's `formatAmount`, which is what every receipt this shop has ever
+     * sent says — CLAUDE.md §7's naira symbol is an ADMIN SCREEN rule. A shopper
+     * who gets this nudge and then a receipt for the same basket must see one
+     * money format, not two.
+     */
+    expect(message.html).toContain('5000.00 NGN');
+    // The block went in as MARKUP, unescaped — the one raw insertion in the renderer.
+    expect(message.html).toContain('<table');
+    expect(message.html).not.toContain('&lt;table');
+
+    // `2 × PLA Basic`, with U+00D7 — the character every order email already uses.
+    expect(message.text).toContain('2 × PLA Basic');
+    expect(message.text).toContain('Basket total: 5000.00 NGN');
+    expect(message.text).not.toContain('<table');
+
+    // `{{basket_url}}` is the STOREFRONT's basket page, not this deployment's.
+    expect(message.text).toContain(basketUrl());
+    expect(message.text).not.toContain('{{basket');
+  });
+
+  it('serves the photographs from THIS deployment, not from the storefront', async () => {
+    /*
+     * `/api/public/images/…` is served by the admin and by nothing else — the
+     * storefront is a separate Worker that carries no such route. Passing the
+     * storefront's origin here type-checks perfectly and 404s every photograph in
+     * every nudge, silently, in a delivered message no test renders. So the
+     * source of the image URL is asserted directly.
+     */
+    await giveBasket('ada@test.local', [
+      { title: 'PLA Basic', qty: 1, unitMinor: 250_000, imageId: 'img_1' },
+    ]);
+    const broadcast = await started(['ada@test.local'], bodied('{{basket}} {{unsubscribe_url}}'));
+    const mailer = new Recorder();
+
+    await drainBroadcast(db, broadcast, mailer, ORIGIN, NOW);
+
+    const src = /<img[^>]*src="([^"]+)"/.exec(mailer.sent[0].html)?.[1] ?? '';
+    expect(src).toBe(`${assetOrigin()}/api/public/images/img_1`);
+    expect(src.startsWith(storefrontOrigin())).toBe(false);
+    // Nor the origin the unsubscribe link is built from, which is a request-scoped
+    // value the caller passes and the images have nothing to do with.
+    expect(src.startsWith(ORIGIN)).toBe(false);
+  });
+});
+
+describe('the basket check sits after the claim and after suppression', () => {
+  it('a person who unsubscribes mid-drain is still passed over, and not as an empty basket', async () => {
+    // Unchanged behaviour, asserted again because the claim loop moved — and
+    // because reporting an opt-out as `emptyBasket` would hide the one of the two
+    // an operator has to act on.
+    const broadcast = await started(['gone@test.local'], bodied('{{basket}} {{unsubscribe_url}}'));
+    await unsubscribeNow('gone@test.local');
+    const mailer = new Recorder();
+
+    const summary = await drainBroadcast(db, broadcast, mailer, ORIGIN, NOW);
+
+    expect(mailer.sent).toHaveLength(0);
+    expect(summary.suppressed).toBe(1);
+    expect(summary.emptyBasket).toBe(0);
+    expect((await recipientRow(broadcast.id)).status).toBe('failed');
+  });
+
+  it('a basket the database refuses is retried — not skipped, and never sent', async () => {
+    /*
+     * `basketFor` is a database call inside a loop whose contract is that nothing
+     * throws. Both other answers are worse than a retry: `skipped` would claim
+     * "they have already bought" on evidence nobody has, and sending anyway would
+     * deliver the literal text `{{basket}}` to a reader.
+     */
+    const broadcast = await started(['ada@test.local'], bodied('{{basket}} {{unsubscribe_url}}'));
+    await giveBasket('ada@test.local', [{ title: 'PLA Basic', qty: 1, unitMinor: 250_000 }]);
+    const mailer = new Recorder();
+
+    const summary = await drainBroadcast(
+      dbThatCannotReadBaskets(),
+      broadcast,
+      mailer,
+      ORIGIN,
+      NOW,
+    );
+
+    expect(mailer.sent).toHaveLength(0);
+    expect(summary).toMatchObject({ sent: 0, emptyBasket: 0, retryable: 1, failed: 0 });
+
+    const row = await recipientRow(broadcast.id);
+    expect(row.status).toBe('pending');
+    expect(row.last_error).toBe('connection terminated unexpectedly');
+
+    // And the retry delivers, because the row was left claimable.
+    expect((await drainBroadcast(db, broadcast, mailer, ORIGIN, NOW)).sent).toBe(1);
+  });
+});
+
+describe('drainAll adds the basket counter up across broadcasts', () => {
+  it('reports both skips, rather than one or none', async () => {
+    // `add()` names every field by hand, so a counter added to the summary and not
+    // to that list reports zero the moment two broadcasts are drained together —
+    // which is exactly the shape the cron runs in.
+    const body = bodied('{{basket}} {{unsubscribe_url}}');
+    await started(['ada@test.local'], body);
+    // A second broadcast to the same one person, built the way the existing
+    // `drainAll` case builds its own: adding a subscriber here would enqueue them
+    // onto BOTH sends and make the arithmetic below say something else.
+    const draft = await createBroadcast(db, body, actor, NOW + 1);
+    await startBroadcast(db, draft.id, NOW + 1);
+    await enqueueAudience(db, draft.id);
+    const mailer = new Recorder();
+
+    const summary = await drainAll(db, mailer, ORIGIN, NOW);
+
+    expect(mailer.sent).toHaveLength(0);
+    expect(summary).toMatchObject({ broadcasts: 2, emptyBasket: 2, sent: 0 });
   });
 });
 

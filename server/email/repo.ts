@@ -1044,21 +1044,38 @@ export async function enqueueAudience(db: Db, broadcastId: string): Promise<numb
   return res.rows.length;
 }
 
-/** How the queue for one broadcast stands, for the detail view. */
+/**
+ * How the queue for one broadcast stands, for the detail view.
+ *
+ * ONE BUCKET PER STATUS THE CHECK CONSTRAINT ALLOWS, WHICH IS WHY `skipped` IS
+ * HERE. The four numbers are what an operator adds up against `recipientCount`
+ * to answer "is this send accounted for" — so a status with no bucket is a
+ * queue that visibly does not reconcile: since `server/email/send.ts` began
+ * skipping a nudge whose basket had emptied, pending + sent + failed silently
+ * stopped summing to the audience, and the missing people looked lost rather
+ * than deliberately passed over.
+ *
+ * COUNTED SEPARATELY FROM `failed` rather than folded into it, for the reason
+ * `DrainSummary.emptyBasket` gives at more length: "six hundred had already
+ * bought" and "six hundred bounced" call for two different responses, and one
+ * of them is not a problem at all.
+ */
 export async function recipientCounts(
   db: Db,
   broadcastId: string,
-): Promise<{ pending: number; sent: number; failed: number }> {
+): Promise<{ pending: number; sent: number; failed: number; skipped: number }> {
   const res = await db.execute(sql`
     SELECT count(*) FILTER (WHERE status = 'pending') AS pending,
            count(*) FILTER (WHERE status = 'sent') AS sent,
-           count(*) FILTER (WHERE status = 'failed') AS failed
+           count(*) FILTER (WHERE status = 'failed') AS failed,
+           count(*) FILTER (WHERE status = 'skipped') AS skipped
       FROM email_broadcast_recipients WHERE broadcast_id = ${broadcastId}::uuid`);
   const row = res.rows[0];
   return {
     pending: Number(row.pending),
     sent: Number(row.sent),
     failed: Number(row.failed),
+    skipped: Number(row.skipped),
   };
 }
 

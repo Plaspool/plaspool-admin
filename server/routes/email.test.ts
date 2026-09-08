@@ -112,6 +112,7 @@ interface Drained {
   failed: number;
   suppressed: number;
   skipped: number;
+  emptyBasket: number;
   retryable: number;
 }
 
@@ -563,6 +564,8 @@ describe('broadcasts', () => {
       failed: 0,
       suppressed: 0,
       skipped: 0,
+      // Nobody's basket was consulted: this template carries no {{basket}}.
+      emptyBasket: 0,
       retryable: 0,
     });
     expect(body.broadcast).toEqual(
@@ -641,7 +644,7 @@ describe('broadcasts', () => {
     const body = await json<{ recipients: { pending: number; sent: number; failed: number } }>(
       await owner.get(`/api/admin/email/broadcasts/${broadcast.id}`),
     );
-    expect(body.recipients).toEqual({ pending: 0, sent: 1, failed: 0 });
+    expect(body.recipients).toEqual({ pending: 0, sent: 1, failed: 0, skipped: 0 });
   });
 
   it('409s a second send, so one press is one audience', async () => {
