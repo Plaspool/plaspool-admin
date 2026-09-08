@@ -67,8 +67,12 @@ beforeEach(async () => {
 interface SeedVariantSpec {
   id: string;
   sku: string;
-  /** Written to `shop_prices`, which is where a price lives — never on the variant. */
-  priceMinor: number;
+  /**
+   * Written to `shop_prices`, which is where a price lives — never on the
+   * variant. `null` writes NO price row at all, which is the state the LEFT
+   * join in both statements exists for: a variant nobody has priced yet.
+   */
+  priceMinor: number | null;
   /** The PRODUCT's title. A basket line is titled by the product, not the SKU. */
   productTitle: string;
   imageId?: string | null;
@@ -112,10 +116,12 @@ async function seedVariant(db: Db, v: SeedVariantSpec): Promise<void> {
             'active', ${v.imageId ?? null}, ${S0}, ${S0})`);
   /* `effective_to` left NULL: that is what "current" means, and the partial
      unique index `shop_prices_current_uq` is what makes it at most one. */
-  await db.execute(sql`
-    INSERT INTO shop_prices (id, variant_id, amount, currency, effective_from, created_at)
-    VALUES (${`prc_${v.id}`}, ${v.id}, ${v.priceMinor}, ${v.currency ?? 'NGN'},
-            ${S0}, ${S0})`);
+  if (v.priceMinor !== null) {
+    await db.execute(sql`
+      INSERT INTO shop_prices (id, variant_id, amount, currency, effective_from, created_at)
+      VALUES (${`prc_${v.id}`}, ${v.id}, ${v.priceMinor}, ${v.currency ?? 'NGN'},
+              ${S0}, ${S0})`);
+  }
 }
 
 async function insertCart(db: Db, c: SeedCartSpec): Promise<void> {
@@ -212,6 +218,43 @@ async function unsubscribe(db: Db, email: string): Promise<void> {
 
 async function placeOrder(db: Db, email: string): Promise<void> {
   await seedOrder(db, { email });
+}
+
+let broadcasts = 0;
+
+/** One finished send. Both bodies are non-empty because the schema insists. */
+async function seedBroadcast(db: Db): Promise<string> {
+  broadcasts += 1;
+  const id = randomUUID();
+  await db.execute(sql`
+    INSERT INTO email_broadcasts (id, subject, html, text, status, created_at)
+    VALUES (${id}::uuid, ${`Broadcast ${broadcasts}`}, ${'<p>hi</p>'}, ${'hi'},
+            'sent', ${S0})`);
+  return id;
+}
+
+/**
+ * One row in the per-recipient queue, found by address rather than by id so a
+ * test does not have to thread subscriber ids around.
+ *
+ * `RETURNING id`, AND THE ASSERTION BELOW IT, because the insert is an
+ * `INSERT … SELECT`: with no matching subscriber it writes nothing, succeeds,
+ * and leaves a test that proves the field is null for the wrong reason.
+ */
+async function seedRecipient(
+  db: Db,
+  broadcastId: string,
+  email: string,
+  o: { status: 'pending' | 'sent'; sentAt?: number },
+): Promise<void> {
+  const res = await db.execute(sql`
+    INSERT INTO email_broadcast_recipients (id, broadcast_id, subscriber_id, status, sent_at)
+    SELECT ${randomUUID()}::uuid, ${broadcastId}::uuid, s.id, ${o.status}::text,
+           ${o.sentAt ?? null}::bigint
+      FROM email_subscribers s
+     WHERE s.email = ${email.toLowerCase()}
+    RETURNING id`);
+  expect(res.rows).toHaveLength(1);
 }
 
 // ------------------------------------------------------------------- tests
@@ -397,8 +440,16 @@ describe('listProspects', () => {
     // The whole point of this module. A second query written for the email would
     // be a second answer to "what is in their basket", and the only person who
     // would ever see both is the recipient.
+    //
+    // THE PADDING ON THE STORED ADDRESS IS NOT DECORATION. Nothing on the write
+    // path trims — `setCheckoutContact` stores `a.email` verbatim and `str()`
+    // strips NUL and nothing else — so '  Ada@Example.test ' is a state
+    // production can hold. The list prints the FOLDED address, and the contract
+    // Tasks 4 and 6 rely on is that handing that string straight back to
+    // `basketFor` finds this basket. Folded on one side only, the row said
+    // "5 items, ₦8,000" while the basket read as empty.
     const db = await seed({
-      cart: { id: 'cart_1', email: 'ada@example.test', status: 'open' },
+      cart: { id: 'cart_1', email: '  Ada@Example.test ', status: 'open' },
       lines: [
         { variantId: 'var_1', qty: 2 },
         { variantId: 'var_2', qty: 3 },
@@ -409,13 +460,114 @@ describe('listProspects', () => {
       ],
     });
 
-    const basket = await basketFor(db, 'ada@example.test');
     const row = (await listProspects(db, { tab: 'basket' })).items[0];
+    expect(row.email).toBe('ada@example.test');
 
+    const basket = await basketFor(db, row.email);
     expect(basket?.totalMinor).toBe(800_000);
     expect(row.basketMinor).toBe(basket?.totalMinor);
     expect(row.basketItems).toBe(basket?.lines.reduce((n, l) => n + l.qty, 0));
     expect(row.currency).toBe(basket?.currency);
+  });
+
+  it('folds a padded address onto one person, whichever table carries the padding', async () => {
+    // `email_subscribers_email_ck` asks only that the address equal its own
+    // `lower()`, which '  ada@example.test' does — so a padded row and a bare
+    // one are two rows the unique index is perfectly happy with, and the fold
+    // has to make them one. The same goes for `shop_customers_email_uq`, which
+    // is unique over the RAW address.
+    const db = await seedShop();
+    await giveBasket(db, ' ADA@Example.test ');
+    await giveAccount(db, '  ada@example.test');
+    await giveSubscription(db, 'ada@example.test  ');
+    await giveSubscription(db, 'ada@example.test');
+
+    const page = await listProspects(db, { tab: 'all' });
+    expect(page.items.map((p) => p.email)).toEqual(['ada@example.test']);
+    expect(page.items[0]).toMatchObject({
+      hasBasket: true,
+      hasAccount: true,
+      isSubscriber: true,
+      subscribeState: 'subscribed',
+    });
+  });
+
+  it('counts a basket whose address is only whitespace as unreachable', async () => {
+    // `NULLIF(c.email, '')` does not catch '   ', `picked`'s `email <> ''` does
+    // not catch it, and the unreachable count's `= ''` does not either. Without
+    // the trim this is a listed — and mailable — prospect whose address is
+    // three spaces, which is exactly the population that count exists to keep
+    // off the screen.
+    const db = await seedShop();
+    await giveBasket(db, '   ');
+    await giveBasket(db, 'lead@example.test');
+
+    const page = await listProspects(db, { tab: 'basket' });
+    expect(page.items.map((p) => p.email)).toEqual(['lead@example.test']);
+    expect(page.unreachableBaskets).toBe(1);
+  });
+
+  it('keeps a line whose variant has no price, at zero, rather than dropping it', async () => {
+    // `LEFT JOIN shop_prices`, in `basketFor` AND in the list's `baskets` CTE.
+    // `INNER` is the more natural thing to write and is a one-word edit in two
+    // places: the line would vanish from the basket and its units from the
+    // row's count, which is precisely the item-count disagreement the LEFT join
+    // was chosen to prevent.
+    const db = await seed({
+      cart: { id: 'cart_1', email: 'ada@example.test', status: 'open' },
+      lines: [
+        { variantId: 'var_1', qty: 2 },
+        { variantId: 'var_2', qty: 3 },
+      ],
+      variants: [
+        { id: 'var_1', sku: 'PRICED', priceMinor: 250_000, productTitle: 'PLA Basic' },
+        { id: 'var_2', sku: 'UNPRICED', priceMinor: null, productTitle: 'PLA Silk' },
+      ],
+    });
+
+    const basket = await basketFor(db, 'ada@example.test');
+    expect(basket?.lines.map((l) => l.sku)).toEqual(['PRICED', 'UNPRICED']);
+    expect(basket?.lines[1].unitMinor).toBe(0);
+    expect(basket?.lines[1].lineMinor).toBe(0);
+    expect(basket?.totalMinor).toBe(500_000);
+
+    const row = (await listProspects(db, { tab: 'basket' })).items[0];
+    expect(row.basketItems).toBe(5);
+    expect(row.basketItems).toBe(basket?.lines.reduce((n, l) => n + l.qty, 0));
+    expect(row.basketMinor).toBe(basket?.totalMinor);
+  });
+
+  it('shows when a broadcast last reached somebody, and ignores one still queued', async () => {
+    // Nothing else in this file seeds a send, so `lastNudgeAt` hardcoded to
+    // null passed every other assertion here — a wrong table, a wrong status
+    // literal or a wrong join column would have been invisible until Task 6.
+    const db = await seedShop();
+    await giveBasket(db, 'mailed@example.test');
+    await giveSubscription(db, 'mailed@example.test');
+    await giveBasket(db, 'queued@example.test');
+    await giveSubscription(db, 'queued@example.test');
+
+    // TWO broadcasts, because `email_broadcast_recipients_dedupe_uq` is
+    // (broadcast_id, subscriber_id): one person can be in a send only once, so
+    // proving the later send wins takes a second one.
+    const older = await seedBroadcast(db);
+    const newer = await seedBroadcast(db);
+    await seedRecipient(db, older, 'mailed@example.test', {
+      status: 'sent',
+      sentAt: S0 + DAY,
+    });
+    await seedRecipient(db, newer, 'mailed@example.test', {
+      status: 'sent',
+      sentAt: S0 + 3 * DAY,
+    });
+    // Queued and not sent. An enqueued recipient is not a nudge until it lands,
+    // and a drain that crashes leaves rows in exactly this state.
+    await seedRecipient(db, newer, 'queued@example.test', { status: 'pending' });
+
+    const page = await listProspects(db, { tab: 'basket' });
+    const nudged = new Map(page.items.map((p) => [p.email, p.lastNudgeAt]));
+    expect(nudged.get('mailed@example.test')).toBe(S0 + 3 * DAY);
+    expect(nudged.get('queued@example.test')).toBeNull();
   });
 
   it('finds somebody by part of their address', async () => {

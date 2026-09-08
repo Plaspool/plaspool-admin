@@ -20,8 +20,8 @@ import { normalizeBlobId } from '../../repo/public-projection';
  * the recipient.
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * THE ADDRESS IS `lower(COALESCE(shop_carts.email, shop_customers.email))` AND
- * BOTH HALVES ARE LOAD-BEARING. `shop_carts.email` is written when a shopper
+ * THE ADDRESS IS `lower(btrim(COALESCE(shop_carts.email, shop_customers.email)))`
+ * AND BOTH HALVES ARE LOAD-BEARING. `shop_carts.email` is written when a shopper
  * reaches the checkout contact step (`setCheckoutContact`), so a signed-in
  * shopper who has not got that far has an address only through the customer
  * join, and a guest who HAS got that far has one only on the cart. Measured on
@@ -152,17 +152,76 @@ function json<T>(value: unknown): T | null {
 }
 
 /**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE ADDRESS FOLD, AND IT HAS TO BE THE SAME FIVE CHARACTERS IN SQL AND IN JS.
+ *
+ * `basketFor` folds a caller's string in JavaScript; every statement in this
+ * file folds a stored column in SQL; and the promise at the top of the file is
+ * that the address the list PRINTS reads back as the basket the list COUNTED.
+ * That holds only if `foldEmail(sqlFold(x)) = sqlFold(x)` for every storable x
+ * — which is to say only if the two strip exactly the same set.
+ *
+ * NOT ONE OF THE THREE WRITE PATHS TRIMS. `setCheckoutContact` writes
+ * `a.email` verbatim, fed by `email: str().min(3).max(320)`, and `str()` strips
+ * NUL and nothing else — so `' ada@example.test'` is storable on `shop_carts`,
+ * on `shop_customers` and (since `lower()` of a padded address equals itself,
+ * which is all `email_subscribers_email_ck` asks) on `email_subscribers` too.
+ * Folding one side and not the other made the row say "1 item, ₦2,800" while
+ * `basketFor` returned null, which is the exact divergence this file exists to
+ * prevent.
+ *
+ * `btrim(x)` WITH NO SECOND ARGUMENT IS NOT THAT SET — it strips spaces and
+ * nothing else, so a trailing newline off a pasted address would survive SQL
+ * and not survive JS, which is the same bug one character further along. The
+ * five are space, tab, CR, LF and the non-breaking space a paste out of a mail
+ * client carries. `chr()` rather than an escaped literal keeps the expression
+ * free of backslashes, which neither a `sql` template nor this repo's shell
+ * carries reliably.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+const TRIM_CODES = [32, 9, 13, 10, 160] as const;
+
+/** The SQL half, as `chr()` calls, and the JS half, as one character class —
+ *  both built from the list above so neither can drift from the other. */
+const TRIM_SET = TRIM_CODES.map((code) => `chr(${code})`).join(' || ');
+const TRIM_RE = ((set) => new RegExp(`^[${set}]+|[${set}]+$`, 'g'))(
+  TRIM_CODES.map((code) => String.fromCharCode(code)).join(''),
+);
+
+/** `btrim(<expr>, <the five>)`. Composed into the folds below, never used bare. */
+const trimSql = (expr: string): string => `btrim(${expr}, ${TRIM_SET})`;
+
+/**
+ * The JS half of the fold above. Same five characters, same order as
+ * `lower(btrim(…))`, so a folded address is a fixed point of this function.
+ */
+function foldEmail(email: string): string {
+  return email.replace(TRIM_RE, '').toLowerCase();
+}
+
+/**
  * The address a cart belongs to, as one expression, used by every statement
  * here so the list, the basket and the unreachable count cannot disagree about
  * who a cart is for.
  *
- * `NULLIF(c.email, '')` AND NOT A BARE `c.email`. `shop_carts` carries no
- * non-empty CHECK on its address (unlike `shop_customers`, which has
+ * `NULLIF(btrim(c.email), '')` AND NOT A BARE `c.email`. `shop_carts` carries
+ * no non-empty CHECK on its address (unlike `shop_customers`, which has
  * `shop_customers_email_ck`), so an empty string is storable — and a bare
  * COALESCE would let one MASK the account's real address rather than fall
- * through to it.
+ * through to it. The inner trim is what extends that to `'   '`, which is
+ * otherwise a listed, mailable "prospect" whose address is whitespace: `NULLIF`
+ * would not catch it, `picked`'s `email <> ''` would not catch it, and
+ * `countUnreachableBaskets`'s `= ''` would not catch it either.
  */
-const CART_ADDRESS = sql.raw(`lower(COALESCE(NULLIF(c.email, ''), cu.email))`);
+const CART_ADDRESS = sql.raw(
+  `lower(${trimSql(`COALESCE(NULLIF(${trimSql('c.email')}, ''), cu.email)`)})`,
+);
+
+/** The same fold over `shop_customers`, `email_subscribers` and `shop_orders`.
+ *  One expression each, so no CTE can fold differently from its neighbours. */
+const ACCOUNT_ADDRESS = sql.raw(`lower(${trimSql('cu.email')})`);
+const SUB_ADDRESS = sql.raw(`lower(${trimSql('s.email')})`);
+const ORDER_ADDRESS = sql.raw(`lower(${trimSql('o.email')})`);
 
 /** A cart that could still be checked out. `converted` is an order; `abandoned`
  *  is a merged guest cart the shopper has already replaced. */
@@ -192,7 +251,7 @@ const HAS_LINES = sql.raw(
  * hide. `expiresAt` is on the returned shape for exactly that.
  */
 export async function basketFor(db: Db, email: string): Promise<Basket | null> {
-  const folded = rejectNul(email.trim().toLowerCase(), 'email');
+  const folded = rejectNul(foldEmail(email), 'email');
   if (folded === '') return null;
 
   const res = await db.execute(sql`
@@ -417,27 +476,60 @@ export async function listProspects(db: Db, q: ProspectQuery): Promise<ProspectP
     ),
     /*
      * GROUPED, because shop_customers_email_uq is unique over the RAW address:
-     * two accounts differing only in case are storable and are one person here.
-     * max() over a group that the fold may have made larger than one is how
-     * listBuyers says the same thing.
+     * two accounts differing only in case -- or in padding -- are storable and
+     * are one person here. max() over a group that the fold may have made
+     * larger than one is how listBuyers says the same thing.
      */
     accounts AS (
-      SELECT lower(cu.email)     AS email,
-             max(cu.display_name) AS display_name,
-             min(cu.created_at)   AS created_at
+      SELECT ${ACCOUNT_ADDRESS}     AS email,
+             max(cu.display_name)   AS display_name,
+             min(cu.created_at)     AS created_at
         FROM shop_customers cu
-       WHERE cu.email IS NOT NULL AND cu.email <> ''
-       GROUP BY lower(cu.email)
+       WHERE cu.email IS NOT NULL AND ${ACCOUNT_ADDRESS} <> ''
+       GROUP BY ${ACCOUNT_ADDRESS}
     ),
     /*
-     * NOT grouped, and it does not need to be: email_subscribers_email_ck
-     * refuses any address that is not already lowercase and
-     * email_subscribers_email_uq makes it unique, so one row per folded address
-     * is a database property here rather than something to re-derive.
+     * GROUPED, AND SINCE THE FOLD TRIMS IT HAS TO BE. This CTE used to lean on
+     * email_subscribers_email_ck for one row per address, but that check only
+     * asks that the address equal its own lower() -- which '  ada@x  ' does --
+     * so a padded row and a bare one are two rows the unique index is happy
+     * with and the fold makes one. Ungrouped, that would put the same person on
+     * the screen twice. unsubscribed_at is max()'d with the rest, so an opt-out
+     * on EITHER row suppresses: the safe direction, and the one addSubscriber's
+     * "an existing address is never resurrected" rule already takes.
      */
     subs AS (
-      SELECT s.email, s.name, s.created_at, s.consent_at, s.unsubscribed_at
+      SELECT ${SUB_ADDRESS}         AS email,
+             max(s.name)            AS name,
+             min(s.created_at)      AS created_at,
+             max(s.consent_at)      AS consent_at,
+             max(s.unsubscribed_at) AS unsubscribed_at
         FROM email_subscribers s
+       WHERE ${SUB_ADDRESS} <> ''
+       GROUP BY ${SUB_ADDRESS}
+    ),
+    /*
+     * WHEN A BROADCAST LAST REACHED THEM, read off the send and not off
+     * email_broadcast_audience. The audience table records who a picked
+     * broadcast was AIMED at, which excludes everybody an all_subscribers
+     * newsletter reached -- so an operator would see a dash beside somebody
+     * mailed last week.
+     *
+     * A CTE KEYED ON THE FOLDED ADDRESS, NOT A CORRELATED SUBQUERY PER ROW.
+     * The subquery this replaces re-joined email_subscribers for every address
+     * in folded -- every address, not every address on the page, because it
+     * sat below the LIMIT -- and email_broadcast_recipients' only index that
+     * mentions subscriber_id is (broadcast_id, subscriber_id), which cannot
+     * serve a subscriber_id lookup as its leading column. One grouped pass also
+     * survives the fold above: two subscriber rows for one person contribute
+     * their sends to the same address rather than to whichever id won a max().
+     */
+    nudges AS (
+      SELECT ${SUB_ADDRESS} AS email, max(r.sent_at) AS last_nudge_at
+        FROM email_broadcast_recipients r
+        JOIN email_subscribers s ON s.id = r.subscriber_id
+       WHERE r.status = 'sent'
+       GROUP BY ${SUB_ADDRESS}
     ),
     addresses AS (
       SELECT email FROM baskets
@@ -461,25 +553,21 @@ export async function listProspects(db: Db, q: ProspectQuery): Promise<ProspectP
              /* Cart last touched, else account created, else subscribed. At
                 least one is non-null: the address came from one of the three. */
              COALESCE(b.updated_at, ac.created_at, s.created_at) AS last_seen_at,
-             /*
-              * WHEN A BROADCAST LAST REACHED THEM, read off the send and not off
-              * email_broadcast_audience. The audience table records who a picked
-              * broadcast was AIMED at, which excludes everybody an
-              * all_subscribers newsletter reached -- so an operator would see a
-              * dash beside somebody mailed last week. s2.email is compared bare
-              * because email_subscribers_email_ck already holds it lowercase,
-              * which keeps the unique index usable.
-              */
-             (SELECT max(r.sent_at)
-                FROM email_broadcast_recipients r
-                JOIN email_subscribers s2 ON s2.id = r.subscriber_id
-               WHERE s2.email = a.email
-                 AND r.status = 'sent')         AS last_nudge_at
+             n.last_nudge_at                    AS last_nudge_at
         FROM addresses a
         LEFT JOIN baskets  b  ON b.email  = a.email
         LEFT JOIN accounts ac ON ac.email = a.email
         LEFT JOIN subs     s  ON s.email  = a.email
-       WHERE NOT EXISTS (SELECT 1 FROM shop_orders o WHERE lower(o.email) = a.email)
+        LEFT JOIN nudges   n  ON n.email  = a.email
+       /*
+        * THE ORDER ADDRESS IS FOLDED THE SAME WAY, which costs the functional
+        * index shop_orders_email_idx (over lower(email) alone) and buys the
+        * thing this predicate is for: a padded address on an order would
+        * otherwise fail to match its owner, and the owner would be listed and
+        * nudged about a basket they have already paid for. This exclusion only
+        * ever removes people, so trimming it errs in the safe direction.
+        */
+       WHERE NOT EXISTS (SELECT 1 FROM shop_orders o WHERE ${ORDER_ADDRESS} = a.email)
     )
     SELECT f.email, f.display_name, f.has_basket, f.has_account, f.is_subscriber,
            f.subscribe_state, f.basket_items, f.basket_minor, f.currency,
