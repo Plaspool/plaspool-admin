@@ -1063,6 +1063,22 @@ export interface ShopShippingOption {
   position: number;
 }
 
+/**
+ * `shop_delivery_settings`, the whole row (migrations 0760 and 1060).
+ *
+ * `servedCountries` is where the shop will send a parcel it arranges ITSELF —
+ * the manual method. It is never empty and there is no "everywhere": a country
+ * nobody named falls to the catch-all zone, which is the fail-safe rate.
+ */
+export interface ShopDeliverySettings {
+  addressMode: 'district' | 'simple';
+  locationOffered: boolean;
+  servedRegions: string[] | null;
+  servedCountries: string[];
+  revision: number;
+  updatedAt: number;
+}
+
 export interface ShopShippingZone {
   id: string;
   label: string;
@@ -1762,6 +1778,36 @@ export const shopApi = {
   },
 
   /** Every shipping zone with its options, for the admin screen. */
+  /**
+   * The delivery settings row (migration 0760) — of which the admin uses ONE
+   * field today, `servedCountries` (migration 1060).
+   *
+   * The row also carries `addressMode`, `servedRegions` and `locationOffered`,
+   * and no screen has ever edited them; 0760's card was never built. They ride
+   * along here because the endpoint returns the whole row and a patch that
+   * omits a key leaves it alone, so reading them costs nothing and inventing a
+   * narrower endpoint would cost a migration's worth of confusion later.
+   */
+  async getDeliverySettings(signal?: AbortSignal): Promise<ShopDeliverySettings> {
+    const res = await shopFetch<{ settings: ShopDeliverySettings }>(
+      `${BASE}/delivery-settings`,
+      { signal },
+    );
+    return res.settings;
+  },
+
+  /** CAS on `expectedRevision`, like every other settings write here. */
+  async saveDeliverySettings(
+    expectedRevision: number,
+    patch: { servedCountries?: string[] },
+  ): Promise<ShopDeliverySettings> {
+    const res = await shopFetch<{ settings: ShopDeliverySettings }>(
+      `${BASE}/delivery-settings`,
+      { method: 'PATCH', subject: 'Delivery settings', body: { expectedRevision, ...patch } },
+    );
+    return res.settings;
+  },
+
   async listShippingZones(signal?: AbortSignal): Promise<ShopShippingZone[]> {
     const res = await shopFetch<{ items: ShopShippingZone[] }>(`${BASE}/shipping-zones`, {
       signal,

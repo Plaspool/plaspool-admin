@@ -5,14 +5,16 @@ import {
   parseMajor,
   plainMajor,
   shopApi,
+  type ShopDeliverySettings,
   type ShopShippingOption,
   type ShopShippingZone,
 } from '../../data/api-shop';
+import { HOME_COUNTRY, SHIPPABLE_COUNTRIES, byName, countryName } from './countries';
 import { money } from '../lib/format';
 import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, EmptyState } from '../ui/primitives';
 import { DataTable, IdCell, type Column } from '../ui/DataTable';
-import { AffixField, Checkbox, TextField } from '../ui/Field';
+import { AffixField, Checkbox, SelectField, TextField } from '../ui/Field';
 import { Float } from '../ui/Float';
 import { Menu, MenuItem, MenuSeparator } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
@@ -244,6 +246,8 @@ export default function SettingsShipping() {
         </Banner>
       ) : null}
 
+      <WhereWeShip zones={zones} />
+
       <DataTable
         caption="Shipping zones"
         columns={columns}
@@ -325,6 +329,144 @@ const NAMED_STATES = 3;
  * pointer has left both the button and the panel. It rides `Float` like every
  * other popover: inside `.tscroll` an absolute panel would be clipped.
  */
+/**
+ * WHERE WE SHIP — `shop_delivery_settings.served_countries` (migration 1060).
+ *
+ * THE SWITCH THAT OPENS INTERNATIONAL SELLING. The storefront's checkout gates
+ * its Continue button on this list, served to it by
+ * `GET /api/public/shop/delivery-config`, so a country missing here disables
+ * checkout for every address in it. It was a hardcoded constant until 1060,
+ * which is why the shop could not sell abroad at all.
+ *
+ * SAVES ON CHANGE, the `defaultReturnProgramId` precedent — there is no Save
+ * button because there is one field and a stray unsaved change to where the
+ * shop ships is worse than a write the owner can immediately undo. The write is
+ * CAS on `revision`, so a second tab cannot silently overwrite this one.
+ *
+ * NIGERIA IS PINNED AND CANNOT BE REMOVED. Two reasons, and the second is the
+ * one that would bite: it is the shop's home market, and the FIRST country in
+ * the list is what `serviceRefusal` treats as home when it decides whether the
+ * `served_regions` restriction applies. Letting the owner drag Nigeria out of
+ * the list would silently re-scope a Nigerian state restriction onto whichever
+ * country happened to sort first.
+ */
+function WhereWeShip({ zones }: { zones: ShopShippingZone[] | null }) {
+  const toast = useToast();
+  const [settings, setSettings] = useState<ShopDeliverySettings | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async (signal?: AbortSignal) => {
+    try {
+      setSettings(await shopApi.getDeliverySettings(signal));
+      setLoadError(null);
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === 'AbortError') return;
+      setLoadError(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
+  }, [load]);
+
+  async function save(servedCountries: string[]) {
+    if (!settings) return;
+    setSaving(true);
+    try {
+      setSettings(await shopApi.saveDeliverySettings(settings.revision, { servedCountries }));
+    } catch (cause) {
+      toast.show(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.', 'critical');
+      /* Re-read rather than keep a list the server refused — a 409 means
+         somebody else saved, and the screen has to show theirs. */
+      void load();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const chosen = settings?.servedCountries ?? [];
+  /* Which countries a zone actually names. A country in NO zone's list falls to
+     the catch-all, which is the deliberately punitive international rate — so
+     switching one on without pricing it is the mistake worth naming. */
+  const zoned = new Set((zones ?? []).flatMap((z) => z.countries.map((c) => c.toUpperCase())));
+  const unpriced = chosen.filter((c) => c !== HOME_COUNTRY && !zoned.has(c));
+  const available = SHIPPABLE_COUNTRIES.filter((c) => !chosen.includes(c)).slice().sort(byName);
+
+  return (
+    <div className="card">
+      <div className="card__head">
+        <h2 className="card__title">Where we ship</h2>
+      </div>
+      <div className="card__body">
+        <p className="muted wws__intro">
+          Countries a customer can choose at checkout. Anywhere not on this list can’t place an
+          order.
+        </p>
+
+      {loadError ? (
+        <Banner tone="critical" title="Couldn’t load this" action={<Button onClick={() => void load()}>Retry</Button>}>
+          {loadError}
+        </Banner>
+      ) : null}
+
+      {unpriced.length > 0 ? (
+        <Banner tone="warn" title="Some of these have no delivery price">
+          {unpriced.map(countryName).join(', ')} {unpriced.length === 1 ? 'has' : 'have'} no zone of
+          its own, so {unpriced.length === 1 ? 'it uses' : 'they use'} the catch-all zone’s price.
+          Add a zone below naming {unpriced.length === 1 ? 'it' : 'them'} before you tell customers
+          you ship there.
+        </Banner>
+      ) : null}
+
+      <div className="wws">
+        <ul className="wws__list">
+          {chosen.map((code) => (
+            <li key={code} className="wws__item">
+              <Badge tone={code === HOME_COUNTRY ? 'ok' : 'neutral'} dot={false}>
+                {countryName(code)}
+              </Badge>
+              {code === HOME_COUNTRY ? (
+                <span className="muted wws__home">Home</span>
+              ) : (
+                <Button
+                  tone="plain"
+                  busy={saving}
+                  aria-label={`Stop shipping to ${countryName(code)}`}
+                  onClick={() => void save(chosen.filter((c) => c !== code))}
+                >
+                  <Trash2 aria-hidden="true" />
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
+
+        <SelectField
+          label="Add a country"
+          hint="Set its delivery price in a zone below, then add it here."
+          value=""
+          disabled={saving || settings === null}
+          onChange={(e) => {
+            const code = e.currentTarget.value;
+            if (code) void save([...chosen, code]);
+          }}
+        >
+          <option value="">Choose a country…</option>
+          {available.map((code) => (
+            <option key={code} value={code}>
+              {countryName(code)}
+            </option>
+          ))}
+        </SelectField>
+      </div>
+      </div>
+    </div>
+  );
+}
+
 function ZoneStates({ zone }: { zone: ShopShippingZone }) {
   const named = zone.regions.slice(0, NAMED_STATES);
   const rest = zone.regions.slice(NAMED_STATES);

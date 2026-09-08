@@ -216,6 +216,123 @@ async function openMenu(
 
 // ============================================================================
 
+const SETTINGS = '/api/shop/admin/delivery-settings';
+
+function withSettings(servedCountries: string[], revision = 3): void {
+  when(SETTINGS, (_url, init) => ({
+    body: {
+      settings: {
+        addressMode: 'district',
+        locationOffered: false,
+        servedRegions: null,
+        /* A PATCH answers with what it was asked to store, so the card's
+           optimistic-free "render what came back" path is what gets driven. */
+        servedCountries:
+          (init.method ?? 'GET') === 'PATCH'
+            ? ((JSON.parse(String(init.body)) as { servedCountries?: string[] }).servedCountries ??
+              servedCountries)
+            : servedCountries,
+        revision: (init.method ?? 'GET') === 'PATCH' ? revision + 1 : revision,
+        updatedAt: 0,
+      },
+    },
+  }));
+}
+
+/**
+ * WHERE WE SHIP — the switch that opens international selling (migration 1060).
+ *
+ * The country list was a hardcoded constant until 1060, so the storefront
+ * disabled Continue for every foreign address no matter which zones existed.
+ * What matters on this card is therefore not that it renders, but that the
+ * BODY it sends is the list the server will store — and that it says out loud
+ * when a country has no delivery price, since an unzoned country quotes the
+ * catch-all's deliberately punitive international rate.
+ */
+describe('where we ship', () => {
+  it('lists the countries the shop serves, by name rather than by code', async () => {
+    withZones();
+    withSettings(['NG', 'GB']);
+    mount();
+
+    expect(await screen.findByText('Nigeria')).toBeTruthy();
+    expect(await screen.findByText('United Kingdom')).toBeTruthy();
+  });
+
+  it('sends the whole new list when a country is added', async () => {
+    const user = userEvent.setup();
+    withZones();
+    withSettings(['NG']);
+    mount();
+
+    await screen.findByText('Nigeria');
+    await user.selectOptions(await screen.findByLabelText('Add a country'), 'GH');
+
+    await waitFor(() => expect(bodiesOf(SETTINGS, 'PATCH')).toHaveLength(1));
+    /* The WHOLE list, not a delta — `servedCountries` replaces, and a patch
+       carrying only the new country would silently close the shop's home
+       market. And the CAS revision, so a second tab cannot overwrite this. */
+    expect(bodiesOf(SETTINGS, 'PATCH')[0]).toEqual({
+      expectedRevision: 3,
+      servedCountries: ['NG', 'GH'],
+    });
+  });
+
+  it('sends the list without the one removed', async () => {
+    const user = userEvent.setup();
+    withZones();
+    withSettings(['NG', 'GB']);
+    mount();
+
+    await user.click(await screen.findByRole('button', { name: 'Stop shipping to United Kingdom' }));
+
+    await waitFor(() => expect(bodiesOf(SETTINGS, 'PATCH')).toHaveLength(1));
+    expect(bodiesOf(SETTINGS, 'PATCH')[0]).toMatchObject({ servedCountries: ['NG'] });
+  });
+
+  /*
+   * NIGERIA CANNOT BE REMOVED, and the reason is not sentiment. The FIRST
+   * country in the list is what `serviceRefusal` treats as home when deciding
+   * whether the `served_regions` restriction applies, so dragging Nigeria out
+   * would silently re-scope a Nigerian state list onto whichever country
+   * sorted first.
+   */
+  it('offers no way to remove the home country', async () => {
+    withZones();
+    withSettings(['NG', 'GB']);
+    mount();
+
+    await screen.findByText('Nigeria');
+    expect(screen.queryByRole('button', { name: 'Stop shipping to Nigeria' })).toBeNull();
+  });
+
+  /*
+   * THE MISTAKE WORTH NAMING. Adding a country does not price it: with no zone
+   * of its own it falls to the catch-all, seeded at the punitive international
+   * rate so a forgotten price fails safe rather than giving away shipping.
+   */
+  it('warns when a served country has no zone naming it', async () => {
+    withZones();
+    withSettings(['NG', 'GB']);
+    mount();
+
+    const warning = await screen.findByText(/no delivery price/i);
+    expect(warning).toBeTruthy();
+    expect((await screen.findByText(/United Kingdom.*no zone of its own/is)).textContent).toContain(
+      'United Kingdom',
+    );
+  });
+
+  it('stays quiet when every served country is priced', async () => {
+    withZones([{ ...namedZone, id: 'zone_uk', label: 'UK', countries: ['GB'], regions: [] }]);
+    withSettings(['NG', 'GB']);
+    mount();
+
+    await screen.findByText('United Kingdom');
+    expect(screen.queryByText(/no delivery price/i)).toBeNull();
+  });
+});
+
 describe('the zones screen', () => {
   it('offers no Delete on the only fallback zone’s row', async () => {
     const user = userEvent.setup();
