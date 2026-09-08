@@ -371,6 +371,62 @@ describe('a nudge whose basket emptied before the batch reached it', () => {
   });
 });
 
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE HOLE FIX ROUND 1 CLOSES: `usesBasket` MATCHES ONLY THE `{{basket}}`
+ * BLOCK. A template that mentions `{{basket_total}}` or `{{basket_url}}` and
+ * never the block itself used to compute `needsBasket = false` in
+ * `drainBroadcast` — so nobody's basket was ever looked up, the reader saw
+ * literal `{{basket_total}}` braces, and — the exact failure this whole
+ * feature exists to prevent — NOBODY WAS EVER SKIPPED, so a person who had
+ * already paid could still receive a message saying their basket was
+ * waiting. `drainBroadcast` now asks the wider `needsBasket` predicate
+ * (`shared/email/variables.ts`), which is true for any of the three basket
+ * names. Both cases here use a body with `{{basket_total}}` and no
+ * `{{basket}}` at all, on purpose.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+describe('a template that mentions the basket total or link, but never the block', () => {
+  it('skips a recipient whose basket has emptied, even with no {{basket}} in the body', async () => {
+    const broadcast = await started(
+      ['ada@test.local'],
+      bodied('Your basket is worth {{basket_total}} — see it here: {{unsubscribe_url}}'),
+    );
+    const mailer = new Recorder();
+    // No cart at all for Ada: she bought, or emptied it, after she was picked.
+
+    const summary = await drainBroadcast(db, broadcast, mailer, ORIGIN, NOW);
+
+    expect(mailer.sent).toHaveLength(0);
+    expect(summary.emptyBasket).toBe(1);
+    expect(summary.sent).toBe(0);
+    const row = await recipientRow(broadcast.id);
+    expect(row.status).toBe('skipped');
+    expect(row.last_error).toBe('basket_empty');
+  });
+
+  it('substitutes the real total for a recipient who does have a basket', async () => {
+    await giveBasket('ada@test.local', [{ title: 'PLA Basic', qty: 2, unitMinor: 250_000 }]);
+    const broadcast = await started(
+      ['ada@test.local'],
+      bodied('Your basket is worth {{basket_total}} — see it here: {{unsubscribe_url}}'),
+    );
+    const mailer = new Recorder();
+
+    const summary = await drainBroadcast(db, broadcast, mailer, ORIGIN, NOW);
+
+    expect(summary.sent).toBe(1);
+    expect(summary.emptyBasket).toBe(0);
+    const [message] = mailer.sent;
+    // The real total, in both parts — not the block (the body never asked for
+    // it), just the bare scalar `basketTotal` produces.
+    expect(message.html).toContain('5000.00 NGN');
+    expect(message.text).toContain('5000.00 NGN');
+    expect(message.html).not.toContain('{{basket_total}}');
+    expect(message.text).not.toContain('{{basket_total}}');
+  });
+});
+
 describe('a broadcast that asks for no basket asks the database for none', () => {
   it('sends to somebody with no basket at all', async () => {
     const broadcast = await started(['ada@test.local'], bodied('Hello {{name}} {{unsubscribe_url}}'));

@@ -17,6 +17,7 @@ import {
   escapeHtml,
   greetingName,
   hasUnsubscribeVariable,
+  needsBasket,
   renderHtml,
   renderSubject,
   renderText,
@@ -224,6 +225,32 @@ describe('hasUnsubscribeVariable', () => {
     // The literal text is not the variable: a template that merely mentions the
     // words cannot be sent either.
     expect(hasUnsubscribeVariable('unsubscribe_url')).toBe(false);
+  });
+});
+
+/**
+ * `needsBasket` is `drainBroadcast`'s wider question: not "does this print the
+ * block" (`usesBasket`) but "does resolving this recipient's basket matter at
+ * all" — true for either scalar as well as the block, because a template can
+ * depend on a reader's basket without ever printing the `{{basket}}` table.
+ */
+describe('needsBasket', () => {
+  it('is true for any one of the three basket variables alone, not only the block', () => {
+    expect(needsBasket('Yours: {{basket_total}}')).toBe(true);
+    expect(needsBasket('Come back: {{basket_url}}')).toBe(true);
+    expect(needsBasket('{{basket}}')).toBe(true);
+  });
+
+  it('is whitespace-tolerant, like usesBasket and hasUnsubscribeVariable', () => {
+    expect(needsBasket('{{ basket_total }}')).toBe(true);
+    expect(needsBasket('{{ basket_url }}')).toBe(true);
+    expect(needsBasket('{{ basket }}')).toBe(true);
+  });
+
+  it('is false when none of the three appear', () => {
+    expect(needsBasket('Hi {{name}}, <a href="{{unsubscribe_url}}">unsubscribe</a>')).toBe(false);
+    // The literal words are not the variables, same rule as hasUnsubscribeVariable.
+    expect(needsBasket('basket_total basket_url basket')).toBe(false);
   });
 });
 

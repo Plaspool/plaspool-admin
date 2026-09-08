@@ -135,3 +135,55 @@ export function usesBasket(source: string): boolean {
   }
   return false;
 }
+
+/**
+ * The two SCALAR names populated from the same per-recipient lookup as
+ * `basket`, even though neither one is a block — see `TemplateValues` in
+ * `server/email/render.ts`. Named here, once, so `needsBasket` below is a
+ * list-membership test rather than three hard-coded string comparisons: a
+ * later basket variable joins this array (or `TEMPLATE_BLOCKS`, if it is a
+ * block) and `needsBasket` widens with it, rather than staying narrow the way
+ * three separate `=== '…'` checks would if a name were added to
+ * `TEMPLATE_VARIABLES` above and simply forgotten here.
+ */
+export const BASKET_SCALARS = ['basket_total', 'basket_url'] as const;
+
+const BASKET_VARIABLE_NAMES: readonly string[] = [...TEMPLATE_BLOCKS, ...BASKET_SCALARS];
+
+/**
+ * True if a body needs a recipient's basket resolved for it AT ALL — every
+ * name that comes from that one lookup, not only the `{{basket}}` block
+ * `usesBasket` above answers for.
+ *
+ * `usesBasket` MATCHES ONLY THE BLOCK, which is exactly right for what it is
+ * named — but `drainBroadcast` (`server/email/send.ts`) uses that same answer
+ * to decide something bigger: whether to look a basket up AT ALL, and
+ * therefore whether to SKIP a recipient whose basket has since emptied. A
+ * template written "Your basket is worth {{basket_total}} — {{basket_url}}"
+ * carries neither the block nor anything `usesBasket` would see, and yet it
+ * depends on the reader's basket exactly as much as one that prints the
+ * block. Deciding `drainBroadcast`'s basket need from `usesBasket` alone
+ * leaves such a template's basket unresolved: the reader sees literal
+ * `{{basket_total}}` braces, and — the exact failure this whole feature
+ * exists to prevent — NOBODY IS SKIPPED, so a person who has already paid
+ * still receives a message about the basket they left behind.
+ *
+ * DERIVED FROM `TEMPLATE_BLOCKS` PLUS `BASKET_SCALARS` ABOVE, not from three
+ * hard-coded comparisons, so a later basket variable cannot silently reopen
+ * this hole the way this one opened it: add the name to one of those two
+ * lists and this function widens with it.
+ *
+ * WHITESPACE-TOLERANT, for the reason `usesBasket` and `hasUnsubscribeVariable`
+ * both are: `{{ basket_total }}` depends on the basket exactly as much as
+ * `{{basket_total}}` does, and a check that missed the spaced form would tell
+ * a caller "nothing to resolve" about a template that plainly needs one.
+ *
+ * `usesBasket` ITSELF DOES NOT CHANGE. It keeps meaning "uses the block" —
+ * a narrower, different question other callers may still depend on.
+ */
+export function needsBasket(source: string): boolean {
+  for (const match of source.matchAll(placeholderPattern())) {
+    if (BASKET_VARIABLE_NAMES.includes(match[1].trim())) return true;
+  }
+  return false;
+}

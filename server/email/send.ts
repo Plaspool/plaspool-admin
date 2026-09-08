@@ -9,7 +9,7 @@ import {
   type ClaimedRecipient,
   type EmailBroadcast,
 } from './repo';
-import { greetingName, renderHtml, renderSubject, renderText, usesBasket } from './render';
+import { greetingName, needsBasket as templateNeedsBasket, renderHtml, renderSubject, renderText } from './render';
 import { basketBlock, basketTotal } from './basket-block';
 import { basketFor } from '../shop/admin/prospects';
 import { basketUrl } from '../shop/storefront-url';
@@ -247,12 +247,20 @@ export async function drainBroadcast(
   const summary = emptySummary();
   /*
    * A PROPERTY OF THE SNAPSHOT, SO IT IS ANSWERED ONCE. Whether this broadcast
-   * carries `{{basket}}` cannot vary by recipient, and asking per recipient
+   * needs a basket resolved cannot vary by recipient, and asking per recipient
    * would scan both bodies four thousand times for one answer. It also decides
    * whether anybody's basket is read at all: an ordinary newsletter must not pay
    * a per-recipient query for a placeholder it does not contain.
+   *
+   * THE PREDICATE IS `needsBasket`, NOT `usesBasket` — true for `{{basket_total}}`
+   * and `{{basket_url}}` as well as for the `{{basket}}` block itself. A template
+   * that carries only a scalar depends on the reader's basket exactly as much as
+   * one that prints the block, and `usesBasket` alone would miss it: nobody would
+   * be skipped for a basket that has since emptied, and the reader would see
+   * literal `{{basket_total}}` braces instead of a value. See the predicate's own
+   * comment in `shared/email/variables.ts`.
    */
-  const needsBasket = usesBasket(broadcast.html) || usesBasket(broadcast.text);
+  const needsBasket = templateNeedsBasket(broadcast.html) || templateNeedsBasket(broadcast.text);
   const candidates = await claimableRecipients(db, broadcast.id, limit);
 
   for (const candidate of candidates) {

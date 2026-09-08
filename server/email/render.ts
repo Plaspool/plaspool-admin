@@ -43,6 +43,7 @@ export {
   TEMPLATE_BLOCKS,
   hasUnsubscribeVariable,
   isTemplateBlock,
+  needsBasket,
   usesBasket,
 } from '../../shared/email/variables';
 export type { TemplateVariable, TemplateBlock } from '../../shared/email/variables';
