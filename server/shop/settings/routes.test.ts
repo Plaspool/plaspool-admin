@@ -35,7 +35,8 @@ beforeEach(async () => {
   http.clearCookies();
   await ctx.db.execute(sql`
     UPDATE shop_delivery_settings
-       SET address_mode = 'district', location_offered = false, served_regions = NULL, revision = 1
+       SET address_mode = 'district', location_offered = false, served_regions = NULL,
+           served_countries = '{NG}', revision = 1
      WHERE id = 'main'`);
 });
 
@@ -144,6 +145,63 @@ describe('PATCH', () => {
 
   it('refuses a save with no expectedRevision at all', async () => {
     expect((await http.patch(PATH, { addressMode: 'simple' })).status).toBe(400);
+  });
+});
+
+describe('served countries — where the shop ships at all', () => {
+  beforeEach(async () => {
+    await http.signIn({ email: 'owner@test.local' });
+  });
+
+  it('starts as Nigeria and nowhere else — the migration opens no doors', async () => {
+    expect((await read()).settings.servedCountries).toEqual(['NG']);
+  });
+
+  it('stores a list, so the storefront can offer the country', async () => {
+    const res = await http.patch(PATH, {
+      expectedRevision: 1,
+      servedCountries: ['NG', 'GB'],
+    });
+    expect(res.status).toBe(200);
+    expect((await json<Payload>(res)).settings.servedCountries).toEqual(['NG', 'GB']);
+  });
+
+  /* Normalised the way a region is, and for the same reason: an owner who
+     types " gb " has said something correct. Uppercase because the column's
+     CHECK and `zoneFor` both demand it. */
+  it('folds case and whitespace, and drops a repeat', async () => {
+    const res = await http.patch(PATH, {
+      expectedRevision: 1,
+      servedCountries: [' ng ', 'NG', 'gb'],
+    });
+    expect(res.status).toBe(200);
+    expect((await json<Payload>(res)).settings.servedCountries).toEqual(['NG', 'GB']);
+  });
+
+  it('leaves it alone when the key is absent', async () => {
+    await http.patch(PATH, { expectedRevision: 1, servedCountries: ['NG', 'GB'] });
+    await http.patch(PATH, { expectedRevision: 2, addressMode: 'simple' });
+    expect((await read()).settings.servedCountries).toEqual(['NG', 'GB']);
+  });
+
+  /*
+   * THE ONE THAT KEEPS THE SHOP OPEN. There is no "everywhere" and no
+   * "nowhere": an empty list is a 400 naming the field, never a CHECK
+   * violation surfacing as a 500, and `null` is not a spelling of either.
+   */
+  it('refuses an empty list rather than closing the shop', async () => {
+    const res = await http.patch(PATH, { expectedRevision: 1, servedCountries: [] });
+    expect(res.status).toBe(400);
+    expect((await read()).settings.servedCountries).toEqual(['NG']);
+  });
+
+  it('refuses something that is not a country code', async () => {
+    const res = await http.patch(PATH, {
+      expectedRevision: 1,
+      servedCountries: ['NG', 'Nigeria'],
+    });
+    expect(res.status).toBe(400);
+    expect((await read()).settings.servedCountries).toEqual(['NG']);
   });
 });
 

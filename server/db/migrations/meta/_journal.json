@@ -435,6 +435,13 @@
                         "when":  1786600005500,
                         "tag":  "1040_push_subscriptions",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  62,
+                        "version":  "7",
+                        "when":  1786600005600,
+                        "tag":  "1060_served_countries",
+                        "breakpoints":  true
                     }
                 ]
 }

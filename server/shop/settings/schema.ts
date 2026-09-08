@@ -47,6 +47,14 @@ export const shopDeliverySettings = pgTable(
      * CHECK rather than read as "serve nowhere".
      */
     servedRegions: text('served_regions').array(),
+    /**
+     * Where the shop will ship at all (migration 1060). ISO-3166-1 alpha-2.
+     *
+     * NOT NULL AND NEVER EMPTY, unlike `servedRegions` — there is no spelling
+     * of "everywhere". A country nobody named falls to the catch-all zone,
+     * which is the bug 0900 fixed; see the migration header.
+     */
+    servedCountries: text('served_countries').array().notNull(),
     /** CAS, as on `posts.revision`. Moves on every write. */
     revision: integer('revision').notNull(),
     updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),

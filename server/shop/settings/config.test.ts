@@ -17,6 +17,7 @@ const DISTRICT_MODE: DeliverySettings = {
   addressMode: 'district',
   locationOffered: false,
   servedRegions: null,
+  servedCountries: ['NG'],
   revision: 1,
   updatedAt: 0,
 };
@@ -105,6 +106,43 @@ describe('region', () => {
       const region = deliveryConfigFor(settings).fields.find((f) => f.key === 'region');
       expect(region).toMatchObject({ show: true, required: true });
     }
+  });
+});
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * WHERE THE SHOP WILL SHIP, FROM THE ROW RATHER THAN FROM A CONSTANT.
+ *
+ * `country` was three hardcoded values until this. The storefront gates its
+ * whole checkout on `allowed` — a non-matching address disables Continue — so
+ * this is the switch that opens international selling, and it opens WITHOUT a
+ * storefront deploy.
+ *
+ * `locked` AND `default` ARE DERIVED, NOT STORED. One country renders as text
+ * and is its own default; several render a dropdown. Two more columns could
+ * disagree with the list; a derivation cannot.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+describe('country', () => {
+  it('lists every country the shop serves, unlocked once there is a choice', () => {
+    expect(deliveryConfigFor({ ...DISTRICT_MODE, servedCountries: ['NG', 'GB', 'US'] }).country)
+      .toEqual({ default: 'NG', allowed: ['NG', 'GB', 'US'], locked: false });
+  });
+
+  /* The owner's ordering IS the default — first in the list is what the form
+   * pre-selects, so re-ordering the field re-points the default with it. */
+  it('takes the default from the head of the list, not from a pinned NG', () => {
+    const config = deliveryConfigFor({ ...DISTRICT_MODE, servedCountries: ['GB', 'NG'] });
+    expect(config.country.default).toBe('GB');
+    expect(config.country.locked).toBe(false);
+  });
+
+  it('locks the field again when the shop serves exactly one country', () => {
+    expect(deliveryConfigFor({ ...DISTRICT_MODE, servedCountries: ['GB'] }).country).toEqual({
+      default: 'GB',
+      allowed: ['GB'],
+      locked: true,
+    });
   });
 });
 

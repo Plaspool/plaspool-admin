@@ -50,6 +50,27 @@ const DeliverySettingsBody = z
      * either.
      */
     servedRegions: z.array(str().min(1).max(120)).max(100).nullable().optional(),
+    /**
+     * Where the shop ships at all (migration 1060). NOT nullable, unlike
+     * `servedRegions`: there is no "no restriction" to express, because a
+     * country nobody named falls to the catch-all zone — the bug 0900 fixed.
+     *
+     * THE SHAPE IS REFUSED HERE, where a bad value can be named to the person
+     * who typed it, rather than reaching the column's CHECK as a 500. Two
+     * letters, either case: the repo uppercases, so an owner typing `gb` is
+     * right. `[]` reaches the repo, which refuses it as a 400 for the same
+     * reason `servedRegions` does — closing the shop must not be one keystroke.
+     */
+    servedCountries: z
+      /* Surrounding whitespace is TOLERATED, not refused — the repo trims and
+       * uppercases, and a validation error about a stray space is the pedantry
+       * `normalizeServedRegions` already declines to commit. The two letters
+       * themselves are not negotiable: the column's CHECK and `zoneFor` both
+       * demand them, and refusing "Nigeria" here names the field to the person
+       * who typed it instead of surfacing a 23514 as a 500. */
+      .array(str().regex(/^\s*[A-Za-z]{2}\s*$/))
+      .max(250)
+      .optional(),
   })
   .strict();
 

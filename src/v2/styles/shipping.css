@@ -1,0 +1,54 @@
+/* ── Where we ship ──────────────────────────────────────────────────────────
+ *
+ * The country list on `/settings/shipping` (migration 1060).
+ *
+ * A WRAPPING ROW OF CHIPS, not a table: the list is fifty-six items at its
+ * widest and one item at its narrowest, and a table of one column is a table
+ * that looks broken at both ends.
+ *
+ * Spacing uses the `--s1`…`--s12` scale. There is no `--sp-*` scale in this
+ * codebase and inventing one produces CSS that silently computes to nothing.
+ */
+
+.wws__intro {
+  margin-bottom: var(--s3);
+}
+
+.wws {
+  display: grid;
+  gap: var(--s4);
+}
+
+.wws__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Each chip carries its own remove button, so the item is the hit target's
+ * parent rather than the badge — a badge that grew a button would change
+ * shape for every other use of Badge in the app. */
+.wws__item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  padding-right: var(--s1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-sub);
+}
+
+.wws__home {
+  padding-right: var(--s2);
+  font-size: var(--t-sm);
+}
+
+/* The picker is a fixed, readable width rather than the card's full span: a
+ * select stretched across a desktop card puts its caret a screen away from
+ * its label. */
+.wws .field {
+  max-width: 22rem;
+}
