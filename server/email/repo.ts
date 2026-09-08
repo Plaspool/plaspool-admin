@@ -97,6 +97,15 @@ export interface EmailSubscriber {
 export interface EmailBroadcast {
   id: string;
   templateId: string | null;
+  /**
+   * WHO this broadcast was for (migration 0980). `all_subscribers` is every
+   * non-suppressed row in `email_subscribers`, and is what every broadcast
+   * meant before the "Not bought yet" screen existed — the default, so no
+   * existing caller of `createBroadcast` had to change. `picked` reads its
+   * addresses from `email_broadcast_audience`; see `setBroadcastAudience` and
+   * `listBroadcastAudience`.
+   */
+  audienceKind: 'all_subscribers' | 'picked';
   subject: string;
   html: string;
   text: string;
@@ -147,7 +156,7 @@ const SUBSCRIBER_COLUMNS = sql.raw(
  * changes after the first statement.
  */
 const BROADCAST_COLUMNS = sql.raw(
-  `id, template_id, subject, html, text, status, created_by, created_at,
+  `id, template_id, audience_kind, subject, html, text, status, created_by, created_at,
    scheduled_at, started_at, finished_at, sent_count, failed_count,
    (SELECT count(*) FROM email_broadcast_recipients r
      WHERE r.broadcast_id = email_broadcasts.id) AS recipient_count`,
@@ -182,6 +191,7 @@ function rowToBroadcast(row: Record<string, unknown>): EmailBroadcast {
   return {
     id: String(row.id),
     templateId: row.template_id == null ? null : String(row.template_id),
+    audienceKind: row.audience_kind as EmailBroadcast['audienceKind'],
     subject: String(row.subject),
     html: String(row.html),
     text: String(row.text),
@@ -811,14 +821,27 @@ export async function tokenForEmail(db: Db, email: string): Promise<string | nul
 
 export async function createBroadcast(
   db: Db,
-  snapshot: { templateId: string | null; subject: string; html: string; text: string },
+  snapshot: {
+    templateId: string | null;
+    subject: string;
+    html: string;
+    text: string;
+    /**
+     * ABSENT MEANS `all_subscribers` — every caller before Task 7 (this
+     * repository's route included) constructs a snapshot with no opinion
+     * about audience at all, and that has to keep compiling and keep meaning
+     * what it always meant.
+     */
+    audienceKind?: 'all_subscribers' | 'picked';
+  },
   actorId: string,
   now: number,
 ): Promise<EmailBroadcast> {
   const res = await db.execute(sql`
-    INSERT INTO email_broadcasts (id, template_id, subject, html, text, status,
+    INSERT INTO email_broadcasts (id, template_id, audience_kind, subject, html, text, status,
                                   created_by, created_at)
     VALUES (${randomUUID()}::uuid, ${snapshot.templateId}::uuid,
+            ${snapshot.audienceKind ?? 'all_subscribers'},
             ${snapshot.subject}, ${snapshot.html}, ${snapshot.text}, 'draft',
             ${actorId}::uuid, ${now})
     RETURNING ${BROADCAST_COLUMNS}`);
@@ -908,29 +931,114 @@ export async function deleteBroadcast(db: Db, id: string): Promise<boolean> {
   return res.rows.length > 0;
 }
 
+// ------------------------------------------------------- picked audiences
+
 /**
- * Enqueue the audience: every subscriber who has not opted out, once.
+ * Record who a `picked` broadcast is aimed at.
  *
- * ONE STATEMENT, `INSERT … SELECT`, so an audience of five thousand is one round
- * trip to Neon rather than five thousand. `ON CONFLICT DO NOTHING` against the
- * dedupe index is what makes a duplicated call — a second press, a retried
- * request, a cron delivery Vercel documents as possibly duplicated — enqueue
- * nothing the second time.
+ * Addresses are folded by `normaliseEmail` — the same function
+ * `email_subscribers_email_ck` enforces and `addSubscriber` folds through — so
+ * a pick and the subscriber row `enqueueAudience` creates for it at send time
+ * can never disagree about identity. Deduplicated in JS before the round
+ * trip, so `'A@x.test'` and `'a@x.test'` in one call cost one row, not a
+ * conflict to swallow.
+ *
+ * Returns how many DISTINCT, non-blank addresses were newly recorded — a
+ * second call naming an address already on the list records nothing more for
+ * it. The route uses a zero here to refuse a body that folded to nothing
+ * usable, rather than silently creating a broadcast that can never reach
+ * anybody.
+ */
+export async function setBroadcastAudience(
+  db: Db,
+  broadcastId: string,
+  emails: string[],
+): Promise<number> {
+  const folded = [...new Set(emails.map(normaliseEmail))].filter((e) => e !== '');
+  if (folded.length === 0) return 0;
+  // `sql.param(...)::text[]` — a bare array bind is a `22P02`.
+  const res = await db.execute(sql`
+    INSERT INTO email_broadcast_audience (broadcast_id, email)
+    SELECT ${broadcastId}::uuid, e
+      FROM unnest(${sql.param(folded)}::text[]) AS e
+    ON CONFLICT (broadcast_id, email) DO NOTHING
+    RETURNING email`);
+  return res.rows.length;
+}
+
+/**
+ * Every address a `picked` broadcast was aimed at, folded, alphabetically.
+ *
+ * THIS IS "WHO DID WE PICK", NOT "WHO DID WE REACH" — deliberately independent
+ * of `email_broadcast_recipients`. Someone unsubscribed, or never subscribed
+ * and could not be enrolled, still belongs on this list; the gap between it
+ * and the recipient queue is exactly what an operator needs to see (migration
+ * 0980's header). `enqueueAudience` also uses this to drive enrolment.
+ */
+export async function listBroadcastAudience(db: Db, broadcastId: string): Promise<string[]> {
+  const res = await db.execute(sql`
+    SELECT email FROM email_broadcast_audience
+     WHERE broadcast_id = ${broadcastId}::uuid
+     ORDER BY email ASC`);
+  return res.rows.map((row) => String(row.email));
+}
+
+/**
+ * Enqueue the audience, once: for an `all_subscribers` broadcast, every
+ * subscriber who has not opted out; for a `picked` one, every subscriber whose
+ * address is on this broadcast's own picked list.
+ *
+ * THE `all_subscribers` PATH IS CHARACTER-FOR-CHARACTER WHAT IT WAS BEFORE
+ * `picked` EXISTED — one `INSERT … SELECT`, with the branch below adding
+ * nothing but a predicate to it. So an audience of five thousand is still one
+ * round trip to Neon rather than five thousand, and `ON CONFLICT DO NOTHING`
+ * against the dedupe index still makes a duplicated call — a second press, a
+ * retried request, a cron delivery Vercel documents as possibly duplicated —
+ * enqueue nothing the second time.
+ *
+ * A `picked` BROADCAST ENROLS ITS AUDIENCE AS SUBSCRIBERS FIRST, IN
+ * JAVASCRIPT, AND IT IS WHAT MAKES THE SEND LAWFUL RATHER THAN A CONVENIENCE.
+ * Most people a picked list names have no subscriber row at all — production
+ * held ZERO when this was written — and no row means no token, which means no
+ * working unsubscribe link in a message about to be sent. `addSubscriber` is
+ * idempotent and NEVER resurrects an unsubscribed address; that property is
+ * the whole reason this reuses it rather than writing its own INSERT. The
+ * enrolment happens in JS, one row at a time, rather than as a single
+ * `INSERT … SELECT`, because `email_subscribers.token` is an HMAC of
+ * `email_subscribers.id` and that id has to exist in the process before the
+ * row does — see the note on that column in migration 0008.
  *
  * `gen_random_uuid()` for the recipient id, unlike `email_subscribers.id`: nothing
  * about a recipient row is derived from its id, so there is no reason to mint five
  * thousand of them in the process and send them over the wire.
  *
- * SUPPRESSION IS APPLIED HERE **AND** AT CLAIM TIME. Here it keeps the queue from
- * carrying rows that can never be sent; there it catches the person who opts out
- * between the two. Neither is sufficient alone, and `send.ts` tests both.
+ * SUPPRESSION IS APPLIED HERE **AND** AT CLAIM TIME, for both audience kinds.
+ * Here it keeps the queue from carrying rows that can never be sent; there it
+ * catches the person who opts out between the two. Neither is sufficient
+ * alone, and `send.ts` tests both.
  */
 export async function enqueueAudience(db: Db, broadcastId: string): Promise<number> {
+  const kind = await db.execute(sql`
+    SELECT audience_kind FROM email_broadcasts WHERE id = ${broadcastId}::uuid`);
+  const picked = String(kind.rows[0]?.audience_kind ?? 'all_subscribers') === 'picked';
+
+  if (picked) {
+    const enrolledAt = Date.now();
+    for (const email of await listBroadcastAudience(db, broadcastId)) {
+      await addSubscriber(db, { email, source: 'customer', consentAt: null }, enrolledAt);
+    }
+  }
+
   const res = await db.execute(sql`
     INSERT INTO email_broadcast_recipients (id, broadcast_id, subscriber_id, status)
     SELECT gen_random_uuid(), ${broadcastId}::uuid, s.id, 'pending'
       FROM email_subscribers s
      WHERE s.unsubscribed_at IS NULL
+       ${picked
+         ? sql`AND EXISTS (SELECT 1 FROM email_broadcast_audience a
+                            WHERE a.broadcast_id = ${broadcastId}::uuid
+                              AND a.email = s.email)`
+         : sql``}
     ON CONFLICT (broadcast_id, subscriber_id) DO NOTHING
     RETURNING id`);
   return res.rows.length;
@@ -1056,6 +1164,35 @@ export async function markRecipientFailed(
       UPDATE email_broadcasts SET failed_count = failed_count + 1
        WHERE id = ${broadcastId}::uuid`);
   }
+}
+
+/**
+ * Not delivered, and not a failure either — a nudge whose basket emptied
+ * between the pick and the batch that reached it (`server/email/send.ts`).
+ *
+ * `attempts` IS NOT TOUCHED. A skip never reached the provider, so unlike
+ * `markRecipientFailed` — which moves this same row through a CAS on that
+ * column — a skip is not an attempt at delivery.
+ *
+ * No broadcast-level counter moves here, unlike `markRecipientSent` and
+ * `markRecipientFailed`: `email_broadcasts` has no `skipped_count` (migration
+ * 0980 did not add one), so the tally for a batch lives only in the drain's
+ * own `DrainSummary`.
+ *
+ * `broadcastId` scopes the guard defensively alongside `id`, even though `id`
+ * alone already identifies the row uniquely — cheap insurance against a stray
+ * call skipping a row under the wrong broadcast.
+ */
+export async function markRecipientSkipped(
+  db: Db,
+  id: string,
+  broadcastId: string,
+  reason: string,
+): Promise<void> {
+  await db.execute(sql`
+    UPDATE email_broadcast_recipients
+       SET status = 'skipped', last_error = ${reason}
+     WHERE id = ${id}::uuid AND broadcast_id = ${broadcastId}::uuid AND status = 'pending'`);
 }
 
 /**
