@@ -1,4 +1,4 @@
--- BROADCAST AUDIENCE (range 0980-0999; owner's answers 2026-09-08).
+-- BROADCAST AUDIENCE (range 1000-1019; owner's answers 2026-09-08).
 --
 -- WARNING (2026-09-08): the dev database's ledger high-water was measured at
 -- 1786600005400 the same day this migration's journal entry was corrected to
