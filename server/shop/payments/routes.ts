@@ -12,7 +12,7 @@ import { createRefund, listRefunds } from './refunds';
 import { completeCheckoutForIntent, drainPaymentEvents, processEvent, storeEvent } from './webhook';
 import type { Context } from 'hono';
 import type { AppEnv } from '../../app-env';
-import { DEFAULT_PAYMENTS_CALLBACK_URL } from './utils/callback-url';
+import { paymentsCallbackUrl } from './utils/callback-url';
 import type { Db } from '../../db/client';
 import type { PaymentsCheckoutPort } from './checkout';
 import type { PaymentProvider } from './provider/types';
@@ -335,7 +335,21 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
       checkoutId: body.checkoutId,
       email: body.email,
       idempotencyKey: body.idempotencyKey,
-      callbackUrl: deps.callbackUrl ?? safeCallbackUrl(),
+      /*
+       * THE ORIGIN IS READ HERE AND NOWHERE ELSE IN THE SHOP. This request was
+       * made by the customer's own browser, on the storefront they are buying
+       * from, so its `Origin` is the only honest answer to "which of our two
+       * storefronts must Paystack return this person to" — and getting it wrong
+       * sends a dev test payment home to the live shop, where `/confirm` 404s
+       * against a database that has never seen the intent.
+       *
+       * It is a KEY into `STOREFRONT_ORIGINS`, never a value: an origin that is
+       * not one of the two hostnames we publish is discarded and production
+       * stands. `storefrontOrigin` enforces that, and `originGuard` has already
+       * refused this POST outright if the header is absent or unknown to
+       * `APP_ORIGINS`.
+       */
+      callbackUrl: deps.callbackUrl ?? safeCallbackUrl(c.req.header('Origin')),
     });
     /*
      * 200 ON A REPLAY, 201 ON A CREATE. The body is identical either way —
@@ -509,8 +523,14 @@ function publicIntent(intent: {
  * payments environment at all — does not turn creating an intent into a 500
  * raised by config parsing. The callback is a convenience; the webhook and
  * `/confirm` are the mechanisms.
+ *
+ * @param requestOrigin the intent-creation request's `Origin` header, which
+ * decides WHICH storefront the customer is returned to. Omitting it is safe and
+ * yields production — but on the dev deployment it is the difference between a
+ * test payment coming home and one landing on the live shop as a 404. See
+ * `utils/callback-url.ts` for the account of that bug.
  */
-function safeCallbackUrl(): string | undefined {
+function safeCallbackUrl(requestOrigin?: string): string | undefined {
   try {
     /*
      * The environment still wins, so a preview can redirect somewhere else
@@ -527,9 +547,9 @@ function safeCallbackUrl(): string | undefined {
     // straight through, `paystack.ts` would omit `callback_url` entirely, and
     // the customer would land on Paystack's generic page, which is the exact
     // regression this fallback exists to prevent.
-    return paymentsEnv().PAYMENTS_CALLBACK_URL || DEFAULT_PAYMENTS_CALLBACK_URL;
+    return paymentsEnv().PAYMENTS_CALLBACK_URL || paymentsCallbackUrl(requestOrigin);
   } catch {
-    return DEFAULT_PAYMENTS_CALLBACK_URL;
+    return paymentsCallbackUrl(requestOrigin);
   }
 }
 

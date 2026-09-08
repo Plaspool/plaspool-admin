@@ -43,6 +43,43 @@
  */
 export const DEFAULT_STOREFRONT_ORIGIN = 'https://plaspool.com';
 
+/**
+ * ⚠  THE DEVELOPMENT STOREFRONT — a different DATABASE behind it, not a staging
+ * copy of the same one.
+ *
+ * `dev.plaspool.com` is the storefront that talks to `admin.dev.plaspool.com`,
+ * whose Preview environment scope carries its own `DATABASE_URL`. The same
+ * sentence `admin-url.ts` writes about invitations applies here to money: a URL
+ * that names the wrong one of these two is not a broken link, it is a link to
+ * the wrong database, and both ends answer 200 while it happens.
+ *
+ * THE BUG THIS EXISTS FOR (found 2026-09-08 by reading the redirect, which is
+ * the only place it is visible). A test payment made against the dev admin was
+ * stamped with production's `/checkout/complete` as its Paystack `callback_url`.
+ * Paystack redirected the customer to the LIVE shop, which called `/confirm`
+ * against the LIVE API, whose database has never heard of that intent — so a
+ * successful test payment rendered as a 404 on the wrong site, and the dev order
+ * settled minutes later via the sweep with nothing on screen connecting the two.
+ *
+ * This is `revalidate-url.ts`'s bug wearing a second hat, and it survived that
+ * fix because payments held its own hardcoded copy of the same string rather
+ * than reading this module.
+ */
+export const DEV_STOREFRONT_ORIGIN = 'https://dev.plaspool.com';
+
+/**
+ * Every hostname a customer of this shop may legitimately be SENT to.
+ *
+ * Not an allow-list for requests — `middleware/origin.ts` owns that, and
+ * `APP_ORIGINS` is where a second storefront is granted the right to CALL this
+ * API. This is the far smaller set of addresses fit to put in a redirect or in
+ * mail, and membership here grants nothing.
+ */
+export const STOREFRONT_ORIGINS: readonly string[] = [
+  DEFAULT_STOREFRONT_ORIGIN,
+  DEV_STOREFRONT_ORIGIN,
+];
+
 function normalise(raw: string): string {
   const trimmed = raw.trim();
   return trimmed.endsWith('/') ? trimmed.replace(/\/+$/, '') : trimmed;
@@ -51,15 +88,54 @@ function normalise(raw: string): string {
 /**
  * The origin customer links are built from.
  *
+ * @param requestOrigin the calling request's `Origin` header, when the caller is
+ * a browser on the storefront and there is one. OMIT IT unless the request is
+ * genuinely coming FROM the storefront — see the warning below.
+ *
+ * ═══ THE REQUEST'S ORIGIN IS A KEY INTO `STOREFRONT_ORIGINS`, NEVER A VALUE ═══
+ * The same safety property `adminOrigin` spells out, for the same reason. `Host`
+ * is attacker-controlled outright and `Origin` is only better, not authoritative
+ * — so it is matched by EQUALITY against the constants above and the matched
+ * CONSTANT is returned. Anything else is discarded and production stands. The
+ * worst a forged header achieves is choosing between two hostnames we own,
+ * publish, and would have been content to send anyway.
+ *
+ * ═══ MOST CALLERS MUST NOT PASS ONE, AND THAT IS NOT AN OVERSIGHT ═══
+ * The parameter is optional because for nearly every caller there is no request
+ * whose origin means anything:
+ *
+ *   - order and review mail is sent by the SWEEP, on a cron, with no request in
+ *     sight at all
+ *   - the catalogue's cache purge runs on an ADMIN save, so the origin in hand
+ *     is `admin.dev.plaspool.com` — an admin host, never a member of this list,
+ *     correctly discarded
+ *   - `configuredOrigins()` is building an allow-list, where reading the
+ *     caller's own claim would be circular
+ *
+ * Passing `c.req.header('Origin')` at one of those sites would look like an
+ * improvement and would be wrong. It is right at exactly one kind of site: a
+ * request the STOREFRONT made, about the browser that made it. Payment intent
+ * creation is that site.
+ *
  * READS THE ENVIRONMENT ON EVERY CALL rather than at module load. A module-level
  * `const` is captured once per process, and these functions run inside a Vercel
  * lambda that is reused across invocations — so a value read at import time is
  * the value from whenever the container happened to start. It is also what makes
  * this testable without module-registry games.
+ *
+ * `STOREFRONT_ORIGIN` still wins over both, so a host not yet listed here can be
+ * pointed at without a code change.
  */
-export function storefrontOrigin(): string {
+export function storefrontOrigin(requestOrigin?: string): string {
   const configured = process.env.STOREFRONT_ORIGIN;
   if (configured !== undefined && configured.trim() !== '') return normalise(configured);
+
+  if (requestOrigin !== undefined && requestOrigin.trim() !== '') {
+    const candidate = normalise(requestOrigin);
+    const known = STOREFRONT_ORIGINS.find((origin) => origin === candidate);
+    if (known !== undefined) return known;
+  }
+
   return DEFAULT_STOREFRONT_ORIGIN;
 }
 
