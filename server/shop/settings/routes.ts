@@ -6,6 +6,7 @@ import { currentDb, currentUser } from '../../app-env';
 import { NotFoundError } from '../../repo/errors';
 import { deliveryConfigFor } from './config';
 import { getDeliverySettings, patchDeliverySettings } from './repo';
+import { activeCourier } from '../logistics/repo';
 import type { AppEnv } from '../../app-env';
 
 /**
@@ -93,7 +94,14 @@ deliverySettingsRoutes.get('/admin/delivery-settings', auth, async (c) => {
    * write would be a screen that looks fine over a broken deployment.
    */
   if (settings === null) throw new NotFoundError('delivery_settings');
-  return c.json({ settings, config: deliveryConfigFor(settings) });
+  /* THE ACTIVE COURIER DECIDES WHETHER THE ROUTING-CITY FIELD EXISTS, so the
+   * screen must show the form the storefront will actually render — the whole
+   * reason the config rides along beside the row. `deliveryConfigFor` stays
+   * pure; reading which courier is switched on is this route's job. */
+  return c.json({
+    settings,
+    config: deliveryConfigFor(settings, await activeCourier(currentDb(c))),
+  });
 });
 
 deliverySettingsRoutes.patch('/admin/delivery-settings', requireAdmin(), async (c) => {
@@ -103,5 +111,8 @@ deliverySettingsRoutes.patch('/admin/delivery-settings', requireAdmin(), async (
     actorId: currentUser(c).id,
     now: Date.now(),
   });
-  return c.json({ settings, config: deliveryConfigFor(settings) });
+  return c.json({
+    settings,
+    config: deliveryConfigFor(settings, await activeCourier(currentDb(c))),
+  });
 });

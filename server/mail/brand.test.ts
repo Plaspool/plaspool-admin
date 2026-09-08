@@ -209,6 +209,25 @@ describe('components', () => {
     expect(button('Go', 'https://a.test/?a=1&b=2')).toContain('a=1&amp;b=2');
   });
 
+  it('LINKS A ROW THAT CARRIES AN href, so a tracking page is clickable in Outlook', () => {
+    const html = facts([{ label: 'Track', value: 'https://t.test/x', mono: true, href: 'https://t.test/x' }]);
+    expect(html).toContain('href="https://t.test/x"');
+    expect(html).toContain('text-decoration:underline');
+  });
+
+  it('REFUSES A NON-http SCHEME, keeping the text and dropping the link', () => {
+    /*
+     * A tracking URL is a courier's string on a row this admin renders into
+     * markup. `esc` alone does not save an `href` — `javascript:alert(1)`
+     * contains none of the five characters it replaces — so the scheme is
+     * checked rather than escaped, and a refused one still shows its text.
+     */
+    const html = facts([{ label: 'Track', value: 'javascript:alert(1)', href: 'javascript:alert(1)' }]);
+    expect(html).not.toContain('<a ');
+    expect(html).not.toContain('href=');
+    expect(html).toContain('javascript:alert(1)');
+  });
+
   it('TICKS EVERY REACHED STEP AND LEAVES THE REST EMPTY', () => {
     /*
      * A tick is read as a symbol before it is read as a colour, which is what

@@ -31,6 +31,9 @@ import { SHOP_PREFIX, shopApp } from './shop/app';
 import { createReviewPublicRoutes } from './shop/reviews/public';
 import { createDeliveryConfigRoutes } from './shop/settings/public';
 import { createPaymentRoutes, createWebhookRoutes } from './shop/payments/routes';
+import { createLogisticsWebhookRoutes } from './shop/logistics/webhooks';
+import { syncCourierStatuses } from './shop/logistics/sync';
+import { resolveLogisticsDeps } from './shop/logistics/deps';
 import { checkoutPort } from './shop/cart/port';
 import { drainCommerceEvents } from './shop/orders/repo/consumer';
 import { resolveShopCustomer } from './shop/cart/identity/customers';
@@ -244,6 +247,26 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
         refundId: result.refund.id,
         status: result.refund.status,
       })),
+    /*
+     * THE SIXTH SEAM: ASK THE COURIERS WHERE THE PARCELS ARE.
+     *
+     * The BACKSTOP behind the two webhook routes mounted below, not the
+     * mechanism — a callback can be lost to a deploy, a cold start or a URL
+     * nobody registered, and without this a parcel delivered on Tuesday still
+     * reads "Pending Pick-Up" on Friday and its customer never got a shipment
+     * email. Bounded to one page of parcels per run, sharing `runSweep`'s
+     * `maxDuration: 30` with the payment drain and the commerce sweep.
+     *
+     * INJECTED RATHER THAN IMPORTED, exactly as `drainPayments` above is and for
+     * the same rule: `GET /admin/sweep` is Orders' route, and Orders does not
+     * import Logistics. This closure is the only place that knows both halves.
+     *
+     * `resolveLogisticsDeps()` IS CALLED PER SWEEP, not once here — a courier's
+     * credentials can change under a running process (`resetLogisticsEnv`), and
+     * a resolution captured at boot would keep answering with the adapters that
+     * existed then.
+     */
+    syncCouriers: (db, now) => syncCourierStatuses(db, resolveLogisticsDeps(), now),
   });
 
   /*
@@ -373,6 +396,31 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
         ),
     }),
   );
+
+  /*
+   * THE COURIERS' WEBHOOKS, DIRECTLY AFTER THE PAYMENTS ONE AND FOR THE
+   * IDENTICAL REASON.
+   *
+   * Fez and Terminal call us server-to-server with no `Origin` and no cookie,
+   * so mounted below `originGuard` both endpoints would be a 403 on every
+   * genuine event and each courier would retry it for days — the exact shape of
+   * AMENDMENTS A-PAY-001, one subsystem later. The exemption is safe here for
+   * the same reason it is safe above: neither route reads a cookie, resolves a
+   * session or trusts anything about the caller, and their whole authority is a
+   * signature over the raw body that a cross-origin form post cannot produce.
+   *
+   * NO DEPENDENCIES ARE PASSED, and that is not the trap `createWebhookRoutes`
+   * above documents. Logistics resolves its couriers and its clock through
+   * `resolveLogisticsDeps()` PER REQUEST (`shop/logistics/deps.ts`), so there is
+   * no seam here that a mount could leave unwired — the catalog port is
+   * registered by `shopApp()` and the adapters are built from the environment.
+   *
+   * BELOW THE DATABASE FACTORY, because a delivery writes a parcel and a log
+   * row; ABOVE `sessionMiddleware`, which is a property rather than an
+   * accident — reading a cookie is the one thing that would make the origin
+   * exemption unsafe.
+   */
+  app.route(API_PREFIX, createLogisticsWebhookRoutes());
 
   /*
    * UNSUBSCRIBE, AND IT IS ABOVE `originGuard` FOR THE SAME REASON THE WEBHOOK IS.

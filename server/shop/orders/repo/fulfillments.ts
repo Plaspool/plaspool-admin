@@ -49,6 +49,14 @@ import {
 
 export type FulfillmentStatus = 'pending' | 'shipped' | 'delivered' | 'cancelled';
 
+/** Which courier booked a parcel. NULL on the row = shipped by hand. */
+export type CourierProvider = 'fez' | 'terminal';
+
+/** Our normalised reading of the courier's last raw status (migration 0980). */
+export type CourierState =
+  | 'draft' | 'booked' | 'picked_up' | 'in_transit' | 'delivered'
+  | 'returned' | 'cancelled' | 'failed' | 'unknown';
+
 export interface FulfillmentLine {
   id: string;
   orderLineId: string;
@@ -66,6 +74,16 @@ export interface Fulfillment {
   createdAt: number;
   revision: number;
   lines: FulfillmentLine[];
+  /* ── courier booking (0980); all NULL for a parcel shipped by hand ── */
+  provider: CourierProvider | null;
+  providerRef: string | null;
+  providerStatus: string | null;
+  courierState: CourierState | null;
+  trackingUrl: string | null;
+  labelUrl: string | null;
+  providerCostMinor: number | null;
+  providerSyncedAt: number | null;
+  providerLastError: string | null;
 }
 
 const FULFILLMENT_COLUMNS = [
@@ -78,19 +96,31 @@ const FULFILLMENT_COLUMNS = [
   'delivered_at',
   'created_at',
   'revision',
+  'provider',
+  'provider_ref',
+  'provider_status',
+  'courier_state',
+  'tracking_url',
+  'label_url',
+  'provider_cost_minor',
+  'provider_synced_at',
+  'provider_last_error',
 ];
 
-const returning = (alias?: string) =>
+/** `SELECT`/`RETURNING` list, optionally alias-qualified. Shared with repo/courier.ts. */
+export const returning = (alias?: string) =>
   FULFILLMENT_COLUMNS.map((c) => (alias ? `${alias}.${c}` : c)).join(', ');
 
-function rowToFulfillment(row: Record<string, unknown>): Fulfillment {
+const text = (v: unknown): string | null => (v == null ? null : String(v));
+
+export function rowToFulfillment(row: Record<string, unknown>): Fulfillment {
   const lines = (row.lines as Record<string, unknown>[]) ?? [];
   return {
     id: String(row.id),
     orderId: String(row.order_id),
     status: row.status as FulfillmentStatus,
-    carrier: row.carrier == null ? null : String(row.carrier),
-    trackingNumber: row.tracking_number == null ? null : String(row.tracking_number),
+    carrier: text(row.carrier),
+    trackingNumber: text(row.tracking_number),
     shippedAt: toEpochMsOrNull(row.shipped_at),
     deliveredAt: toEpochMsOrNull(row.delivered_at),
     createdAt: toEpochMs(row.created_at),
@@ -100,6 +130,15 @@ function rowToFulfillment(row: Record<string, unknown>): Fulfillment {
       orderLineId: String(line.order_line_id),
       qty: Number(line.qty),
     })),
+    provider: text(row.provider) as CourierProvider | null,
+    providerRef: text(row.provider_ref),
+    providerStatus: text(row.provider_status),
+    courierState: text(row.courier_state) as CourierState | null,
+    trackingUrl: text(row.tracking_url),
+    labelUrl: text(row.label_url),
+    providerCostMinor: row.provider_cost_minor == null ? null : Number(row.provider_cost_minor),
+    providerSyncedAt: toEpochMsOrNull(row.provider_synced_at),
+    providerLastError: text(row.provider_last_error),
   };
 }
 
@@ -497,6 +536,11 @@ function shipTransition(details?: FulfillmentDetails): FulfillmentTransition {
             lines: parcelLines(order, fulfillment),
             carrier: shipping.carrier,
             trackingNumber: shipping.trackingNumber,
+            /* The courier's tracking page, when a courier booked this parcel
+             * (migration 0980). NOT part of `FulfillmentDetails`: the ship
+             * dialog cannot type it, only a booking can write it, so it comes
+             * off the stored row and never off the request. */
+            trackingUrl: shipping.trackingUrl,
           },
           link,
           templates,

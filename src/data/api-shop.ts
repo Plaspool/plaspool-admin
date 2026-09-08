@@ -644,6 +644,11 @@ export interface ShopOrderLine {
 
 export type FulfillmentStatus = 'pending' | 'shipped' | 'delivered' | 'cancelled';
 
+export type CourierProviderId = 'manual' | 'fez' | 'terminal';
+export type CourierState =
+  | 'draft' | 'booked' | 'picked_up' | 'in_transit' | 'delivered'
+  | 'returned' | 'cancelled' | 'failed' | 'unknown';
+
 export interface ShopFulfillment {
   id: string;
   orderId: string;
@@ -655,6 +660,163 @@ export interface ShopFulfillment {
   createdAt: number;
   revision: number;
   lines: { id: string; orderLineId: string; qty: number }[];
+  /** Courier booking (migration 0980) — all absent on responses from before couriers shipped; read as null. */
+  provider?: Exclude<CourierProviderId, 'manual'> | null;
+  providerRef?: string | null;
+  providerStatus?: string | null;
+  courierState?: CourierState | null;
+  trackingUrl?: string | null;
+  labelUrl?: string | null;
+  providerCostMinor?: number | null;
+  providerSyncedAt?: number | null;
+  providerLastError?: string | null;
+}
+
+/**
+ * The delivery-courier surface (`server/shop/logistics/*`, migration 0980).
+ *
+ * `GET /shop/logistics/provider` is NOT under `BASE` — every signed-in role may
+ * ask which courier is switched on (the route is `requireAuth()` only, so the
+ * teammate packing a parcel gets an answer). Everything else here sits under
+ * `/shop/admin/logistics/*` (the `settings` permission) or
+ * `/shop/admin/fulfillments/:id/courier/*` (booking a parcel, gated `orders`).
+ */
+export interface ShopCourierProvider { provider: CourierProviderId; label: string }
+
+export interface ShopShipFrom {
+  name: string; phone: string; email?: string; line1: string; line2?: string;
+  city: string; region: string; postalCode: string; countryCode: 'NG';
+}
+export interface ShopCourierPackaging { name: string; lengthCm: number; widthCm: number; heightCm: number; weightKg: number }
+export interface ShopCourierProviderStatus {
+  /** A parcel can be BOOKED with this courier: the credentials it books with are on the server. */
+  configured: boolean;
+  /**
+   * This courier's callbacks can be VERIFIED here — a different question, and
+   * for Fez a different credential (`FEZ_SECRET_KEY`, absent from
+   * `configured`). `configured && !webhookReady` is a shop that can send
+   * parcels and can never hear what happened to them.
+   */
+  webhookReady: boolean;
+  environment: 'sandbox' | 'live';
+  webhookUrl: string;
+}
+export interface ShopCourierWebhookRow {
+  id: string; provider: 'fez' | 'terminal'; providerRef: string | null; rawStatus: string | null;
+  verified: boolean; applied: 'applied' | 'ignored' | 'unmatched' | 'rejected'; receivedAt: number;
+}
+export interface ShopCourierSettings {
+  provider: CourierProviderId;
+  shipFrom: ShopShipFrom | null;
+  packaging: ShopCourierPackaging;
+  revision: number;
+  /** Rides along on every settings read (`settingsView` in the courier routes); tolerated, not yet shown. */
+  updatedAt: number;
+  providers: { fez: ShopCourierProviderStatus; terminal: ShopCourierProviderStatus };
+  variantsMissingWeight: number;
+  variantsTotal: number;
+  recentWebhooks: ShopCourierWebhookRow[];
+}
+export interface ShopCourierSettingsPatch {
+  expectedRevision: number;
+  provider?: CourierProviderId;
+  shipFrom?: ShopShipFrom | null;
+  packaging?: ShopCourierPackaging;
+}
+/**
+ * What `POST /shop/admin/logistics/places/refresh` answers — the courier's own
+ * lists of states and the places inside them, re-fetched and cached.
+ *
+ * `cities` IS EVERY PLACE ACROSS EVERY STATE, not the number of states that
+ * have any, and it is `0` for a courier that checks no place names at all
+ * (Fez). Zero and "none acceptable" are not the same claim, which is why the
+ * screen says the two differently.
+ */
+export interface ShopCourierPlaces {
+  country: string;
+  provider: CourierProviderId;
+  regions: number;
+  cities: number;
+  updatedAt: number;
+}
+
+export interface ShopCourierOption {
+  id: string; carrier: string; label: string; amountMinor: number; currency: 'NGN'; eta?: string; pickupEta?: string;
+}
+export interface ShopCourierMissingWeight { orderLineId: string; variantId: string; sku: string; title: string }
+export interface ShopCourierQuote {
+  provider: 'fez' | 'terminal';
+  providerLabel: string;
+  weightKg: number;
+  quoteRef: string | null;
+  note: string | null;
+  options: ShopCourierOption[];
+  missingWeights: ShopCourierMissingWeight[];
+}
+
+/**
+ * What `POST …/courier/refresh` answers (`server/shop/logistics/routes.ts`).
+ * `changed` and `transitioned` ride along with the parcel on purpose — the
+ * screen can say "nothing new" instead of repainting an identical row and
+ * leaving the operator to wonder whether the button did anything.
+ */
+export interface ShopCourierRefresh {
+  fulfillment: ShopFulfillment;
+  changed: boolean;
+  transitioned: 'shipped' | 'delivered' | null;
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * COURIER DIAGNOSTICS — `POST /shop/admin/logistics/diagnostics`.
+ *
+ * The four questions that used to need a throwaway script: are the credentials
+ * good, will this courier price this address, can this admin hear a callback,
+ * and will the courier actually send one.
+ *
+ * A DISCRIMINATED UNION because the four checks take four different bodies and
+ * the server's Zod schema is `.strict()` — an extra key is a permanent 400, so
+ * a single wide optional-everything shape would let a caller assemble one that
+ * can never succeed and only find out at runtime.
+ *
+ * `provider_simulate` is `terminal` ALONE, mirroring `z.literal('terminal')` on
+ * the server: Fez has no simulator, so asking for one is a malformed request
+ * rather than an unlucky one, and the type says so before the request is made.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+export type ShopCourierDiagnosticRequest =
+  | { check: 'connection'; provider: 'fez' | 'terminal' }
+  | {
+      check: 'quote';
+      provider: 'fez' | 'terminal';
+      /** A made-up destination. No name and no phone: this check is about an ADDRESS —
+       *  the recipient is synthesised on the server from the shop's own ship-from. */
+      to: { line1: string; city: string; region: string; postalCode?: string };
+      /** Defaults to 1000 g on the server. */
+      weightGrams?: number;
+      }
+  | { check: 'webhook_self_test'; provider: 'fez' | 'terminal' }
+  | { check: 'provider_simulate'; provider: 'terminal'; shipmentId: string };
+
+/**
+ * One envelope for all four checks, and **`ok: false` arrives with a 200**.
+ *
+ * A courier refusing is what the operator pressed the button to find out, so it
+ * is an answer rather than a failure: `summary` then carries the courier's own
+ * words VERBATIM (paraphrasing "Invalid city, please select a city from the
+ * list of cities" throws away the finding) and `detail.accepted` carries the
+ * names it said it would take.
+ *
+ * `detail` IS DELIBERATELY UNTYPED. It is a different shape per check and per
+ * courier, every field of it is optional in practice, and the screen reads it
+ * defensively — a strict shape here would make an unfamiliar-but-useful answer
+ * a client crash instead of a rendered finding.
+ */
+export interface ShopCourierDiagnosticResult {
+  check: ShopCourierDiagnosticRequest['check'];
+  ok: boolean;
+  summary: string;
+  detail?: Record<string, unknown>;
 }
 
 export interface ShopTimelineEntry {
@@ -1843,6 +2005,76 @@ export const shopApi = {
     });
   },
 
+  // ------------------------------------------------------------ delivery courier
+  /** Which courier is switched on. Any signed-in role may ask; the order screen needs it. */
+  async getCourierProvider(signal?: AbortSignal): Promise<ShopCourierProvider> {
+    /* NOT under /shop/admin: every signed-in role may ask which courier is on. */
+    return shopFetch<ShopCourierProvider>('/shop/logistics/provider', { signal });
+  },
+
+  async getCourierSettings(signal?: AbortSignal): Promise<ShopCourierSettings> {
+    return shopFetch<ShopCourierSettings>(`${BASE}/logistics/settings`, { signal });
+  },
+
+  /** CAS on `expectedRevision`, like every settings PATCH here. A stale revision
+   *  answers 409 `stale_write` (not `conflict`, despite the name) — the caller
+   *  should treat the two alike. */
+  async saveCourierSettings(patch: ShopCourierSettingsPatch): Promise<ShopCourierSettings> {
+    return shopFetch<ShopCourierSettings>(`${BASE}/logistics/settings`, {
+      method: 'PATCH',
+      body: patch,
+      subject: 'Delivery courier',
+    });
+  },
+
+  async registerCourierWebhook(provider: 'fez' | 'terminal'): Promise<void> {
+    await shopFetch<{ ok: boolean }>(`${BASE}/logistics/webhooks/register`, {
+      method: 'POST',
+      body: { provider },
+      subject: 'Delivery courier',
+    });
+  },
+
+  /**
+   * Run ONE courier check. A courier's refusal comes back as a 200 with
+   * `ok: false` and is a normal return here, not a throw — only a request that
+   * cannot be run at all raises: 400 `bad_request`, 409
+   * `provider_not_configured`, 409 `ship_from_incomplete` (which carries
+   * `missing`).
+   *
+   * Books nothing and spends nothing. The one thing it can write is Terminal's
+   * cached packaging id, which Terminal mints during a quote whether we asked
+   * or not.
+   */
+  async runCourierDiagnostic(
+    body: ShopCourierDiagnosticRequest,
+  ): Promise<ShopCourierDiagnosticResult> {
+    return shopFetch<ShopCourierDiagnosticResult>(`${BASE}/logistics/diagnostics`, {
+      method: 'POST',
+      body,
+      subject: 'Delivery courier',
+    });
+  },
+
+  /**
+   * Ask the ACTIVE courier which places it will accept, and cache the answer.
+   *
+   * DOZENS OF CALLS AT A COURIER — one for the states and one per state — so it
+   * is an operator pressing a button and never anything on a request path.
+   * `country` is omitted for the shop's own, which is the only one today.
+   *
+   * Throws 409 `provider_not_configured` (ships by hand, or no credentials
+   * here) and 409 `places_unsupported` (that courier publishes no list —
+   * nothing is broken, and retrying cannot change it).
+   */
+  async refreshCourierPlaces(country?: string): Promise<ShopCourierPlaces> {
+    return shopFetch<ShopCourierPlaces>(`${BASE}/logistics/places/refresh`, {
+      method: 'POST',
+      body: country ? { country } : {},
+      subject: 'Delivery courier',
+    });
+  },
+
   /**
    * PER-DISTRICT DELIVERY (migration 0300). Only the shop's OPINION about a
    * district — the districts themselves come from `marketingApi.listAreas`, and
@@ -2067,6 +2299,55 @@ export const shopApi = {
         subject: 'Fulfilment',
       },
     );
+  },
+
+  /**
+   * Asks the active courier for a price. 422 `weights_missing` carries the
+   * lines to fix; 422 `provider_rejected` carries `accepted` — the place names
+   * the courier said it WOULD take — when it named any.
+   *
+   * `routingCity` IS A DELIVERY ZONE FOR THIS REQUEST ONLY. It is what the
+   * courier is told to deliver to, in place of the city on the order, and it is
+   * stored nowhere: the customer's address is never rewritten. Omitted (rather
+   * than sent as null) so an ordinary quote is still the empty body the route
+   * has always taken.
+   */
+  async quoteCourier(fulfillmentId: string, routingCity?: string): Promise<ShopCourierQuote> {
+    return shopFetch<ShopCourierQuote>(`${BASE}/fulfillments/${seg(fulfillmentId)}/courier/quote`, {
+      method: 'POST',
+      body: routingCity ? { routingCity } : {},
+      id: fulfillmentId,
+      subject: 'Parcel',
+    });
+  },
+
+  /** `routingCity` must be the zone the quote was asked with — see `quoteCourier`. */
+  async bookCourier(
+    fulfillmentId: string,
+    body: { optionId: string; quoteRef: string | null; routingCity?: string },
+  ): Promise<ShopFulfillment> {
+    const res = await shopFetch<{ fulfillment: ShopFulfillment }>(
+      `${BASE}/fulfillments/${seg(fulfillmentId)}/courier/book`,
+      { method: 'POST', body, id: fulfillmentId, subject: 'Parcel' },
+    );
+    return res.fulfillment;
+  },
+
+  /** Returns the whole answer, not just the parcel — `changed` and
+   *  `transitioned` are what let the caller say whether anything moved. */
+  async refreshCourier(fulfillmentId: string): Promise<ShopCourierRefresh> {
+    return shopFetch<ShopCourierRefresh>(
+      `${BASE}/fulfillments/${seg(fulfillmentId)}/courier/refresh`,
+      { method: 'POST', body: {}, id: fulfillmentId, subject: 'Parcel' },
+    );
+  },
+
+  async cancelCourier(fulfillmentId: string, reason?: string): Promise<ShopFulfillment> {
+    const res = await shopFetch<{ fulfillment: ShopFulfillment }>(
+      `${BASE}/fulfillments/${seg(fulfillmentId)}/courier/cancel`,
+      { method: 'POST', body: reason ? { reason } : {}, id: fulfillmentId, subject: 'Parcel' },
+    );
+    return res.fulfillment;
   },
 
   /**

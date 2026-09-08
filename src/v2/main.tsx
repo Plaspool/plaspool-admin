@@ -38,6 +38,7 @@ import Marketing from './routes/Marketing';
 import Settings from './routes/Settings';
 import SettingsNotifications from './routes/SettingsNotifications';
 import SettingsShipping from './routes/SettingsShipping';
+import SettingsDeliveryCourier from './routes/SettingsDeliveryCourier';
 import SettingsTeam from './routes/SettingsTeam';
 import SettingsWriting from './routes/SettingsWriting';
 import EmailBroadcasts from './routes/EmailBroadcasts';
@@ -237,6 +238,7 @@ const router = createHashRouter([
       { path: '/settings', element: <Settings /> },
       { path: '/settings/notifications', element: <SettingsNotifications /> },
       { path: '/settings/shipping', element: <SettingsShipping /> },
+      { path: '/settings/delivery-courier', element: <SettingsDeliveryCourier /> },
       { path: '/settings/team', element: <SettingsTeam /> },
       { path: '/settings/writing', element: <SettingsWriting /> },
 

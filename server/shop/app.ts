@@ -20,6 +20,7 @@ import { catalogPort } from './catalog/port';
 import { addOnPort } from './catalog/add-ons/port';
 import { checkoutPaymentsPort } from './payments/port';
 import { orders } from './orders/routes';
+import { CourierConflictError } from './orders/repo/courier';
 import { drainCommerceEvents } from './orders/repo/consumer';
 import { adoptGuestOrders } from './orders/repo/orders';
 import { cartShopRoutes } from './cart/routes';
@@ -28,6 +29,9 @@ import { SHOP_CURRENCY } from './currency';
 import { shopAdminRoutes } from './admin/routes';
 import { shippingZoneRoutes } from './cart/checkout/shipping-zones-routes';
 import { deliverySettingsRoutes } from './settings/routes';
+import { logisticsRoutes } from './logistics/routes';
+import { registerLogisticsDefaults } from './logistics/deps';
+import { logisticsCatalogPort } from './catalog/logistics-port';
 import { notificationSettingsRoutes, pushRoutes } from './notifications/routes';
 import { ShippingZonePreconditionFailedError } from './cart/checkout/shipping-zones-repo';
 
@@ -169,7 +173,30 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
                */
               err instanceof DuplicateOptionsError
               ? { error: 'duplicate_options', detail: 'optionValues', summary: err.summary }
-              : null;
+              : /*
+                 * TWO COURIERS RACING ONE PARCEL — belt and braces behind the
+                 * refusals the logistics service already returns.
+                 *
+                 * `CourierConflictError` is raised by every guarded write in
+                 * `orders/repo/courier.ts`, and the service catches it at each
+                 * door it knows about (`quoteParcel`, `bookParcel`,
+                 * `cancelParcelCourier`). `server/middleware/errors.ts` has no
+                 * row for it, so ANY door added later that forgets to catch it
+                 * would answer `{"error":"internal"}` — a 500, which the client
+                 * then retries five times for a question whose answer can never
+                 * change, on the one surface in this admin that spends money at
+                 * a third party. Classified here, that failure mode is closed by
+                 * construction rather than by everyone remembering.
+                 *
+                 * `err.reason` and not a fixed string: `already_booked` ("this
+                 * parcel is spoken for") and `ref_in_use` ("that waybill belongs
+                 * to another parcel") are different situations with different
+                 * next moves, and the class carries the distinction precisely so
+                 * a caller can tell them apart.
+                 */
+                err instanceof CourierConflictError
+                ? { error: err.reason }
+                : null;
 
     if (!body) return toResponse(err, requestId);
 
@@ -360,6 +387,34 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
    * split `server/shop/reviews/public.ts` makes and for the same reason.
    */
   shop.route('/', deliverySettingsRoutes);
+
+  /*
+   * DELIVERY COURIERS — `/admin/logistics/*` and `/logistics/provider`
+   * (migration 0990). Which courier is switched on, the address we ship from,
+   * the box Terminal quotes against, and the log of every webhook a courier has
+   * sent us. `settings` domain on the admin half, `requireAuth()` on the read
+   * every packer needs; both guarded per route inside the router.
+   *
+   * THE ONE DEPENDENCY IS CATALOG'S, AND THIS IS THE ONLY PLACE THAT KNOWS BOTH
+   * HALVES. Logistics declares `LogisticsCatalog` and never imports Catalog;
+   * `logisticsCatalogPort` is Catalog's implementation of it, because
+   * `shop_variants` and "which variants can be sold" are Catalog's. Registered
+   * as a DEFAULT rather than set outright: `shopApp()` runs for every server
+   * suite in this repository, so a plain registration here would silently
+   * replace a fake a test had already registered — the failure
+   * `registerOrdersDefaults` documents.
+   *
+   * THE COURIERS THEMSELVES ARE NOT WIRED HERE. They are built from
+   * `logisticsEnv()` inside `resolveLogisticsDeps`, so a deployment with no
+   * credentials reports both as "not configured" rather than failing to boot.
+   *
+   * ITS WEBHOOK ROUTES ARE NOT HERE EITHER, for the reason Payments' are not:
+   * a courier calls back server-to-server with no `Origin`, which is a 403 from
+   * `originGuard` every time. They are mounted in `server/index.ts` above the
+   * guard, where their order relative to it is the thing you read.
+   */
+  registerLogisticsDefaults({ catalog: logisticsCatalogPort });
+  shop.route('/', logisticsRoutes);
 
   /*
    * WHO THE SHOP TELLS WHEN AN ORDER IS PAID — `/admin/notification-settings`

@@ -119,6 +119,7 @@ export const NAV_FOOT: NavEntry[] = [
     icon: <Settings />,
     children: [
       { to: '/settings/shipping', label: 'Shipping' },
+      { to: '/settings/delivery-courier', label: 'Delivery courier' },
       { to: '/settings/notifications', label: 'Notifications' },
       { to: '/settings/team', label: 'Team' },
       { to: '/settings/writing', label: 'Writing' },

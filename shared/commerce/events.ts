@@ -285,6 +285,24 @@ export interface AddressSnapshot {
    */
   district?: string | null;
   /**
+   * THE COURIER'S DELIVERY ZONE — the place name the customer CHOSE from the
+   * active courier's own list (migration 1020), never parsed out of `city` and
+   * never a replacement for it.
+   *
+   * Terminal validates `city` against its per-country list and refuses anything
+   * else with a 400 that kills the whole quote; "Gwarinpa" is not on its list
+   * and "Maitama" is. So the zone travels here and the customer's own words
+   * stay in `city`, `line1` and `line2` — which is what a rider reads, and what
+   * Fez (which validates no city at all) is still sent.
+   *
+   * OPTIONAL for the same reason `district` and `location` are: every event
+   * serialized before migration 1020 lacks the property and a replayed payload
+   * must not become invalid retroactively. Absent and null mean the same thing
+   * — no zone named — and both fall back to `city`, which is exactly how every
+   * order behaved before this field existed.
+   */
+  routingCity?: string | null;
+  /**
    * WHERE THE DOOR IS — the pin a shopper optionally shared (migration 0780).
    *
    * OPTIONAL for the same reason `district` is: every event serialized before

@@ -6,6 +6,7 @@ import {
   MapPin,
   MapPinned,
   PenLine,
+  Send,
   Settings as SettingsIcon,
   Truck,
   Users,
@@ -41,6 +42,14 @@ const DOORS: SettingsDoor[] = [
     icon: <Truck />,
     title: 'Shipping',
     body: 'What each part of the country pays for delivery, and how much tax is added.',
+  },
+  {
+    to: '/settings/delivery-courier',
+    /* NOT the truck: Shipping is the door above it and wears one, and two
+       identical icons side by side make the pair unreadable at a glance. */
+    icon: <Send />,
+    title: 'Delivery courier',
+    body: 'Who carries parcels to customers — by hand, Fez Delivery or Terminal Africa.',
   },
   {
     to: '/settings/notifications',

@@ -1,0 +1,604 @@
+import { Hono } from 'hono';
+import type { Context } from 'hono';
+import { z } from 'zod';
+import { pathParam, readJson, readJsonOrEmpty, str } from '../../middleware/errors';
+import { requireAdmin, requireAuth } from '../../middleware/session';
+import { currentDb, currentUser } from '../../app-env';
+import type { AppEnv } from '../../app-env';
+import { adminOrigin } from '../../admin-url';
+import { NotFoundError } from '../../repo/errors';
+import { loadTemplates } from '../../email/system-templates';
+import { ADDRESS_MAX_LENGTHS } from '../settings/config';
+import { shipFromMissing } from './address';
+import { FEZ_LIVE_URL, TERMINAL_LIVE_URL, environmentOf, logisticsEnv } from './config';
+import { resolveLogisticsDeps } from './deps';
+import { DiagnosticsBody, acceptedNames, runDiagnostic } from './diagnostics';
+import { PLACES_DEFAULT_COUNTRY, refreshPlaces } from './places';
+import { LogisticsError, PROVIDER_LABEL } from './port';
+import type { ProviderId } from './port';
+import { getLogisticsSettings, listRecentWebhooks, patchLogisticsSettings } from './repo';
+import type { LogisticsSettings } from './repo';
+import { bookParcel, cancelParcelCourier, quoteParcel, refreshParcel } from './service';
+import type { Refusal } from './service';
+
+/**
+ * The delivery-courier surface — `/admin/logistics/*` and one read for everyone
+ * who packs a parcel.
+ *
+ * MOUNTED INTO `shopApp()` AT `'/'`, exactly as `shipping-zones-routes.ts` and
+ * `settings/routes.ts` are, so the paths below are relative to `/api/shop`.
+ * GUARDS ATTACH PER ROUTE, never `use('*', …)`: a blanket guard on a router that
+ * `app.route(prefix, router)` flattens applies to paths this file has never
+ * heard of and turns a would-be 404 into a 401.
+ *
+ * TWO DOMAINS, ON PURPOSE. `/admin/logistics/*` is `settings` in
+ * `server/middleware/permissions.ts` — choosing the courier and the address we
+ * ship from is an owner-and-developer decision, beside the shipping zones it
+ * prices against. `GET /logistics/provider` is `requireAuth()` and nothing else,
+ * because every teammate who opens a parcel needs to know whether the button
+ * says "Book with Fez" or "By hand", and gating that on `settings` would blank
+ * the screen for the people doing the packing.
+ *
+ * THERE IS NO POST AND NO DELETE for the settings. The row is a CHECK-pinned
+ * singleton seeded by migration 0980; a route that could create or remove it
+ * would be a route that can leave the shop with no courier configuration at all.
+ */
+export const logisticsRoutes = new Hono<AppEnv>();
+
+const auth = requireAuth();
+
+/**
+ * `countryCode` IS PINNED TO `NG` and that is a decision, not an oversight. Both
+ * couriers are Nigerian and quote domestic parcels; a ship-from in another
+ * country would be accepted here and rejected — differently, and much later — by
+ * whichever courier was asked to collect from it.
+ */
+const ShipFromBody = z
+  .object({
+    name: str().min(1).max(200),
+    phone: str().min(3).max(40),
+    email: str().email().max(200).optional(),
+    line1: str().min(1).max(300),
+    line2: str().max(300).optional(),
+    city: str().min(1).max(120),
+    region: str().min(1).max(120),
+    postalCode: str().min(1).max(20),
+    countryCode: z.literal('NG'),
+  })
+  .strict();
+
+const PackagingBody = z
+  .object({
+    name: str().min(1).max(100),
+    lengthCm: z.number().positive().max(500),
+    widthCm: z.number().positive().max(500),
+    heightCm: z.number().positive().max(500),
+    weightKg: z.number().positive().max(100),
+  })
+  .strict();
+
+const SettingsBody = z
+  .object({
+    /** Required, as on every settings patch here. A screen that could save
+     *  without one is two tabs quietly overwriting each other. */
+    expectedRevision: z.number().int().min(1),
+    provider: z.enum(['manual', 'fez', 'terminal']).optional(),
+    /** Absent leaves the address alone; an explicit `null` clears it. */
+    shipFrom: ShipFromBody.nullable().optional(),
+    packaging: PackagingBody.optional(),
+  })
+  .strict();
+
+/**
+ * The origin a courier's webhook must be pointed at.
+ *
+ * RESOLVED IN THREE STEPS, IN ORDER, and every one of them is judged against
+ * `c.get('origins')` — the exact list `originGuard` checked this request
+ * against, the same value `POST /api/invites` builds an invite link from, and
+ * for the identical reason: this URL is handed to a third party who will then
+ * call it, so building it from anything unvalidated would let a caller
+ * register an endpoint of their choosing as this admin's courier webhook.
+ *
+ *   1. The `Origin` header, when it is allow-listed. Every unsafe method
+ *      (`POST`, `PATCH`) carries one — `originGuard` refuses the request
+ *      otherwise — so this is what a dev host or a preview registers itself
+ *      under.
+ *   2. Else the request URL's OWN origin (`new URL(c.req.url).origin`), when
+ *      THAT is allow-listed. A same-origin browser `GET` carries no `Origin`
+ *      header at all — that is what a browser does, not a gap here — so
+ *      skipping straight to step 3 whenever the header is missing would make
+ *      `GET /admin/logistics/settings` show one host while `POST
+ *      …/webhooks/register` from the very same tab registers another. Reading
+ *      where the request actually arrived is safe for the identical reason
+ *      step 1 is: it is not a value the caller gets to assert.
+ *   3. Else the pinned default, `adminOrigin()` — nothing about this request
+ *      names an allow-listed origin at all, by header or by arrival.
+ *
+ * Falling through past step 1 at all — rather than always answering
+ * `adminOrigin()` — is what makes the dev host register its own URL instead
+ * of production's; step 2 is what makes a GET agree with the POST beside it.
+ */
+export function webhookBase(c: Context<AppEnv>): string {
+  const allowed = c.get('origins') ?? [];
+
+  const headerOrigin = c.req.header('origin');
+  if (headerOrigin && allowed.includes(headerOrigin)) return headerOrigin;
+
+  const requestOrigin = new URL(c.req.url).origin;
+  if (allowed.includes(requestOrigin)) return requestOrigin;
+
+  return adminOrigin();
+}
+
+export const webhookPath = (provider: ProviderId): string =>
+  `/api/shop/logistics/${provider}/webhook`;
+
+/**
+ * The settings row plus everything the screen needs beside it.
+ *
+ * COVERAGE AND THE WEBHOOK LOG RIDE ALONG rather than being two more round
+ * trips: "78 of 120 variants have no weight" is the reason a courier cannot be
+ * switched on, and a screen that has to ask for it separately is a screen that
+ * will show the switch without the reason.
+ *
+ * NO SECRET EVER APPEARS HERE. `configured` and `webhookReady` are booleans
+ * and `environment` is derived from a base URL; the credentials themselves
+ * live only in `config.ts` and never leave it.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * `configured` AND `webhookReady` ARE TWO DIFFERENT QUESTIONS, and Fez is the
+ * courier that answers them differently.
+ *
+ * `configured` means "a parcel can be BOOKED": for Fez that is
+ * `FEZ_USER_ID` + `FEZ_PASSWORD`. Verifying a Fez CALLBACK needs
+ * `FEZ_SECRET_KEY` — which the adapter will otherwise learn from a sign-in
+ * *this process* made, so on serverless a correctly-signed webhook 401s on
+ * every instance that has not signed in yet. Read from the environment ALONE
+ * here, deliberately: a flag that went true because this lambda happened to
+ * have signed in would tell the operator the shop can hear back when the next
+ * cold start cannot.
+ *
+ * Terminal's `TERMINAL_SECRET_KEY` both authenticates its API calls and signs
+ * its webhooks, so it has no second half to be missing and the two flags are
+ * the same expression by construction.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+async function settingsView(
+  c: Context<AppEnv>,
+  settings: LogisticsSettings,
+): Promise<Record<string, unknown>> {
+  const db = currentDb(c);
+  const deps = resolveLogisticsDeps();
+  const env = logisticsEnv();
+  const base = webhookBase(c);
+
+  const [coverage, recentWebhooks] = await Promise.all([
+    deps.catalog.weightCoverage(db),
+    listRecentWebhooks(db, 10),
+  ]);
+
+  const terminalConfigured = deps.providerFor('terminal') !== null;
+
+  return {
+    provider: settings.provider,
+    shipFrom: settings.shipFrom,
+    packaging: settings.packaging,
+    revision: settings.revision,
+    updatedAt: settings.updatedAt,
+    providers: {
+      fez: {
+        configured: deps.providerFor('fez') !== null,
+        webhookReady: env.fez?.secretKey != null,
+        environment: environmentOf(env.fez?.baseUrl ?? '', FEZ_LIVE_URL),
+        webhookUrl: `${base}${webhookPath('fez')}`,
+      },
+      terminal: {
+        configured: terminalConfigured,
+        webhookReady: terminalConfigured,
+        environment: environmentOf(env.terminal?.baseUrl ?? '', TERMINAL_LIVE_URL),
+        webhookUrl: `${base}${webhookPath('terminal')}`,
+      },
+    },
+    variantsMissingWeight: coverage.missing,
+    variantsTotal: coverage.total,
+    recentWebhooks,
+  };
+}
+
+/**
+ * WHICH COURIER IS SWITCHED ON — the one logistics read every teammate gets.
+ *
+ * Deliberately the narrowest possible answer: the setting and its label, no
+ * address, no coverage, no webhook log. A parcel screen needs to know what the
+ * button says; it has no business learning the dispatch address from a route
+ * that anyone signed in can call.
+ */
+logisticsRoutes.get('/logistics/provider', auth, async (c) => {
+  const settings = await getLogisticsSettings(currentDb(c));
+  return c.json({ provider: settings.provider, label: PROVIDER_LABEL[settings.provider] });
+});
+
+logisticsRoutes.get('/admin/logistics/settings', auth, async (c) =>
+  c.json(await settingsView(c, await getLogisticsSettings(currentDb(c)))),
+);
+
+/**
+ * REFUSALS COME BEFORE THE WRITE, and they are judged against the state the
+ * patch would PRODUCE rather than the one it names.
+ *
+ * That is the whole reason `nextProvider` and `nextFrom` exist: clearing the
+ * address on a shop already switched to Terminal names no provider at all, and
+ * a check that only looked at `patch.provider` would let it through and leave
+ * the next booking to fail at the courier with a customer waiting.
+ */
+logisticsRoutes.patch('/admin/logistics/settings', requireAdmin(), async (c) => {
+  const db = currentDb(c);
+  const { expectedRevision, ...patch } = await readJson(c, SettingsBody);
+  const deps = resolveLogisticsDeps();
+
+  const current = await getLogisticsSettings(db);
+  const nextProvider = patch.provider ?? current.provider;
+  const nextFrom = patch.shipFrom === undefined ? current.shipFrom : patch.shipFrom;
+
+  /* Switching a courier on that this deployment has no credentials for would
+     save a setting whose only effect is a 500 on the next booking. */
+  if (nextProvider !== 'manual' && deps.providerFor(nextProvider) === null) {
+    return c.json({ error: 'provider_not_configured', provider: nextProvider }, 409);
+  }
+
+  /*
+   * TERMINAL ONLY. Fez collects from an address held in their own portal, so it
+   * can be switched on before ours is filled in; Terminal quotes from the
+   * ship-from we send it and refuses the shipment without one. Requiring it for
+   * both would block the courier that does not need it.
+   */
+  if (nextProvider === 'terminal') {
+    const missing = shipFromMissing(nextFrom);
+    if (missing.length > 0) return c.json({ error: 'ship_from_incomplete', missing }, 409);
+  }
+
+  const saved = await patchLogisticsSettings(db, patch, {
+    expectedRevision,
+    actorId: currentUser(c).id,
+    now: deps.now(),
+  });
+  return c.json(await settingsView(c, saved));
+});
+
+const RegisterBody = z.object({ provider: z.enum(['fez', 'terminal']) }).strict();
+
+/**
+ * Tell a courier where to call us back.
+ *
+ * A BUTTON RATHER THAN A BOOT STEP: both providers register the URL against an
+ * account, so doing it on every cold start would re-register it on every lambda
+ * and there would be nothing on screen to say whether it had worked. The URL is
+ * derived here, never accepted from the body — see `webhookBase`.
+ */
+logisticsRoutes.post('/admin/logistics/webhooks/register', requireAdmin(), async (c) => {
+  const { provider } = await readJson(c, RegisterBody);
+  const adapter = resolveLogisticsDeps().providerFor(provider);
+  if (!adapter) return c.json({ error: 'provider_not_configured', provider }, 409);
+
+  try {
+    await adapter.registerWebhook(`${webhookBase(c)}${webhookPath(provider)}`);
+  } catch (err) {
+    /*
+     * A courier refusing is not this application failing, and the three ways it
+     * can refuse are not one answer either — the operator's next move differs
+     * for each, and a single 502 tells them to press the button again for all
+     * three (global constraints' error table; 500 is worse still, because the
+     * client retries it five times for an answer that cannot change).
+     *
+     *   not_configured   → 409. This deployment has no credentials for that
+     *                      courier. The same body the guard above answers, so
+     *                      one cause reads as one thing however it surfaces:
+     *                      the fix is an env var, not a retry.
+     *   provider_rejected → 422. The courier read the request and declined it.
+     *                      Retrying produces the identical refusal, so their
+     *                      words go to the screen and the operator changes
+     *                      something — usually the URL or the account.
+     *   anything else     → 502. The other end was unreachable, timed out or
+     *                      answered nonsense. THIS is the retryable one.
+     */
+    if (err instanceof LogisticsError) {
+      if (err.code === 'not_configured') {
+        return c.json({ error: 'provider_not_configured', provider }, 409);
+      }
+      if (err.code === 'provider_rejected') {
+        return c.json({ error: 'provider_rejected', message: err.message }, 422);
+      }
+      return c.json({ error: 'provider_error', message: err.message }, 502);
+    }
+    throw err;
+  }
+  return c.json({ ok: true });
+});
+
+/**
+ * THE OWNER'S TEST BENCH — the four checks that used to need a throwaway script.
+ *
+ * ═══ EVERY CHECK ANSWERS 200, INCLUDING THE ONES THAT FAIL ═══
+ *
+ * A diagnostic that cannot fail is useless. A courier refusing our credentials,
+ * refusing a city, or answering an error from its own delivery log is EXACTLY
+ * what the operator pressed the button to find out — so it comes back as
+ * `{ ok: false, summary: <their words> }` with a 200, never a 502. Making it a
+ * 502 would put the finding behind an error banner and buy five client retries
+ * for a verdict that cannot change.
+ *
+ * The only 4xx here are requests that are unusable before any courier is
+ * asked, and they reuse the codes the rest of this file already spends:
+ *
+ *   bad body / unknown courier / `provider_simulate` for Fez  → 400 `bad_request`
+ *   this deployment has no credentials for that courier       → 409 `provider_not_configured`
+ *   Terminal quote with no ship-from saved                    → 409 `ship_from_incomplete`
+ *
+ * `provider_simulate` is refused for Fez by the SCHEMA (`z.literal('terminal')`)
+ * rather than by a branch, because Fez has no simulator at all: the request is
+ * malformed, not merely unlucky, and a 400 with Zod's own detail says which
+ * field.
+ *
+ * THE WEBHOOK URL IS DERIVED HERE, never accepted from the body — the same rule
+ * `webhooks/register` follows, and for a stronger reason: this route makes the
+ * server POST a *signed* payload at that address, so a caller who could choose
+ * it would have us sign for them.
+ */
+logisticsRoutes.post('/admin/logistics/diagnostics', requireAdmin(), async (c) => {
+  const body = await readJson(c, DiagnosticsBody);
+  const out = await runDiagnostic(currentDb(c), resolveLogisticsDeps(), body, {
+    webhookUrl: `${webhookBase(c)}${webhookPath(body.provider)}`,
+  });
+  if ('refused' in out) {
+    if (out.refused === 'ship_from_incomplete') {
+      return c.json({ error: 'ship_from_incomplete', missing: out.missing }, 409);
+    }
+    return c.json({ error: 'provider_not_configured', provider: out.provider }, 409);
+  }
+  return c.json(out);
+});
+
+/**
+ * `country` IS OPTIONAL AND SHAPE-CHECKED, not enumerated. The address form is
+ * locked to `NG` today, and pinning `z.literal('NG')` here would make this route
+ * the thing that has to change the day it is not — the place lists are
+ * country-parameterised precisely so nothing is Nigeria-only by construction.
+ * Two letters is `shop_logistics_places_country_ck`, spelled where a bad value
+ * costs a 400 rather than a 500 out of Postgres.
+ */
+const PlacesRefreshBody = z
+  .object({ country: str().regex(/^[A-Za-z]{2}$/).optional() })
+  .strict();
+
+/**
+ * REFRESH THE COURIER'S PLACE LISTS — the one button in this file that makes
+ * dozens of requests at a courier, and therefore the one that must never sit on
+ * a request path.
+ *
+ * Terminal validates `state` AND `city` against its own per-country lists and
+ * refuses anything else with a 400 that kills the whole quote (measured
+ * 2026-09-07: ten place names inside the FCT, 46 in Lagos), so a shop needs its
+ * list cached before a shopper can be offered a zone the courier will take.
+ * Fetching it costs one call plus one per region — 37 for Nigeria — which is
+ * fine for an operator pressing a button and impossible inside a checkout.
+ *
+ * `requireAdmin()` and the `settings` domain, like every other
+ * `/admin/logistics/` route: which places a courier accepts is part of how the
+ * shop is set up, not something the person packing a box changes.
+ *
+ * THE REFUSALS REUSE CODES THIS FILE ALREADY SPENDS. `provider_not_configured`
+ * is the shop shipping by hand or a courier with no credentials here; the one
+ * new answer is `places_unsupported`, a 409 naming the courier — nothing is
+ * broken, that courier simply publishes no list, and a 502 would invite a retry
+ * for a verdict that cannot change.
+ */
+logisticsRoutes.post('/admin/logistics/places/refresh', requireAdmin(), async (c) => {
+  const body = await readJsonOrEmpty(c, PlacesRefreshBody);
+  const deps = resolveLogisticsDeps();
+  try {
+    const out = await refreshPlaces(currentDb(c), deps, body.country ?? PLACES_DEFAULT_COUNTRY);
+    if ('refused' in out) return c.json({ error: out.refused, provider: out.provider }, 409);
+    return c.json(out);
+  } catch (err) {
+    return providerFailure(c, err);
+  }
+});
+
+/*
+ * ═══════════════════════════════════════════════════════════════════════════
+ * BOOKING A COURIER FOR A PARCEL — `/admin/fulfillments/:id/courier/*`.
+ *
+ * A DIFFERENT PREFIX AND THEREFORE A DIFFERENT DOMAIN, AND THAT IS THE WHOLE
+ * REASON THEY LIVE HERE RATHER THAN UNDER `/admin/logistics/`.
+ * `server/middleware/permissions.ts` maps `/api/shop/admin/fulfillments` to
+ * `orders`, so the teammate who packs the box books the courier for it —
+ * exactly as they already press "ship". Under the settings prefix these would
+ * be `settings`, and the people doing the packing would get a 403 on the one
+ * button their job is made of.
+ *
+ * MOUNTED IN THIS ROUTER RATHER THAN IN ORDERS' because everything they
+ * decide is this subsystem's: which courier is switched on, what a parcel
+ * weighs, what a quote costs. Orders owns `shop_fulfillments` and keeps
+ * owning it — every write below goes through `orders/repo/courier.ts`.
+ *
+ * Hono resolves two routers claiming one path by registration order, and
+ * `shopApp()` mounts `orders` BEFORE this router. Nothing collides: Orders
+ * owns `/admin/fulfillments/:id` itself, these four are two segments deeper.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+
+/**
+ * A refusal about STATE, which is an answer rather than a failure.
+ *
+ * 409 FOR ALL BUT ONE OF THEM AND 422 FOR THAT ONE, per the plan's error
+ * table: the rest describe a conflict with how things currently are ("the shop
+ * ships by hand", "somebody booked this already", "this parcel has already
+ * gone out"), and the client's move is to re-read. `weights_missing` is about
+ * the CONTENT of what was asked for — the dialog turns it into an inline "Set
+ * weights" step — so it carries the lines to fix and the code that means
+ * unprocessable.
+ */
+function refusal(c: Context<AppEnv>, r: Refusal): Response {
+  if (r.refused === 'weights_missing') {
+    return c.json({ error: 'weights_missing', lines: r.lines }, 422);
+  }
+  return c.json({ error: r.refused }, 409);
+}
+
+/**
+ * How a courier's own failure reaches the screen — the three answers
+ * `webhooks/register` above gives, for the same reasons, plus the one only a
+ * parcel can produce: an order whose delivery address is unusable.
+ *
+ * ANYTHING THAT IS NOT A `LogisticsError` IS RE-THROWN UNTOUCHED, which is
+ * what lets the handlers below wrap their whole body in one `try`: a
+ * `NotFoundError` raised for an unknown parcel, a `StaleWriteError` from a
+ * transition, a genuine bug — all of them land on the application's own error
+ * table rather than being flattened into a courier problem.
+ */
+function providerFailure(c: Context<AppEnv>, err: unknown): Response {
+  if (!(err instanceof LogisticsError)) throw err;
+  switch (err.code) {
+    case 'not_configured':
+      return c.json({ error: 'provider_not_configured', message: err.message }, 409);
+    case 'provider_rejected': {
+      /*
+       * THE NAMES THE COURIER SAID IT WOULD TAKE, WHERE IT LISTED ANY.
+       *
+       * Terminal answers an unknown city with its own list of acceptable ones
+       * (`acceptedNames` digs them out — the same reader the diagnostics bench
+       * uses, so one refusal reads as one thing wherever it surfaces). Without
+       * them the booking dialog can only quote the refusal at somebody holding
+       * a parcel; with them it can offer the list and re-quote against a pick.
+       *
+       * ABSENT WHEN THE COURIER NAMED NONE, never `[]` — an empty array would
+       * claim the courier said "nothing is acceptable", which is a different
+       * and much worse thing than saying nothing.
+       */
+      const accepted = acceptedNames(err.detail);
+      return c.json(
+        { error: 'provider_rejected', message: err.message, ...(accepted ? { accepted } : {}) },
+        422,
+      );
+    }
+    /* The one refusal that names the boxes to go and fill in — an order whose
+       delivery address a courier cannot collect at. */
+    case 'address_incomplete':
+      return c.json(
+        { error: 'address_incomplete', message: err.message, missing: err.detail ?? [] },
+        422,
+      );
+    default:
+      return c.json({ error: 'provider_error', message: err.message }, 502);
+  }
+}
+
+/** No body at all is the ordinary call; an unknown key is still a 400. */
+const Empty = z.object({}).strict();
+
+/**
+ * THE ZONE A STAFF MEMBER PICKED, FOR THIS REQUEST ONLY.
+ *
+ * Every order placed before migration 1020 carries no routing city, and
+ * Terminal accepts ten place names in the whole FCT — so most of them are
+ * refused with nothing on screen to do about it. The dialog offers the courier's
+ * own list and sends the pick back here.
+ *
+ * OPTIONAL, AND WRITTEN NOWHERE. `service.ts#buildParcelInput` prefers it over
+ * the zone stored on the order and the order is not touched: the shipment goes
+ * out priced to something the courier accepts and the customer's address stays
+ * the words they typed. `min(1)` because a blank string is a request to send an
+ * empty city, which no courier wants; the length is the ADDRESS FORM'S limit for
+ * the same field, so the admin cannot pick a name the storefront could not.
+ */
+const RoutingCity = str().min(1).max(ADDRESS_MAX_LENGTHS.routingCity).optional();
+
+const QuoteBody = z.object({ routingCity: RoutingCity }).strict();
+const BookBody = z
+  .object({
+    optionId: str().min(1).max(200),
+    quoteRef: str().max(200).nullable().optional(),
+    routingCity: RoutingCity,
+  })
+  .strict();
+const CancelBody = z.object({ reason: str().max(255).optional() }).strict();
+
+logisticsRoutes.post('/admin/fulfillments/:id/courier/quote', auth, async (c) => {
+  const body = await readJsonOrEmpty(c, QuoteBody);
+  const id = pathParam(c, 'id');
+  const deps = resolveLogisticsDeps();
+  try {
+    const out = await quoteParcel(currentDb(c), deps, id, deps.now(), body.routingCity ?? null);
+    if (out === null) throw new NotFoundError(id);
+    if ('refused' in out) return refusal(c, out);
+    return c.json(out);
+  } catch (err) {
+    return providerFailure(c, err);
+  }
+});
+
+logisticsRoutes.post('/admin/fulfillments/:id/courier/book', auth, async (c) => {
+  const body = await readJson(c, BookBody);
+  const id = pathParam(c, 'id');
+  const deps = resolveLogisticsDeps();
+  try {
+    const out = await bookParcel(currentDb(c), deps, id, {
+      optionId: body.optionId,
+      quoteRef: body.quoteRef ?? null,
+      actorId: currentUser(c).id,
+      now: deps.now(),
+      routingCity: body.routingCity ?? null,
+    });
+    if (out === null) throw new NotFoundError(id);
+    if ('refused' in out) return refusal(c, out);
+    return c.json({ fulfillment: out });
+  } catch (err) {
+    return providerFailure(c, err);
+  }
+});
+
+/**
+ * `changed` AND `transitioned` RIDE ALONG WITH THE PARCEL, so the screen can
+ * say "nothing new since 12:04" rather than re-rendering an identical row and
+ * leaving the operator to wonder whether the button did anything.
+ */
+logisticsRoutes.post('/admin/fulfillments/:id/courier/refresh', auth, async (c) => {
+  await readJsonOrEmpty(c, Empty);
+  const id = pathParam(c, 'id');
+  const db = currentDb(c);
+  const deps = resolveLogisticsDeps();
+  try {
+    const out = await refreshParcel(db, deps, id, {
+      now: deps.now(),
+      templates: await loadTemplates(db),
+    });
+    if (out === null) throw new NotFoundError(id);
+    return c.json({
+      fulfillment: out.fulfillment,
+      changed: out.changed,
+      transitioned: out.transitioned,
+    });
+  } catch (err) {
+    return providerFailure(c, err);
+  }
+});
+
+logisticsRoutes.post('/admin/fulfillments/:id/courier/cancel', auth, async (c) => {
+  const body = await readJsonOrEmpty(c, CancelBody);
+  const id = pathParam(c, 'id');
+  const deps = resolveLogisticsDeps();
+  try {
+    const out = await cancelParcelCourier(currentDb(c), deps, id, {
+      reason: body.reason ?? '',
+      actorId: currentUser(c).id,
+      now: deps.now(),
+    });
+    if (out === null) throw new NotFoundError(id);
+    /* `already_shipped` — the parcel outran the cancel. A refusal about state,
+       answered as the same 409 the other conflicts get. */
+    if ('refused' in out) return refusal(c, out);
+    return c.json({ fulfillment: out });
+  } catch (err) {
+    return providerFailure(c, err);
+  }
+});

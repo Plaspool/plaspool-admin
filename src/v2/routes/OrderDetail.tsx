@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { Ban, Check, CreditCard, PackageCheck, Receipt, Truck, Undo2 } from 'lucide-react';
 import {
@@ -6,6 +6,7 @@ import {
   parseRefund,
   shopApi,
   type CancelRefundChoice,
+  type ShopCourierProvider,
   type ShopEmailIntent,
   type ShopFulfillment,
   type ShopOrderDetail,
@@ -24,6 +25,8 @@ import { MenuItem, MenuSeparator } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
 import { Timeline, type TimelineEvent } from '../ui/Timeline';
 import { useToast } from '../ui/Toast';
+import { CourierDialog, describeCourierError } from './CourierDialog';
+import { COURIER_COPY, canBook, courierStateBadge } from './courier-copy';
 import { isAdminRole } from '../../../shared/roles';
 
 /**
@@ -49,12 +52,28 @@ function optionLabel(values: Record<string, string>): string | null {
 function addressLines(addr: Record<string, unknown> | null | undefined): string[] {
   if (!addr) return [];
   const pick = (k: string) => (typeof addr[k] === 'string' && addr[k] ? String(addr[k]) : null);
+  /*
+   * WHAT THE COURIER WAS TOLD, WHEN IT IS NOT WHAT THE CUSTOMER TYPED.
+   *
+   * The shopper picks a routing city off the courier's own list because
+   * Terminal refuses a city that is not on it. Staff chasing a parcel need to
+   * see the zone it actually went out under — otherwise a waybill saying
+   * Maitama for an order that says Gwarinpa is a mystery this screen cannot
+   * resolve.
+   *
+   * ONLY WHEN IT DIFFERS, and quietly. On most orders the two are the same
+   * string or there is no zone at all (every order placed before migration
+   * 1020), and a line repeating the city back would be noise on every one of
+   * them. The customer's own city keeps its usual place above.
+   */
+  const routing = pick('routingCity');
   const lines = [
     pick('name') ?? pick('fullName'),
     pick('phone'),
     pick('line1') ?? pick('address1') ?? pick('street'),
     pick('line2') ?? pick('address2'),
     [pick('district'), pick('city')].filter(Boolean).join(', ') || null,
+    routing && routing !== pick('city') ? `${routing} · courier zone` : null,
     [pick('region') ?? pick('state'), pick('postalCode') ?? pick('postcode')]
       .filter(Boolean)
       .join(' ') || null,
@@ -140,7 +159,28 @@ export default function OrderDetail() {
     [id],
   );
 
+  /* WHICH COURIER IS SWITCHED ON — a SEPARATE, failure-tolerant read. This
+     screen is worked by roles that do not hold the settings domain, and the
+     order must never fail to load because the courier question could not be
+     answered: anything but a clean answer reads as By hand, which is the
+     screen exactly as it was before couriers existed. */
+  const [courier, setCourier] = useState<ShopCourierProvider>({ provider: 'manual', label: 'By hand' });
+  useEffect(() => {
+    const controller = new AbortController();
+    shopApi
+      .getCourierProvider(controller.signal)
+      .then((c) => setCourier(c))
+      .catch(() => setCourier({ provider: 'manual', label: 'By hand' }));
+    return () => controller.abort();
+  }, [id]);
+
   const [modal, setModal] = useState<'none' | 'fulfil' | 'cancel' | 'refund'>('none');
+  /** Booking a courier for ONE parcel, so it carries which parcel — the same
+   *  shape and the same reason as the ship dialog below. */
+  const [courierDialog, setCourierDialog] = useState<{
+    parcel: ShopFulfillment;
+    index: number;
+  } | null>(null);
   /** The ship dialog carries a payload — WHICH parcel, and whether the confirm
    *  transitions it or only saves details — so it is state of its own rather
    *  than a fifth arm of `modal`. */
@@ -429,6 +469,8 @@ export default function OrderDetail() {
                     index={i + 1}
                     fulfillment={f}
                     lines={lines}
+                    courier={courier}
+                    onBook={() => setCourierDialog({ parcel: f, index: i + 1 })}
                     onShip={() => setShipDialog({ parcel: f, index: i + 1, mode: 'ship' })}
                     onEditTracking={() =>
                       setShipDialog({ parcel: f, index: i + 1, mode: 'details' })
@@ -554,7 +596,7 @@ export default function OrderDetail() {
       </div>
 
       {modal === 'fulfil' ? (
-        <FulfilModal orderId={order.id} lines={lines} onClose={() => setModal('none')} onDone={done} />
+        <FulfilModal orderId={order.id} lines={lines} courier={courier} onClose={() => setModal('none')} onDone={done} />
       ) : null}
       {modal === 'cancel' ? (
         <CancelModal order={data} onClose={() => setModal('none')} onDone={done} />
@@ -566,6 +608,19 @@ export default function OrderDetail() {
           maxMinor={refundable}
           onClose={() => setModal('none')}
           onDone={done}
+        />
+      ) : null}
+      {courierDialog ? (
+        <CourierDialog
+          parcel={courierDialog.parcel}
+          index={courierDialog.index}
+          order={order}
+          providerLabel={courier.label}
+          onClose={() => setCourierDialog(null)}
+          onBooked={() => {
+            setCourierDialog(null);
+            reload();
+          }}
         />
       ) : null}
       {shipDialog ? (
@@ -608,6 +663,8 @@ function FulfilmentRow({
   index,
   fulfillment,
   lines,
+  courier,
+  onBook,
   onShip,
   onEditTracking,
   onChanged,
@@ -615,6 +672,11 @@ function FulfilmentRow({
   index: number;
   fulfillment: ShopFulfillment;
   lines: ShopOrderLine[];
+  /** Which courier the shop has switched on. `manual` — including every way
+   *  the question could not be answered — leaves this row exactly as it was. */
+  courier: ShopCourierProvider;
+  /** Open the booking dialog for this parcel. */
+  onBook: () => void;
   /** Open the ship dialog for this parcel — the transition itself, and its
    *  busy state, live there now (the email renders what the dialog confirms). */
   onShip: () => void;
@@ -640,6 +702,46 @@ function FulfilmentRow({
       return `${fl.qty}× ${line?.title ?? 'item'}`;
     })
     .join(', ');
+
+  /* ── the courier, if one is switched on ─────────────────────────────── */
+  const state = fulfillment.courierState ?? null;
+  const badge = courierStateBadge(state);
+  const courierOn = courier.provider !== 'manual';
+  const bookable = courierOn && fulfillment.status === 'pending' && canBook(state);
+  const P = COURIER_COPY.parcel;
+
+  /** Ask the courier where the parcel is, or call the booking off. Both
+   *  answer with the parcel, and both re-read the order rather than patching
+   *  the row from here: a refresh can also SHIP or DELIVER it server-side.
+   *
+   *  THE FAILURE IS A SENTENCE, NOT A CODE. These two buttons hit the same
+   *  routes the booking dialog does and get the same refusals back —
+   *  `already_shipped`, `provider_rejected`, `provider_error` — and
+   *  `ApiError.message` is the bare code (`src/data/api.ts` passes no
+   *  message), so this toast used to read `provider_rejected` at an operator
+   *  holding a parcel. `describeCourierError` is the dialog's own switch,
+   *  shared rather than copied. */
+  async function courierAction(kind: 'refresh' | 'cancel') {
+    setBusy(kind);
+    try {
+      if (kind === 'refresh') {
+        const res = await shopApi.refreshCourier(fulfillment.id);
+        /* Nothing moved: say so, rather than repeating "status refreshed" over
+           a row that looks exactly like it did before the press. */
+        toast.show(
+          !res.changed && res.transitioned === null ? P.refreshedNoChange : P.refreshed(index),
+        );
+      } else {
+        await shopApi.cancelCourier(fulfillment.id);
+        toast.show(P.courierCancelled(index));
+      }
+      onChanged(false);
+    } catch (cause) {
+      toast.show(describeCourierError(cause, courier.label), 'critical');
+    } finally {
+      setBusy(null);
+    }
+  }
 
   /* Shipping is no longer fired from here — the ship dialog owns it, so the
      carrier/tracking the email renders are confirmed rather than assumed. */
@@ -672,20 +774,85 @@ function FulfilmentRow({
         <div className="muted" style={{ fontSize: 'var(--t-sm)' }}>
           {fulfillment.carrier ? `${fulfillment.carrier} · ` : ''}
           {fulfillment.trackingNumber ? (
-            <span className="mono">{fulfillment.trackingNumber}</span>
+            /* A courier that gave us somewhere to look makes the number the
+               link; typed-in tracking stays plain text, because a link to
+               nowhere is worse than no link. */
+            fulfillment.trackingUrl ? (
+              <a className="mono" href={fulfillment.trackingUrl} target="_blank" rel="noreferrer">
+                {fulfillment.trackingNumber}
+              </a>
+            ) : (
+              <span className="mono">{fulfillment.trackingNumber}</span>
+            )
           ) : (
             'No tracking'
           )}
+          {fulfillment.labelUrl ? (
+            <>
+              {' · '}
+              <a href={fulfillment.labelUrl} target="_blank" rel="noreferrer">
+                {P.waybill}
+              </a>
+            </>
+          ) : null}
           {' · created '}
           {dateTime(fulfillment.createdAt)}
           {fulfillment.shippedAt ? ` · shipped ${dateTime(fulfillment.shippedAt)}` : ''}
           {fulfillment.deliveredAt ? ` · delivered ${dateTime(fulfillment.deliveredAt)}` : ''}
         </div>
+        {/* The courier's own line, and only for a parcel that HAS one — every
+            field here is absent on a parcel from before couriers shipped. */}
+        {fulfillment.provider ? (
+          <div className="row" style={{ gap: 'var(--s2)', marginTop: 4, flexWrap: 'wrap' }}>
+            {badge ? <Badge tone={badge.tone}>{badge.label}</Badge> : null}
+            {fulfillment.providerStatus && badge && fulfillment.providerStatus !== badge.label ? (
+              <span className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+                {fulfillment.providerStatus}
+              </span>
+            ) : null}
+            {fulfillment.providerCostMinor != null ? (
+              <span className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+                {P.cost(money(fulfillment.providerCostMinor, 'NGN'))}
+              </span>
+            ) : null}
+            {fulfillment.providerLastError ? (
+              <span className="field__error">{P.lastError(fulfillment.providerLastError)}</span>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       <div className="row" style={{ gap: 'var(--s2)' }}>
         {fulfillment.status === 'pending' ? (
           <>
-            <Button onClick={onShip}>Mark shipped</Button>
+            {bookable ? (
+              <Button tone="primary" onClick={onBook}>
+                {state === 'cancelled' || state === 'failed' || state === 'returned'
+                  ? P.bookAgain
+                  : P.book(courier.label)}
+              </Button>
+            ) : null}
+            {courierOn && !bookable && state === 'booked' ? (
+              <>
+                <Button busy={busy === 'refresh'} onClick={() => void courierAction('refresh')}>
+                  {P.refresh}
+                </Button>
+                <Button tone="plain" busy={busy === 'cancel'} onClick={() => void courierAction('cancel')}>
+                  {P.cancelCourier}
+                </Button>
+              </>
+            ) : null}
+            {/* Picked up, on its way, delivered by the courier while the parcel
+                row still says pending: nothing to cancel, everything to re-ask. */}
+            {courierOn && !bookable && state !== null && state !== 'booked' && state !== 'draft' ? (
+              <Button busy={busy === 'refresh'} onClick={() => void courierAction('refresh')}>
+                {P.refresh}
+              </Button>
+            ) : null}
+            {/* Still reachable with a courier on: a pickup nobody webhooked, a
+                parcel somebody carried themselves. */}
+            <Button tone={courierOn ? 'plain' : 'default'} onClick={onShip}>
+              {courierOn ? P.shipByHand : 'Mark shipped'}
+            </Button>
             <Button tone="plain" onClick={onEditTracking}>
               Edit tracking
             </Button>
@@ -694,9 +861,16 @@ function FulfilmentRow({
             </Button>
           </>
         ) : fulfillment.status === 'shipped' ? (
-          <Button busy={busy === 'delivered'} onClick={() => void move('delivered')}>
-            Mark delivered
-          </Button>
+          <>
+            {fulfillment.provider ? (
+              <Button tone="plain" busy={busy === 'refresh'} onClick={() => void courierAction('refresh')}>
+                {P.refresh}
+              </Button>
+            ) : null}
+            <Button busy={busy === 'delivered'} onClick={() => void move('delivered')}>
+              Mark delivered
+            </Button>
+          </>
         ) : null}
       </div>
     </div>
@@ -824,18 +998,41 @@ function ShipDialog({
   );
 }
 
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * SEND OUT ITEMS — STEP ONE OF TWO WHEN A COURIER IS SWITCHED ON.
+ *
+ * This modal makes the PARCEL. `Book with <courier>` lives on the parcel's own
+ * row and cannot exist until it does — so an operator with a courier on met
+ * this screen first, saw it asking for a free-text *Carrier* and *Tracking
+ * number*, and reasonably asked whether the booking had gone wrong.
+ *
+ * With a courier on, those two fields are not rendered AT ALL and `null` is
+ * sent for both. Not merely hidden and not defaulted: the courier fills both
+ * columns in itself the moment the parcel is booked, and a value typed here
+ * would be a second, human opinion about which carrier a parcel went with —
+ * on the same row, arriving first, and wrong whenever they disagree.
+ *
+ * By hand keeps the fields exactly as they were: there, they are the only way
+ * those columns ever get filled in.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
 function FulfilModal({
   orderId,
   lines,
+  courier,
   onClose,
   onDone,
 }: {
   orderId: string;
   lines: ShopOrderLine[];
+  /** Which courier the shop has switched on — `manual` is the screen as it was. */
+  courier: ShopCourierProvider;
   onClose: () => void;
   onDone: () => void;
 }) {
   const toast = useToast();
+  const courierOn = courier.provider !== 'manual';
   const open = useMemo(() => lines.filter((l) => l.fulfilledQty < l.qty), [lines]);
   const [qty, setQty] = useState<Record<string, string>>(() =>
     Object.fromEntries(open.map((l) => [l.id, String(l.qty - l.fulfilledQty)])),
@@ -864,8 +1061,10 @@ function FulfilModal({
     try {
       await shopApi.createFulfillment(orderId, {
         lines: picked,
-        carrier: carrier.trim() || null,
-        trackingNumber: tracking.trim() || null,
+        /* Explicitly null with a courier on, rather than relying on two boxes
+           nobody could have typed into: the booking owns these columns. */
+        carrier: courierOn ? null : carrier.trim() || null,
+        trackingNumber: courierOn ? null : tracking.trim() || null,
       });
       toast.show('Parcel created');
       onDone();
@@ -891,7 +1090,9 @@ function FulfilModal({
     >
       <div className="stack">
         <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.5 }}>
-          Sending part of an order is normal. Whatever is left stays open for the next parcel.
+          {courierOn
+            ? COURIER_COPY.parcel.packFirst(courier.label)
+            : 'Sending part of an order is normal. Whatever is left stays open for the next parcel.'}
         </p>
         {open.map((line) => (
           <div key={line.id} className="row" style={{ gap: 'var(--s3)', alignItems: 'center' }}>
@@ -917,20 +1118,22 @@ function FulfilModal({
             />
           </div>
         ))}
-        <div className="row" style={{ gap: 'var(--s3)', alignItems: 'flex-start' }}>
-          <div style={{ flex: 1 }}>
-            <TextField label="Carrier" value={carrier} placeholder="Optional" onChange={(e) => setCarrier(e.target.value)} />
+        {courierOn ? null : (
+          <div className="row" style={{ gap: 'var(--s3)', alignItems: 'flex-start' }}>
+            <div style={{ flex: 1 }}>
+              <TextField label="Carrier" value={carrier} placeholder="Optional" onChange={(e) => setCarrier(e.target.value)} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <TextField
+                label="Tracking number"
+                value={tracking}
+                placeholder="Optional"
+                className="input mono"
+                onChange={(e) => setTracking(e.target.value)}
+              />
+            </div>
           </div>
-          <div style={{ flex: 1 }}>
-            <TextField
-              label="Tracking number"
-              value={tracking}
-              placeholder="Optional"
-              className="input mono"
-              onChange={(e) => setTracking(e.target.value)}
-            />
-          </div>
-        </div>
+        )}
         {error ? (
           <span className="field__error" role="alert">
             {error}

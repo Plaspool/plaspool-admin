@@ -317,6 +317,11 @@ function customerFulfillmentView(f: Fulfillment) {
       status: f.status,
       carrier: f.carrier,
       trackingNumber: f.trackingNumber,
+      /* The courier's tracking page (migration 0980) — the one courier column
+       * on the customer's side of the allow-list, because it is the whole
+       * point of the booking from where they are standing. The reference, the
+       * waybill, what the courier cost us and the last error stay private. */
+      trackingUrl: f.trackingUrl,
       shippedAt: f.shippedAt,
       deliveredAt: f.deliveredAt,
       createdAt: f.createdAt,
@@ -1011,6 +1016,24 @@ async function runSweep(c: Context<AppEnv>, d: ResolvedDeps) {
   );
   const emails = await sweepEmailIntents(db, d.mailer, now);
   /*
+   * ASK THE COURIERS WHERE THE PARCELS ARE — the backstop behind their webhooks
+   * (`shop/logistics/webhooks.ts`), reached through `d.syncCouriers` rather than
+   * by importing Logistics, exactly as `drainPayments` above is reached.
+   *
+   * AFTER `sweepEmailIntents`, DELIBERATELY. A courier answering "delivered"
+   * enqueues a shipment and a delivery email through the same statement as the
+   * status change; queueing them AFTER this pass's mail run means they go out on
+   * the NEXT sweep, ten minutes later, rather than being sent by a mailer whose
+   * own budget has already been spent. The same ordering `runSweep` gives
+   * `ensureSystemTemplates` below, and for the same reason: this pass does the
+   * work, the next pass sends what it created.
+   *
+   * `null` RATHER THAN A ZEROED SUMMARY when nothing is wired — a deployment
+   * with no courier subsystem is not the same as one that looked and found no
+   * parcel, and the sweep's answer is read by an operator.
+   */
+  const couriers = d.syncCouriers ? await d.syncCouriers(db, now) : null;
+  /*
    * SEED ANY SYSTEM TEMPLATE THAT IS NOT IN THE TABLE YET, LAST.
    *
    * Last because it is the only step here that nothing depends on: this pass
@@ -1027,7 +1050,7 @@ async function runSweep(c: Context<AppEnv>, d: ResolvedDeps) {
    * `ensureSystemTemplates` never throws and never overwrites an edited row.
    */
   const seeded = await ensureSystemTemplates(db, now);
-  return { payments, events, emails, seeded, passes: events.passes };
+  return { payments, events, emails, couriers, seeded, passes: events.passes };
 }
 
 /**

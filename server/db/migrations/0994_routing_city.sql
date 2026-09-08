@@ -1,0 +1,33 @@
+-- A ROUTING CITY ON THE CHECKOUT ADDRESS (range 1020-1039; plan
+-- docs/superpowers/plans/2026-09-08-courier-places.md) -- the second half of
+-- migration 1000's place lists.
+--
+-- HAND-WRITTEN IN FULL, like every migration in these ranges: drizzle-kit has
+-- never seen `shop_addresses` (`drizzle.config.ts` declares only
+-- `server/db/schema.ts`). Declared in `server/shop/cart/schema.ts`.
+--
+-- IT IS A DELIVERY ZONE, NOT A DESCRIPTION OF WHERE ANYBODY LIVES. Terminal
+-- validates `city` against its own per-country list and refuses anything else
+-- with a 400 that kills the whole quote -- measured 2026-09-07: ten place
+-- names inside the FCT, and "Gwarinpa" is not one of them. So the shopper
+-- PICKS a zone from the courier's own list (migration 1000 caches it) and that
+-- pick lands here, while `city` keeps the words they typed.
+--
+-- NOTHING IS SUBSTITUTED BEHIND THE CUSTOMER'S BACK. `city`, `line1` and
+-- `line2` are untouched, Fez's free-text address is still built from `city`,
+-- and only Terminal -- the courier that actually enforces a list -- is told
+-- this value instead. The rider still reads "Gwarinpa".
+--
+-- NULLABLE, AND NULL MEANS "NO ZONE NAMED": every address written before this
+-- migration, every shop whose courier enforces no city list, and every one of
+-- the six minutes a storefront may still be rendering a cached delivery config
+-- that has not heard of the field. A null routing city falls back to `city`,
+-- which is exactly the behaviour every order has today.
+--
+-- NO CHECK CONSTRAINT ON THE SHAPE. The grammar belongs to the COURIER's list,
+-- which is refreshed by a button press and is different for each courier; a
+-- copy of it here would drift the first time that list moved, and would refuse
+-- an address the courier was ready to accept. Exactly the argument migration
+-- 0460 makes for `district`.
+ALTER TABLE shop_addresses
+  ADD COLUMN routing_city text;

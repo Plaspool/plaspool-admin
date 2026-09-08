@@ -267,6 +267,106 @@ describe('addresses', () => {
   });
 });
 
+/**
+ * THE ROUTING CITY (migration 1020) — a delivery zone the COURIER accepts,
+ * carried beside the city the customer actually typed and never instead of it.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * FOUR HAND-MAINTAINED LISTS HAVE TO MOVE TOGETHER for this column to survive
+ * a round trip: `ADDRESS_COLUMNS`, the `INSERT (…)` list, the `ON CONFLICT DO
+ * UPDATE SET` list and `rowToAddress`. NOTHING TYPECHECKS THEM — a value
+ * dropped from any one of the four is silent, and the shape of the loss
+ * differs each time. So each is pinned by a case below rather than by one
+ * happy path that a single omission would still pass.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+describe('routing city', () => {
+  const MAITAMA = { ...UK, city: 'Gwarinpa', routingCity: 'Maitama' };
+
+  it('survives the round trip and rides the frozen event payload', async () => {
+    const cart = await createCart(db, { currency: CURRENCY });
+    await addLine(db, { cartId: cart.id, variantId: 'var_tee', qty: 1 });
+    await putAddresses(db, CONFIG, { cartId: cart.id, shipping: MAITAMA, billing: null });
+
+    // Read back through `getAddress`, which is `ADDRESS_COLUMNS` + `rowToAddress`.
+    const stored = await db.execute(sql`
+      SELECT city, routing_city FROM shop_addresses WHERE cart_id = ${cart.id}`);
+    expect(String(stored.rows[0].city)).toBe('Gwarinpa');
+    expect(String(stored.rows[0].routing_city)).toBe('Maitama');
+
+    await setShipping(db, CONFIG, { cartId: cart.id, optionId: 'standard' });
+    const frozen = await freezeCheckout(db, catalog, CONFIG, { cartId: cart.id });
+    if (!frozen.ok) throw new Error('expected totals');
+    await setCheckoutContact(db, { cartId: cart.id, email: 'buyer@example.test' });
+    await completeCheckout(db, { cartId: cart.id });
+
+    const rows = await db.execute(sql`SELECT payload FROM commerce_events`);
+    const payload = rows.rows[0].payload as Record<string, unknown>;
+    // The snapshot IS `rowToAddress`'s output, so this is the same read the
+    // courier will make — and Orders must still parse it.
+    expect(payload.shippingAddress).toEqual({
+      ...MAITAMA,
+      district: null,
+      location: null,
+    });
+    const parsed = parseCheckoutCompleted(payload, cart.id);
+    expect(parsed.ok, parsed.ok ? '' : `parked at: ${parsed.detail}`).toBe(true);
+  });
+
+  /*
+   * THE ON CONFLICT SET PATH, which is the bug migration 0780's header warns
+   * about: a value left out of the SET list SURVIVES a re-submit, so a shopper
+   * who corrects their address ships to the zone they abandoned. Nothing else
+   * in this file would catch it — every other case writes the address once.
+   */
+  it('is CLEARED by a re-submit that names none', async () => {
+    const cart = await createCart(db, { currency: CURRENCY });
+    await putAddresses(db, CONFIG, { cartId: cart.id, shipping: MAITAMA, billing: null });
+    await putAddresses(db, CONFIG, {
+      cartId: cart.id,
+      shipping: { ...UK, city: 'Gwarinpa' },
+      billing: null,
+    });
+
+    const rows = await db.execute(sql`
+      SELECT routing_city FROM shop_addresses WHERE cart_id = ${cart.id}`);
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0].routing_city).toBeNull();
+  });
+
+  /*
+   * AND AN ADDRESS THAT NEVER HAD ONE BEHAVES EXACTLY AS IT DID BEFORE 1020 —
+   * including a row written before the column existed, which is every address
+   * this shop has ever taken. `null`, not absent: the snapshot is one shape.
+   */
+  it('is null for an address that names none, and for a row older than the column', async () => {
+    const cart = await createCart(db, { currency: CURRENCY });
+    await putAddresses(db, CONFIG, { cartId: cart.id, shipping: UK, billing: null });
+    const fresh = await db.execute(sql`
+      SELECT routing_city FROM shop_addresses WHERE cart_id = ${cart.id}`);
+    expect(fresh.rows[0].routing_city).toBeNull();
+
+    // A pre-1020 row, reproduced: the column exists and holds SQL NULL.
+    await db.execute(sql`
+      UPDATE shop_addresses SET routing_city = NULL WHERE cart_id = ${cart.id}`);
+    await addLine(db, { cartId: cart.id, variantId: 'var_tee', qty: 1 });
+    await setShipping(db, CONFIG, { cartId: cart.id, optionId: 'standard' });
+    const frozen = await freezeCheckout(db, catalog, CONFIG, { cartId: cart.id });
+    if (!frozen.ok) throw new Error('expected totals');
+    await setCheckoutContact(db, { cartId: cart.id, email: 'buyer@example.test' });
+    await completeCheckout(db, { cartId: cart.id });
+
+    const rows = await db.execute(sql`SELECT payload FROM commerce_events`);
+    const payload = rows.rows[0].payload as Record<string, unknown>;
+    expect(payload.shippingAddress).toEqual({
+      ...UK,
+      district: null,
+      location: null,
+      routingCity: null,
+    });
+  });
+});
+
 describe('shipping options', () => {
   it('are the zone the shipping address falls in, priced in the store currency', async () => {
     const cart = await createCart(db, { currency: CURRENCY });
@@ -684,7 +784,21 @@ describe('checkout.completed', () => {
     // `district` rides along since 0460 — null here, because UK names none.
     // `location` rides along since 0780 — null here, and null on almost every
     // order: the pin is optional and the prompt ships switched off.
-    expect(payload.shippingAddress).toEqual({ ...UK, district: null, location: null });
+    // `routingCity` rides along since 1020 — null here, and null on every order
+    // placed before it, which is what makes the courier's fallback to `city`
+    // the whole of today's behaviour.
+    //
+    // A WHOLE-OBJECT ASSERTION ON PURPOSE, AMENDED THREE TIMES NOW RATHER THAN
+    // RELAXED. `toMatchObject` here would stop noticing a field the snapshot
+    // silently stopped carrying — which is exactly the failure the four
+    // hand-maintained column lists in `repo.ts` invite. Add the new key; do not
+    // widen the matcher.
+    expect(payload.shippingAddress).toEqual({
+      ...UK,
+      district: null,
+      location: null,
+      routingCity: null,
+    });
 
     // The holds, so whoever commits stock on capture knows which ones.
     expect(payload.reservationIds).toEqual([]);

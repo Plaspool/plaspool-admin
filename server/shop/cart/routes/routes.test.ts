@@ -519,6 +519,44 @@ describe('the checkout flow, end to end', () => {
     expect(res.status).toBe(400);
   });
 
+  /*
+   * THE ROUTING CITY IS ACCEPTED AND IS NEVER REQUIRED (migration 1020).
+   *
+   * `Address` is `.strict()`, so this route is the feature flag for the wire
+   * shape — the storefront may only send a key the server already knows. And
+   * the public config that advertises it is cached 60s with 300s
+   * stale-while-revalidate, so for up to SIX MINUTES a storefront can be
+   * rendering a form that has never heard of the field. A required
+   * `routingCity` would 400 every one of those submissions. Same discipline
+   * `district` has followed since 0460.
+   */
+  it('takes a routing city, and takes an address without one', async () => {
+    await newCart();
+    const put = (shipping: unknown) =>
+      client.request('/api/shop/checkout/addresses', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ shipping }),
+      });
+
+    expect((await put({ ...LAGOS, routingCity: 'Ikeja' })).status).toBe(200);
+    const stored = await ctx.db.execute(
+      sql`SELECT routing_city FROM shop_addresses WHERE kind = 'shipping'`,
+    );
+    expect(String(stored.rows[0].routing_city)).toBe('Ikeja');
+
+    // Absent is legal, and it CLEARS — the storefront that stops sending the
+    // field must not leave the abandoned zone attached to the new address.
+    expect((await put(LAGOS)).status).toBe(200);
+    const cleared = await ctx.db.execute(
+      sql`SELECT routing_city FROM shop_addresses WHERE kind = 'shipping'`,
+    );
+    expect(cleared.rows[0].routing_city).toBeNull();
+
+    // Explicit null is legal too — one shape for "no zone named".
+    expect((await put({ ...LAGOS, routingCity: null })).status).toBe(200);
+  });
+
   it('404s the whole flow for a browser with no cart', async () => {
     expect((await client.post('/api/shop/checkout/start')).status).toBe(404);
     expect((await client.post('/api/shop/checkout/freeze')).status).toBe(404);

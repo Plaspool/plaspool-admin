@@ -1,4 +1,5 @@
 import type { AddressMode, DeliverySettings } from './repo';
+import type { ProviderSetting } from '../logistics/repo';
 
 /**
  * THE ADDRESS FORM, AS DATA — what `GET /api/public/shop/delivery-config`
@@ -37,6 +38,7 @@ export type AddressFieldKey =
   | 'region'
   | 'district'
   | 'city'
+  | 'routingCity'
   | 'line1'
   | 'line2'
   | 'postalCode';
@@ -55,8 +57,14 @@ export interface AddressFieldConfig {
   /** The `autocomplete` attribute. Browsers fill these; typing an address on a
    *  phone is the single worst part of any checkout. */
   autocomplete: string;
-  /** Present only on `district`: the list is fetched, not enumerated here. */
-  source?: 'areas';
+  /**
+   * Present on the two fields whose values come from a LIST rather than from
+   * the keyboard — the list is fetched, not enumerated here. `'areas'` is
+   * marketing's served areas (`district`); `'places'` is the active courier's
+   * own place list (`routingCity`). The URL for each is on the payload beside
+   * `fields`, so a storefront never hardcodes one.
+   */
+  source?: 'areas' | 'places';
 }
 
 export interface DeliveryConfig {
@@ -72,6 +80,27 @@ export interface DeliveryConfig {
     groupBy: 'region';
     help: string;
     unlistedMessage: string;
+  } | null;
+  /**
+   * WHERE THE COURIER'S OWN PLACE LIST LIVES, and the copy that explains why a
+   * shopper is being asked to pick from it (migration 1020).
+   *
+   * `null`, AND THE FIELD HIDDEN, FOR A COURIER WITH NO CITY LIST. Fez
+   * validates no city at all and `manual` is not a courier, so asking either
+   * shop's customers to choose from a list nothing will ever check is a
+   * question with no answer. Only Terminal enforces one.
+   *
+   * The list is keyed by the region's `code`, which is what `regions[].code`
+   * from that endpoint carries — the region NAME is not interchangeable with
+   * it.
+   */
+  routingCity: {
+    source: '/api/public/shop/delivery-places';
+    label: string;
+    help: string;
+    /** What to say when the shopper's own town is not on the courier's list —
+     *  the case this whole feature exists for. */
+    unlistedHelp: string;
   } | null;
   location: {
     offer: boolean;
@@ -130,6 +159,10 @@ export const ADDRESS_MAX_LENGTHS: Record<AddressFieldKey, number> = {
   region: 120,
   district: 120,
   city: 120,
+  /* The city's limit, because it holds the same kind of thing — a place name
+   * off the courier's list — and a courier that published a longer one than we
+   * accept would be refusing our own storefront's pick. */
+  routingCity: 120,
   line1: 200,
   line2: 200,
   postalCode: 40,
@@ -192,13 +225,62 @@ const REGION: AddressFieldConfig = {
 };
 
 /**
+ * `line2` IS THE LANDMARK FIELD, AND IT IS THE SAME FIELD IN BOTH MODES.
+ *
+ * It always reached both couriers — Terminal's own `line2`, and Fez's free-text
+ * `recipientAddress` through `oneLine()` — but district mode used to label it
+ * "Apartment, floor" with no help at all, which asks for a taxonomy and gets a
+ * rider nothing, while simple mode asked for the gate colour. One definition,
+ * so a rider gets the same detail whichever form the shop is running.
+ *
+ * This is also why the courier-places work adds no landmark column: there is
+ * already one, and it is already wired end to end.
+ */
+const DIRECTIONS: AddressFieldConfig = {
+  key: 'line2',
+  show: true,
+  required: false,
+  label: 'Extra directions',
+  help: 'Gate colour, floor, who to ask for.',
+  maxLength: ADDRESS_MAX_LENGTHS.line2,
+  autocomplete: 'address-line2',
+};
+
+/**
+ * THE COURIER'S DELIVERY ZONE — asked AFTER the real town, in both modes.
+ *
+ * The shopper answers where they actually are first; the zone is the follow-up
+ * that only makes sense once they have ("you said Gwarinpa — which of these is
+ * nearest?"). Their own answer is never overwritten: `city` keeps it, and it is
+ * what the rider reads.
+ *
+ * `required` FOLLOWS `show`, and that is a statement about the FORM, not about
+ * the wire. `PUT /checkout/addresses` must never require this field — the
+ * config is cached 60s with 300s stale-while-revalidate, so a storefront can be
+ * six minutes behind — but a form that has just rendered the list and the copy
+ * explaining it can insist. Exactly the split `district` has had since 0460.
+ */
+function routingCityField(show: boolean): AddressFieldConfig {
+  return {
+    key: 'routingCity',
+    show,
+    required: show,
+    label: 'Nearest delivery zone',
+    help: 'The courier only recognises these. Your address above is what the rider follows.',
+    maxLength: ADDRESS_MAX_LENGTHS.routingCity,
+    autocomplete: 'off',
+    source: 'places',
+  };
+}
+
+/**
  * BY AREA — what this shop ships today (migrations 0300 and 0460).
  *
  * The shopper picks a district from `marketing_service_areas`; the key they
  * pick is what `shop_delivery_areas` prices by and refuses by. Nothing in this
  * branch is new.
  */
-function districtFields(): AddressFieldConfig[] {
+function districtFields(routingCity: boolean): AddressFieldConfig[] {
   return [
     ...IDENTITY,
     REGION,
@@ -220,6 +302,7 @@ function districtFields(): AddressFieldConfig[] {
       maxLength: ADDRESS_MAX_LENGTHS.city,
       autocomplete: 'address-level2',
     },
+    routingCityField(routingCity),
     {
       key: 'line1',
       show: true,
@@ -228,14 +311,7 @@ function districtFields(): AddressFieldConfig[] {
       maxLength: ADDRESS_MAX_LENGTHS.line1,
       autocomplete: 'address-line1',
     },
-    {
-      key: 'line2',
-      show: true,
-      required: false,
-      label: 'Apartment, floor',
-      maxLength: ADDRESS_MAX_LENGTHS.line2,
-      autocomplete: 'address-line2',
-    },
+    DIRECTIONS,
     POSTAL_CODE,
   ];
 }
@@ -252,7 +328,7 @@ function districtFields(): AddressFieldConfig[] {
  * that keys off the array rather than off the mode then has nothing to special
  * case, and the absence is explicit rather than inferred from a missing entry.
  */
-function simpleFields(): AddressFieldConfig[] {
+function simpleFields(routingCity: boolean): AddressFieldConfig[] {
   return [
     ...IDENTITY,
     REGION,
@@ -264,6 +340,7 @@ function simpleFields(): AddressFieldConfig[] {
       maxLength: ADDRESS_MAX_LENGTHS.city,
       autocomplete: 'address-level2',
     },
+    routingCityField(routingCity),
     {
       key: 'line1',
       show: true,
@@ -273,15 +350,7 @@ function simpleFields(): AddressFieldConfig[] {
       maxLength: ADDRESS_MAX_LENGTHS.line1,
       autocomplete: 'address-line1',
     },
-    {
-      key: 'line2',
-      show: true,
-      required: false,
-      label: 'Extra directions',
-      help: 'Gate colour, floor, who to ask for.',
-      maxLength: ADDRESS_MAX_LENGTHS.line2,
-      autocomplete: 'address-line2',
-    },
+    DIRECTIONS,
     {
       key: 'district',
       show: false,
@@ -305,14 +374,50 @@ function simpleFields(): AddressFieldConfig[] {
  */
 const AREAS_SOURCE = '/api/public/marketing/areas';
 
-/** The one thing this endpoint is for: the form, from the row. */
-export function deliveryConfigFor(settings: DeliverySettings): DeliveryConfig {
+/** Migration 1000's cache, served by `server/shop/settings/public.ts`. */
+const PLACES_SOURCE = '/api/public/shop/delivery-places';
+
+/**
+ * WHICH COURIERS VALIDATE A CITY, exhaustively — a `Record` rather than an
+ * array, so adding a courier to `ProviderSetting` fails to compile until
+ * somebody answers this question for it.
+ *
+ * IT IS NOT THE SAME AS "PUBLISHES A PLACE LIST". Fez publishes one — its 37
+ * states — and enforces nothing below the state, which is why its cached row
+ * carries `cities: null`. `manual` is not a courier at all. Only Terminal
+ * refuses an unrecognised city, and only for Terminal is it honest to make a
+ * shopper choose from a list.
+ */
+const VALIDATES_CITY: Record<ProviderSetting, boolean> = {
+  manual: false,
+  fez: false,
+  terminal: true,
+};
+
+/**
+ * The one thing this endpoint is for: the form, from the row.
+ *
+ * THE COURIER IS PASSED IN, NOT LOOKED UP. This is a pure function over its
+ * arguments — no database, no clock, no request — and reaching into
+ * `shop_logistics_settings` from here to answer one boolean would cost that,
+ * and with it the property that `config.test.ts` can check the whole contract
+ * by calling it. The two routes that serve this already hold a database handle;
+ * reading the row is their job.
+ *
+ * The default is the no-list answer, so every caller written before couriers
+ * existed keeps describing exactly the form it described before.
+ */
+export function deliveryConfigFor(
+  settings: DeliverySettings,
+  courier: ProviderSetting = 'manual',
+): DeliveryConfig {
   const simple = settings.addressMode === 'simple';
+  const routingCity = VALIDATES_CITY[courier] ?? false;
   return {
     mode: settings.addressMode,
     revision: settings.revision,
     country: countryFor(settings.servedCountries),
-    fields: simple ? simpleFields() : districtFields(),
+    fields: simple ? simpleFields(routingCity) : districtFields(routingCity),
     districts: simple
       ? null
       : {
@@ -321,6 +426,19 @@ export function deliveryConfigFor(settings: DeliverySettings): DeliveryConfig {
           help: 'Pick the area closest to you. It sets your delivery price.',
           unlistedMessage: "We don't deliver there yet. Pick another area, or get in touch.",
         },
+    routingCity: routingCity
+      ? {
+          source: PLACES_SOURCE,
+          label: 'Nearest delivery zone',
+          help: 'The courier only recognises these. Your address above is what the rider follows.',
+          /* THE CASE THIS FEATURE EXISTS FOR. A shopper in Gwarinpa will not
+           * find Gwarinpa on Terminal's list, and the honest reading of a form
+           * that says nothing is "they do not deliver to me". Say what to do
+           * and say that their own address is what gets followed. */
+          unlistedHelp:
+            "Can't see your town? Pick the closest one — we deliver to the address you typed.",
+        }
+      : null,
     location: {
       offer: settings.locationOffered,
       /* NEVER REQUIRED. A permission prompt the shopper must accept to buy

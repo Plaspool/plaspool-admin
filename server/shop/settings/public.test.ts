@@ -145,3 +145,139 @@ describe('a missing row', () => {
       VALUES ('main', 'district', false, 1, 1)`);
   });
 });
+
+/**
+ * `GET /api/public/shop/delivery-places` — the courier's own place lists, on
+ * the wire beside the form that uses them.
+ *
+ * HERE AND NOT IN `logistics/` BECAUSE OF WHERE IT IS MOUNTED. It is the same
+ * router, above `sessionMiddleware`, so it is cookieless by construction and
+ * `Cache-Control: public` is safe for the same reason `delivery-config`'s is.
+ * Ten minutes rather than sixty seconds: a courier's list of states moves about
+ * once a year, and it is refreshed by an admin pressing a button.
+ */
+describe('the public place lists', () => {
+  const PLACES = '/api/public/shop/delivery-places';
+
+  interface PlacesPayload {
+    country: string;
+    provider: 'manual' | 'fez' | 'terminal';
+    updatedAt: number | null;
+    regions: { name: string; code: string | null }[];
+    cities: Record<string, { name: string }[]> | null;
+  }
+
+  const REGIONS = [
+    { name: 'Abuja', code: 'FC' },
+    { name: 'Lagos', code: 'LA' },
+  ];
+  const CITIES = { FC: [{ name: 'Maitama' }], LA: [{ name: 'Ikeja' }] };
+
+  async function cache(provider: 'fez' | 'terminal', country: string, at: number): Promise<void> {
+    await ctx.db.execute(sql`
+      UPDATE shop_logistics_settings SET provider = ${provider} WHERE id = 'main'`);
+    await ctx.db.execute(sql`
+      INSERT INTO shop_logistics_places (provider, country, regions, cities, fetched_at)
+      VALUES (${provider}, ${country}, ${JSON.stringify(REGIONS)}::jsonb,
+              ${JSON.stringify(CITIES)}::jsonb, ${at})
+      ON CONFLICT (provider, country) DO UPDATE SET fetched_at = EXCLUDED.fetched_at`);
+  }
+
+  async function reset(): Promise<void> {
+    await ctx.db.execute(sql`DELETE FROM shop_logistics_places`);
+    await ctx.db.execute(sql`
+      UPDATE shop_logistics_settings SET provider = 'manual' WHERE id = 'main'`);
+  }
+
+  it('is cacheable, cross-origin readable, and sets no cookie', async () => {
+    const res = await http.get(PLACES);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe(
+      'public, s-maxage=600, stale-while-revalidate=3600',
+    );
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+    /* Its absence is the correct answer, exactly as on `delivery-config`: a
+       credentialed fetch would make a `Cache-Control: public` response
+       per-viewer. */
+    expect(res.headers.get('access-control-allow-credentials')).toBeNull();
+    expect(res.headers.getSetCookie()).toEqual([]);
+  });
+
+  /**
+   * THE DEGRADATION THAT IS THE WHOLE POINT. Nothing is cached yet, so the
+   * answer is an empty list and a 200 — the storefront falls back to free text.
+   * A 404 here would be a shop that cannot take an order because an admin has
+   * not pressed a button.
+   */
+  it('answers an empty list rather than 404ing when nothing is cached', async () => {
+    await reset();
+    const res = await http.get(PLACES);
+    expect(res.status).toBe(200);
+    expect(await json<PlacesPayload>(res)).toEqual({
+      country: 'NG',
+      provider: 'manual',
+      updatedAt: null,
+      regions: [],
+      cities: null,
+    });
+  });
+
+  it('serves the cached list of the courier that is switched on', async () => {
+    await cache('terminal', 'NG', 1_800_000_000_000);
+    expect(await json<PlacesPayload>(await http.get(PLACES))).toEqual({
+      country: 'NG',
+      provider: 'terminal',
+      updatedAt: 1_800_000_000_000,
+      regions: REGIONS,
+      cities: CITIES,
+    });
+    await reset();
+  });
+
+  it('takes a country, and answers an empty list for one nothing is cached for', async () => {
+    await cache('terminal', 'NG', 1_800_000_000_000);
+    const res = await http.get(`${PLACES}?country=gh`);
+    expect(res.status).toBe(200);
+    expect(await json<PlacesPayload>(res)).toMatchObject({
+      country: 'GH',
+      provider: 'terminal',
+      regions: [],
+      cities: null,
+    });
+    await reset();
+  });
+
+  /* A junk query string is not a reason to break a checkout. It falls back to
+     the country the address form is locked to, and SAYS which one it used. */
+  it('falls back to the default country rather than 400ing on a junk one', async () => {
+    const res = await http.get(`${PLACES}?country=Nigeria`);
+    expect(res.status).toBe(200);
+    expect(await json<PlacesPayload>(res)).toMatchObject({ country: 'NG' });
+  });
+
+  it('answers a signed-in operator exactly what it answers a stranger', async () => {
+    await cache('terminal', 'NG', 1_800_000_000_000);
+    const anonymous = await (await http.get(PLACES)).text();
+    await http.signIn({ email: 'owner@test.local' });
+    const signedIn = await (await http.get(PLACES)).text();
+    expect(signedIn).toBe(anonymous);
+    http.clearCookies();
+    await reset();
+  });
+
+  /**
+   * The singleton is seeded by migration 0980 and no route deletes it, so this
+   * is a hand-run DELETE — and the admin read THROWS on exactly that. A
+   * storefront must still render a checkout, so this one answers `manual`.
+   */
+  it('survives a missing courier settings row', async () => {
+    await ctx.db.execute(sql`DELETE FROM shop_logistics_settings WHERE id = 'main'`);
+    expect(await json<PlacesPayload>(await http.get(PLACES))).toMatchObject({
+      provider: 'manual',
+      regions: [],
+    });
+    await ctx.db.execute(sql`
+      INSERT INTO shop_logistics_settings (id, provider, updated_at)
+      VALUES ('main', 'manual', 1786600005100)`);
+  });
+});
