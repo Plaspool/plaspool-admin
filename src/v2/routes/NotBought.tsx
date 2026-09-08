@@ -10,6 +10,7 @@ import { Badge, Banner, Button, EmptyState, type BadgeTone } from '../ui/primiti
 import { PeopleArt } from '../ui/illustrations';
 import { DataTable, IdCell, TablePager, type BulkConfig, type Column } from '../ui/DataTable';
 import { PersonModal } from './not-bought/PersonModal';
+import { SendModal } from './not-bought/SendModal';
 
 /**
  * NOT BOUGHT YET — `/customers/not-bought`.
@@ -103,10 +104,11 @@ export default function NotBought() {
   const [cursors, setCursors] = useState<(string | null)[]>([null]);
   const cursor = cursors[cursors.length - 1] ?? null;
 
-  /* Task 11 mounts the composer against this. The pill records WHO was picked
-     and nothing else until then; the handler is deliberately without a visible
-     effect for one task rather than being a second, throwaway modal. */
-  const [, setSending] = useState<string[] | null>(null);
+  /* WHO the bulk pill picked, by email — the composer's whole input. Held as
+     addresses rather than as rows because the pill hands out keys, and a row
+     re-fetched under a new page would be a different object for the same
+     person. */
+  const [sending, setSending] = useState<string[] | null>(null);
 
   /** The row a click opened — its basket, quoted live. */
   const [opened, setOpened] = useState<string | null>(null);
@@ -135,7 +137,7 @@ export default function NotBought() {
     return () => window.clearTimeout(timer);
   }, [search, term]);
 
-  const { data, error, loading } = useAsync(
+  const { data, error, loading, reload } = useAsync(
     (signal) =>
       shopApi.listProspects(
         {
@@ -268,6 +270,11 @@ export default function NotBought() {
 
   const nothing = NOTHING[tab];
 
+  /* Null until the pill fires, and null again if the picked addresses are no
+     longer on screen — the modal must never open over an empty selection. */
+  const stillHere = sending === null ? [] : rows.filter((p) => sending.includes(p.email));
+  const sendTo = stillHere.length > 0 ? stillHere : null;
+
   return (
     <div className="page">
       <PageHeader
@@ -348,6 +355,21 @@ export default function NotBought() {
       />
 
       {opened ? <PersonModal email={opened} onClose={() => setOpened(null)} /> : null}
+
+      {/* PICKED OFF THE ROWS ON SCREEN, not re-fetched: the composer's three
+          counts are claims about these exact people, and a row that has since
+          moved page would silently drop out of the send it is being counted
+          for. `onSent` reloads the list so `Last nudge` catches up. */}
+      {sendTo !== null ? (
+        <SendModal
+          picked={sendTo}
+          onClose={() => setSending(null)}
+          onSent={() => {
+            setSending(null);
+            reload();
+          }}
+        />
+      ) : null}
     </div>
   );
 }
