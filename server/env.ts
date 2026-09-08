@@ -38,6 +38,23 @@ const Schema = z.object({
    * off VITE_CLERK_PUBLISHABLE_KEY at build time).
    */
   CLERK_SECRET_KEY: z.string().default(''),
+  /*
+   * Web Push (migration 1040). `.default('')` for the reason every optional
+   * variable above carries: a deployment without keys still boots and still
+   * notifies — the email and the in-app bell are untouched, and only the buzz
+   * on a closed phone is missing. `pushConfigured()` is the one place that
+   * asks, so nothing else has to remember which of the three is the gate.
+   *
+   * VAPID_PUBLIC_KEY IS NOT A SECRET and is served to browsers by
+   * `GET /api/shop/admin/push/key` — deliberately over the wire rather than as
+   * a VITE_ variable, because those bake into the bundle at BUILD time and
+   * would mean a redeploy before a newly-set key did anything.
+   *
+   * VAPID_SUBJECT is a `mailto:` the push services use to reach the sender.
+   */
+  VAPID_PUBLIC_KEY: z.string().default(''),
+  VAPID_PRIVATE_KEY: z.string().default(''),
+  VAPID_SUBJECT: z.string().default(''),
   NODE_ENV: z.string().default('development'),
 });
 

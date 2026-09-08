@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { toEpochMs } from '../../db/client';
+import { toEpochMs, toEpochMsOrNull } from '../../db/client';
 import type { Db } from '../../db/client';
 import { EMAIL_ATTEMPT_LIMIT } from '../orders/repo/emails';
 import type { OrderStatus } from '../orders/repo/orders';
@@ -84,6 +84,16 @@ export interface EmailBacklog {
   stuck: number;
   /** Delivered. Counted so "0 pending" can be told from "no email ever". */
   sent: number;
+  /**
+   * When the oldest still-waiting intent was written, or `null` if none is.
+   *
+   * THE COUNT ALONE CANNOT SAY WHETHER THE QUEUE IS MOVING. `pending` goes
+   * above zero after every order and back to zero on the next sweep, so a
+   * reader shown "2 waiting" learns nothing, and an alert keyed on it fires on
+   * the happy path until people stop reading it. An AGE separates the ordinary
+   * minute from a queue that nothing is draining.
+   */
+  oldestPendingAt: number | null;
 }
 
 export interface LatestOrder {
@@ -232,13 +242,30 @@ async function emailBacklog(db: Db): Promise<EmailBacklog> {
                               AND e.attempts <  ${EMAIL_ATTEMPT_LIMIT})::int AS pending,
            count(*) FILTER (WHERE e.sent_at IS NULL AND e.dismissed_at IS NULL
                               AND e.attempts >= ${EMAIL_ATTEMPT_LIMIT})::int AS stuck,
-           count(*) FILTER (WHERE e.sent_at IS NOT NULL)::int                AS sent
+           count(*) FILTER (WHERE e.sent_at IS NOT NULL)::int                AS sent,
+           /* THE AGE OF THE OLDEST THING STILL WAITING, which is the only way to
+            * tell a queue that is MOVING from one that is not. A count cannot:
+            * pending is briefly non-zero after every single order, so an alert
+            * on the count alone fires on the happy path and teaches the reader
+            * to ignore it. Measured 2026-09-08 on the preview host, where three
+            * intents sat at attempts = 0 indefinitely because nothing there
+            * calls the sweep — a state indistinguishable, by count, from an
+            * order placed one second ago.
+            *
+            * Column names are BARE in here on purpose: a backtick inside a
+            * sql template literal closes it, and the error it produces names
+            * neither SQL nor the backtick (CLAUDE.md §5). */
+           min(e.created_at) FILTER (WHERE e.sent_at IS NULL AND e.dismissed_at IS NULL
+                              AND e.attempts <  ${EMAIL_ATTEMPT_LIMIT})      AS oldest_pending_at
       FROM shop_order_email_intents e`);
   const row = res.rows[0];
   return {
     pending: Number(row.pending),
     stuck: Number(row.stuck),
     sent: Number(row.sent),
+    /* NULL whenever `pending` is 0 — an empty queue has no oldest member, and
+     * `toEpochMsOrNull` keeps that distinct from the epoch. */
+    oldestPendingAt: toEpochMsOrNull(row.oldest_pending_at),
   };
 }
 

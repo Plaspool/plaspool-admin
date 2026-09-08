@@ -261,3 +261,93 @@ describe('the detail view', () => {
     expect(within(modal).getByText('buyer@example.test')).toBeTruthy();
   });
 });
+
+describe('Send queued now', () => {
+  /**
+   * THE BUTTON EXISTS FOR THE PREVIEW HOST, where nothing else drains the
+   * outbox: Vercel fires cron entries for the production deployment only, and
+   * the external cron service authenticates with production's CRON_SECRET.
+   * Measured 2026-09-08 — three intents sat at `attempts = 0` on dev while the
+   * order they belonged to was plainly `paid`, because the storefront's
+   * checkout-complete page settles the capture without any sweep.
+   */
+  const SWEEP = '/api/shop/admin/sweep';
+
+  /** `runSweep`'s real answer, field for field — payments answers `count`, and
+   *  the event drain answers applied/ignored/parked. Both were guessed wrong
+   *  once; a fixture that agrees with the client's own invented shape would
+   *  prove nothing. */
+  const sweepRun = (sent: number, failed = 0) => ({
+    payments: { count: 0 },
+    events: { applied: 0, ignored: 0, parked: 0, passes: 1 },
+    emails: { sent, failed, skipped: 0 },
+    seeded: 0,
+    passes: 1,
+  });
+
+  it('POSTs the sweep and says how many left', async () => {
+    withOutbox({ attention: [dead] });
+    when(SWEEP, sweepRun(3));
+    mount();
+    await screen.findByText('Order 2026-000009-D is confirmed');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Send queued now' }));
+
+    // The PATH and the METHOD, which a mocked api module would assert neither of.
+    await waitFor(() => {
+      const call = calls.find((c) => c.path === SWEEP);
+      expect(call).toBeTruthy();
+      expect(call!.init.method).toBe('POST');
+    });
+    await screen.findByText('3 emails sent');
+  });
+
+  it('says nothing was waiting rather than claiming a send', async () => {
+    withOutbox({ attention: [] });
+    when(SWEEP, sweepRun(0));
+    mount();
+    await userEvent.click(await screen.findByRole('button', { name: 'Send queued now' }));
+
+    await screen.findByText('Nothing was waiting to send');
+  });
+
+  it('reports a partial failure instead of only the good half', async () => {
+    withOutbox({ attention: [dead] });
+    when(SWEEP, sweepRun(2, 1));
+    mount();
+    await screen.findByText('Order 2026-000009-D is confirmed');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Send queued now' }));
+
+    await screen.findByText('2 sent, 1 failed — the reasons are on the rows.');
+  });
+
+  it('re-reads the table afterwards, so a row that left stops showing as owed', async () => {
+    withOutbox({ attention: [dead] });
+    when(SWEEP, sweepRun(1));
+    mount();
+    await screen.findByText('Order 2026-000009-D is confirmed');
+    const before = asked('/emails?');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Send queued now' }));
+
+    await waitFor(() => expect(asked('/emails?')).toBeGreaterThan(before));
+  });
+
+  it('surfaces a refusal rather than reporting a send that did not happen', async () => {
+    withOutbox({ attention: [dead] });
+    // A writer pressing it: the route is requireAdmin(), so the server says no.
+    when(SWEEP, { error: 'forbidden', requestId: 'req_test' }, 403);
+    mount();
+    await screen.findByText('Order 2026-000009-D is confirmed');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Send queued now' }));
+
+    /* `querySelector` rather than a text matcher: the toast wraps its message
+       beside a close button, so no single node's text is the whole message. */
+    await waitFor(() => expect(document.querySelector('.toast')).toBeTruthy());
+    expect(document.querySelector('.toast--critical')).toBeTruthy();
+    expect(screen.queryByText(/emails sent/)).toBeNull();
+    expect(screen.queryByText('Nothing was waiting to send')).toBeNull();
+  });
+});

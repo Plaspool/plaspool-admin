@@ -101,10 +101,58 @@ export default function EmailOutbox() {
   const toast = useToast();
   const [bucket, setBucket] = useState<OutboxBucket>('attention');
   const [viewing, setViewing] = useState<ShopOutboxItem | null>(null);
+  const [sending, setSending] = useState(false);
   const { data, error, loading, reload } = useAsync(
     (signal) => shopApi.listEmailOutbox(bucket, signal),
     [bucket],
   );
+
+  /**
+   * Run the sweep now rather than waiting for whatever is scheduled to.
+   *
+   * THE REASON THIS BUTTON EXISTS IS THE PREVIEW HOST. Production has an
+   * external cron holding the `CRON_SECRET`, so its queue is seconds old and
+   * this is only ever a nudge. `admin.dev.plaspool.com` has nothing: Vercel
+   * fires cron entries for the PRODUCTION deployment alone, and the external
+   * service authenticates with production's secret. So mail written on dev sat
+   * unsent at `attempts = 0` indefinitely, while the ORDER still went `paid`
+   * because the storefront's checkout-complete page settles the capture itself
+   * — an outbox that never moves behind a shop that plainly works.
+   *
+   * It sweeps everything, not just mail: payments settle and commerce events
+   * drain in the same pass, because they are one route and splitting them would
+   * mean a second button for a distinction nobody making an order has.
+   */
+  async function sendQueued() {
+    setSending(true);
+    try {
+      const res = await shopApi.sweepNow();
+      const { sent, failed } = res.emails;
+      if (sent > 0 && failed > 0) {
+        /* `critical` and not a gentler tone because there is no gentler tone —
+           Toast takes default | critical only — and a partial failure is the
+           half a person has to act on. */
+        toast.show(`${sent} sent, ${failed} failed — the reasons are on the rows.`, 'critical');
+      } else if (sent > 0) {
+        toast.show(sent === 1 ? '1 email sent' : `${sent} emails sent`);
+      } else if (failed > 0) {
+        toast.show('Nothing sent — every attempt failed. The reasons are on the rows.', 'critical');
+      } else {
+        toast.show('Nothing was waiting to send');
+      }
+    } catch (cause) {
+      toast.show(
+        cause instanceof Error && cause.message ? cause.message : 'Something went wrong.',
+        'critical',
+      );
+    } finally {
+      /* Cleared before the reload, not after: the button is what the person is
+         looking at, and leaving it busy while a table refetches reads as a
+         click that did not land. */
+      setSending(false);
+    }
+    reload();
+  }
 
   async function retry(i: ShopOutboxItem) {
     try {
@@ -276,6 +324,11 @@ export default function EmailOutbox() {
         icon={<Inbox />}
         title="Sent emails"
         subtitle="Every order email the store still owes or has already sent. Retry the failed ones here."
+        actions={
+          <Button tone="default" busy={sending} onClick={() => void sendQueued()}>
+            Send queued now
+          </Button>
+        }
       />
 
       {error ? (

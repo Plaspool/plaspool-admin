@@ -82,12 +82,17 @@ function loadWorker(existingCacheNames: string[] = [], openWindows: FakeWindowCl
   const fetchSpy = vi.fn(async (): Promise<unknown> => new Response('hi', { status: 200 }));
   const matchAll = vi.fn(async () => openWindows);
   const openWindow = vi.fn(async () => undefined);
+  const showNotification = vi.fn(async () => undefined);
 
   const self = {
     addEventListener: (type: string, fn: (event: FakeEvent) => void) => listeners.set(type, fn),
     location: { origin: ORIGIN },
     skipWaiting: vi.fn(),
     clients: { claim: vi.fn(async () => undefined), matchAll, openWindow },
+    /* The push handler's only outward move. ADDITIVE to the double and never a
+       change to an assertion: every test above still passes without it, and the
+       push tests below have something to observe with it. */
+    registration: { showNotification },
   };
   const caches = {
     open,
@@ -111,7 +116,19 @@ function loadWorker(existingCacheNames: string[] = [], openWindows: FakeWindowCl
     URL,
   );
 
-  return { listeners, open, add, put, del, match, fetchSpy, self, matchAll, openWindow };
+  return {
+    listeners,
+    open,
+    add,
+    put,
+    del,
+    match,
+    fetchSpy,
+    self,
+    matchAll,
+    openWindow,
+    showNotification,
+  };
 }
 
 function fetchEvent(url: string, mode = 'cors'): FakeEvent {
@@ -427,5 +444,98 @@ describe('public/sw.js answers a tapped notification', () => {
     expect(withWindow.notification.close).toHaveBeenCalled();
     expect(withNone.notification.close).toHaveBeenCalled();
     await Promise.all([...withWindow.waited, ...withNone.waited]);
+  });
+});
+
+describe('a push arrives with no page running', () => {
+  /** A `push` event, whose payload is whatever the shop sent. `data` is absent
+   *  entirely for the "no payload at all" case a push service may deliver. */
+  function pushEvent(payload?: unknown): FakeEvent {
+    const settled: unknown[] = [];
+    return {
+      data: payload === undefined ? undefined : { json: () => payload },
+      respondWith: vi.fn((p: unknown) => settled.push(p)),
+      waitUntil: (p: unknown) => settled.push(p),
+    } as unknown as FakeEvent;
+  }
+
+  const order = {
+    title: 'New order 2026-000002-U',
+    body: '32600.00 NGN — buyer@example.test paid. Nothing sent out yet.',
+    url: 'https://admin.plaspool.com/#/orders/ord_1',
+    tag: 'order-ord_1',
+  };
+
+  it('shows what the shop sent, and carries the URL for the tap', async () => {
+    const w = loadWorker();
+    w.listeners.get('push')!(pushEvent(order));
+    await flush();
+
+    expect(w.showNotification).toHaveBeenCalledTimes(1);
+    const [title, options] = w.showNotification.mock.calls[0] as unknown as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(title).toBe('New order 2026-000002-U');
+    expect(options.body).toBe(order.body);
+    // The notificationclick handler reads exactly this.
+    expect(options.data).toEqual({ url: order.url });
+    // One row per order, replaced rather than stacked on a redelivery.
+    expect(options.tag).toBe('order-ord_1');
+  });
+
+  it('STILL SHOWS SOMETHING when the payload is missing or unreadable', async () => {
+    /*
+     * THE BARGAIN THE BROWSERS ENFORCE. A push that resolves without calling
+     * showNotification spends the permission silently, and Chrome and Firefox
+     * answer by showing their own "this site was updated in the background"
+     * notice and, after enough of them, revoking the subscription outright. A
+     * vague notification is recoverable; a revoked subscription is not, and it
+     * fails closed on the one channel that works with the app shut.
+     */
+    for (const bad of [undefined, null, 'not json at all']) {
+      const w = loadWorker();
+      const event =
+        bad === 'not json at all'
+          ? ({
+              data: {
+                json: () => {
+                  throw new SyntaxError('Unexpected token');
+                },
+              },
+              respondWith: vi.fn(),
+              waitUntil: () => {},
+            } as unknown as FakeEvent)
+          : pushEvent(bad === null ? null : undefined);
+
+      w.listeners.get('push')!(event);
+      await flush();
+
+      expect(w.showNotification).toHaveBeenCalledTimes(1);
+      const [title, options] = w.showNotification.mock.calls[0] as unknown as [
+        string,
+        Record<string, unknown>,
+      ];
+      expect(title).toBe('PlaSpool');
+      expect(String(options.body).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('registers push as its OWN listener, leaving fetch alone', () => {
+    /*
+     * The test double keeps ONE handler per event type in a Map, so a second
+     * `fetch` registration would silently replace the first and every caching
+     * test above would then be exercising a handler it was not written for.
+     * Real browsers run both, which is what makes this invisible outside a
+     * test — so it is asserted here rather than trusted.
+     */
+    const w = loadWorker();
+    expect([...w.listeners.keys()].sort()).toEqual([
+      'activate',
+      'fetch',
+      'install',
+      'notificationclick',
+      'push',
+    ]);
   });
 });

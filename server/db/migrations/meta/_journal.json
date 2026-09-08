@@ -428,6 +428,13 @@
                         "when":  1786600005300,
                         "tag":  "1000_broadcast_audience",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  61,
+                        "version":  "7",
+                        "when":  1786600005500,
+                        "tag":  "1040_push_subscriptions",
+                        "breakpoints":  true
                     }
                 ]
 }

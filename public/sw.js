@@ -222,3 +222,61 @@ self.addEventListener('notificationclick', (event) => {
       }),
   );
 });
+
+/**
+ * A PUSH FROM THE SHOP — the one notification that arrives with every tab shut.
+ *
+ * The page raises its own notifications while somebody is looking at the admin
+ * (`src/v2/data/notify.ts`); this is the other half, and the reason Web Push
+ * exists at all: a worker is woken by the browser's push service with no page
+ * running anywhere.
+ *
+ * SHOWING SOMETHING IS NOT OPTIONAL. Chrome and Firefox both enforce a
+ * "userVisibleOnly" bargain — a push that resolves without calling
+ * showNotification spends the permission silently, and browsers respond by
+ * showing their own "this site was updated in the background" notice or, after
+ * enough of them, revoking the subscription. So the catch below still shows a
+ * message rather than returning quietly: a vague notification is recoverable,
+ * a revoked subscription is not.
+ *
+ * `self.registration`, `self.clients` — never the bare globals. src/sw.test.ts
+ * evaluates this file inside a scriptable global that injects exactly self,
+ * caches, fetch, Response and URL by name, so any other worker global read at
+ * MODULE scope throws ReferenceError before a single listener registers.
+ */
+self.addEventListener('push', (event) => {
+  /* Everything the payload decides has a fallback, because the payload comes
+     off the network and a malformed one must still notify: the whole point of
+     this channel is the case where nobody is watching a screen. */
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch (err) {
+    payload = {};
+  }
+  /*
+   * A VALID JSON PAYLOAD OF `null` IS NOT AN OBJECT, and reading `.title` off
+   * it throws OUTSIDE the try above — which loses the notification entirely and
+   * spends the permission, the one failure this handler must not have. `typeof
+   * null === 'object'`, so the truthiness check has to come first.
+   */
+  if (!payload || typeof payload !== 'object') payload = {};
+
+  const title = payload.title || 'PlaSpool';
+  const body = payload.body || 'Something needs your attention in the admin.';
+  const url = payload.url || '/';
+
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      /* Same tag replaces rather than stacks — a redelivered push must not
+         leave two identical rows on a lock screen. */
+      tag: payload.tag || 'plaspool',
+      renotify: Boolean(payload.tag),
+      icon: '/brand/icon-192.png',
+      badge: '/brand/icon-192.png',
+      /* Read by the notificationclick handler above. */
+      data: { url: url },
+    }),
+  );
+});

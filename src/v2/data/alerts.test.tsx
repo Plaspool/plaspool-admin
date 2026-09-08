@@ -301,3 +301,160 @@ describe('a paid order in the bell', () => {
     expect(alerts[0]!.title).toBe('Order 2026-000123-A — ––');
   });
 });
+
+describe('mail that is waiting rather than mail that failed', () => {
+  const GENERATED = 1_756_000_100_000;
+
+  function withStats(stats: Record<string, unknown>) {
+    stubAnswers((pathname) =>
+      pathname === STATS
+        ? { status: 200, body: stats }
+        : { status: 200, body: { items: [], nextCursor: null } },
+    );
+  }
+
+  const waiting = (n: number, ageMs: number) =>
+    statsBody({
+      generatedAt: GENERATED,
+      emails: { pending: n, stuck: 0, sent: 0, oldestPendingAt: GENERATED - ageMs },
+    });
+
+  it('stays quiet for a queue that is merely a minute old', async () => {
+    /* THE WHOLE POINT OF KEYING ON AGE. `pending` is above zero for the minute
+       between an order and the next sweep, on every healthy shop, every time.
+       An alert that fired here would be wrong far more often than right and
+       would be trained away within a day. */
+    withStats(waiting(2, 60_000));
+    expect((await fetchAlerts()).map((a) => a.id)).not.toContain('emails-waiting');
+  });
+
+  it('rings once the oldest has outlived several sweeps', async () => {
+    withStats(waiting(3, 45 * 60_000));
+
+    const row = (await fetchAlerts()).find((a) => a.id === 'emails-waiting');
+    expect(row).toBeTruthy();
+    expect(row!.source).toBe('Emails');
+    expect(row!.tone).toBe('warn');
+    expect(row!.title).toBe('3 emails are waiting to send');
+    expect(row!.body).toContain('45 minutes');
+    // It has to land where the button is.
+    expect(row!.to).toBe('/emails/outbox');
+    // Dated by the queue, not by the reading — "waiting since", not "noticed at".
+    expect(row!.at).toBe(GENERATED - 45 * 60_000);
+  });
+
+  it('reads as one email, singular, when there is one', async () => {
+    withStats(waiting(1, 40 * 60_000));
+    const row = (await fetchAlerts()).find((a) => a.id === 'emails-waiting');
+    expect(row!.title).toBe('1 email is waiting to send');
+    expect(row!.body).toContain('send it');
+  });
+
+  it('is a different fact from the stuck alert, and both can stand at once', async () => {
+    /* Out of attempts is not the same as never attempted, and an operator
+       needs to know which they have: one is a bad address, the other is a
+       sweeper that is not running. */
+    withStats(
+      statsBody({
+        generatedAt: GENERATED,
+        emails: { pending: 2, stuck: 4, sent: 0, oldestPendingAt: GENERATED - 60 * 60_000 },
+      }),
+    );
+
+    const ids = (await fetchAlerts()).map((a) => a.id);
+    expect(ids).toContain('emails-stuck');
+    expect(ids).toContain('emails-waiting');
+  });
+
+  it('does not exist at all for a response with no age in it', async () => {
+    /* A deployment older than the field answers without it. Read strictly that
+       is `undefined - number = NaN`, every comparison false — quiet by luck.
+       Pinned so it stays quiet by intent. */
+    withStats(statsBody({ generatedAt: GENERATED, emails: { pending: 5, stuck: 0, sent: 0 } }));
+    expect((await fetchAlerts()).map((a) => a.id)).not.toContain('emails-waiting');
+  });
+
+  it('re-rings when the queue grows, and not on every poll while it sits', async () => {
+    withStats(waiting(2, 40 * 60_000));
+    const first = (await fetchAlerts()).find((a) => a.id === 'emails-waiting')!;
+
+    markRead(first);
+    expect(isUnread(first)).toBe(false);
+
+    // Same count, four more minutes: still the same news, still settled.
+    withStats(waiting(2, 44 * 60_000));
+    const later = (await fetchAlerts()).find((a) => a.id === 'emails-waiting')!;
+    expect(isUnread(later)).toBe(false);
+
+    // A third message joins the pile: that is news again.
+    withStats(waiting(3, 45 * 60_000));
+    const grown = (await fetchAlerts()).find((a) => a.id === 'emails-waiting')!;
+    expect(isUnread(grown)).toBe(true);
+  });
+});
+
+describe('a device that can never be notified', () => {
+  const GENERATED = 1_756_000_100_000;
+
+  function withStats(stats: Record<string, unknown>) {
+    stubAnswers((pathname) =>
+      pathname === STATS
+        ? { status: 200, body: stats }
+        : { status: 200, body: { items: [], nextCursor: null } },
+    );
+  }
+
+  function withPermission(permission: string | undefined) {
+    if (permission === undefined) {
+      vi.stubGlobal('Notification', undefined);
+      return;
+    }
+    vi.stubGlobal('Notification', { permission });
+  }
+
+  it('says so when the person blocked them, because nothing else will', async () => {
+    /* The bell's opt-in row shows for `default` and then hides once the answer
+       is in — INCLUDING when the answer was no. Without this alert a blocked
+       permission looks identical to a working one from every screen. */
+    withPermission('denied');
+    withStats(statsBody({ generatedAt: GENERATED }));
+
+    const row = (await fetchAlerts()).find((a) => a.id === 'notifications-blocked');
+    expect(row).toBeTruthy();
+    expect(row!.source).toBe('Notifications');
+    expect(row!.tone).toBe('warn');
+    // It must not imply the orders are lost — they are not.
+    expect(row!.body).toContain('email');
+    expect(row!.to).toBe('/settings/notifications');
+  });
+
+  it('stays quiet before the person has been asked — the bell offers that itself', async () => {
+    withPermission('default');
+    withStats(statsBody({ generatedAt: GENERATED }));
+    expect((await fetchAlerts()).map((a) => a.id)).not.toContain('notifications-blocked');
+  });
+
+  it('stays quiet once they have allowed them', async () => {
+    withPermission('granted');
+    withStats(statsBody({ generatedAt: GENERATED }));
+    expect((await fetchAlerts()).map((a) => a.id)).not.toContain('notifications-blocked');
+  });
+
+  it('stays quiet on a browser with no notifications at all — there is nothing to fix', async () => {
+    withPermission(undefined);
+    withStats(statsBody({ generatedAt: GENERATED }));
+    expect((await fetchAlerts()).map((a) => a.id)).not.toContain('notifications-blocked');
+  });
+
+  it('settles for good once dismissed — a block may have been deliberate', async () => {
+    withPermission('denied');
+    withStats(statsBody({ generatedAt: GENERATED }));
+    const first = (await fetchAlerts()).find((a) => a.id === 'notifications-blocked')!;
+    markRead(first);
+
+    // A later poll, a later moment: the same standing fact, still settled.
+    withStats(statsBody({ generatedAt: GENERATED + 10 * 60_000 }));
+    const later = (await fetchAlerts()).find((a) => a.id === 'notifications-blocked')!;
+    expect(isUnread(later)).toBe(false);
+  });
+});

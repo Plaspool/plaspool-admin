@@ -29,6 +29,7 @@ import {
   type OrderRead,
 } from './orders';
 import { queueStaffOrderEmail } from '../staff-mail';
+import { sendStaffOrderPush } from '../../notifications/order-push';
 
 /**
  * THE CONSUMER (contract §6, brief §4).
@@ -506,6 +507,21 @@ async function dispatch(
        * exists to avoid. See `staff-mail.ts`'s header.
        */
       await queueStaffOrderEmail(db, read.order.id, now, deps.templates ?? BUILT_IN);
+
+      /*
+       * AND THE SAME NEWS AS A PUSH (migration 1040), which is the only one of
+       * the three channels that reaches somebody with the admin closed. The
+       * email above is durable and arrives whenever the outbox is next drained;
+       * this is immediate and best-effort, and the two are deliberately not one
+       * mechanism — a phone that was off is not worth an outbox row, because
+       * "an order came in" stops being actionable long before a retry would
+       * land.
+       *
+       * AFTER the mail, never before: the mail is the channel that must not be
+       * lost, so it gets its row written while nothing has had a chance to go
+       * wrong. Same discarded return and the same no-throw contract.
+       */
+      await sendStaffOrderPush(db, read.order.id, now);
 
       /*
        * SPOOLPOINTS ARE SPENT HERE — AT THE CAPTURE, NOT AT `checkout.completed`.

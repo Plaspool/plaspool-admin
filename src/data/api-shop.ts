@@ -694,6 +694,24 @@ export interface ShopEmailIntent {
 /** The outbox screen's slices. Disjoint, and together they cover the table. */
 export type OutboxBucket = 'attention' | 'queued' | 'sent' | 'dismissed';
 
+/**
+ * What one run of the sweep moved.
+ *
+ * COPIED OFF `runSweep`'s OWN RETURN (`server/shop/orders/routes.ts`), field by
+ * field, because `shopFetch<T>` is an unchecked assertion — nothing compares T
+ * to the payload at runtime, so a shape written from memory is a screen reading
+ * `undefined` with no type error anywhere. Both halves of this were guessed
+ * wrong on the first attempt: payments answers `count`, not settled/failed, and
+ * the event drain answers applied/ignored/parked, not processed.
+ */
+export interface SweepRun {
+  payments: { count: number };
+  events: { applied: number; ignored: number; parked: number; passes: number };
+  emails: { sent: number; failed: number; skipped: number };
+  seeded: number;
+  passes: number;
+}
+
 /** An intent joined with the order number the list screen links through. */
 export interface ShopOutboxItem extends ShopEmailIntent {
   orderNumber: string;
@@ -824,6 +842,15 @@ export interface EmailBacklog {
   stuck: number;
   /** Handed to a mailer. Counted so "0 pending" can be told from "no email ever". */
   sent: number;
+  /**
+   * When the oldest still-waiting intent was written, or `null` if none is.
+   *
+   * OPTIONAL ON THE WIRE, and read defensively for it: a deployment serving a
+   * bundle older than the field answers without it, and a strict read would
+   * make the bell treat an ordinary response as broken. Same rule the frozen
+   * totals learned twice.
+   */
+  oldestPendingAt?: number | null;
 }
 
 /** A row of `GET /shop/admin/inventory`, which `stats` reuses for low stock. */
@@ -1219,6 +1246,79 @@ export const shopApi = {
   /** Stop counting an unsent intent at the operator. Retry undoes it. */
   async dismissEmailIntent(id: string): Promise<{ ok: true }> {
     return shopFetch(`${BASE}/emails/${seg(id)}/dismiss`, { method: 'POST', id });
+  },
+
+  /**
+   * Run the sweep now — settle payments, drain commerce events, send the queued
+   * mail — instead of waiting for whatever is scheduled to call it.
+   *
+   * ON PRODUCTION THIS IS A NUDGE. An external cron already holds the
+   * `CRON_SECRET` and calls `GET /admin/sweep` on a schedule, so the queue is
+   * normally seconds old and pressing this changes little.
+   *
+   * ON A PREVIEW HOST IT IS THE ONLY DRAINER THERE IS, which is the reason it
+   * exists. Vercel's own cron entries fire for the PRODUCTION deployment only,
+   * and the external service authenticates with production's secret, which the
+   * Preview scope does not share — so on `admin.dev.plaspool.com` nothing calls
+   * the sweep at all. An order still reaches `paid` there, because the
+   * storefront's checkout-complete page resolves the capture from Paystack
+   * directly, which is exactly what makes the silence confusing: the order
+   * moves and the outbox does not. Measured 2026-09-08, three intents stuck at
+   * `attempts = 0` with no error anywhere.
+   *
+   * `requireAdmin()` on the server — owner and developers.
+   */
+  async sweepNow(): Promise<SweepRun> {
+    return shopFetch<SweepRun>(`${BASE}/sweep`, { method: 'POST', body: {} });
+  },
+
+  // ------------------------------------------------------------------ push
+
+  /**
+   * The VAPID public key a browser needs before it can subscribe.
+   *
+   * OVER THE WIRE RATHER THAN BAKED INTO THE BUNDLE, deliberately. A `VITE_`
+   * variable is read at BUILD time, so an owner who sets the keys and reloads
+   * would see nothing change until the next deploy — and would reasonably
+   * conclude the feature was broken. `configured` is false when the deployment
+   * has no keys, which is a state the UI shows rather than an error.
+   *
+   * The key is not a secret; it is published to every subscribing browser.
+   *
+   * `orders` domain, not `settings`: whether a person's own phone buzzes is not
+   * an owner-only decision.
+   */
+  async pushKey(signal?: AbortSignal): Promise<{ publicKey: string | null; configured: boolean }> {
+    return shopFetch(`${BASE}/push/key`, { signal });
+  },
+
+  /** How many devices the CALLER has registered, and whether push works here. */
+  async pushDevices(signal?: AbortSignal): Promise<{ configured: boolean; devices: number }> {
+    return shopFetch(`${BASE}/push/devices`, { signal });
+  },
+
+  /** Register this browser, or refresh the keys of one already registered.
+   *  Idempotent on the endpoint — re-subscribing must not deliver twice. */
+  async pushSubscribe(body: {
+    endpoint: string;
+    keys: { p256dh: string; auth: string };
+    userAgent?: string;
+  }): Promise<{ ok: true; configured: boolean }> {
+    return shopFetch(`${BASE}/push/subscribe`, {
+      method: 'POST',
+      subject: 'Notifications',
+      body,
+    });
+  },
+
+  /** Forget this browser. `ok` even when no row existed — unsubscribing twice
+   *  has got what it asked for. */
+  async pushUnsubscribe(endpoint: string): Promise<{ ok: true; removed: number }> {
+    return shopFetch(`${BASE}/push/unsubscribe`, {
+      method: 'POST',
+      subject: 'Notifications',
+      body: { endpoint },
+    });
   },
 
   /** The full low-stock list the overview only shows the head of. */
