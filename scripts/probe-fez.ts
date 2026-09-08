@@ -17,35 +17,51 @@
  * probe that agrees with itself and disagrees with production is worse than no
  * probe; §2 of CLAUDE.md is a list of those.
  *
- * ═══ IT DEFAULTS TO THE SANDBOX AND BOOKS NOTHING ═══
+ * ═══ DEV AND PROD, AND IT BOOKS NOTHING IN EITHER ═══
  *
- * `--live` is the only way to reach the production base URL, matching
- * `config.ts`'s rule that a forgotten variable can never spend real money.
+ *   npm run probe:fez -- --dev     https://apisandbox.fezdelivery.co/v1  (default)
+ *   npm run probe:fez -- --prod    https://api.fezdelivery.co/v1
+ *
+ * `--sandbox` and `--live` are the same two, under the names the rest of this
+ * codebase uses; `--env=prod` also works. The sandbox is the default and only
+ * an explicit word reaches production, matching `config.ts`'s rule that a
+ * forgotten variable can never spend real money. The two accounts are separate
+ * — Fez issues you a user id per environment — so a dev credential will not
+ * sign in to prod, and that refusal is the expected one rather than a fault.
+ *
  * Both calls it makes are reads: `POST /order/cost` is a price (Fez holds no
  * draft between a price and an order, so this reserves nothing) and
  * `GET /states` is a list.
  *
- * ═══ PASSING A PASSWORD ═══
+ * ═══ PASSING A PASSWORD AND A SECRET KEY ═══
  *
- * Prefer a file, because a flag is visible in shell history and to `ps`. The
- * npm script loads `.fez.env` when one is there and shrugs when it is not, so
- * put FEZ_USER_ID / FEZ_PASSWORD (and optionally FEZ_SECRET_KEY, FEZ_BASE_URL)
- * in that file and run:
+ * Three ways, and each beats the one after it: a flag, then the environment,
+ * then the PASTE block below.
+ *
+ * A file is the one to prefer, because a flag is visible in shell history and
+ * to `ps`. The npm script loads `.fez.env` when one is there and shrugs when
+ * it is not, so put FEZ_USER_ID / FEZ_PASSWORD (and optionally FEZ_SECRET_KEY,
+ * FEZ_BASE_URL) in that file and run:
  *
  *   npm run probe:fez
  *
- * `*.env` is already gitignored. For a different file, name it yourself —
- * the flag has to reach tsx, so it goes BEFORE the script and npm cannot
- * forward it:
+ * `*.env` is already gitignored. For a different file, name it yourself — the
+ * flag has to reach tsx, so it goes BEFORE the script and npm cannot forward
+ * it:
  *
- *   npx tsx --env-file=.prod.env scripts/probe-fez.ts --live
+ *   npx tsx --env-file=.prod.env scripts/probe-fez.ts --prod
  *
- * Flags win over the environment when you want a one-off:
+ * For a one-off:
  *
- *   npm run probe:fez -- --user-id=G-4568-3493 --password='…'
+ *   npm run probe:fez -- --user-id=G-4568-3493 --password='…' --secret-key='…'
  *
- * Other flags: `--live`, `--state=Abuja`, `--weight=2.5`, `--states` (print
- * every state Fez ships to rather than just the count).
+ * THE SECRET KEY IS OPTIONAL. Fez hands the org's own key back at sign-in
+ * (`orgDetails['secret-key']`) and the client uses that when it has nothing
+ * else, so supplying one only pins it — which is worth doing when you want to
+ * prove the exact key a deployment would carry.
+ *
+ * Other flags: `--state=Abuja`, `--weight=2.5`, `--states` (print every state
+ * Fez ships to rather than just the count).
  *
  * Exit code is 0 when Fez accepted the credentials, 1 when it did not — so it
  * is usable as a check and not only as something to read.
@@ -64,25 +80,91 @@ function flag(name: string): string | null {
 
 const has = (name: string): boolean => process.argv.includes(`--${name}`);
 
+/**
+ * ┌───────────────────────────────────────────────────────────────────────┐
+ * │  PASTE CREDENTIALS HERE FOR A QUICK TEST — AND TAKE THEM OUT AGAIN.   │
+ * └───────────────────────────────────────────────────────────────────────┘
+ *
+ * Left empty on purpose, and it must go back to empty before you commit.
+ * THIS FILE IS TRACKED: unlike `.fez.env`, which is gitignored, anything left
+ * in here is one `git add scripts/probe-fez.ts` away from the repo's history,
+ * where a password does not come back out — the project has rewritten history
+ * with `filter-branch` once already, and `.prod.env` was committed once by an
+ * unrelated `git add -A`.
+ *
+ * Anything the environment or a flag supplies WINS over what is written here,
+ * so filling `.fez.env` in does not mean emptying this block first.
+ */
+const PASTE = {
+  /** Fez's own admin user id, shaped like `G-4568-3493`. Not your email. */
+  userId: '',
+  password: '',
+  /** Developers → Manage Keys on the Fez portal. Optional — see `secretKey` below. */
+  secretKey: '',
+};
+
+/** THE TWO FEZ ENVIRONMENTS, and there are only two. `dev` is Fez's own word
+ *  for the sandbox in their docs ("Development Base URL"); `sandbox` is the
+ *  word the rest of this codebase uses, and both are accepted so nobody has to
+ *  remember which side of the fence they are standing on. */
+const HOSTS = {
+  dev: FEZ_SANDBOX_URL,
+  sandbox: FEZ_SANDBOX_URL,
+  prod: FEZ_LIVE_URL,
+  live: FEZ_LIVE_URL,
+} as const;
+
+type HostName = keyof typeof HOSTS;
+
+/**
+ * Which Fez to talk to. THE DEFAULT IS THE SANDBOX AND ONLY AN EXPLICIT WORD
+ * CHANGES IT, matching `config.ts`'s rule that a forgotten variable can never
+ * reach the real courier.
+ *
+ * An explicit choice BEATS an inherited `FEZ_BASE_URL` rather than losing to
+ * it: a shell — or a `.fez.env` — that already exports the sandbox URL must
+ * not quietly turn `--prod` back into a sandbox run. `FEZ_BASE_URL` is still
+ * honoured when you name no environment at all, which is what makes
+ * `npx tsx --env-file=.prod.env …` behave like the deployment it came from.
+ */
+function baseUrlFrom(): string {
+  const named = (flag('env') ?? (['prod', 'live', 'dev', 'sandbox'] as const).find((n) => has(n))) as
+    | HostName
+    | undefined;
+  if (named) {
+    const url = HOSTS[named];
+    if (!url) throw new Error(`--env must be one of ${Object.keys(HOSTS).join(', ')}, got "${named}"`);
+    return url;
+  }
+  return process.env.FEZ_BASE_URL?.trim() || FEZ_SANDBOX_URL;
+}
+
+const first = (...values: (string | null | undefined)[]): string | null => {
+  for (const v of values) if (v && v.trim() !== '') return v.trim();
+  return null;
+};
+
 function env(): FezEnv {
-  const userId = flag('user-id') ?? process.env.FEZ_USER_ID?.trim();
-  const password = flag('password') ?? process.env.FEZ_PASSWORD;
+  /* Order everywhere: the flag you just typed, then the environment, then the
+     block above — most deliberate first, so a paste left in by accident can
+     never override the file you meant to use. */
+  const userId = first(flag('user-id'), process.env.FEZ_USER_ID, PASTE.userId);
+  const password = first(flag('password'), process.env.FEZ_PASSWORD, PASTE.password);
   if (!userId || !password) {
     throw new Error(
-      'Need a user id and password. Pass --user-id=… --password=…, or put FEZ_USER_ID and\n' +
-        'FEZ_PASSWORD in .fez.env, which `npm run probe:fez` loads on its own.',
+      'Need a user id and password. Pass --user-id=… --password=…, put FEZ_USER_ID and\n' +
+        'FEZ_PASSWORD in .fez.env (which `npm run probe:fez` loads on its own), or fill in\n' +
+        'the PASTE block near the top of scripts/probe-fez.ts.',
     );
   }
-  /* --live is deliberately the ONLY route to production, and it beats an
-     inherited FEZ_BASE_URL rather than losing to it: a shell that already
-     exports the sandbox URL must not quietly turn --live back into a
-     sandbox run. An explicit --base-url is not offered; there are two. */
-  const baseUrl = has('live') ? FEZ_LIVE_URL : process.env.FEZ_BASE_URL?.trim() || FEZ_SANDBOX_URL;
   return {
     userId,
     password,
-    secretKey: flag('secret-key') ?? process.env.FEZ_SECRET_KEY?.trim() ?? null,
-    baseUrl,
+    /* NULL IS A WORKING ANSWER, not a missing one: Fez returns the org's key as
+       `orgDetails['secret-key']` at sign-in and the client uses that when it
+       has nothing else. Supplying one only pins it. */
+    secretKey: first(flag('secret-key'), process.env.FEZ_SECRET_KEY, PASTE.secretKey),
+    baseUrl: baseUrlFrom(),
   };
 }
 
@@ -93,9 +175,16 @@ async function main(): Promise<void> {
   const provider = createFezProvider(fez);
   const where = provider.diagnostics?.environment ?? 'sandbox';
 
-  console.log(`Fez Delivery — ${where} (${fez.baseUrl})`);
+  /* `environment` is read off the base URL by the adapter itself rather than
+     from the flag, so what prints is where the calls are actually going. */
+  console.log(`Fez Delivery — ${where === 'live' ? 'PROD' : 'dev'} (${fez.baseUrl})`);
   console.log(`user id      ${fez.userId}`);
-  console.log(`secret key   ${fez.secretKey ? 'from the environment' : 'to be learned from the sign-in'}`);
+  console.log(`secret key   ${fez.secretKey ? `pinned, ending …${fez.secretKey.slice(-4)}` : 'to be learned from the sign-in'}`);
+  /* Loud, because a credential in a TRACKED file is the one that gets
+     committed by accident. */
+  if (PASTE.userId || PASTE.password || PASTE.secretKey) {
+    console.log('⚠ Using the PASTE block in this script — empty it before you commit.');
+  }
   console.log('');
 
   /* The sign-in is not probed on its own: `ping()` IS the sign-in plus one
