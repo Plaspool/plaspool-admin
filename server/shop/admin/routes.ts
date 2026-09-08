@@ -1,13 +1,15 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { readQuery, str } from '../../middleware/errors';
+import { pathParam, readQuery, str } from '../../middleware/errors';
 import { requireAuth } from '../../middleware/session';
 import { currentDb } from '../../app-env';
 import type { AppEnv } from '../../app-env';
+import { BadRequestError } from '../../repo/errors';
 import { listAudit } from './audit';
 import { listShopTags } from './tags';
 import { listBuyers } from './customers';
 import { listInventory } from './inventory';
+import { basketFor, listProspects, type ProspectTab } from './prospects';
 import { shopStats } from './stats';
 import { ANALYTICS_RANGES, shopAnalytics } from './analytics';
 
@@ -95,6 +97,20 @@ const InventoryQueryParams = PageQueryParams.extend({
 }).strict();
 
 /**
+ * The four tabs `prospects.ts` knows, plus the search box every tab shares.
+ *
+ * `tab` IS OPTIONAL HERE AND REQUIRED ON `ProspectQuery` — the route below
+ * supplies the default, so an absent `?tab=` reads as "show me the baskets"
+ * rather than a 400 demanding a caller name one.
+ */
+const DEFAULT_PROSPECT_TAB: ProspectTab = 'basket';
+
+const ProspectQueryParams = PageQueryParams.extend({
+  tab: z.enum(['basket', 'account', 'subscriber', 'all']).optional(),
+  query: str().max(200).optional(),
+}).strict();
+
+/**
  * No parameters at all, and the empty schema is what says so.
  *
  * `readQuery` against `.strict()` makes `?limit=10` on this route a 400 rather
@@ -133,6 +149,45 @@ shopAdminRoutes.get('/admin/stats', auth, async (c) => {
 shopAdminRoutes.get('/admin/customers', auth, async (c) => {
   const q = readQuery(c, PageQueryParams);
   return c.json(await listBuyers(currentDb(c), q));
+});
+
+/**
+ * WHO HAS NOT BOUGHT YET, tab by tab, and one person's basket — `prospects.ts`
+ * carries the whole shape of both: why the tabs are disjoint, why the address
+ * is folded the way it is, and why a basket is quoted live rather than frozen.
+ *
+ * NESTED UNDER `/admin/customers` ON PURPOSE. `server/middleware/permissions.ts`
+ * carries `{ prefix: '/api/shop/admin/customers', domain: 'customers' }`, so
+ * these two routes are gated by the existing rule and no permission change was
+ * needed. Sending to these people is a separate surface on `/api/admin/email/`,
+ * domain `marketing` — each route on the domain its API is in, the way Spools
+ * split its four screens.
+ *
+ * REGISTERED ABOVE ANY `/admin/customers/:id` THAT IS EVER ADDED. A fixed
+ * segment must never sit below a dynamic one — the same ordering discipline
+ * the marketing app's own header records — and today there is no such route to
+ * collide with, so this is a note for whoever adds one next.
+ */
+shopAdminRoutes.get('/admin/customers/prospects', auth, async (c) => {
+  const q = readQuery(c, ProspectQueryParams);
+  return c.json(await listProspects(currentDb(c), { ...q, tab: q.tab ?? DEFAULT_PROSPECT_TAB }));
+});
+
+/**
+ * One person's basket, read the same way the broadcast drain reads it
+ * (`basketFor`'s own header explains why one statement serves both).
+ *
+ * `pathParam`, NOT A BARE `c.req.param` — the boundary `server/nul-bytes.test.ts`
+ * walks every route to enforce, so a NUL in the segment is a 400 rather than a
+ * 500 that never should have reached the driver. `basketFor` folds and rejects
+ * a NUL of its own further in; the check here is only for the segment being
+ * BLANK — whitespace that folds to nothing — which would otherwise read back as
+ * an honest 200 null basket rather than the caller having named nobody at all.
+ */
+shopAdminRoutes.get('/admin/customers/prospects/:email', auth, async (c) => {
+  const email = pathParam(c, 'email');
+  if (email.trim() === '') throw new BadRequestError('email');
+  return c.json({ basket: await basketFor(currentDb(c), email) });
 });
 
 shopAdminRoutes.get('/admin/inventory', auth, async (c) => {
