@@ -60,6 +60,19 @@ beforeEach(async () => {
   await resetOrderTables(ctx.db);
   await ctx.db.execute(sql`DELETE FROM auth_attempts`);
   await ctx.db.execute(sql`DELETE FROM sessions`);
+  /*
+   * THE STAFF NEW-ORDER ALERT IS SWITCHED OFF FOR THIS WHOLE SUITE. Migration
+   * 0980 seeds it on, and `resetOrderTables` does not touch that row, so every
+   * `paidOrder()` below would otherwise queue one intent per roster account
+   * holding `orders` on top of the buyer's two — and every count in this file
+   * would be a count of the harness's user list. This suite is about the outbox
+   * ROUTES over CUSTOMER mail: which bucket a row lands in, what retry
+   * delivers, what dismiss removes. Who gets told about a paid order is
+   * `staff-mail.test.ts`'s subject and is covered there.
+   */
+  await ctx.db.execute(
+    sql`UPDATE shop_notification_settings SET notify_on_order = false WHERE id = 'main'`,
+  );
 });
 
 async function login(user: AuthUser, deps = {}): Promise<OrdersClient> {

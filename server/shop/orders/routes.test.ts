@@ -18,6 +18,7 @@ import type { TestCtx } from '../../test/harness';
 import { json } from '../../test/http';
 import { TEST_ORIGIN } from '../../test/http';
 import { DEFAULT_STOREFRONT_ORIGIN } from '../storefront-url';
+import { DEFAULT_ADMIN_ORIGIN } from '../../admin-url';
 import { CUSTOMER_HEADER, ordersClient, resetOrdersDeps, type OrdersClient } from './test/app';
 import { resetOrderTables } from './test/harness';
 import {
@@ -70,7 +71,43 @@ beforeEach(async () => {
    */
   await ctx.db.execute(sql`DELETE FROM auth_attempts`);
   await ctx.db.execute(sql`DELETE FROM sessions`);
+  /*
+   * The staff new-order alert's settings row, back to what migration 0980 seeds.
+   * `resetOrderTables` deliberately truncates only the tables Orders owns, and
+   * this row belongs to another subsystem — so without this line a test that
+   * changes who is told leaks that change into every test after it, and the
+   * suite's outcome starts depending on the order the cases run in.
+   */
+  await ctx.db.execute(sql`
+    UPDATE shop_notification_settings
+       SET order_recipients = '{}', notify_team = true, notify_on_order = true
+     WHERE id = 'main'`);
 });
+
+/**
+ * The one address the staff new-order alert goes to while a sweep case needs
+ * its own arithmetic to be legible.
+ */
+const STAFF_ADDRESS = 'packing@plaspool.com';
+
+/**
+ * Pin the staff alert (migration 0980) to exactly ONE message per paid order.
+ *
+ * The seeded row has `notify_team = true` and an empty typed list, so the alert
+ * fans out over every account on the harness roster whose role holds `orders` —
+ * four of them today, a different number the day somebody adds a role. A test
+ * asserting a total against that is a test that goes red for a reason with
+ * nothing to do with the sweep. Switching the roster off and naming one address
+ * makes the staff half a constant, and — the part the link test below needs —
+ * makes `message.to` the way to tell the two AUDIENCES apart without sniffing
+ * subject lines.
+ */
+async function pinStaffAlert(): Promise<void> {
+  await ctx.db.execute(sql`
+    UPDATE shop_notification_settings
+       SET notify_team = false, order_recipients = ARRAY[${STAFF_ADDRESS}]::text[]
+     WHERE id = 'main'`);
+}
 
 function client(deps = {}): OrdersClient {
   return ordersClient(ctx.db, { now: () => NOW, ...deps });
@@ -1042,6 +1079,18 @@ describe('GET /admin/orders/by-number/:orderNumber', () => {
 // ================================================================ the sweepers
 
 describe('POST /admin/sweep is the caller both sweepers otherwise lack', () => {
+  /*
+   * ONE STAFF ALERT PER PAID ORDER, TO A NAMED ADDRESS, FOR EVERY CASE BELOW.
+   *
+   * Since migration 0980 a capture writes mail for TWO audiences out of one
+   * drain: the buyer's `placed` and `confirmation`, and "an order came in" to
+   * the shop's own packing bench. Both belong in this block — they are what the
+   * sweep sweeps — but the staff half is a fan-out over the roster, so leaving
+   * it seeded would make each count below a count of `server/test/harness.ts`'s
+   * user list. Pinned, the arithmetic is "the customer's two, plus one".
+   */
+  beforeEach(pinStaffAlert);
+
   it('drains the outbox and hands the resulting mail to the mailer, in that order', async () => {
     /*
      * "A mechanism wired to no caller" is one of the three failure shapes contract §2 says
@@ -1068,14 +1117,18 @@ describe('POST /admin/sweep is the caller both sweepers otherwise lack', () => {
 
     expect(body.events.applied).toBe(2);
     /*
-     * BOTH messages the two events wrote, delivered in the SAME sweep — which is
+     * EVERY message the two events wrote, delivered in the SAME sweep — which is
      * the ordering under test: the commerce drain writes the intents, so sweeping
      * mail first would always leave this sweep's own new mail for the next one.
+     * Three since migration 0980: the buyer's two, and the one telling the shop
+     * itself that an order came in — which is written by the same drain and so
+     * proves the ordering for the staff half too.
      */
-    expect(body.emails.sent).toBe(2);
-    expect(sent).toHaveLength(2);
+    expect(body.emails.sent).toBe(3);
+    expect(sent).toHaveLength(3);
     expect(sent.map((m) => m.subject).join(' ')).toContain('We have your order');
     expect(sent.map((m) => m.subject).join(' ')).toContain('confirmed');
+    expect(sent.map((m) => m.to)).toContain(STAFF_ADDRESS);
 
     const read = await readOrderByCheckout(ctx.db, CHECKOUT);
     expect(read?.order.status).toBe('paid');
@@ -1087,7 +1140,7 @@ describe('POST /admin/sweep is the caller both sweepers otherwise lack', () => {
     expect((await client().post('/api/shop/admin/sweep')).status).toBe(401);
   });
 
-  it('THE CUSTOMER LINK POINTS AT THE STOREFRONT, NEVER AT THIS ADMIN APP', async () => {
+  it('EACH AUDIENCE GETS ITS OWN HOST: the customer the storefront, the shop the admin', async () => {
     /*
      * THE REGRESSION TEST FOR THE BUG THAT PROMPTED ALL OF THIS.
      *
@@ -1114,6 +1167,25 @@ describe('POST /admin/sweep is the caller both sweepers otherwise lack', () => {
      * replaced. A regression test asserting a path the app no longer builds
      * cannot fail on a regression back to it — it is red unconditionally
      * instead, which is what running the suite after that commit shows.
+     *
+     * ═══════════════════════════════════════════════════════════════════════
+     * WHY THIS LOOPS OVER A PARTITION AND NOT OVER EVERY MESSAGE.
+     *
+     * Since migration 0980 one sweep mails two audiences, and the staff alert
+     * deliberately carries no storefront link at all — it links into the ADMIN,
+     * which is the whole point of it. A loop demanding `/account/orders/…` of
+     * every message therefore goes red the moment that feature exists, and a
+     * regression test that is red unconditionally can no longer fail on a
+     * regression: exactly the failure the paragraph above describes, arrived at
+     * from the other side.
+     *
+     * So the messages are split by `to` — which is why `pinStaffAlert` names a
+     * single address — and each half keeps the assertion that belongs to it.
+     * The staff half's is the MIRROR IMAGE, and it earns its place for the same
+     * reason the customer half does: the two link builders sit in adjacent
+     * files reading adjacent-looking origins, and the way this goes wrong is
+     * one of them being given the other's.
+     * ═══════════════════════════════════════════════════════════════════════
      */
     const sent: RenderedEmail[] = [];
     const mailer: Mailer = {
@@ -1126,8 +1198,15 @@ describe('POST /admin/sweep is the caller both sweepers otherwise lack', () => {
     await insertEvents(ctx.db, [checkoutCompleted(), paymentCaptured()]);
     await owner.post('/api/shop/admin/sweep');
 
-    expect(sent.length).toBeGreaterThan(0);
-    for (const message of sent) {
+    const toCustomer = sent.filter((message) => message.to !== STAFF_ADDRESS);
+    const toStaff = sent.filter((message) => message.to === STAFF_ADDRESS);
+    /* Both halves non-empty, asserted before either loop: a partition that
+       silently emptied would make the loop below vacuously true, which is the
+       same nothing-is-checked failure in a new costume. */
+    expect(toCustomer.length).toBeGreaterThan(0);
+    expect(toStaff).toHaveLength(1);
+
+    for (const message of toCustomer) {
       const link = /https?:\/\/[^\s"<]*\/account\/orders\/[^\s"<]+/.exec(message.body);
       expect(link, `${message.subject} carries no order link`).not.toBeNull();
       expect(link![0]).toContain(DEFAULT_STOREFRONT_ORIGIN);
@@ -1135,6 +1214,25 @@ describe('POST /admin/sweep is the caller both sweepers otherwise lack', () => {
       expect(link![0]).not.toContain(TEST_ORIGIN);
       expect(link![0]).not.toContain('blog-admin');
     }
+
+    /*
+     * And the mirror image. `/#/orders/…` because the admin is hash-routed, on
+     * the admin's OWN origin — never `APP_ORIGINS[0]`, which is the mistake
+     * `server/admin-url.ts` was written to stop after the invitation mail made
+     * it — and never the storefront's, where a colleague has no account and
+     * could not open an order if they did.
+     */
+    const staffLink = /https?:\/\/[^\s"<]*\/#\/orders\/[^\s"<]+/.exec(toStaff[0].body);
+    expect(staffLink, 'the staff alert carries no admin link').not.toBeNull();
+    expect(staffLink![0]).toContain(DEFAULT_ADMIN_ORIGIN);
+    expect(staffLink![0]).not.toContain(TEST_ORIGIN);
+    expect(staffLink![0]).not.toContain(DEFAULT_STOREFRONT_ORIGIN);
+    /* Not the customer's path, and — the one that would actually leak — not the
+       customer's guest token. That token is a bearer credential for somebody
+       else's order, and mailing it to the packing bench would hand every
+       colleague a link into a stranger's account page. */
+    expect(toStaff[0].body).not.toContain('/account/orders/');
+    expect(toStaff[0].body).not.toContain('?token=');
   });
 
   it('a broken mailer leaves the order paid and the sweep reporting the failure', async () => {
@@ -1145,8 +1243,10 @@ describe('POST /admin/sweep is the caller both sweepers otherwise lack', () => {
     const body = await json<{ emails: { sent: number; failed: number } }>(
       await owner.post('/api/shop/admin/sweep'),
     );
-    /* Both messages the two events wrote, both refused, both recorded. */
-    expect(body.emails).toMatchObject({ sent: 0, failed: 2 });
+    /* Every message the two events wrote, all refused, all recorded — the
+       buyer's two and the staff alert alike. A provider outage must not be a
+       reason one audience's mail is quietly dropped instead of retried. */
+    expect(body.emails).toMatchObject({ sent: 0, failed: 3 });
     // The whole point of brief §5: the money is recorded whatever the mail provider does.
     expect((await readOrderByCheckout(ctx.db, CHECKOUT))?.order.status).toBe('paid');
   });

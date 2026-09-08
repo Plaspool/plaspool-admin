@@ -31,6 +31,7 @@ import { deliverySettingsRoutes } from './settings/routes';
 import { logisticsRoutes } from './logistics/routes';
 import { registerLogisticsDefaults } from './logistics/deps';
 import { logisticsCatalogPort } from './catalog/logistics-port';
+import { notificationSettingsRoutes } from './notifications/routes';
 import { ShippingZonePreconditionFailedError } from './cart/checkout/shipping-zones-repo';
 
 /**
@@ -376,7 +377,7 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
 
   /*
    * DELIVERY COURIERS — `/admin/logistics/*` and `/logistics/provider`
-   * (migration 0980). Which courier is switched on, the address we ship from,
+   * (migration 0990). Which courier is switched on, the address we ship from,
    * the box Terminal quotes against, and the log of every webhook a courier has
    * sent us. `settings` domain on the admin half, `requireAuth()` on the read
    * every packer needs; both guarded per route inside the router.
@@ -401,6 +402,18 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
    */
   registerLogisticsDefaults({ catalog: logisticsCatalogPort });
   shop.route('/', logisticsRoutes);
+
+  /*
+   * WHO THE SHOP TELLS WHEN AN ORDER IS PAID — `/admin/notification-settings`
+   * (migration 0980). Beside the delivery settings because it is the same kind
+   * of object: a CHECK-pinned singleton on the `settings` domain, guarded per
+   * route inside its own router.
+   *
+   * IT HAS NO PUBLIC HALF AT ALL, unlike the delivery settings above. Nothing a
+   * shopper renders depends on this row — it decides which of OUR addresses get
+   * an email — so there is nothing to mount above `sessionMiddleware`.
+   */
+  shop.route('/', notificationSettingsRoutes);
 
   /*
    * THE DASHBOARD'S READ SURFACE — `/admin/stats`, `/admin/customers`,

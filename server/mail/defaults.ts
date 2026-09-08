@@ -72,6 +72,11 @@ export const SYSTEM_KEYS = [
   'order.cancellation',
   'order.refund',
   'order.refund_failed',
+  /* About an order, like everything above it — but addressed to US (migration
+     0980). The namespace says what the message is about; the templates list's
+     label is what tells an operator who reads it, and it is prefixed
+     `Staff — ` for that reason. */
+  'order.staff_alert',
   'account.welcome',
   'account.invite',
   /*
@@ -141,6 +146,29 @@ function orderFooterText(): string {
   return (
     `\n\nYou are receiving this because you placed an order with PlaSpool.\n` +
     `Questions? Reply to this message or write to ${SUPPORT}.`
+  );
+}
+
+/**
+ * The footer under a message addressed to US rather than to a customer.
+ *
+ * A SEPARATE FOOTER AND NOT `orderFooter()`, because that one opens "You are
+ * receiving this because you placed an order with PlaSpool" — which is false
+ * for a colleague, and false in the one line a reader checks when they cannot
+ * work out why a message reached them. It also offers to answer questions about
+ * "this order", which is not what somebody on the packing bench would be asking.
+ */
+function staffFooter(): string {
+  return (
+    `You are getting this because you handle orders for PlaSpool. Who gets these ` +
+    `is set in the admin. Something wrong with the message itself? Write to ${SUPPORT}.`
+  );
+}
+
+function staffFooterText(): string {
+  return (
+    `\n\nYou are getting this because you handle orders for PlaSpool.\n` +
+    `Who gets these is set in the admin.`
   );
 }
 
@@ -505,6 +533,83 @@ const ORDER_REFUND_FAILED: SystemTemplate = {
     orderSummaryText() +
     viewOrderText() +
     orderFooterText(),
+};
+
+/**
+ * "AN ORDER CAME IN" — to the shop's own staff (migration 0980).
+ *
+ * TO US, NOT TO A CUSTOMER, and it is the second message in this file of which
+ * that is true — `CATALOG_EXPORT` below is the first, and its header makes the
+ * same argument for keeping a staff message in with the rest: it rides the same
+ * shell, so the templates screen previews and edits it like any other.
+ *
+ * IT SITS IN THE `order.*` NAMESPACE ANYWAY, because the namespace says what
+ * the message is ABOUT and this one is about an order. What tells an operator
+ * who READS it is the label on the templates list, which is prefixed
+ * `Staff — ` for exactly that reason.
+ *
+ * `{{admin_url}}` AND NOT `{{order_url}}`, and the difference is a credential.
+ * Every other message here carries the customer's guest link, whose token IS
+ * its authority — which is right for a message to the person who placed the
+ * order and wrong for one that can be forwarded around a warehouse. This link
+ * opens the admin and asks the reader to sign in.
+ *
+ * THE ORDER LINES ARE IN IT ON PURPOSE. The reader's next action is to pick and
+ * pack, and a message that made them open a browser to find out what to pick
+ * would be a notification rather than a useful one.
+ */
+const ORDER_STAFF_ALERT: SystemTemplate = {
+  key: 'order.staff_alert',
+  name: 'New order — staff alert',
+  description: 'Sent to the shop when a payment clears, so somebody can start packing.',
+  variables: [
+    '{{order_number}}',
+    '{{customer}}',
+    '{{order_total}}',
+    '{{item_count}}',
+    '{{order_date}}',
+    '{{order_lines}}',
+    '{{order_timeline}}',
+    '{{admin_url}}',
+    '{{support_email}}',
+  ],
+  subject: 'New order {{order_number}} — {{order_total}}',
+  html: shell({
+    title: 'New order {{order_number}}',
+    preheader: '{{customer}} paid {{order_total}}. Nothing has shipped yet.',
+    body:
+      badge('Paid') +
+      h1('New order {{order_number}}') +
+      p(
+        '<strong>{{customer}}</strong> has paid. Nothing has shipped yet, so this ' +
+        'one is waiting to be packed.',
+      ) +
+      facts([
+        { label: 'Total', value: '{{order_total}}' },
+        { label: 'Items', value: '{{item_count}}' },
+        { label: 'Customer', value: '{{customer}}' },
+        { label: 'Placed', value: '{{order_date}}' },
+      ]) +
+      orderSummary() +
+      button('Open it in the admin', '{{admin_url}}') +
+      small(
+        'The link opens the admin and asks you to sign in — it carries no ' +
+        'access of its own, so forwarding it gives nobody anything.',
+      ),
+    footer: staffFooter(),
+  }),
+  text:
+    `New order {{order_number}} — {{order_total}}.\n\n` +
+    `{{customer}} has paid. Nothing has shipped yet, so this one is waiting to be\n` +
+    `packed.\n\n` +
+    `  Total: {{order_total}}\n` +
+    `  Items: {{item_count}}\n` +
+    `  Customer: {{customer}}\n` +
+    `  Placed: {{order_date}}\n\n` +
+    orderSummaryText() +
+    `\nOpen it in the admin: {{admin_url}}\n` +
+    `(The link asks you to sign in; it carries no access of its own.)\n` +
+    staffFooterText(),
 };
 
 /* ------------------------------------------------------------------ account */
@@ -890,6 +995,7 @@ export const DEFAULT_TEMPLATES: Record<SystemKey, SystemTemplate> = {
   'order.cancellation': ORDER_CANCELLATION,
   'order.refund': ORDER_REFUND,
   'order.refund_failed': ORDER_REFUND_FAILED,
+  'order.staff_alert': ORDER_STAFF_ALERT,
   'account.welcome': ACCOUNT_WELCOME,
   'account.invite': ACCOUNT_INVITE,
   'return.awarded': RETURN_AWARDED,

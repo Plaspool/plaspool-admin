@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  Bell,
   ChevronRight,
   MapPin,
   MapPinned,
@@ -49,6 +50,12 @@ const DOORS: SettingsDoor[] = [
     icon: <Send />,
     title: 'Delivery courier',
     body: 'Who carries parcels to customers — by hand, Fez Delivery or Terminal Africa.',
+  },
+  {
+    to: '/settings/notifications',
+    icon: <Bell />,
+    title: 'Notifications',
+    body: 'Who gets an email when an order comes in.',
   },
   {
     to: '/settings/team',

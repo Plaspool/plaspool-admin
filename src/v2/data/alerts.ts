@@ -1,6 +1,7 @@
 import { shopApi } from '../../data/api-shop';
 import { ForbiddenError } from '../../data/errors';
 import { listReviews } from '../../data/api-reviews';
+import { money } from '../lib/format';
 
 /**
  * The bell's content — REAL operational alerts assembled from endpoints that
@@ -12,6 +13,11 @@ import { listReviews } from '../../data/api-reviews';
  *
  * Read state lives in localStorage: it is one person's own "seen it", not
  * shared state, and losing it costs a blue dot rather than data.
+ *
+ * ONE ALERT IS NOT AN AGGREGATE: a paid order gets a row of its own, with a
+ * STABLE signature, because "order 2026-000123-A arrived" is a fact that never
+ * grows and must stay dismissed once it has been seen. See the block that
+ * builds them for why that is the opposite rule from the counts above it.
  */
 export interface OpsAlert {
   id: string;
@@ -26,6 +32,23 @@ export interface OpsAlert {
 }
 
 const READ_KEY = 'plaspool.v2.alerts.read';
+
+/**
+ * The id prefix every per-order alert carries.
+ *
+ * `isOrderAlert` is exported because the shell has to tell one order apart
+ * from the aggregates — an order is the only fact worth raising a browser
+ * notification for, and "three more emails are stuck" arriving as a desktop
+ * pop-up would be the bell shouting about a number that was already on
+ * screen. The prefix stays in the file that mints it rather than becoming a
+ * `startsWith('order-')` in the shell, which is a contract nobody can see
+ * from either end.
+ */
+const ORDER_PREFIX = 'order-';
+
+export function isOrderAlert(alert: OpsAlert): boolean {
+  return alert.id.startsWith(ORDER_PREFIX);
+}
 
 function readMap(): Record<string, string> {
   try {
@@ -99,21 +122,66 @@ export async function fetchAlerts(signal?: AbortSignal): Promise<OpsAlert[]> {
     });
   }
 
+  /* ═══ PAID ORDERS ARE NAMED ONE BY ONE, AND THE AGGREGATE IS THE OVERFLOW ══
+     `stats.latestOrders` — the five newest orders, id, number, email, total and
+     all — has ridden in this payload since the dashboard strip was built and
+     was read by NOTHING. So a row per paid order costs no new endpoint and no
+     new request, and it is the difference between a bell that says somebody
+     ought to look at Orders and one that says WHICH order arrived and for how
+     much, which is the only version worth a notification.
+
+     COUNTING THE NAMED ONES OUT OF THE TOTAL IS WHAT STOPS ONE ORDER BEING
+     REPORTED TWICE. Five named rows sitting above "9 paid orders" reads as
+     fourteen orders to somebody scanning the panel, and the reader who counts
+     is the one who then goes looking for the five that do not exist. The
+     aggregate keeps its id and its count-shaped signature — it is still the
+     "the pile grew" fact — but it now counts only what the rows above did not
+     name. */
+  const named = stats ? stats.latestOrders.filter((row) => row.status === 'paid') : [];
+  for (const row of named) {
+    alerts.push({
+      id: `${ORDER_PREFIX}${row.id}`,
+      source: 'Orders',
+      tone: 'info',
+      /* `money` is the SAFE formatter. One row whose total came back as
+         something that is not an integer of minor units must render as a
+         placeholder in this line, not throw `MoneyShapeError` on the way
+         through and take the whole bell to the route's error boundary. */
+      title: `Order ${row.orderNumber} — ${money(row.grandTotal, row.currency)}`,
+      body: `${row.email} paid. Nothing sent out yet.`,
+      at: row.placedAt,
+      to: `/orders/${row.id}`,
+      /* STABLE, UNLIKE EVERY AGGREGATE'S SIGNATURE, and that is the whole
+         read mechanism here. An aggregate encodes a COUNT so that a growing
+         pile rings again; one order is one fact that never grows, so once it
+         has been dismissed it stays dismissed rather than coming back every
+         time the poll runs. The status is what this alert is about — an order
+         that came back as something other than paid would be a different fact
+         — and it cannot change while the alert exists, because a row that is
+         no longer paid is filtered out above. */
+      signature: row.status,
+    });
+  }
+
   const paid = stats
     ? stats.ordersByStatus
         .filter((row) => row.status === 'paid')
         .reduce((n, row) => n + row.count, 0)
     : 0;
-  if (stats && paid > 0) {
+  const unnamed = paid - named.length;
+  if (stats && unnamed > 0) {
     alerts.push({
       id: 'orders-paid',
       source: 'Orders',
       tone: 'info',
-      title: `${paid} paid ${plural(paid, 'order', 'orders')} to fulfil`,
+      title:
+        named.length > 0
+          ? `${unnamed} more paid ${plural(unnamed, 'order', 'orders')} to send out`
+          : `${unnamed} paid ${plural(unnamed, 'order', 'orders')} to send out`,
       body: 'Money already taken, parcels not yet on their way.',
       at: stats.generatedAt,
       to: '/orders',
-      signature: String(paid),
+      signature: String(unnamed),
     });
   }
 

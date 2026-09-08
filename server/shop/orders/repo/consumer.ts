@@ -28,6 +28,7 @@ import {
   refundOrder,
   type OrderRead,
 } from './orders';
+import { queueStaffOrderEmail } from '../staff-mail';
 
 /**
  * THE CONSUMER (contract §6, brief §4).
@@ -486,6 +487,25 @@ async function dispatch(
         parsed.value.intentId,
         deps.templates ?? BUILT_IN,
       );
+
+      /*
+       * AND THE SHOP TELLS ITSELF (migration 0980) — HERE, AT THE CAPTURE, NOT
+       * AT `checkout.completed`.
+       *
+       * An order row exists at `checkout.completed` and it is `pending`, so
+       * announcing there would mail the packing bench about every abandoned
+       * basket — and `checkout.completed` is also where the domain emits
+       * `order.created`, which is the event this would be duplicating. Paid is
+       * the moment somebody should walk over and start picking, so paid is when
+       * it is said.
+       *
+       * ITS RETURN IS DISCARDED AND IT CANNOT THROW. Zero is an ordinary answer
+       * — the switch is off, nobody is configured, or a redelivery landed on
+       * rows that already exist — and an exception here would park an event
+       * whose state change stands, which is the one failure `spendPoints` below
+       * exists to avoid. See `staff-mail.ts`'s header.
+       */
+      await queueStaffOrderEmail(db, read.order.id, now, deps.templates ?? BUILT_IN);
 
       /*
        * SPOOLPOINTS ARE SPENT HERE — AT THE CAPTURE, NOT AT `checkout.completed`.

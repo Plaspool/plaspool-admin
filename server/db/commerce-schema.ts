@@ -438,6 +438,11 @@ export const shopOrderEmailIntents = pgTable(
         /** Review lifecycle mail (migration 0640). */
         | 'review_invite'
         | 'review_approved'
+        /** "An order came in" — to STAFF, not to the customer (migration 0980).
+         * The only kind on this table whose `to_email` is a colleague's, so
+         * anything reading the outbox as "what we told the buyer" must exclude
+         * it. */
+        | 'staff_new_order'
       >()
       .notNull(),
     toEmail: text('to_email').notNull(),
@@ -462,7 +467,8 @@ export const shopOrderEmailIntents = pgTable(
     check(
       'shop_order_email_intents_kind_ck',
       sql`${t.kind} IN ('placed', 'confirmation', 'shipment', 'delivered', 'cancellation',
-                        'refund', 'refund_failed', 'review_invite', 'review_approved')`,
+                        'refund', 'refund_failed', 'review_invite', 'review_approved',
+                        'staff_new_order')`,
     ),
   ],
 );
@@ -600,8 +606,8 @@ export * from '../shop/reviews/schema';
 export * from '../shop/settings/schema';
 
 // ============================================================================
-// DELIVERY COURIERS — owned by `server/shop/logistics/` (migration ranges
-// 0980–0999 and 1000–1019). RE-EXPORTED FROM A FILE THAT SUBSYSTEM OWNS EXCLUSIVELY,
+// DELIVERY COURIERS — owned by `server/shop/logistics/` (migrations 0990, 1000
+// and 1020). RE-EXPORTED FROM A FILE THAT SUBSYSTEM OWNS EXCLUSIVELY,
 // following Catalog, Payments, Cart, Reviews and Delivery settings above and
 // for the reason they record: a block declared here is a block a wholesale
 // overwrite deletes silently, while a lost `export *` is one line `tsc` names
@@ -618,3 +624,17 @@ export * from '../shop/settings/schema';
 // `server/shop/logistics/schema-parity.test.ts`.
 // ============================================================================
 export * from '../shop/logistics/schema';
+
+// ============================================================================
+// NOTIFICATION SETTINGS — owned by `server/shop/notifications/` (migration
+// 0980). RE-EXPORTED FROM A FILE THAT SUBSYSTEM OWNS EXCLUSIVELY,
+// for the reason every block above records: a declaration made here is one a
+// wholesale overwrite deletes silently, while a lost `export *` is one line
+// `tsc` names immediately.
+//
+// `shop_notification_settings` — the CHECK-pinned singleton that decides who
+// the shop emails when an order is paid. Its counterpart change is one column
+// over: `shopOrderEmailIntents.kind` gained `staff_new_order`, which is the
+// first kind on that table whose reader is staff rather than a customer.
+// ============================================================================
+export * from '../shop/notifications/schema';

@@ -1118,7 +1118,13 @@ describe('thawCheckout', () => {
      * whether it was paid", so absence refuses.
      */
     const cart = await frozenCart();
-    await expect(thawCheckout(db, CONFIG, { cartId: cart.id })).rejects.toMatchObject({
+    /* `{ payments: undefined }` rather than `CONFIG`: a thaw takes `ThawDeps`,
+       which is the port and nothing else, so this IS the whole of the missing
+       configuration — the zones and the currency `CONFIG` also carries were
+       never read here and TypeScript now says so. */
+    await expect(
+      thawCheckout(db, { payments: undefined }, { cartId: cart.id }),
+    ).rejects.toMatchObject({
       name: 'NotImplementedError',
       feature: 'checkout_cancel',
     });

@@ -76,7 +76,11 @@ export type EmailKind =
      header carries the argument for why that is the right table rather than a
      shortcut, and names the one case it leaves unserved. */
   | 'review_invite'
-  | 'review_approved';
+  | 'review_approved'
+  /* The first kind here whose reader is STAFF (migration 0980). Every other
+     message in this file is addressed to the person who spent the money; this
+     one tells the people who pack the parcel that money arrived. */
+  | 'staff_new_order';
 
 /**
  * A rendered message. `html` is nullable ONLY because rows written before
@@ -191,6 +195,30 @@ export interface RefundFailedMailView extends OrderMailView {
 export interface CancelMailView extends OrderMailView {
   /** Why, in the operator's own words. Optional; a generic line stands in. */
   reason?: string | null;
+}
+
+/**
+ * The paid-order alert that goes to STAFF (migration 0980).
+ *
+ * IT STILL EXTENDS `OrderMailView` because the whole rendering pipeline is
+ * built on one and the order really is what this message is about. What it adds
+ * are the two things a person deciding whether to walk to the packing bench
+ * actually wants and cannot get from the order lines: who bought it, and how
+ * many things there are.
+ */
+export interface StaffOrderMailView extends OrderMailView {
+  /**
+   * The name on the shipping address, or the buyer's email when there is none.
+   *
+   * NOT `greeting(view.email)`, which is what `{{customer_name}}` is elsewhere.
+   * That is the local part of an address and it is the right thing to greet a
+   * person by; it is the wrong thing to identify a customer TO somebody else,
+   * because "Hi jane.o" reads as a name and `jane.o` is not one.
+   */
+  customer: string;
+  /** Units across the whole order — Σ qty, not the number of lines. A
+   *  three-of-one-thing order is three items to pack, not one. */
+  itemCount: number;
 }
 
 /**
@@ -349,6 +377,12 @@ function stepsFor(kind: EmailKind): Step[] {
     case 'placed':
       return path(0);
     case 'confirmation':
+    /* The staff alert is queued at the capture, so it shows the order exactly
+       where the customer's confirmation shows it: paid, not yet packed. The
+       strip is the same one because it is the same moment, not because staff
+       are being shown a customer's view — what the reader needs from it is
+       "nothing has shipped yet", and that is what it says. */
+    case 'staff_new_order':
       return path(1);
     case 'shipment':
       return path(2);
@@ -457,7 +491,27 @@ function renderKind(
   values: TemplateValues,
   templates: TemplateSet,
 ): RenderedEmail {
-  const message: RenderedMessage = render(templates.get(key), view.email, values);
+  return renderTo(key, view.email, values, templates);
+}
+
+/**
+ * The same render, TO AN ADDRESS THE CALLER NAMES.
+ *
+ * `renderKind` ABOVE HARDCODES `view.email`, WHICH IS THE CUSTOMER'S, and that
+ * is right for the nine messages about somebody's own order — a function that
+ * could not get the recipient wrong is worth more there than one that is
+ * flexible. `staff_new_order` is the message that breaks the assumption: it
+ * carries a customer's order and goes to a colleague, and reaching for
+ * `renderKind` with a staff view would mail the buyer a note about their own
+ * purchase written for the warehouse.
+ */
+function renderTo(
+  key: SystemKey,
+  to: string,
+  values: TemplateValues,
+  templates: TemplateSet,
+): RenderedEmail {
+  const message: RenderedMessage = render(templates.get(key), to, values);
   return {
     to: message.to,
     subject: message.subject,
@@ -630,6 +684,43 @@ export function renderRefundFailed(
   const values = baseValues(view, link, 'refund_failed');
   values.scalars.refund_amount = formatAmount(view.failedAmount, view.currency);
   return renderKind('order.refund_failed', view, values, templates);
+}
+
+/**
+ * "An order came in" — to the shop's own staff (migration 0980).
+ *
+ * THE RECIPIENT IS AN ARGUMENT AND NOT `view.email`, which is the buyer's. The
+ * caller resolves the list — the team roster plus whatever addresses somebody
+ * typed into the settings screen — and calls this once per address, because
+ * `resendMailer` posts a single address per send and one row per recipient is
+ * what makes a bounce to one of them not a silent failure for all of them.
+ *
+ * `adminUrl` IS THE ADMIN'S OWN ORIGIN, NOT THE STOREFRONT'S, and the two are
+ * not interchangeable — `server/admin-url.ts` carries the account of the
+ * invitation that shipped with the wrong one. It is passed in rather than built
+ * here for the same reason `link` is: this file renders, it does not decide
+ * where anything lives.
+ *
+ * THERE IS NO GUEST TOKEN ANYWHERE IN THIS MESSAGE. The link opens a page that
+ * asks the reader to sign in, which is the whole point: this mail can land in a
+ * personal inbox, be forwarded, or sit in a mailbox somebody else has access
+ * to, and a link that carried its own authority would hand a stranger a
+ * customer's address and payment history.
+ */
+export function renderStaffNewOrder(
+  view: StaffOrderMailView,
+  to: string,
+  adminUrl: string,
+  templates: TemplateSet = BUILT_IN,
+): RenderedEmail {
+  /* `null` link, so `{{order_url}}` renders empty — the customer's magic link
+     has no business in a staff message and building one here would put a
+     credential in it. The staff template uses `{{admin_url}}` instead. */
+  const values = baseValues(view, null, 'staff_new_order');
+  values.scalars.customer = view.customer;
+  values.scalars.item_count = String(view.itemCount);
+  values.scalars.admin_url = adminUrl;
+  return renderTo('order.staff_alert', to, values, templates);
 }
 
 // -------------------------------------------------------------- the adapter

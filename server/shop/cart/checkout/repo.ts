@@ -119,6 +119,20 @@ export interface CheckoutConfig {
 // -------------------------------------------------------------------- thawing
 
 /**
+ * All a thaw actually consults — the payments port and nothing else.
+ *
+ * NARROWER THAN `CheckoutConfig` ON PURPOSE, and the narrowing is what lets the
+ * CART surface share this. `loadConfig` in `routes/checkout.ts` reads the zones
+ * table and the delivery settings on every call; a line write needs neither,
+ * and making `POST /cart/lines` pay for two queries so it could satisfy a type
+ * would put a round trip on the shop's hottest path to buy nothing.
+ *
+ * A full `CheckoutConfig` still satisfies it, so every existing caller passes
+ * exactly what it passed before and no checkout call site changed.
+ */
+export type ThawDeps = Pick<CheckoutConfig, 'payments'>;
+
+/**
  * `authorized` and everything above it on the payment ladder.
  *
  * THE BAR IS `authorized`, NOT `captured`, and the gap between them is the
@@ -182,7 +196,7 @@ const CANCELLABLE_BELOW_RANK = paymentStatusRank('cancelled');
  */
 export async function thawCheckout(
   db: Db,
-  config: CheckoutConfig,
+  config: ThawDeps,
   a: { cartId: string; baseRevision?: number },
 ): Promise<Cart> {
   const cart = await getCart(db, a.cartId);
@@ -301,10 +315,26 @@ export async function thawCheckout(
  * the ordinary checkout path — which is every checkout that has not been
  * frozen — reaches `updateCartFields` with precisely what it had before this
  * function existed, and consults Payments not at all.
+ *
+ * ═══ EXPORTED, BECAUSE THE BASKET NEEDS THE SAME SENTENCE ═══
+ *
+ * `routes/cart.ts` calls this before each of its three line writes. Adding,
+ * removing or re-quantifying an item is backing out of payment just as much as
+ * correcting an address is — and until it did, a shopper who abandoned at
+ * Paystack and came back to the cart drawer had no recovery anywhere in the
+ * application: the line writes 409'd for ever, `LIVE_STATUSES` kept handing the
+ * frozen basket back to the cookie, and `POST /cart` returned that same cart
+ * rather than a fresh one. See `routes/cart.ts` for the two storefront triggers
+ * that miss the journey and why they cannot simply be widened.
+ *
+ * SHARED RATHER THAN REIMPLEMENTED so the money guard is impossible to omit:
+ * every caller inherits the `checkout_paid` refusal and the intent cancellation
+ * from one place. A cart route that flipped the status itself would be one
+ * `git grep` away from reopening a paid order.
  */
-async function makeEditable(
+export async function makeEditable(
   db: Db,
-  config: CheckoutConfig,
+  config: ThawDeps,
   a: { cartId: string; baseRevision?: number },
 ): Promise<number | undefined> {
   const cart = await getCart(db, a.cartId);
