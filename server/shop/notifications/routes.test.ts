@@ -214,3 +214,53 @@ describe('PATCH', () => {
     );
   });
 });
+
+describe('POST /admin/push/test', () => {
+  const TEST = '/api/shop/admin/push/test';
+
+  beforeEach(async () => {
+    await ctx.db.execute(sql`DELETE FROM shop_push_subscriptions`);
+  });
+
+  it('needs a session, like every other push route', async () => {
+    http.clearCookies();
+    expect((await http.post(TEST, {})).status).toBe(401);
+  });
+
+  it('reports zero devices rather than claiming a send', async () => {
+    /*
+     * THE WHOLE POINT OF THE COUNTS. A 200 says the request worked, which says
+     * nothing about a notification arriving — and "Sent!" over silence is the
+     * failure this button exists to end. A person who never finished the
+     * subscribe step must be told exactly that.
+     */
+    await http.signIn({ email: 'owner@test.local' });
+    const res = await http.post(TEST, {});
+    expect(res.status).toBe(200);
+    const body = (await json(res)) as { devices: number; sent: number };
+    expect(body).toMatchObject({ devices: 0, sent: 0 });
+  });
+
+  it('counts the devices BEFORE sending, so a dropped subscription is distinguishable', async () => {
+    /*
+     * `devices: 1, sent: 0` and `devices: 0, sent: 0` are different stories —
+     * a browser that dropped its subscription versus one that was never
+     * registered — and they need different instructions. Counting after the
+     * send would collapse them, because a 410 prunes the row mid-request.
+     *
+     * The push here fails (no real push service), which is what makes this the
+     * interesting case rather than the happy one.
+     */
+    await http.signIn({ email: 'owner@test.local' });
+    const who = await ctx.db.execute(sql`SELECT id FROM users WHERE email = 'owner@test.local'`);
+    const userId = String((who.rows[0] as { id: string }).id);
+    await ctx.db.execute(sql`
+      INSERT INTO shop_push_subscriptions (id, user_id, endpoint, p256dh, auth, created_at)
+      VALUES ('psb_test', ${userId}::uuid, 'https://push.invalid/endpoint-for-a-test',
+              'p256dh-value-long-enough', 'auth-val', ${Date.now()})`);
+
+    const body = (await json(await http.post(TEST, {}))) as { devices: number; sent: number };
+    expect(body.devices).toBe(1);
+    expect(body.sent).toBe(0);
+  });
+});

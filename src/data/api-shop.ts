@@ -1311,6 +1311,27 @@ export const shopApi = {
     });
   },
 
+  /**
+   * Push a test to the CALLER's own devices and say how many took it.
+   *
+   * `devices` is counted before the send, so `devices: 1, sent: 0` is a
+   * different story from `devices: 0` — one is a browser that dropped its
+   * subscription, the other is a device that was never registered. The screen
+   * says which; without the pair it could only say "nothing happened".
+   */
+  async pushTest(): Promise<{
+    ok: true;
+    configured: boolean;
+    devices: number;
+    sent: number;
+  }> {
+    return shopFetch(`${BASE}/push/test`, {
+      method: 'POST',
+      subject: 'Notifications',
+      body: {},
+    });
+  },
+
   /** Forget this browser. `ok` even when no row existed — unsubscribing twice
    *  has got what it asked for. */
   async pushUnsubscribe(endpoint: string): Promise<{ ok: true; removed: number }> {
