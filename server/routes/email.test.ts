@@ -20,6 +20,7 @@ import { sql } from 'drizzle-orm';
 import { freshDb } from '../test/harness';
 import { httpClient, json } from '../test/http';
 import { MailNotConfiguredError } from '../mail/port';
+import { listBroadcastAudience } from '../email/repo';
 import type { TestCtx } from '../test/harness';
 import type { HttpClient } from '../test/http';
 import type { Mailer } from '../mail/port';
@@ -66,6 +67,14 @@ const TEMPLATE = {
   text: 'Hello {{name}}\n\nUnsubscribe: {{unsubscribe_url}}',
 };
 
+/** A template carrying the `{{basket}}` block, for the test-send basket fix. */
+const BASKET_TEMPLATE = {
+  name: 'Not bought yet',
+  subject: 'Still thinking it over, {{name}}?',
+  html: '<p>Hello {{name}}</p>{{basket}}<p><a href="{{unsubscribe_url}}">Unsubscribe</a></p>',
+  text: 'Hello {{name}}\n{{basket}}\nUnsubscribe: {{unsubscribe_url}}',
+};
+
 async function login(user: AuthUser): Promise<HttpClient> {
   const client = httpClient(ctx.db, { mailer });
   await client.signIn(user);
@@ -83,6 +92,16 @@ beforeEach(async () => {
                                     email_broadcast_recipients CASCADE`);
   await ctx.db.execute(sql`DELETE FROM auth_attempts`);
   await ctx.db.execute(sql`DELETE FROM sessions`);
+  /*
+   * The test-send basket fixture writes real carts. DELETE and not TRUNCATE,
+   * for the reason `server/shop/admin/prospects.test.ts` and
+   * `server/email/send.test.ts` both give: TRUNCATE refuses a table another
+   * one references unless every referencing table is named in the same
+   * statement. Carts go first so their lines go with them, freeing the
+   * variants the products then take with them.
+   */
+  await ctx.db.execute(sql`DELETE FROM shop_carts`);
+  await ctx.db.execute(sql`DELETE FROM shop_products`);
   mailer = new Recorder();
   owner = await login(ctx.users.owner);
 });
@@ -132,6 +151,51 @@ async function tokenOf(email: string): Promise<string> {
   const res = await ctx.db.execute(sql`
     SELECT token FROM email_subscribers WHERE email = ${email}`);
   return String(res.rows[0].token);
+}
+
+let baskets = 0;
+
+/**
+ * A live cart with lines, addressed to `email` — the shape `basketFor`
+ * (`server/shop/admin/prospects.ts`) reads. Mirrors the fixture of the same
+ * name in `server/email/send.test.ts`, kept local rather than shared, per
+ * this file's own convention of not importing another suite's helpers.
+ */
+async function giveBasket(
+  email: string,
+  lines: { title: string; qty: number; unitMinor: number }[],
+): Promise<void> {
+  baskets += 1;
+  const cartId = `cart_${baskets}`;
+  const now = Date.now();
+  await ctx.db.execute(sql`
+    INSERT INTO shop_carts (id, customer_id, currency, status, email,
+                            created_at, updated_at, expires_at, revision)
+    VALUES (${cartId}, NULL, 'NGN', 'open', ${email}, ${now}, ${now}, ${now + 86_400_000}, 1)`);
+
+  for (const [index, line] of lines.entries()) {
+    const tag = `${baskets}_${index}`;
+    await ctx.db.execute(sql`
+      INSERT INTO shop_products (id, slug, title, description, description_text,
+                                 status, category, cover_image_id,
+                                 created_at, updated_at, author_id, revision)
+      VALUES (${`prd_${tag}`}, ${`prd-${tag}`}, ${line.title},
+              ${'{"type":"doc","content":[]}'}::jsonb, ${''},
+              'active', 'test', NULL, ${now}, ${now}, ${ctx.users.owner.id}::uuid, 1)`);
+    await ctx.db.execute(sql`
+      INSERT INTO shop_variants (id, product_id, sku, option_values, position,
+                                 status, image_id, created_at, updated_at)
+      VALUES (${`var_${tag}`}, ${`prd_${tag}`}, ${`SKU-${tag}`}, ${'{"Colour":"Red"}'}::jsonb,
+              0, 'active', NULL, ${now}, ${now})`);
+    /* `effective_to` left NULL: that is what "current" means, and the partial
+       unique index `shop_prices_current_uq` is what makes it at most one. */
+    await ctx.db.execute(sql`
+      INSERT INTO shop_prices (id, variant_id, amount, currency, effective_from, created_at)
+      VALUES (${`prc_${tag}`}, ${`var_${tag}`}, ${line.unitMinor}, 'NGN', ${now}, ${now})`);
+    await ctx.db.execute(sql`
+      INSERT INTO shop_cart_lines (id, cart_id, variant_id, qty, added_at)
+      VALUES (${`ln_${tag}`}, ${cartId}, ${`var_${tag}`}, ${line.qty}, ${now})`);
+  }
 }
 
 // --------------------------------------------------------------------- guards
@@ -714,6 +778,84 @@ describe('broadcasts', () => {
   });
 });
 
+describe('a picked audience', () => {
+  it('records the picked audience on the draft', async () => {
+    const template = await createTemplate();
+    const res = await owner.post('/api/admin/email/broadcasts', {
+      templateId: template.id,
+      audience: { kind: 'picked', emails: ['A@Example.test', 'b@example.test'] },
+    });
+    expect(res.status).toBe(201);
+    const body = await json<{ broadcast: { audienceKind: string } }>(res);
+    expect(body.broadcast.audienceKind).toBe('picked');
+  });
+
+  it('folds and de-duplicates the picked addresses', async () => {
+    const template = await createTemplate();
+    const res = await owner.post('/api/admin/email/broadcasts', {
+      templateId: template.id,
+      audience: { kind: 'picked', emails: ['A@x.test', 'a@x.test'] },
+    });
+    expect(res.status).toBe(201);
+    const body = await json<{ broadcast: { id: string } }>(res);
+    expect(await listBroadcastAudience(ctx.db, body.broadcast.id)).toEqual(['a@x.test']);
+  });
+
+  it('refuses a picked audience with no addresses, naming the field', async () => {
+    /*
+     * `emails: []` PASSES THE SCHEMA — `audience.emails` carries no `.min(1)`,
+     * on purpose, so this refusal comes from the route's own
+     * `recorded === 0` check and always names the field `audience`, never the
+     * nested `audience.emails` a schema-level minimum would report instead.
+     */
+    const template = await createTemplate();
+    const res = await owner.post('/api/admin/email/broadcasts', {
+      templateId: template.id,
+      audience: { kind: 'picked', emails: [] },
+    });
+    expect(res.status).toBe(400);
+    expect((await json<{ detail: string }>(res)).detail).toBe('audience');
+  });
+
+  it('refuses a picked list of blank addresses the same way, by the same field name', async () => {
+    // Three spaces each — long enough to pass the per-string `.min(3)` bound,
+    // and blank enough that `normaliseEmail`'s trim folds every one of them
+    // to '' — so this is the OTHER way to fold to nothing usable, caught by
+    // the same runtime check as the empty array above rather than by the
+    // schema.
+    const template = await createTemplate();
+    const res = await owner.post('/api/admin/email/broadcasts', {
+      templateId: template.id,
+      audience: { kind: 'picked', emails: ['   ', '   ', '   '] },
+    });
+    expect(res.status).toBe(400);
+    expect((await json<{ detail: string }>(res)).detail).toBe('audience');
+  });
+
+  it('caps the picked list, so one request cannot become an unbounded enrolment', async () => {
+    /*
+     * Task 5's `enqueueAudience` enrols a picked audience with one sequential
+     * `addSubscriber` call per address — N picked addresses is N round trips
+     * to Neon on the eventual send. This is the route's ceiling on that.
+     */
+    const template = await createTemplate();
+    const tooMany = Array.from({ length: 2_001 }, (_, i) => `reader${i}@x.test`);
+    const res = await owner.post('/api/admin/email/broadcasts', {
+      templateId: template.id,
+      audience: { kind: 'picked', emails: tooMany },
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('a body with no audience still means every subscriber, exactly as before', async () => {
+    const template = await createTemplate();
+    const res = await owner.post('/api/admin/email/broadcasts', { templateId: template.id });
+    expect(res.status).toBe(201);
+    const body = await json<{ broadcast: { audienceKind: string } }>(res);
+    expect(body.broadcast.audienceKind).toBe('all_subscribers');
+  });
+});
+
 describe('the test send', () => {
   it('goes to the CALLER’S OWN address and takes no recipient', async () => {
     /*
@@ -747,6 +889,40 @@ describe('the test send', () => {
     const res = await owner.post(`/api/admin/email/broadcasts/${broadcast.id}/test`);
     expect(res.status).toBe(200);
     expect(await json(res)).toMatchObject({ sent: false });
+  });
+
+  it('resolves the caller’s own basket, so a basket template shows one instead of braces', async () => {
+    /*
+     * THIS ROUTE USED TO CALL `renderMessage` WITH THREE ARGUMENTS. An operator
+     * testing a "not bought yet" template therefore saw the literal `{{basket}}`
+     * braces where a real recipient would see their basket — the drain resolves
+     * one per recipient (`server/email/send.ts`) and this route resolved none
+     * at all.
+     */
+    const template = await createTemplate(BASKET_TEMPLATE);
+    const broadcast = await createBroadcast(template.id);
+    await giveBasket(ctx.users.owner.email, [{ title: 'PLA Basic', qty: 2, unitMinor: 150_000 }]);
+
+    const res = await owner.post(`/api/admin/email/broadcasts/${broadcast.id}/test`);
+    expect(res.status).toBe(200);
+    expect(mailer.sent).toHaveLength(1);
+    const message = mailer.sent[0];
+    expect(message.text).not.toContain('{{basket}}');
+    expect(message.html).not.toContain('{{basket}}');
+    expect(message.text).toContain('PLA Basic');
+    expect(message.html).toContain('PLA Basic');
+  });
+
+  it('leaves the placeholder visible for a caller with no basket of their own', async () => {
+    // The documented rule for a value nobody supplied: visible braces, not a
+    // blank — see `TemplateValues` in `server/email/render.ts`.
+    const template = await createTemplate(BASKET_TEMPLATE);
+    const broadcast = await createBroadcast(template.id);
+
+    const res = await owner.post(`/api/admin/email/broadcasts/${broadcast.id}/test`);
+    expect(res.status).toBe(200);
+    expect(mailer.sent[0].text).toContain('{{basket}}');
+    expect(mailer.sent[0].html).toContain('{{basket}}');
   });
 });
 
