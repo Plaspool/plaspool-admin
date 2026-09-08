@@ -5,7 +5,10 @@ import {
   type BookingResult,
   type LogisticsProvider,
   type ParcelInput,
+  type PlaceList,
+  type PlaceRegion,
   type ProviderDiagnostics,
+  type ProviderPlaces,
   type QuoteOption,
   type QuoteResult,
   type TrackResult,
@@ -58,10 +61,41 @@ export function createFezProvider(env: FezEnv, opts: FezClientOptions = {}): Log
     },
   };
 
+  /**
+   * THE STATES FEZ SHIPS TO, AND NOTHING UNDER THEM.
+   *
+   * `cities: null` is the honest answer rather than an empty map: Fez takes a
+   * free-text `recipientAddress` and validates no city at all, so a storefront
+   * must let a shopper type whatever they like. An empty object would say the
+   * opposite — that every region's list is empty and nothing is acceptable.
+   *
+   * `country` IS IGNORED, and deliberately so rather than by oversight. Fez's
+   * `GET /states` is not country-parameterised — it is a Nigerian courier and
+   * answers one list — so the same list is what any country would get. The
+   * caller still files it under the country it asked about, which keeps the
+   * cache one shape; a Fez shop asking about somewhere Fez does not serve gets
+   * a list its own booking calls would refuse anyway.
+   */
+  const places: ProviderPlaces = {
+    async list(_country: string): Promise<PlaceList> {
+      const res = await client.call('GET', '/states');
+      const rows = Array.isArray(res.states) ? (res.states as Record<string, unknown>[]) : [];
+      const regions: PlaceRegion[] = rows.flatMap((row) => {
+        const name = typeof row.state === 'string' && row.state.trim() !== '' ? row.state : null;
+        /* Fez's id is a NUMBER on the wire and a string here, because every
+           code in a `PlaceList` is one — the cache column and the public
+           payload do not get to hold two spellings of the same thing. */
+        return name ? [{ name, code: row.id == null ? null : String(row.id) }] : [];
+      });
+      return { regions, cities: null };
+    },
+  };
+
   return {
     id: 'fez',
     label: FEZ_LABEL,
     diagnostics,
+    places,
 
     async quote(input: ParcelInput): Promise<QuoteResult> {
       const missing = missingWeights(input.items);

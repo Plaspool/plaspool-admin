@@ -454,3 +454,66 @@ describe('diagnostics', () => {
     expect(createFezProvider(ENV, {}).diagnostics!.simulateWebhook).toBeUndefined();
   });
 });
+
+/**
+ * THE PLACE LIST — states and nothing under them.
+ *
+ * Fez does not validate cities at all and takes a free-text address, so
+ * `cities` is `null` rather than `{}`: "we enforce no city list" and "we
+ * enforce a list that happens to be empty" send a storefront to opposite
+ * behaviours, and only the first is true here.
+ */
+describe('places', () => {
+  it('reads the states and answers no city list at all', async () => {
+    const { fetchImpl, calls } = fezFetch([
+      AUTH_OK(),
+      {
+        status: 200,
+        json: {
+          status: 'Success',
+          states: [
+            { id: 1, state: 'Kano' },
+            { id: 25, state: 'Lagos' },
+          ],
+        },
+      },
+    ]);
+
+    const out = await createFezProvider(ENV, { fetchImpl }).places!.list('NG');
+
+    expect(calls[1]!.url).toBe('https://fez.test/v1/states');
+    expect(calls[1]!.method).toBe('GET');
+    expect(calls[1]!.headers.authorization).toBe('Bearer tok-abc123');
+    expect(out).toEqual({
+      /* Fez's id is a NUMBER on the wire and a string here, because every code
+         in a `PlaceList` is one — the cache column and the public payload do
+         not get to hold two spellings of the same thing. */
+      regions: [
+        { name: 'Kano', code: '1' },
+        { name: 'Lagos', code: '25' },
+      ],
+      cities: null,
+    });
+  });
+
+  it('drops an entry with no state name rather than listing a blank', async () => {
+    const { fetchImpl } = fezFetch([
+      AUTH_OK(),
+      { status: 200, json: { status: 'Success', states: [{ id: 1, state: '' }, { id: 2 }] } },
+    ]);
+    expect(await createFezProvider(ENV, { fetchImpl }).places!.list('NG')).toEqual({
+      regions: [],
+      cities: null,
+    });
+  });
+
+  it('lets a refusal escape as the LogisticsError the caller classifies', async () => {
+    const { fetchImpl } = fezFetch([
+      AUTH_OK(),
+      { status: 403, json: { description: 'Not permitted' } },
+    ]);
+    const err = await failureOf(createFezProvider(ENV, { fetchImpl }).places!.list('NG'));
+    expect(err.code).toBe('provider_rejected');
+    expect(err.message).toBe('Not permitted');
+  });
+});

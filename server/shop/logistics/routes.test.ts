@@ -9,7 +9,7 @@ import { resetLogisticsEnv } from './config';
 import { registerLogisticsDeps, resetLogisticsDeps } from './deps';
 import type { LogisticsCatalog } from './deps';
 import { LogisticsError } from './port';
-import type { LogisticsProvider, Packaging, ProviderId, ShipFrom } from './port';
+import type { LogisticsProvider, Packaging, PlaceList, ProviderId, ShipFrom } from './port';
 import { logWebhook } from './repo';
 
 /**
@@ -35,6 +35,7 @@ const SEEDED_AT = 1_786_600_005_100;
 const SETTINGS = '/api/shop/admin/logistics/settings';
 const PROVIDER = '/api/shop/logistics/provider';
 const REGISTER = '/api/shop/admin/logistics/webhooks/register';
+const PLACES_REFRESH = '/api/shop/admin/logistics/places/refresh';
 
 const SHIP_FROM: ShipFrom = {
   name: 'PlaSpool',
@@ -116,6 +117,7 @@ beforeEach(async () => {
     now: () => NOW,
   });
   await ctx.db.execute(sql`DELETE FROM shop_logistics_webhooks`);
+  await ctx.db.execute(sql`DELETE FROM shop_logistics_places`);
   await ctx.db.execute(sql`DELETE FROM shop_logistics_settings`);
   await ctx.db.execute(sql`
     INSERT INTO shop_logistics_settings (id, provider, updated_at)
@@ -371,6 +373,7 @@ describe('the guards', () => {
     expect((await http.get(SETTINGS)).status).toBe(403);
     expect((await http.patch(SETTINGS, { expectedRevision: 1, provider: 'fez' })).status).toBe(403);
     expect((await http.post(REGISTER, { provider: 'fez' })).status).toBe(403);
+    expect((await http.post(PLACES_REFRESH, {})).status).toBe(403);
   });
 
   it('GET the provider answers { provider, label } and 401s without a session', async () => {
@@ -484,5 +487,141 @@ describe('POST webhooks/register', () => {
   it('refuses a body naming manual, which is not a courier at all', async () => {
     await http.signIn({ email: 'owner@test.local' });
     expect((await http.post(REGISTER, { provider: 'manual' })).status).toBe(400);
+  });
+});
+
+/**
+ * REFRESHING THE PLACE LISTS — the one button that makes 37 requests at a
+ * courier, and therefore the one that must never sit on a request path.
+ *
+ * `requireAdmin()` and the `settings` domain, like every other route under
+ * `/admin/logistics/`: which places a courier accepts is configuration the
+ * shop is set up with, not something the person packing a box changes.
+ */
+describe('POST places/refresh', () => {
+  /** A courier that publishes a list. `places` is optional on the port, so a
+   *  fake without it is still a valid provider — which is the case below. */
+  function listingProvider(id: ProviderId, list: () => Promise<PlaceList>): LogisticsProvider {
+    return { ...fakeProvider(id), places: { list } };
+  }
+
+  const LIST: PlaceList = {
+    regions: [
+      { name: 'Abuja', code: 'FC' },
+      { name: 'Lagos', code: 'LA' },
+    ],
+    cities: { FC: [{ name: 'Maitama' }], LA: [{ name: 'Ikeja' }, { name: 'Yaba' }] },
+  };
+
+  async function switchTo(provider: 'fez' | 'terminal'): Promise<void> {
+    await ctx.db.execute(sql`
+      UPDATE shop_logistics_settings SET provider = ${provider} WHERE id = 'main'`);
+  }
+
+  it('caches the active courier list and answers what it learned', async () => {
+    registerLogisticsDeps({
+      providers: { fez: listingProvider('fez', async () => LIST), terminal: null },
+      now: () => NOW,
+    });
+    await switchTo('fez');
+    await http.signIn({ email: 'owner@test.local' });
+
+    const res = await http.post(PLACES_REFRESH, {});
+    expect(res.status).toBe(200);
+    expect(await json(res)).toEqual({
+      country: 'NG',
+      provider: 'fez',
+      regions: 2,
+      cities: 3,
+      updatedAt: NOW,
+    });
+
+    const row = await ctx.db.execute(sql`
+      SELECT provider, country FROM shop_logistics_places`);
+    expect(row.rows).toEqual([{ provider: 'fez', country: 'NG' }]);
+  });
+
+  /** No body at all is the ordinary call — the country defaults to the one the
+   *  address form is locked to. */
+  it('takes an empty body and an explicit country alike', async () => {
+    registerLogisticsDeps({
+      providers: { fez: listingProvider('fez', async () => LIST), terminal: null },
+      now: () => NOW,
+    });
+    await switchTo('fez');
+    await http.signIn({ email: 'owner@test.local' });
+
+    expect((await http.post(PLACES_REFRESH)).status).toBe(200);
+    expect(await json(await http.post(PLACES_REFRESH, { country: 'GH' }))).toMatchObject({
+      country: 'GH',
+    });
+    expect((await http.post(PLACES_REFRESH, { country: 'Nigeria' })).status).toBe(400);
+    expect((await http.post(PLACES_REFRESH, { nope: 1 })).status).toBe(400);
+  });
+
+  /**
+   * A COURIER WITH NO LIST IS A 409 THAT NAMES IT, not a 502. Nothing is
+   * broken: this courier simply publishes nothing to pick from, and the screen
+   * says so instead of offering a button that always fails.
+   */
+  it('answers 409 places_unsupported for a courier that publishes no list', async () => {
+    registerLogisticsDeps({ providers: { fez: fakeProvider('fez'), terminal: null }, now: () => NOW });
+    await switchTo('fez');
+    await http.signIn({ email: 'owner@test.local' });
+
+    const res = await http.post(PLACES_REFRESH, {});
+    expect(res.status).toBe(409);
+    expect(await json(res)).toEqual({ error: 'places_unsupported', provider: 'fez' });
+  });
+
+  it('answers 409 provider_not_configured while the shop still ships by hand', async () => {
+    await http.signIn({ email: 'owner@test.local' });
+    const res = await http.post(PLACES_REFRESH, {});
+    expect(res.status).toBe(409);
+    expect(await json(res)).toMatchObject({ error: 'provider_not_configured' });
+  });
+
+  /* The courier read the request and declined it. Retrying produces the
+     identical refusal, so their words go to the screen — the same 422 the
+     register and booking routes spend on this class of answer. */
+  it('reports a courier that REFUSED as 422 provider_rejected', async () => {
+    registerLogisticsDeps({
+      providers: {
+        fez: listingProvider('fez', () =>
+          Promise.reject(new LogisticsError('provider_rejected', 'Fez lists Nigeria only')),
+        ),
+        terminal: null,
+      },
+      now: () => NOW,
+    });
+    await switchTo('fez');
+    await http.signIn({ email: 'owner@test.local' });
+
+    const res = await http.post(PLACES_REFRESH, { country: 'GH' });
+    expect(res.status).toBe(422);
+    expect(await json(res)).toMatchObject({
+      error: 'provider_rejected',
+      message: 'Fez lists Nigeria only',
+    });
+  });
+
+  it('reports an unreachable courier as 502, which is the retryable one', async () => {
+    registerLogisticsDeps({
+      providers: {
+        fez: listingProvider('fez', () =>
+          Promise.reject(new LogisticsError('provider_unavailable', 'Fez Delivery timed out')),
+        ),
+        terminal: null,
+      },
+      now: () => NOW,
+    });
+    await switchTo('fez');
+    await http.signIn({ email: 'owner@test.local' });
+
+    expect((await http.post(PLACES_REFRESH, {})).status).toBe(502);
+  });
+
+  it('401s without a session at all', async () => {
+    expect((await http.post(PLACES_REFRESH, {})).status).toBe(401);
   });
 });

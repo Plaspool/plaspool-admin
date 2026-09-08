@@ -84,6 +84,52 @@ export interface ProviderDiagnostics {
   simulateWebhook?(shipmentId: string): Promise<ProviderSimulateOutcome>;
 }
 
+/** One entry in a courier's list of regions. `code` is the courier's OWN state
+ *  code — the value it wants sent back, not a display name — and `null` where a
+ *  courier publishes a name and nothing to send back with it. */
+export interface PlaceRegion {
+  name: string;
+  code: string | null;
+}
+
+/** A place inside a region. A NAME AND NOTHING ELSE: this is the string the
+ *  courier validates against, and anything more would be a second copy of
+ *  somebody else's list to keep in step. */
+export interface PlaceCity {
+  name: string;
+}
+
+export interface PlaceList {
+  regions: PlaceRegion[];
+  /**
+   * Keyed by `PlaceRegion.code`, and `null` FOR A COURIER THAT ENFORCES NO CITY
+   * LIST. `null` and `{}` are not the same answer: the first says a shopper may
+   * type whatever they like, the second says every region's list is empty and
+   * nothing is acceptable. Fez is the first; Terminal is never either.
+   */
+  cities: Record<string, PlaceCity[]> | null;
+}
+
+/**
+ * WHICH PLACES A COURIER WILL ACTUALLY ACCEPT.
+ *
+ * OPTIONAL ON `LogisticsProvider`, so a courier that publishes no list simply
+ * omits it — `manual` has no adapter at all, and a future courier that
+ * validates nothing should not have to invent an empty implementation. The
+ * absence IS the answer, and `places.ts` reports it as `places_unsupported`
+ * rather than as a failure.
+ *
+ * ⚠️  NEVER CALLED ON A REQUEST PATH. Terminal's list costs one call for the
+ *     regions and one per region for their cities — 37 for Nigeria. This is an
+ *     admin pressing a button; the result is cached in `shop_logistics_places`
+ *     and everything else reads the cache.
+ */
+export interface ProviderPlaces {
+  /** ISO-3166 alpha-2, upper-case. Throws a `LogisticsError` when the courier
+   *  refuses — including for a country it does not serve. */
+  list(country: string): Promise<PlaceList>;
+}
+
 export interface LogisticsProvider {
   readonly id: ProviderId;
   readonly label: string;
@@ -96,6 +142,9 @@ export interface LogisticsProvider {
   parseWebhook(rawBody: Uint8Array, headers: Headers, now: number): WebhookEvent | null;
   /** The owner's test bench. Absent on a provider that has none — see `ProviderDiagnostics`. */
   readonly diagnostics?: ProviderDiagnostics;
+  /** The courier's own place lists. Absent on a courier that publishes none —
+   *  see `ProviderPlaces`. */
+  readonly places?: ProviderPlaces;
 }
 
 export type LogisticsErrorCode =

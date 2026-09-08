@@ -530,3 +530,176 @@ describe('diagnostics', () => {
     expect(out.deliveries.count).toBeNull();
   });
 });
+
+/**
+ * THE PLACE LIST — Terminal's own answer to "which places will you accept",
+ * measured against its live sandbox on 2026-09-07: 37 states for NG (36 plus
+ * the FCT, which Terminal names `Abuja` with isoCode `FC`), 10 cities in FC
+ * and 46 in LA. It validates both names and refuses anything else with a 400
+ * that kills the whole quote, which is why we ask it what it will take.
+ */
+describe('places', () => {
+  interface PlacesStub {
+    fetchImpl: typeof fetch;
+    calls: string[];
+    peak: () => number;
+  }
+
+  /**
+   * `/states` answers at once; every `/cities` call is HELD OPEN for a tick, so
+   * the number in flight at any instant is observable. A stub that resolved
+   * immediately would report a peak of one whatever the implementation did, and
+   * the cap would be asserted by a test that cannot see it.
+   */
+  function placesFetch(
+    states: Record<string, unknown>[],
+    cities: Record<string, string[]>,
+    refuse: ReadonlySet<string> = new Set(),
+  ): PlacesStub {
+    const calls: string[] = [];
+    let inFlight = 0;
+    let peak = 0;
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes('/states')) {
+        return new Response(
+          JSON.stringify({ status: true, message: 'States in Nigeria', data: states }),
+          { status: 200 },
+        );
+      }
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      inFlight -= 1;
+      const code = new URL(url).searchParams.get('state_code') ?? '';
+      if (refuse.has(code)) {
+        return new Response(JSON.stringify({ status: false, message: 'Rate limited' }), {
+          status: 429,
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          status: true,
+          data: (cities[code] ?? []).map((name) => ({ name, stateCode: code })),
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+    return { fetchImpl, calls, peak: () => peak };
+  }
+
+  it('reads the states, then the cities of each, in the shapes Terminal answers', async () => {
+    const { fetchImpl, calls } = placesFetch(
+      [
+        { name: 'Abuja', isoCode: 'FC', countryCode: 'NG' },
+        { name: 'Lagos', isoCode: 'LA', countryCode: 'NG' },
+      ],
+      { FC: ['Maitama', 'Wuse'], LA: ['Ikeja'] },
+    );
+
+    const out = await createTerminalProvider(ENV, { fetchImpl }).places!.list('NG');
+
+    expect(calls[0]).toBe('https://terminal.test/v1/states?country_code=NG');
+    expect(calls.slice(1).sort()).toEqual([
+      'https://terminal.test/v1/cities?country_code=NG&state_code=FC',
+      'https://terminal.test/v1/cities?country_code=NG&state_code=LA',
+    ]);
+    expect(out).toEqual({
+      /* `isoCode` becomes `code`, and it is the key the city map is filed
+         under — Terminal asks for `state_code`, not for the display name. */
+      regions: [
+        { name: 'Abuja', code: 'FC' },
+        { name: 'Lagos', code: 'LA' },
+      ],
+      cities: {
+        FC: [{ name: 'Maitama' }, { name: 'Wuse' }],
+        LA: [{ name: 'Ikeja' }],
+      },
+    });
+  });
+
+  it('asks about the country it was given, not a pinned one', async () => {
+    const { fetchImpl, calls } = placesFetch([{ name: 'Greater Accra', isoCode: 'AA' }], {
+      AA: ['Accra'],
+    });
+    await createTerminalProvider(ENV, { fetchImpl }).places!.list('GH');
+    expect(calls[0]).toBe('https://terminal.test/v1/states?country_code=GH');
+    expect(calls[1]).toBe('https://terminal.test/v1/cities?country_code=GH&state_code=AA');
+  });
+
+  /**
+   * THE CAP, WHICH IS THE ONE THING THIS CALL COULD DO BADLY. Nigeria is 37
+   * states, so an unbounded `Promise.all` would open 37 sockets at a courier at
+   * once and invite a rate limit, while a plain sequential loop would spend 37
+   * round trips. Four in flight is the middle, and this is an admin-triggered
+   * refresh that never runs on a request path.
+   */
+  it('never has more than four city requests in flight, and never only one', async () => {
+    const states = Array.from({ length: 37 }, (_, i) => ({
+      name: `State ${i}`,
+      isoCode: `S${i}`,
+    }));
+    const { fetchImpl, calls, peak } = placesFetch(states, {});
+
+    const out = await createTerminalProvider(ENV, { fetchImpl }).places!.list('NG');
+
+    expect(out.regions).toHaveLength(37);
+    expect(calls).toHaveLength(38);
+    expect(peak()).toBeLessThanOrEqual(4);
+    /* And genuinely concurrent: a sequential loop satisfies the line above and
+       would spend 37 round trips against a live courier. */
+    expect(peak()).toBeGreaterThan(1);
+  });
+
+  /**
+   * A STATE WITH NO CODE IS STILL A STATE. Terminal wants a `state_code` and
+   * there is none to send, so it gets no city request — but dropping the region
+   * itself would quietly shorten the list a shopper picks from.
+   */
+  it('keeps a region with no isoCode and asks for no cities under it', async () => {
+    const { fetchImpl, calls } = placesFetch(
+      [
+        { name: 'Lagos', isoCode: 'LA' },
+        { name: 'Nowhere', isoCode: '' },
+      ],
+      { LA: ['Ikeja'] },
+    );
+
+    const out = await createTerminalProvider(ENV, { fetchImpl }).places!.list('NG');
+
+    expect(out.regions).toEqual([
+      { name: 'Lagos', code: 'LA' },
+      { name: 'Nowhere', code: null },
+    ]);
+    expect(out.cities).toEqual({ LA: [{ name: 'Ikeja' }] });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('lets a refusal escape as the LogisticsError the caller classifies', async () => {
+    const { fetchImpl } = terminalFetch([
+      { status: 400, json: { status: false, message: 'Unsupported country' } },
+    ]);
+    const err = await failureOf(createTerminalProvider(ENV, { fetchImpl }).places!.list('ZZ'));
+    expect(err.code).toBe('provider_rejected');
+    expect(err.message).toBe('Unsupported country');
+  });
+
+  /**
+   * `Promise.all` rejects at once and CANCELS NOTHING, so a pool that only
+   * threw would keep sending the remaining thirty-odd requests to a courier
+   * that has just rate-limited us — for an answer nobody is waiting for.
+   */
+  it('stops asking the moment one city request is refused', async () => {
+    const states = Array.from({ length: 20 }, (_, i) => ({ name: `State ${i}`, isoCode: `S${i}` }));
+    const { fetchImpl, calls } = placesFetch(states, {}, new Set(['S0']));
+
+    const err = await failureOf(createTerminalProvider(ENV, { fetchImpl }).places!.list('NG'));
+
+    expect(err.code).toBe('provider_rejected');
+    expect(err.message).toBe('Rate limited');
+    /* One `/states` plus the handful already in flight — nowhere near 21. */
+    expect(calls.length).toBeGreaterThan(1);
+    expect(calls.length).toBeLessThanOrEqual(9);
+  });
+});

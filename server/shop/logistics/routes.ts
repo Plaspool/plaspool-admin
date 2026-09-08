@@ -12,6 +12,7 @@ import { shipFromMissing } from './address';
 import { FEZ_LIVE_URL, TERMINAL_LIVE_URL, environmentOf, logisticsEnv } from './config';
 import { resolveLogisticsDeps } from './deps';
 import { DiagnosticsBody, runDiagnostic } from './diagnostics';
+import { PLACES_DEFAULT_COUNTRY, refreshPlaces } from './places';
 import { LogisticsError, PROVIDER_LABEL } from './port';
 import type { ProviderId } from './port';
 import { getLogisticsSettings, listRecentWebhooks, patchLogisticsSettings } from './repo';
@@ -354,6 +355,52 @@ logisticsRoutes.post('/admin/logistics/diagnostics', requireAdmin(), async (c) =
     return c.json({ error: 'provider_not_configured', provider: out.provider }, 409);
   }
   return c.json(out);
+});
+
+/**
+ * `country` IS OPTIONAL AND SHAPE-CHECKED, not enumerated. The address form is
+ * locked to `NG` today, and pinning `z.literal('NG')` here would make this route
+ * the thing that has to change the day it is not — the place lists are
+ * country-parameterised precisely so nothing is Nigeria-only by construction.
+ * Two letters is `shop_logistics_places_country_ck`, spelled where a bad value
+ * costs a 400 rather than a 500 out of Postgres.
+ */
+const PlacesRefreshBody = z
+  .object({ country: str().regex(/^[A-Za-z]{2}$/).optional() })
+  .strict();
+
+/**
+ * REFRESH THE COURIER'S PLACE LISTS — the one button in this file that makes
+ * dozens of requests at a courier, and therefore the one that must never sit on
+ * a request path.
+ *
+ * Terminal validates `state` AND `city` against its own per-country lists and
+ * refuses anything else with a 400 that kills the whole quote (measured
+ * 2026-09-07: ten place names inside the FCT, 46 in Lagos), so a shop needs its
+ * list cached before a shopper can be offered a zone the courier will take.
+ * Fetching it costs one call plus one per region — 37 for Nigeria — which is
+ * fine for an operator pressing a button and impossible inside a checkout.
+ *
+ * `requireAdmin()` and the `settings` domain, like every other
+ * `/admin/logistics/` route: which places a courier accepts is part of how the
+ * shop is set up, not something the person packing a box changes.
+ *
+ * THE REFUSALS REUSE CODES THIS FILE ALREADY SPENDS. `provider_not_configured`
+ * is the shop shipping by hand or a courier with no credentials here; the one
+ * new answer is `places_unsupported`, a 409 naming the courier — nothing is
+ * broken, that courier simply publishes no list, and a 502 would invite a retry
+ * for a verdict that cannot change.
+ */
+logisticsRoutes.post('/admin/logistics/places/refresh', requireAdmin(), async (c) => {
+  const body = await readJsonOrEmpty(c, PlacesRefreshBody);
+  const deps = resolveLogisticsDeps();
+  try {
+    const out = await refreshPlaces(currentDb(c), deps, body.country ?? PLACES_DEFAULT_COUNTRY);
+    if ('refused' in out) return c.json({ error: out.refused, provider: out.provider }, 409);
+    return c.json(out);
+  } catch (err) {
+    return providerFailure(c, err);
+  }
 });
 
 /*

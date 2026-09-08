@@ -1,9 +1,9 @@
 import { sql } from 'drizzle-orm';
-import { bigint, boolean, check, index, integer, jsonb, pgTable, text, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, check, index, integer, jsonb, pgTable, primaryKey, text, uuid } from 'drizzle-orm/pg-core';
 import { users } from '../../db/schema';
 
 /**
- * The two tables the delivery-courier subsystem owns (migration 0980).
+ * The three tables the delivery-courier subsystem owns (migrations 0980, 1000).
  *
  * DECLARED IN A FILE THIS SUBSYSTEM OWNS EXCLUSIVELY and re-exported from
  * `server/db/commerce-schema.ts`, following Catalog, Payments, Cart, Reviews and
@@ -12,12 +12,13 @@ import { users } from '../../db/schema';
  * is one line `tsc` names immediately.
  *
  * ⚠️  NOT THE SOURCE OF TRUTH FOR THE DDL. `drizzle.config.ts` declares only
- *     `server/db/schema.ts`, so drizzle-kit has never seen either table and
- *     never will. They exist because `migrations/0980_logistics.sql` created
- *     them, hand-written in full. What this file buys is `$inferSelect`, one
- *     place to read the shape, and a home for the documentation;
- *     `schema-parity.test.ts` reads both shapes back out of `information_schema`
- *     and `pg_constraint` so the description and its authority cannot drift.
+ *     `server/db/schema.ts`, so drizzle-kit has never seen any of these tables
+ *     and never will. They exist because `migrations/0980_logistics.sql` and
+ *     `1000_courier_places.sql` created them, hand-written in full. What this
+ *     file buys is `$inferSelect`, one place to read the shape, and a home for
+ *     the documentation; `schema-parity.test.ts` reads every shape back out of
+ *     `information_schema` and `pg_constraint` so the description and its
+ *     authority cannot drift.
  *
  * NOTHING IN `server/shop/logistics/` IMPORTS THESE OBJECTS. Every statement in
  * the subsystem is raw parameterised SQL through `db.execute`, as in Payments,
@@ -145,5 +146,64 @@ export const shopLogisticsWebhooks = pgTable(
   ],
 );
 
+/** One entry in a courier's list of regions. `code` is the courier's own state
+ *  code — Terminal's `isoCode`, Fez's numeric id as a string — and `null` where
+ *  a courier publishes a name and nothing to send back to it. */
+export interface PlaceRegionJson {
+  name: string;
+  code: string | null;
+}
+
+/** A place inside a region. A NAME AND NOTHING ELSE, deliberately: this is the
+ *  string the courier validates against, and anything more would be a second
+ *  place to keep in step with somebody else's list. */
+export interface PlaceCityJson {
+  name: string;
+}
+
+/**
+ * WHAT EACH COURIER SAYS IT WILL ACCEPT, cached (migration 1000).
+ *
+ * A CACHE AND ONLY A CACHE. Terminal validates state AND city against its own
+ * per-country lists and refuses anything else with a 400 that kills the whole
+ * quote — measured 2026-09-07: 37 states for NG, ten place names inside the
+ * FCT, 46 in Lagos. Asking it fresh would be 37 requests in a checkout, so an
+ * admin presses a button, the answer lands here, and the storefront reads this
+ * row. Dropping the table loses nothing but the button press.
+ *
+ * KEYED BY COURIER AND COUNTRY TOGETHER, so both couriers' lists can sit here
+ * at once and switching the courier reads a different row rather than a list
+ * the live one has never heard of.
+ */
+export const shopLogisticsPlaces = pgTable(
+  'shop_logistics_places',
+  {
+    provider: text('provider').$type<'fez' | 'terminal'>().notNull(),
+    /** ISO-3166 alpha-2, upper-case, pinned by a CHECK. Nothing here is
+     *  Nigeria-only by construction. */
+    country: text('country').notNull(),
+    regions: jsonb('regions').$type<PlaceRegionJson[]>().notNull(),
+    /**
+     * `null` FOR A COURIER THAT ENFORCES NO CITY LIST — Fez takes a free-text
+     * address and validates no city at all. "We enforce nothing" and "we
+     * enforce a list that happens to be empty" send a storefront to opposite
+     * behaviours, and only the first is true of Fez.
+     */
+    cities: jsonb('cities').$type<Record<string, PlaceCityJson[]>>(),
+    fetchedAt: bigint('fetched_at', { mode: 'number' }).notNull(),
+  },
+  (t) => [
+    primaryKey({ name: 'shop_logistics_places_pk', columns: [t.provider, t.country] }),
+    check('shop_logistics_places_provider_ck', sql`${t.provider} IN ('fez', 'terminal')`),
+    check('shop_logistics_places_country_ck', sql`${t.country} ~ '^[A-Z]{2}$'`),
+    check('shop_logistics_places_regions_ck', sql`jsonb_typeof(${t.regions}) = 'array'`),
+    check(
+      'shop_logistics_places_cities_ck',
+      sql`${t.cities} IS NULL OR jsonb_typeof(${t.cities}) = 'object'`,
+    ),
+  ],
+);
+
 export type DbShopLogisticsSettings = typeof shopLogisticsSettings.$inferSelect;
 export type DbShopLogisticsWebhook = typeof shopLogisticsWebhooks.$inferSelect;
+export type DbShopLogisticsPlaces = typeof shopLogisticsPlaces.$inferSelect;

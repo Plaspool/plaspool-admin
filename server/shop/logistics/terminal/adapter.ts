@@ -1,6 +1,6 @@
 import { TERMINAL_LIVE_URL, environmentOf, type TerminalEnv } from '../config';
 import { splitName, terminalStateName, toE164, zipFor } from '../address';
-import { LogisticsError, type BookingResult, type LogisticsProvider, type ParcelInput, type ProviderDiagnostics, type ProviderSimulateOutcome, type QuoteOption, type QuoteResult, type SimulateLeg, type TrackResult, type WebhookEvent } from '../port';
+import { LogisticsError, type BookingResult, type LogisticsProvider, type ParcelInput, type PlaceCity, type PlaceList, type PlaceRegion, type ProviderDiagnostics, type ProviderPlaces, type ProviderSimulateOutcome, type QuoteOption, type QuoteResult, type SimulateLeg, type TrackResult, type WebhookEvent } from '../port';
 import { terminalState } from '../status';
 import { terminalItemKg, totalGrams } from '../weights';
 import { TerminalClient, type TerminalClientOptions } from './client';
@@ -29,6 +29,51 @@ function address(a: { name: string; phone: string | null; email: string | null; 
     state: terminalStateName(a.region || a.city),
     country: a.countryCode.toUpperCase(), zip: zipFor(a.postalCode, a.region), is_residential: residential,
   };
+}
+
+/**
+ * HOW MANY CITY REQUESTS MAY BE IN FLIGHT AT ONCE.
+ *
+ * Nigeria is 37 states, so an unbounded `Promise.all` would open 37 sockets at
+ * a courier in one breath and invite a rate limit, while a plain sequential
+ * loop would spend 37 round trips. Four is the middle, and it is affordable
+ * because this NEVER runs on a request path — `port.ts`'s `ProviderPlaces`
+ * carries that rule and `places.ts` is the only caller.
+ */
+const PLACES_CONCURRENCY = 4;
+
+/**
+ * Run `job` over every item with at most `limit` outstanding.
+ *
+ * A fixed pool of workers pulling from a shared cursor rather than chunked
+ * batches: a batch of four waits for its slowest member before starting the
+ * next four, which against a courier that occasionally takes a second turns
+ * ten rounds into ten worst cases.
+ *
+ * THE FIRST FAILURE STOPS THE REST. `Promise.all` rejects at once but does not
+ * cancel anything, so without the flag a courier that just refused — or
+ * rate-limited us — would still be sent the remaining thirty-odd requests for
+ * an answer nobody is waiting for any more.
+ */
+async function pooled<T>(items: readonly T[], limit: number, job: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  let stopped = false;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      if (stopped) return;
+      const index = next;
+      next += 1;
+      const item = items[index];
+      if (item === undefined) return;
+      try {
+        await job(item);
+      } catch (err) {
+        stopped = true;
+        throw err;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
 /**
@@ -137,8 +182,53 @@ export function createTerminalProvider(env: TerminalEnv, opts: TerminalClientOpt
     },
   };
 
+  /**
+   * WHICH PLACES TERMINAL WILL ACCEPT, which is not a courtesy — it validates
+   * `state` and `city` against these lists and refuses anything else with a 400
+   * that kills the whole quote. Measured 2026-09-07: 37 states for NG (36 plus
+   * the FCT, which Terminal names `Abuja` with isoCode `FC`), ten place names
+   * inside the FCT and 46 in Lagos.
+   *
+   * REGIONS FIRST, THEN THEIR CITIES, four at a time. The region's `isoCode` is
+   * both the key the city map is filed under and the `state_code` Terminal
+   * wants back — the display name is not interchangeable with it.
+   */
+  const places: ProviderPlaces = {
+    async list(country: string): Promise<PlaceList> {
+      const code = country.toUpperCase();
+      const res = await client.call('GET', `/states?country_code=${encodeURIComponent(code)}`);
+      const rows = Array.isArray(res.data) ? (res.data as Record<string, unknown>[]) : [];
+      /* A state with no name is not a place a shopper can pick; a state with no
+         isoCode IS, it simply has no cities to ask for. Dropping the second
+         would quietly shorten the list. */
+      const regions: PlaceRegion[] = rows.flatMap((row) => {
+        const name = str(row.name);
+        return name ? [{ name, code: str(row.isoCode) }] : [];
+      });
+
+      const cities: Record<string, PlaceCity[]> = {};
+      await pooled(
+        regions.filter((region): region is PlaceRegion & { code: string } => region.code !== null),
+        PLACES_CONCURRENCY,
+        async (region) => {
+          const answer = await client.call(
+            'GET',
+            `/cities?country_code=${encodeURIComponent(code)}&state_code=${encodeURIComponent(region.code)}`,
+          );
+          const list = Array.isArray(answer.data) ? (answer.data as Record<string, unknown>[]) : [];
+          cities[region.code] = list.flatMap((row) => {
+            const name = str(row.name);
+            return name ? [{ name }] : [];
+          });
+        },
+      );
+
+      return { regions, cities };
+    },
+  };
+
   return {
-    id: 'terminal', label: TERMINAL_LABEL, diagnostics,
+    id: 'terminal', label: TERMINAL_LABEL, diagnostics, places,
 
     async quote(input: ParcelInput): Promise<QuoteResult> {
       if (!input.from) throw new LogisticsError('address_incomplete', 'Terminal Africa needs a ship-from address', { detail: ['shipFrom'] });

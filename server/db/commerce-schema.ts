@@ -600,8 +600,8 @@ export * from '../shop/reviews/schema';
 export * from '../shop/settings/schema';
 
 // ============================================================================
-// DELIVERY COURIERS — owned by `server/shop/logistics/` (migration range
-// 0980–0999). RE-EXPORTED FROM A FILE THAT SUBSYSTEM OWNS EXCLUSIVELY,
+// DELIVERY COURIERS — owned by `server/shop/logistics/` (migration ranges
+// 0980–0999 and 1000–1019). RE-EXPORTED FROM A FILE THAT SUBSYSTEM OWNS EXCLUSIVELY,
 // following Catalog, Payments, Cart, Reviews and Delivery settings above and
 // for the reason they record: a block declared here is a block a wholesale
 // overwrite deletes silently, while a lost `export *` is one line `tsc` names
@@ -609,10 +609,12 @@ export * from '../shop/settings/schema';
 //
 // `shop_logistics_settings` — the CHECK-pinned singleton naming the one courier
 // that is switched on, the ship-from address and the packaging Terminal quotes
-// against — and `shop_logistics_webhooks`, the inbound delivery log. The
-// courier columns those two write back to live on `shop_fulfillments` above,
-// which Orders owns. §4's purpose is preserved: both tables are reachable from
-// this one import path, and their applied shapes are asserted against a
-// migrated database by `server/shop/logistics/schema-parity.test.ts`.
+// against — `shop_logistics_webhooks`, the inbound delivery log — and
+// `shop_logistics_places` (migration 1000), the cache of which places each
+// courier says it will actually accept. The courier columns they write back to
+// live on `shop_fulfillments` above, which Orders owns. §4's purpose is
+// preserved: every table is reachable from this one import path, and their
+// applied shapes are asserted against a migrated database by
+// `server/shop/logistics/schema-parity.test.ts`.
 // ============================================================================
 export * from '../shop/logistics/schema';

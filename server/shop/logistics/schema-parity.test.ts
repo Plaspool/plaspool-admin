@@ -4,7 +4,7 @@ import { getTableConfig } from 'drizzle-orm/pg-core';
 import type { PgTable } from 'drizzle-orm/pg-core';
 import { freshDb, type TestCtx } from '../../test/harness';
 import { shopFulfillments } from '../../db/commerce-schema';
-import { shopLogisticsSettings, shopLogisticsWebhooks } from './schema';
+import { shopLogisticsPlaces, shopLogisticsSettings, shopLogisticsWebhooks } from './schema';
 
 /**
  * The declaration and the applied DDL, reconciled against a real database.
@@ -35,6 +35,10 @@ afterAll(async () => {
 const TABLES: [string, PgTable][] = [
   ['shop_logistics_settings', shopLogisticsSettings],
   ['shop_logistics_webhooks', shopLogisticsWebhooks],
+  /* Migration 1000's cache of each courier's own place lists. Declared in the
+   * same file and reconciled by the same three cases — a table added to the
+   * subsystem and not to this list is a declaration nothing checks. */
+  ['shop_logistics_places', shopLogisticsPlaces],
 ];
 
 /**
@@ -141,6 +145,28 @@ describe('the 0980 declaration and the applied DDL agree', () => {
     expect(actual, `${name}: a declared index is missing`).toEqual(
       expect.arrayContaining(declared),
     );
+  });
+
+  /**
+   * The place cache is keyed by BOTH columns, and that is the whole design: one
+   * row per courier per country, so switching courier reads a different row
+   * rather than a list the live courier has never heard of, and a refresh
+   * REPLACES rather than accumulating. A primary key on `provider` alone would
+   * make a second country overwrite the first.
+   */
+  it('shop_logistics_places is keyed by courier AND country together', async () => {
+    const declared = getTableConfig(shopLogisticsPlaces).primaryKeys;
+    expect(declared).toHaveLength(1);
+    expect(declared[0]!.columns.map((c) => c.name)).toEqual(['provider', 'country']);
+
+    const res = await ctx.db.execute(sql`
+      SELECT a.attname AS name
+        FROM pg_constraint c
+        JOIN unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord) ON true
+        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+       WHERE c.conrelid = 'public.shop_logistics_places'::regclass AND c.contype = 'p'
+       ORDER BY k.ord`);
+    expect(res.rows.map((row) => String(row.name))).toEqual(['provider', 'country']);
   });
 
   /**
