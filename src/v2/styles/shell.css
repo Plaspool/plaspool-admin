@@ -1167,3 +1167,66 @@
     display: none;
   }
 }
+
+/* ═══ INSTALL OFFER ═══════════════════════════════════════════════════════
+   The panel behind the topbar's ⤓, hung off the dark bar like the alerts
+   popover but riding `Float` rather than `position: absolute`.
+
+   It states its own `max-width` even though `.vfloat` already caps every
+   panel: a panel that fixes its `width` and leaves the ceiling to the
+   backstop is one edit away from a `min-width` that beats both, which is
+   exactly how `.sselect__panel` came to hang off a phone's left edge.
+
+   Wordier than a menu on purpose. Most people have never installed a web app,
+   and a bare "Install" beside an arrow reads like it is about to download a
+   file onto their machine. */
+.install {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s3);
+  width: 21rem;
+  max-width: calc(100vw - var(--s6));
+  padding: var(--s4);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.install__title {
+  font-size: var(--t-lg);
+  font-weight: var(--w-semi);
+  color: var(--ink-strong);
+}
+
+.install__body {
+  margin: 0;
+  font-size: var(--t-md);
+  line-height: 1.5;
+  color: var(--ink-sub);
+}
+
+/* The iOS route, which we can only describe — Safari has no prompt for us to
+   raise. Numbered rather than written out as prose: it is a sequence of taps
+   inside another app's chrome, and a paragraph of that gets re-read from the
+   top every time somebody loses their place halfway. */
+.install__steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: 0;
+  padding-left: var(--s4);
+  font-size: var(--t-md);
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.install__steps svg {
+  width: 15px;
+  height: 15px;
+  /* Pulled onto the text's own baseline. These name two buttons in the
+     browser's toolbar, and an icon riding above the words reads as decoration
+     instead of as the thing to go and look for. */
+  vertical-align: -2px;
+  color: var(--ink-sub);
+}

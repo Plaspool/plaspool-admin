@@ -34,6 +34,7 @@ import SpoolsAreas from './routes/SpoolsAreas';
 import SpoolsRates from './routes/SpoolsRates';
 import Marketing from './routes/Marketing';
 import Settings from './routes/Settings';
+import SettingsNotifications from './routes/SettingsNotifications';
 import SettingsShipping from './routes/SettingsShipping';
 import SettingsTeam from './routes/SettingsTeam';
 import SettingsWriting from './routes/SettingsWriting';
@@ -119,6 +120,38 @@ if (getSession().status !== 'unknown') {
   });
 }
 
+/*
+ * THE OFFLINE SHELL, WHICH HAS BEEN DEAD SINCE THE v2 CUTOVER.
+ *
+ * `public/sw.js` never stopped existing, and `src/sw.test.ts` never stopped
+ * asserting on it — but the only `register` call in the repo was v1's, in
+ * `src/main.tsx`, and `index.html` has booted THIS file since the cutover. So
+ * no visitor has registered a worker since, the app shell has not been cached
+ * on any machine, and the admin has not been installable at all: a browser
+ * offers to install a site only once it has both a manifest and a worker.
+ * These seven lines are what revive it, and they are why the manifest added
+ * beside them does anything.
+ *
+ * Both guards are v1's and both are load-bearing. PROD only, because a worker
+ * in dev serves yesterday's bundle back to Vite and fights HMR. The `load`
+ * listener, because registering during boot competes for the network with the
+ * very assets the first paint is waiting on. `/sw.js` absolute rather than v1's
+ * relative './sw.js': the scope a worker gets is the directory it was served
+ * from, and this app is hash-routed — every route is the root document today,
+ * but a relative path is one deploy under a subpath away from a worker that
+ * controls nothing.
+ *
+ * The failure is swallowed on purpose. Offline capability is a bonus; an admin
+ * that refuses to boot because a worker would not register is not.
+ */
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      // Offline capability is a bonus, never a requirement to run.
+    });
+  });
+}
+
 const router = createHashRouter([
   /*
    * `#/design` — the design system on one page, OUTSIDE the gate. It fetches
@@ -199,6 +232,7 @@ const router = createHashRouter([
 
       /* ── settings ────────────────────────────────────────────────────── */
       { path: '/settings', element: <Settings /> },
+      { path: '/settings/notifications', element: <SettingsNotifications /> },
       { path: '/settings/shipping', element: <SettingsShipping /> },
       { path: '/settings/team', element: <SettingsTeam /> },
       { path: '/settings/writing', element: <SettingsWriting /> },

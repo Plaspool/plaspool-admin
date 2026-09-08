@@ -8,6 +8,7 @@ import { teamApi, type OwnershipTransfer } from '../../data/api-team';
 import { Banner, Button } from '../ui/primitives';
 import { brand } from '../../brand';
 import { AlertsBell } from './Alerts';
+import { InstallButton } from './InstallButton';
 import { Palette } from './Palette';
 
 /**
@@ -266,6 +267,13 @@ export function Shell({ storeName, userName }: { storeName: string; userName: st
         </div>
 
         <div className="top__end">
+          {/* BEFORE the bell, never after. This row is `justify-content:
+              flex-end` and the account disc has been the rightmost object
+              since the store-switcher came out, so anything appended lands
+              outside the person and moves the one control people aim for
+              without looking. Most of the time it renders nothing at all —
+              see `InstallButton`. */}
+          <InstallButton />
           <AlertsBell />
           <Menu
             tone="plain"
