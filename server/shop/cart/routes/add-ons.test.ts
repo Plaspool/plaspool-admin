@@ -40,6 +40,10 @@ beforeAll(async () => {
 afterAll(() => ctx.close());
 beforeEach(async () => {
   await resetShopTables(ctx.db);
+  /* This suite's shop ships to the UK and, since migration 1060, has to say so
+   * — `served_countries` is seeded `{NG}` and checkout refuses outside it. */
+  await ctx.db.execute(sql`
+    UPDATE shop_delivery_settings SET served_countries = '{GB,NG}' WHERE id = 'main'`);
   const config: CheckoutConfig = { zones: ZONES, storeCurrency: CURRENCY };
   const cart = await createCart(ctx.db, { currency: CURRENCY, customerId: null });
   cartId = cart.id;

@@ -63,6 +63,15 @@ afterAll(() => ctx.close());
 
 beforeEach(async () => {
   await resetShopTables(ctx.db);
+  /*
+   * THIS SUITE'S SHOP SHIPS TO THE UK, and since migration 1060 it has to SAY
+   * so. `served_countries` is seeded `{NG}` — the real shop's answer — and the
+   * checkout refuses an address outside it, so a suite whose every fixture is a
+   * London address has to declare the country it is testing from. Left implicit
+   * this reads as an unrelated `precondition_failed` three tests later.
+   */
+  await ctx.db.execute(sql`
+    UPDATE shop_delivery_settings SET served_countries = '{GB,NG}' WHERE id = 'main'`);
   await ctx.db.execute(sql`TRUNCATE auth_attempts`);
   await ctx.db.execute(sql`TRUNCATE shop_products, shop_inventory_holds CASCADE`);
 

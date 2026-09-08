@@ -530,6 +530,13 @@ function refusePricing(c: Context<ShopEnv>, result: PricingRefusal) {
   if (result.reason === 'outside_service_region') {
     return c.json({ error: 'outside_service_region' }, 409);
   }
+  // And its own again for the country (migration 1060). The two above are both
+  // fixed by editing the address; this one is not — a shopper in Canada cannot
+  // retype their way into a country the shop does not ship to, so the message
+  // has to stop offering the address step as the remedy.
+  if (result.reason === 'outside_service_country') {
+    return c.json({ error: 'outside_service_country' }, 409);
+  }
   /* THE SAME BODY THE APPLY ROUTE ANSWERS, so a storefront reads "your code
    * stopped working" identically whether it learns it while typing the code or
    * at the freeze. The alternative is two shapes for one situation and a branch

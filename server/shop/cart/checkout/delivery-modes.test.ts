@@ -63,7 +63,8 @@ beforeEach(async () => {
   await resetShopTables(ctx.db);
   await ctx.db.execute(sql`
     UPDATE shop_delivery_settings
-       SET address_mode = 'district', location_offered = false, served_regions = NULL, revision = 1
+       SET address_mode = 'district', location_offered = false, served_regions = NULL,
+           served_countries = '{NG}', revision = 1
      WHERE id = 'main'`);
   http = httpClient(ctx.db);
   ipCounter += 1;
@@ -74,6 +75,13 @@ beforeEach(async () => {
 async function setMode(mode: 'district' | 'simple'): Promise<void> {
   await ctx.db.execute(sql`
     UPDATE shop_delivery_settings SET address_mode = ${mode} WHERE id = 'main'`);
+}
+
+async function setServedCountries(countries: string[]): Promise<void> {
+  await ctx.db.execute(sql`
+    UPDATE shop_delivery_settings
+       SET served_countries = ARRAY[${sql.join(countries.map((c) => sql`${c}`), sql`, `)}]::text[]
+     WHERE id = 'main'`);
 }
 
 async function setServedRegions(regions: string[] | null): Promise<void> {
@@ -170,6 +178,72 @@ describe('mode: simple — a stored district stops deciding anything', () => {
     expect(await deliveryMinor(ABUJA)).toBe(ZONE_RATE_ABUJA_MINOR);
     await setMode('district');
     expect(await deliveryMinor(ABUJA)).toBe(DISTRICT_RATE_MINOR);
+  });
+});
+
+/**
+ * WHERE THE SHOP WILL SHIP AT ALL — migration 1060.
+ *
+ * The country was a hardcoded constant on the public config until this, so the
+ * storefront disabled Continue for every foreign address no matter which zones
+ * existed. These drive the whole path: the setting, the public config the
+ * storefront gates on, and the server-side refusal that has to agree with it.
+ */
+const LONDON = {
+  name: 'A Shopper',
+  line1: '10 Downing Street',
+  city: 'London',
+  region: 'England',
+  countryCode: 'GB',
+};
+
+describe('served countries', () => {
+  it('refuses a country the shop has not named, with its OWN error code', async () => {
+    const res = await putAddress(LONDON);
+    expect(res.status).toBe(400);
+    /* Not `outside_service_region`: that one names a Nigerian state, and the
+       next step for a shopper in London is not to pick a different state. */
+    const body = JSON.stringify(await res.json());
+    expect(body).toContain('outside_service_country');
+    expect(body).not.toContain('outside_service_region');
+  });
+
+  it('lets the address through once the owner opens the country', async () => {
+    await setServedCountries(['NG', 'GB']);
+    const res = await putAddress(LONDON);
+    expect(res.status).toBe(200);
+  });
+
+  it('still ships Nigeria on the seeded single-country list', async () => {
+    expect(await deliveryMinor(ABUJA)).toBe(ZONE_RATE_ABUJA_MINOR);
+  });
+
+  /*
+   * THE SCOPING RULE, END TO END. `served_regions` holds Nigerian STATES, so
+   * applying it to a foreign address refuses every one of them — and the owner
+   * would "fix" that by clearing a restriction protecting something real.
+   */
+  it('does not let a Nigerian region list refuse a foreign address', async () => {
+    await setServedCountries(['NG', 'GB']);
+    await setServedRegions(['Abuja', 'Lagos']);
+    expect((await putAddress(LONDON)).status).toBe(200);
+    // ...while still refusing the Nigerian state that is genuinely off the list.
+    expect((await putAddress({ ...ABUJA, region: 'Kano', district: undefined })).status).toBe(400);
+  });
+
+  it('tells the storefront what it may offer, so the form and the server agree', async () => {
+    await setServedCountries(['NG', 'GB']);
+    const res = await http.request('/api/public/shop/delivery-config', { method: 'GET' });
+    const { config } = (await res.json()) as {
+      config: { country: { default: string; allowed: string[]; locked: boolean } };
+    };
+    expect(config.country).toEqual({ default: 'NG', allowed: ['NG', 'GB'], locked: false });
+  });
+
+  it('locks the field again when the shop serves one country', async () => {
+    const res = await http.request('/api/public/shop/delivery-config', { method: 'GET' });
+    const { config } = (await res.json()) as { config: { country: { locked: boolean } } };
+    expect(config.country.locked).toBe(true);
   });
 });
 
