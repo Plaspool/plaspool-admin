@@ -21,6 +21,7 @@ import { addOnPort } from './catalog/add-ons/port';
 import { checkoutPaymentsPort } from './payments/port';
 import { orders } from './orders/routes';
 import { drainCommerceEvents } from './orders/repo/consumer';
+import { adoptGuestOrders } from './orders/repo/orders';
 import { cartShopRoutes } from './cart/routes';
 import { resolveShopCustomer } from './cart/identity/customers';
 import { SHOP_CURRENCY } from './currency';
@@ -293,6 +294,18 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
        * redemption existed.
        */
       redemption,
+      /*
+       * GUEST ORDERS FOLLOW THEIR BUYER INTO AN ACCOUNT (2026-09-08).
+       *
+       * The same seam as `sweepEvents` above and for the same reason: signing in
+       * is CART's route, `shop_orders` is ORDERS' table, and this file is the
+       * only one allowed to know both. Neither subsystem imports the other.
+       *
+       * Before this line a shopper who checked out as a guest and signed in
+       * later had an empty order history for ever — the order kept
+       * `customer_id NULL` and the list query has always been scoped by id.
+       */
+      adoptOrders: adoptGuestOrders,
       /*
        * ═══════════════════════════════════════════════════════════════════════
        * PAYMENTS → CART, SO A FROZEN CHECKOUT CAN BE UNFROZEN.

@@ -522,6 +522,55 @@ export function listCustomerOrders(
 }
 
 /**
+ * ADOPT THE ORDERS THIS PERSON PLACED BEFORE THEY HAD AN ACCOUNT.
+ *
+ * A guest checkout stores the typed email and leaves `customer_id NULL` — see
+ * `getOrderForCustomer`. Signing in afterwards mints a customer row and nothing
+ * ever linked the two, so an order history that read `WHERE customer_id = $1`
+ * was EMPTY for everybody who bought first and registered later. Found
+ * 2026-09-08 on a real shopper: one guest order and one customer row, the same
+ * address on both, no row joining them.
+ *
+ * ═══ WHY MATCHING ON EMAIL IS SAFE HERE AND NOWHERE ELSE ═══
+ *
+ * The address bound below does not come from a request body. It comes off the
+ * customer row the identity bridge just resolved from a VERIFIED assertion, so
+ * the only person who can claim an address is the one Neon Auth proved owns it.
+ * That is what makes this different from a lookup keyed by an email in a URL,
+ * which `marketing/ledger/customer.ts` refuses for exactly the right reason.
+ *
+ * THE `customer_id IS NULL` PREDICATE IS THE OTHER HALF, and it is not
+ * decoration: without it a re-exchange could move an order OFF the customer it
+ * already belongs to. Only orphans are adopted, so the statement is idempotent
+ * — the second run matches nothing — and it can never take an order away from
+ * somebody.
+ *
+ * ONE GUARDED STATEMENT, NOT A READ THEN A WRITE, and never `db.transaction`:
+ * the Neon HTTP driver throws on it while PGlite does not, so a transaction
+ * here would pass every test in this repository and 500 in production.
+ *
+ * What it deliberately does NOT touch is the order's own `email`. That column
+ * is what the guest receipt link authenticates against (`getOrderForGuest`), and
+ * a link already in a mailbox must keep working after its owner signs up.
+ */
+export async function adoptGuestOrders(
+  db: Db,
+  customerId: string,
+  email: string,
+): Promise<number> {
+  if (customerId.length === 0) throw new BadRequestError('customerId');
+  const normalised = email.trim().toLowerCase();
+  if (normalised.length === 0) throw new BadRequestError('email');
+  const res = await db.execute(sql`
+    UPDATE shop_orders
+       SET customer_id = ${customerId}
+     WHERE customer_id IS NULL
+       AND lower(email) = ${normalised}
+    RETURNING id`);
+  return res.rows.length;
+}
+
+/**
  * The distinct addresses this customer has actually shipped to, most recent
  * first.
  *

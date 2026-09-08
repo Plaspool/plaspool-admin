@@ -317,3 +317,71 @@ describe('the origin guard covers the shop routes too', () => {
     expect(res.status).toBe(200);
   });
 });
+
+/**
+ * THE EXCHANGE ADOPTS WHAT THIS PERSON BOUGHT AS A GUEST (2026-09-08).
+ *
+ * A WIRING TEST, NOT A BEHAVIOUR TEST. `adopt-guest-orders.test.ts` next door
+ * proves the statement itself — every predicate, both directions. What is
+ * unproven by that file, and was the whole shape of this repository's worst
+ * bugs, is whether the COMPOSITION ROOT hands the function to the route at all:
+ * `ShopCartDeps.adoptOrders` is optional, and an unwired deployment mints the
+ * session, adopts nothing and answers 200 exactly as a wired one does.
+ *
+ * So this drives the real `createApp()` — no dep injected here, no fake — and
+ * asserts on the row. If a future edit drops the field from `server/shop/app.ts`,
+ * this test fails and the orders suite stays green.
+ */
+describe('signing in claims the orders placed before the account existed', () => {
+  const GUEST_EMAIL = 'Late.Signup@example.test';
+
+  beforeEach(async () => {
+    await ctx.db.execute(sql`TRUNCATE shop_order_lines, shop_orders CASCADE`);
+  });
+
+  /** A guest order: the address as it was typed, and no owner. */
+  async function insertGuestOrder(email: string, checkoutId: string): Promise<void> {
+    await ctx.db.execute(sql`
+      INSERT INTO shop_orders (
+        id, order_number, customer_id, email, currency,
+        subtotal, shipping_total, tax_total, grand_total, status,
+        shipping_address, billing_address, placed_at, revision,
+        source_event_id, checkout_id)
+      VALUES (
+        ${`ord_${checkoutId}`}, ${`2026-00000${checkoutId.slice(-1)}-K`}, NULL,
+        ${email}, 'NGN', 1000, 0, 0, 1000, 'paid',
+        '{}'::jsonb, '{}'::jsonb, ${Date.now()}, 1,
+        ${`evt_${checkoutId}`}, ${checkoutId})`);
+  }
+
+  async function ownerOf(checkoutId: string): Promise<string | null> {
+    const res = await ctx.db.execute(
+      sql`SELECT customer_id FROM shop_orders WHERE checkout_id = ${checkoutId}`,
+    );
+    const value = res.rows[0]?.customer_id;
+    return value == null ? null : String(value);
+  }
+
+  it('links the guest order to the customer the assertion names', async () => {
+    await insertGuestOrder(GUEST_EMAIL, 'chk_late_1');
+    expect(await ownerOf('chk_late_1')).toBeNull();
+
+    const customer = await loginAsCustomer(GUEST_EMAIL);
+
+    // Lower-cased on the customer row, as typed on the order — matched anyway.
+    expect(await ownerOf('chk_late_1')).toBe(customer.id);
+  });
+
+  it('claims nothing that belongs to another address', async () => {
+    await insertGuestOrder('somebody.else@example.test', 'chk_late_2');
+    await loginAsCustomer(GUEST_EMAIL);
+    expect(await ownerOf('chk_late_2')).toBeNull();
+  });
+
+  it('still mints the session when there is nothing to adopt', async () => {
+    // Adoption is a convenience on top of sign-in, never a precondition for it.
+    const customer = await loginAsCustomer('no.orders@example.test');
+    expect(client.cookies().has(SHOP_SESSION_COOKIE)).toBe(true);
+    expect(customer.id).toMatch(/^cus_/);
+  });
+});
