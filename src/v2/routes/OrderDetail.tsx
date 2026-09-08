@@ -52,12 +52,28 @@ function optionLabel(values: Record<string, string>): string | null {
 function addressLines(addr: Record<string, unknown> | null | undefined): string[] {
   if (!addr) return [];
   const pick = (k: string) => (typeof addr[k] === 'string' && addr[k] ? String(addr[k]) : null);
+  /*
+   * WHAT THE COURIER WAS TOLD, WHEN IT IS NOT WHAT THE CUSTOMER TYPED.
+   *
+   * The shopper picks a routing city off the courier's own list because
+   * Terminal refuses a city that is not on it. Staff chasing a parcel need to
+   * see the zone it actually went out under — otherwise a waybill saying
+   * Maitama for an order that says Gwarinpa is a mystery this screen cannot
+   * resolve.
+   *
+   * ONLY WHEN IT DIFFERS, and quietly. On most orders the two are the same
+   * string or there is no zone at all (every order placed before migration
+   * 1020), and a line repeating the city back would be noise on every one of
+   * them. The customer's own city keeps its usual place above.
+   */
+  const routing = pick('routingCity');
   const lines = [
     pick('name') ?? pick('fullName'),
     pick('phone'),
     pick('line1') ?? pick('address1') ?? pick('street'),
     pick('line2') ?? pick('address2'),
     [pick('district'), pick('city')].filter(Boolean).join(', ') || null,
+    routing && routing !== pick('city') ? `${routing} · courier zone` : null,
     [pick('region') ?? pick('state'), pick('postalCode') ?? pick('postcode')]
       .filter(Boolean)
       .join(' ') || null,

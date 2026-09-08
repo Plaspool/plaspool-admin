@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ADDRESS_MAX_LENGTHS, deliveryConfigFor } from './config';
 import type { AddressFieldKey } from './config';
 import type { DeliverySettings } from './repo';
+import type { ProviderSetting } from '../logistics/repo';
 
 /**
  * The address form, as a pure function of the settings row.
@@ -23,13 +24,13 @@ const DISTRICT_MODE: DeliverySettings = {
 
 const SIMPLE_MODE: DeliverySettings = { ...DISTRICT_MODE, addressMode: 'simple', revision: 2 };
 
-const shown = (settings: DeliverySettings): AddressFieldKey[] =>
-  deliveryConfigFor(settings)
+const shown = (settings: DeliverySettings, courier?: ProviderSetting): AddressFieldKey[] =>
+  deliveryConfigFor(settings, courier)
     .fields.filter((f) => f.show)
     .map((f) => f.key);
 
-const required = (settings: DeliverySettings): AddressFieldKey[] =>
-  deliveryConfigFor(settings)
+const required = (settings: DeliverySettings, courier?: ProviderSetting): AddressFieldKey[] =>
+  deliveryConfigFor(settings, courier)
     .fields.filter((f) => f.show && f.required)
     .map((f) => f.key);
 
@@ -48,6 +49,28 @@ describe('mode: district — today’s form, written down', () => {
 
   it('marks line2 optional and everything else required', () => {
     expect(required(DISTRICT_MODE)).toEqual(['name', 'phone', 'region', 'district', 'city', 'line1']);
+  });
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════
+   * `line2` IS THE LANDMARK FIELD, IN BOTH MODES.
+   *
+   * It always was — simple mode calls it "Extra directions" and asks for the
+   * gate colour, and that text already reaches BOTH couriers (Terminal's
+   * `line2`, and Fez's free-text `recipientAddress` through `oneLine()`).
+   * District mode labelled it "Apartment, floor" with no help at all, which
+   * asked for a taxonomy and got a rider nothing. Same field, same words, so
+   * a rider gets the same detail whichever form the shop is running.
+   *
+   * This is why the courier-places work adds NO landmark column: there is
+   * already one, and it is already wired end to end.
+   * ═══════════════════════════════════════════════════════════════════════
+   */
+  it('asks for directions in line2, in the same words simple mode uses', () => {
+    const line2 = deliveryConfigFor(DISTRICT_MODE).fields.find((f) => f.key === 'line2');
+    expect(line2?.label).toBe('Extra directions');
+    expect(line2?.help).toBe('Gate colour, floor, who to ask for.');
+    expect(line2).toEqual(deliveryConfigFor(SIMPLE_MODE).fields.find((f) => f.key === 'line2'));
   });
 
   it('points at the areas list so the storefront does not hardcode the URL', () => {
@@ -86,6 +109,92 @@ describe('mode: simple — the district question goes away', () => {
     const fields = deliveryConfigFor(SIMPLE_MODE).fields;
     expect(fields.find((f) => f.key === 'line1')?.help).toContain('landmark');
     expect(fields.find((f) => f.key === 'line2')?.label).toBe('Extra directions');
+  });
+});
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE ROUTING CITY — A DELIVERY ZONE, NOT WHERE ANYBODY LIVES.
+ *
+ * It exists because Terminal validates `city` against its own per-country list
+ * and refuses anything else with a 400 that kills the whole quote: ten place
+ * names inside the FCT, measured 2026-09-07, and "Gwarinpa" is not one of them.
+ * So the shopper PICKS a zone from the courier's own list, and the words they
+ * typed stay in `city` and on the lines a rider reads.
+ *
+ * IT IS NULL, AND THE FIELD HIDDEN, FOR A COURIER WITH NO CITY LIST. Fez
+ * validates no city at all and `manual` is not a courier — asking either shop's
+ * customers to pick from a list nothing will ever check is a question with no
+ * answer. That is why the courier is an ARGUMENT here: this stays a pure
+ * function of what it is handed, and the routes do the reading.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+describe('routingCity', () => {
+  it('is null — and the field hidden — for a shop that ships by hand', () => {
+    for (const settings of [DISTRICT_MODE, SIMPLE_MODE]) {
+      expect(deliveryConfigFor(settings, 'manual').routingCity).toBeNull();
+      expect(shown(settings, 'manual')).not.toContain('routingCity');
+    }
+  });
+
+  /* Fez HAS a place list — its 37 states — and enforces no city inside them.
+     "No list to enforce" and "no lists at all" are different facts, and only
+     the first one is what hides this field. */
+  it('is null for Fez, which validates no city at all', () => {
+    expect(deliveryConfigFor(SIMPLE_MODE, 'fez').routingCity).toBeNull();
+    expect(shown(SIMPLE_MODE, 'fez')).not.toContain('routingCity');
+  });
+
+  it('points Terminal’s shops at the cached place list', () => {
+    expect(deliveryConfigFor(SIMPLE_MODE, 'terminal').routingCity).toMatchObject({
+      source: '/api/public/shop/delivery-places',
+    });
+    const pointer = deliveryConfigFor(SIMPLE_MODE, 'terminal').routingCity!;
+    // Every string is copy the storefront renders; none may be blank.
+    expect(pointer.label).toBeTruthy();
+    expect(pointer.help).toBeTruthy();
+    /* THE UNLISTED CASE IS THE WHOLE POINT. A shopper whose town is not on the
+       courier's list must be told to pick the nearest one and reassured that
+       the rider still follows the address they typed — otherwise the honest
+       reading of the form is "we do not deliver to you". */
+    expect(pointer.unlistedHelp).toBeTruthy();
+  });
+
+  /* AFTER `city`, DELIBERATELY. The shopper answers where they actually are
+     first; the zone is the follow-up question that only makes sense once they
+     have. Same position in both modes, so the two forms read alike. */
+  it('is asked after the real city, in both modes', () => {
+    expect(shown(DISTRICT_MODE, 'terminal')).toEqual([
+      'name', 'phone', 'region', 'district', 'city', 'routingCity', 'line1', 'line2',
+    ]);
+    expect(shown(SIMPLE_MODE, 'terminal')).toEqual([
+      'name', 'phone', 'region', 'city', 'routingCity', 'line1', 'line2',
+    ]);
+  });
+
+  /* REQUIRED IN THE FORM, NEVER ON THE WIRE — the same split `district` has
+     had since 0460. The server may not require it: this config is cached 60s
+     with 300s stale-while-revalidate, so for up to six minutes a storefront can
+     be rendering a form that has never heard of the field, and a required
+     server-side check would 400 every one of those submissions. The FORM can
+     insist, because the form is the copy that just told the shopper why. */
+  it('is required in the form wherever it is shown', () => {
+    expect(required(SIMPLE_MODE, 'terminal')).toContain('routingCity');
+  });
+
+  /* The default keeps every caller that has not been taught about couriers —
+     and every test written before this — reading the form they read before. */
+  it('defaults to the no-list answer when no courier is named', () => {
+    expect(deliveryConfigFor(SIMPLE_MODE).routingCity).toBeNull();
+    expect(shown(SIMPLE_MODE)).toEqual(shown(SIMPLE_MODE, 'manual'));
+  });
+
+  /* Hidden, but still LISTED, for the same reason `district` is in simple mode:
+     a storefront keying off the array rather than off the courier has nothing
+     to special-case, and the absence is explicit rather than inferred. */
+  it('is still listed when hidden, so the absence is explicit', () => {
+    const field = deliveryConfigFor(SIMPLE_MODE, 'fez').fields.find((f) => f.key === 'routingCity');
+    expect(field).toMatchObject({ show: false, required: false });
   });
 });
 
@@ -165,16 +274,21 @@ describe('the rest of the payload', () => {
    */
   it('publishes a length for every field it describes', () => {
     for (const settings of [DISTRICT_MODE, SIMPLE_MODE]) {
-      for (const field of deliveryConfigFor(settings).fields) {
-        expect(field.maxLength).toBe(ADDRESS_MAX_LENGTHS[field.key]);
-        expect(field.maxLength).toBeGreaterThan(0);
+      // Every courier, so a field that only one of them shows is covered too.
+      for (const courier of ['manual', 'fez', 'terminal'] as const) {
+        for (const field of deliveryConfigFor(settings, courier).fields) {
+          expect(field.maxLength, field.key).toBe(ADDRESS_MAX_LENGTHS[field.key]);
+          expect(field.maxLength, field.key).toBeGreaterThan(0);
+        }
       }
     }
   });
 
   it('gives every shown field an autocomplete hint — typing an address on a phone is the worst part of any checkout', () => {
-    for (const field of deliveryConfigFor(SIMPLE_MODE).fields.filter((f) => f.show)) {
-      expect(field.autocomplete).toBeTruthy();
+    for (const courier of ['manual', 'fez', 'terminal'] as const) {
+      for (const field of deliveryConfigFor(SIMPLE_MODE, courier).fields.filter((f) => f.show)) {
+        expect(field.autocomplete, field.key).toBeTruthy();
+      }
     }
   });
 });

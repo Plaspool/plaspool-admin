@@ -108,6 +108,30 @@ export async function getLogisticsSettings(db: Db): Promise<LogisticsSettings> {
   return rowToSettings(row as Record<string, unknown>);
 }
 
+/**
+ * WHICH COURIER IS SWITCHED ON — for readers that must answer even when the
+ * settings row is gone.
+ *
+ * `getLogisticsSettings` THROWS on a missing singleton, which is right for the
+ * settings screen and wrong for anything a shopper is waiting on: migration
+ * 0980 seeds that row and no route deletes it, so its absence is a hand-run
+ * DELETE, and the answer to that must not be a checkout nobody can finish.
+ * `manual` — ship it by hand — is the honest reading, and it is the same answer
+ * a shop that has chosen no courier already gets.
+ *
+ * ONLY `NotFoundError` IS SWALLOWED, and that precision is the point. A dropped
+ * connection is not a missing row, and catching it here would let a broken
+ * database serve a confident "no courier" while every monitor stayed green.
+ */
+export async function activeCourier(db: Db): Promise<ProviderSetting> {
+  try {
+    return (await getLogisticsSettings(db)).provider;
+  } catch (err) {
+    if (!(err instanceof NotFoundError)) throw err;
+    return 'manual';
+  }
+}
+
 // --------------------------------------------------------------------- write
 
 export interface LogisticsSettingsPatch {

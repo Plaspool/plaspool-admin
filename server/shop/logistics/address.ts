@@ -28,6 +28,17 @@ export function shipFromMissing(from: ShipFrom | null): string[] {
 export interface RecipientAddress {
   name: string; phone: string | null; email: string | null; line1: string; line2: string | null;
   city: string; region: string; postalCode: string | null; countryCode: string;
+  /**
+   * THE ZONE THE SHOPPER PICKED FROM THE COURIER'S OWN LIST (migration 1020),
+   * carried BESIDE `city` and never merged into it here.
+   *
+   * Which courier is told what is the adapter's decision, not this function's:
+   * Terminal prefers it because Terminal validates cities, and Fez ignores it
+   * because Fez does not. `null` on every order placed before 1020 — and on
+   * every order taken by a shop whose courier enforces no list — which is why
+   * both adapters fall back to `city`.
+   */
+  routingCity: string | null;
 }
 
 const s = (v: unknown): string | null => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
@@ -44,6 +55,12 @@ export function readShippingAddress(raw: Record<string, unknown>): RecipientAddr
     name: name!, line1: line1!, city: city!, countryCode: countryCode.toUpperCase(),
     line2: s(raw.line2), region: s(raw.region) ?? '', postalCode: s(raw.postalCode) ?? s(raw.postal_code),
     phone: s(raw.phone), email: s(raw.email),
+    /* ABSENT IS `null`, NOT AN ERROR. Every order placed before migration 1020
+       has no such key, and refusing one would make this whole feature a reason
+       existing parcels could not be booked. `s()` also turns a blank string
+       into null, so a storefront sending `""` for "no zone" says the same
+       thing as one that omits the field. */
+    routingCity: s(raw.routingCity),
   };
 }
 

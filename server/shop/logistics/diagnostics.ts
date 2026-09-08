@@ -264,6 +264,11 @@ async function quoteCheck(
       region: req.to.region,
       postalCode: req.to.postalCode ?? null,
       countryCode: 'NG',
+      /* NO ROUTING CITY, DELIBERATELY. The bench exists to find out whether the
+       * courier accepts the city the operator TYPED — substituting a zone here
+       * would answer a question nobody asked and hide the refusal this probe is
+       * for. Real bookings get the shopper's own pick (migration 1020). */
+      routingCity: null,
     },
     from: settings.shipFrom,
     items,

@@ -254,6 +254,22 @@ export const shopAddresses = pgTable(
      *  Migration 0460 has the argument. */
     district: text('district'),
     /**
+     * THE COURIER'S DELIVERY ZONE (migration 1020) — not a description of where
+     * anybody lives, and never a replacement for `city`.
+     *
+     * Terminal validates `city` against its own per-country list and refuses
+     * anything else with a 400 that kills the whole quote — ten place names
+     * inside the FCT, and "Gwarinpa" is not one of them. So the shopper picks a
+     * zone from the courier's own list (cached by migration 1000) and it lands
+     * here, while `city` keeps the words they typed and the rider still reads
+     * them. Only Terminal is told this value; Fez enforces no city list and its
+     * free-text address is still built from `city`.
+     *
+     * NULL FALLS BACK TO `city`, which is exactly today's behaviour — and is
+     * what every address written before this column has.
+     */
+    routingCity: text('routing_city'),
+    /**
      * THE OPTIONAL PIN (migration 0780) — where the door actually is.
      *
      * MICRO-DEGREES AS `integer`, THE WAY MONEY IS MINOR UNITS. `numeric` reads

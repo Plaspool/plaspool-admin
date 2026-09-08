@@ -18,13 +18,31 @@ const toMinor = (v: unknown): number | null => {
   return Number.isFinite(n) ? Math.round(n * 100) : null;
 };
 
-function address(a: { name: string; phone: string | null; email: string | null; line1: string; line2: string | null; city: string; region: string; postalCode: string | null; countryCode: string }, residential: boolean) {
+function address(a: { name: string; phone: string | null; email: string | null; line1: string; line2: string | null; city: string; region: string; postalCode: string | null; countryCode: string; routingCity?: string | null }, residential: boolean) {
   const { firstName, lastName } = splitName(a.name);
   const phone = a.phone ? toE164(a.phone) : null;
   if (!phone) throw new LogisticsError('address_incomplete', `Terminal Africa needs a phone number for ${a.name}`, { detail: ['phone'] });
   return {
     first_name: firstName, last_name: lastName, ...(a.email ? { email: a.email } : {}), phone,
-    line1: a.line1, ...(a.line2 ? { line2: a.line2 } : {}), city: a.city,
+    line1: a.line1, ...(a.line2 ? { line2: a.line2 } : {}),
+    /*
+     * THE ROUTING CITY, FALLING BACK TO THE REAL ONE (migration 1020).
+     *
+     * Terminal validates `city` against the per-country list below and refuses
+     * anything else with a 400 that kills the whole quote — "Gwarinpa" is not
+     * one of the ten names it accepts inside the FCT. So the zone the shopper
+     * picked from Terminal's own list goes here, and the words they typed ride
+     * `line1`/`line2` untouched, which is what prints on the label.
+     *
+     * ONE FIELD. The state still goes through `terminalStateName` and the zip
+     * still keys off `region`; neither is derived from the city, and making
+     * either follow this value would move where the parcel is priced to.
+     *
+     * The fallback is the whole of today's behaviour, and is what every order
+     * placed before 1020 gets. The ship-from address has no routing city and
+     * never will — a warehouse is a real place we chose.
+     */
+    city: a.routingCity ?? a.city,
     /* Terminal's OWN spelling, which is not ours and not Fez's — see terminalStateName. */
     state: terminalStateName(a.region || a.city),
     country: a.countryCode.toUpperCase(), zip: zipFor(a.postalCode, a.region), is_residential: residential,

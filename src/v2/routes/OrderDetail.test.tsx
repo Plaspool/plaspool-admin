@@ -231,10 +231,15 @@ function parcel(status: 'pending' | 'shipped' | 'delivered' | 'cancelled') {
 
 function withOrder(
   fulfillments: unknown[] = [],
-  overrides: { addOns?: unknown[]; addOnTotal?: number } = {},
+  overrides: { addOns?: unknown[]; addOnTotal?: number; shippingAddress?: unknown } = {},
 ): void {
+  const base =
+    overrides.addOnTotal === undefined ? order : { ...order, addOnTotal: overrides.addOnTotal };
   when(ORDER, {
-    order: overrides.addOnTotal === undefined ? order : { ...order, addOnTotal: overrides.addOnTotal },
+    order:
+      overrides.shippingAddress === undefined
+        ? base
+        : { ...base, shippingAddress: overrides.shippingAddress },
     lines: [line],
     fulfillments,
     timeline: [],
@@ -626,5 +631,46 @@ describe('add-ons on the order', () => {
 
     expect(screen.queryByText('Add-ons')).toBeNull();
     expect(await screen.findByText('Recycled Spool')).toBeTruthy();
+  });
+});
+
+/**
+ * WHAT THE COURIER WAS TOLD, WHEN IT IS NOT WHAT THE CUSTOMER TYPED.
+ *
+ * The shopper picks a routing city from the courier's own list because Terminal
+ * refuses a city that is not on it. Staff chasing a parcel need to see the zone
+ * it actually went out under — otherwise "we booked it to Gwarinpa" and the
+ * waybill saying Maitama is a mystery nobody can resolve from this screen.
+ *
+ * A QUIET SECOND LINE, NOT A REPLACEMENT. The customer's own city is still the
+ * one printed in its usual place, and the zone only appears when the two
+ * genuinely differ — which on most orders they will not.
+ */
+describe('the courier zone on the address', () => {
+  it('shows the zone as a second line when it is not the city the customer typed', async () => {
+    withOrder([], { shippingAddress: { ...address, routingCity: 'Maitama' } });
+    mount();
+    await loaded();
+
+    // The customer's own city survives, in its usual place.
+    expect(screen.getAllByText(/Gwarinpa/).length).toBeGreaterThan(0);
+    expect(await screen.findByText(/Maitama · courier zone/)).toBeTruthy();
+  });
+
+  it('says nothing when the courier was told the same city', async () => {
+    withOrder([], { shippingAddress: { ...address, routingCity: 'Gwarinpa' } });
+    mount();
+    await loaded();
+
+    expect(screen.queryByText(/courier zone/)).toBeNull();
+  });
+
+  /* Every order placed before migration 1020, which is all of them so far. */
+  it('says nothing for an order that never named a zone', async () => {
+    withOrder();
+    mount();
+    await loaded();
+
+    expect(screen.queryByText(/courier zone/)).toBeNull();
   });
 });

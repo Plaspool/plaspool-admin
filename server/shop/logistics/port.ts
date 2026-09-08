@@ -15,7 +15,14 @@ export interface ParcelLine {
 export interface ParcelInput {
   fulfillmentId: string;
   orderNumber: string;
-  to: { name: string; phone: string | null; email: string | null; line1: string; line2: string | null; city: string; region: string; postalCode: string | null; countryCode: string };
+  /**
+   * `routingCity` is the delivery zone the shopper picked from the ACTIVE
+   * courier's own list (migration 1020) — a routing value, not a description of
+   * where they live. Each adapter decides for itself whether to use it:
+   * Terminal validates cities and prefers it, Fez validates none and ignores
+   * it. `null` for every order placed before 1020.
+   */
+  to: { name: string; phone: string | null; email: string | null; line1: string; line2: string | null; city: string; region: string; postalCode: string | null; countryCode: string; routingCity: string | null };
   from: ShipFrom | null;
   items: ParcelLine[];
   valueMinor: number;

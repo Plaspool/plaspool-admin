@@ -2,10 +2,24 @@ import { describe, expect, it } from 'vitest';
 import { fezStateName, oneLine, readShippingAddress, splitName, terminalStateName, toE164, zipFor } from './address';
 
 describe('readShippingAddress', () => {
+  /* AN EXACT `toEqual`, KEPT EXACT. This narrows an opaque jsonb blob, so the
+     only thing standing between a field the snapshot stopped carrying and a
+     courier quietly not being told about it is a whole-object assertion. */
   it('narrows the jsonb snapshot and tolerates the older shapes', () => {
     expect(readShippingAddress({ name: 'Ada Obi', line1: '1 Test Close', line2: null, city: 'Gwarinpa', region: 'FCT', postalCode: null, countryCode: 'NG', phone: '08012345678' }))
-      .toEqual({ name: 'Ada Obi', line1: '1 Test Close', line2: null, city: 'Gwarinpa', region: 'FCT', postalCode: null, countryCode: 'NG', phone: '08012345678', email: null });
+      .toEqual({ name: 'Ada Obi', line1: '1 Test Close', line2: null, city: 'Gwarinpa', region: 'FCT', postalCode: null, countryCode: 'NG', phone: '08012345678', email: null, routingCity: null });
     expect(readShippingAddress({ name: 'A', line1: '1', city: 'Abuja', country: 'NG' }).countryCode).toBe('NG');
+  });
+
+  /* THE ZONE THE SHOPPER PICKED (migration 1020), carried BESIDE the city they
+     typed. Every order placed before 1020 has none, so absent must read as
+     `null` rather than as a throw — that fallback IS today's behaviour. */
+  it('carries the routing city when there is one, and null when there is not', () => {
+    const base = { name: 'Ada Obi', line1: '1 Test Close', city: 'Gwarinpa', region: 'FCT', countryCode: 'NG' };
+    expect(readShippingAddress({ ...base, routingCity: 'Maitama' })).toMatchObject({ city: 'Gwarinpa', routingCity: 'Maitama' });
+    expect(readShippingAddress(base).routingCity).toBeNull();
+    expect(readShippingAddress({ ...base, routingCity: null }).routingCity).toBeNull();
+    expect(readShippingAddress({ ...base, routingCity: '  ' }).routingCity).toBeNull();
   });
   it('reports what is missing rather than guessing', () => {
     expect(() => readShippingAddress({ name: 'A', city: 'Abuja', countryCode: 'NG' })).toThrow(/line1/);

@@ -60,6 +60,9 @@ const DEFAULT_TO = {
   name: 'Jane Doe', phone: '+2348012345678', email: null as string | null,
   line1: '1 Test Close', line2: 'Flat 2' as string | null, city: 'Gwarinpa',
   region: 'Abuja', postalCode: null as string | null, countryCode: 'NG',
+  /* Fez never reads this — see the `routing city` suite at the foot of this
+     file for why that is deliberate rather than an omission. */
+  routingCity: null as string | null,
 };
 
 function item(o: Partial<ParcelLine> = {}): ParcelLine {
@@ -515,5 +518,45 @@ describe('places', () => {
     const err = await failureOf(createFezProvider(ENV, { fetchImpl }).places!.list('NG'));
     expect(err.code).toBe('provider_rejected');
     expect(err.message).toBe('Not permitted');
+  });
+});
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * FEZ IS TOLD NOTHING ABOUT THE ROUTING CITY, AND THAT IS THE POINT.
+ *
+ * Fez validates no city at all — `recipientAddress` is free text and only
+ * `recipientState` is checked against a list. So substituting the shopper's
+ * picked zone into the line a RIDER READS would buy nothing and would cost
+ * them the street they actually live on: "Maitama" instead of "Gwarinpa", for
+ * a courier that was always going to accept "Gwarinpa".
+ *
+ * This suite exists so that nobody later "fixes" the asymmetry with Terminal
+ * by making `oneLine()` prefer the routing value. The request must not move.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+describe('routing city', () => {
+  /** The `/order` body for a booking, with and without a picked zone. */
+  async function orderBody(routingCity: string | null): Promise<unknown> {
+    const { fetchImpl, calls } = fezFetch([
+      AUTH_OK(),
+      { status: 200, json: { orderNos: { 'fulfillment-1': 'ASAC1' } } },
+      { status: 200, json: { data: { url: 'https://cdn.fezdelivery.co/manifest.pdf' } } },
+    ]);
+    const input = parcel({ from: shipFrom(), to: { city: 'Gwarinpa', routingCity } });
+    await createFezProvider(ENV, { fetchImpl }).book(input, 'fez', null, CHOSEN);
+    return calls[1]!.body;
+  }
+
+  it('books byte-identically whether or not a zone was picked', async () => {
+    const withZone = await orderBody('Maitama');
+    const without = await orderBody(null);
+    expect(JSON.stringify(withZone)).toBe(JSON.stringify(without));
+  });
+
+  it('keeps the customer’s own city in the line the rider reads', async () => {
+    expect(await orderBody('Maitama')).toMatchObject([
+      { recipientAddress: '1 Test Close, Flat 2, Gwarinpa', recipientState: 'FCT' },
+    ]);
   });
 });

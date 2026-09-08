@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { currentDb } from '../../app-env';
 import { publicPlaces } from '../logistics/places';
+import { activeCourier } from '../logistics/repo';
 import { deliveryConfigFor } from './config';
 import { DEFAULT_DELIVERY_SETTINGS, getDeliverySettings } from './repo';
 import type { AppEnv } from '../../app-env';
@@ -88,10 +89,22 @@ export function createDeliveryConfigRoutes(): Hono<AppEnv> {
      * `revision: 0` in the payload is how an operator tells the two apart.
      */
     const settings = (await getDeliverySettings(currentDb(c))) ?? DEFAULT_DELIVERY_SETTINGS;
+    /*
+     * WHICH COURIER IS SWITCHED ON DECIDES WHETHER THE FORM ASKS FOR A ROUTING
+     * CITY AT ALL — only Terminal enforces a city list, and asking a Fez shop's
+     * customers to pick from one nothing will check is a question with no
+     * answer. `activeCourier` answers `manual` for a missing settings row
+     * rather than throwing: this response is what a checkout is rendered from,
+     * and a 500 here is a shop that cannot take an order.
+     *
+     * STILL NOTHING PER-VIEWER. The courier is a property of the shop, like
+     * every other field on this payload, so `Cache-Control: public` holds.
+     */
+    const courier = await activeCourier(currentDb(c));
 
     c.header('cache-control', CACHE);
     c.header(CORS_HEADER, CORS_VALUE);
-    return c.json({ config: deliveryConfigFor(settings) });
+    return c.json({ config: deliveryConfigFor(settings, courier) });
   });
 
   /**

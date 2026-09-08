@@ -134,6 +134,17 @@ export function createFezProvider(env: FezEnv, opts: FezClientOptions = {}): Log
 
     async book(input: ParcelInput, _optionId: string, _quoteRef: string | null, chosen: QuoteOption | null): Promise<BookingResult> {
       const order: Record<string, unknown> = {
+        /*
+         * `input.to.routingCity` IS DELIBERATELY UNREAD, HERE AND EVERYWHERE
+         * ELSE IN THIS FILE (migration 1020).
+         *
+         * Fez validates no city at all — only `recipientState` is checked
+         * against a list — so preferring the shopper's picked zone would buy
+         * nothing and would cost them the place they actually live: a rider
+         * sent to "Maitama" for an address in Gwarinpa that Fez was always
+         * going to accept. `oneLine()` must keep using the REAL city. The
+         * asymmetry with Terminal's `address()` is the point, not an omission.
+         */
         recipientAddress: oneLine(input.to),
         recipientState: fezStateName(input.to.region || input.to.city),
         recipientName: input.to.name,

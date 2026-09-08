@@ -380,12 +380,32 @@ function rowToAddress(row: Record<string, unknown>): AddressSnapshot {
     countryCode: String(row.country_code),
     phone: row.phone == null ? null : String(row.phone),
     district: row.district == null ? null : String(row.district),
+    /* The courier's delivery zone (migration 1020), beside the city the
+     * customer typed and never instead of it. Null on every address written
+     * before 1020, which is what makes the couriers' fallback to `city` the
+     * whole of today's behaviour. */
+    routingCity: row.routing_city == null ? null : String(row.routing_city),
     location: rowToLocation(row),
   };
 }
 
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THIS LIST AND THE TWO IN `putAddresses` MOVE TOGETHER. NOTHING TYPECHECKS
+ * THEM.
+ *
+ * A column missing HERE makes `rowToAddress` read `undefined` and quietly write
+ * `null` into the frozen event — the address is stored correctly and the order
+ * carries a hole. A column missing from the INSERT list never gets written at
+ * all. A column missing from the `ON CONFLICT DO UPDATE SET` list is worse than
+ * either: the first submission's value SURVIVES a correction, so the parcel
+ * ships to an address the customer has since changed (migration 0780's header
+ * argues this at length). `repo.test.ts`'s `routing city` suite pins all three
+ * separately, because one happy-path round trip passes with two of them wrong.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
 const ADDRESS_COLUMNS = sql`name, line1, line2, city, region, postal_code, country_code,
-                            phone, district, location_lat_e6, location_lng_e6,
+                            phone, district, routing_city, location_lat_e6, location_lng_e6,
                             location_accuracy_m, location_source, location_captured_at`;
 
 export async function getAddress(
@@ -592,12 +612,13 @@ export async function putAddresses(
     const loc = address.location ?? null;
     await db.execute(sql`
       INSERT INTO shop_addresses (id, cart_id, kind, name, line1, line2, city, region,
-                                  postal_code, country_code, phone, district,
+                                  postal_code, country_code, phone, district, routing_city,
                                   location_lat_e6, location_lng_e6, location_accuracy_m,
                                   location_source, location_captured_at)
       VALUES (${newId('address')}, ${a.cartId}, ${kind}, ${address.name}, ${address.line1},
               ${address.line2}, ${address.city}, ${address.region}, ${address.postalCode},
               ${address.countryCode}, ${address.phone}, ${address.district ?? null},
+              ${address.routingCity ?? null}::text,
               ${loc === null ? null : Math.round(loc.lat * 1e6)}::integer,
               ${loc === null ? null : Math.round(loc.lng * 1e6)}::integer,
               ${loc === null || loc.accuracyM === null ? null : Math.round(loc.accuracyM)}::integer,
@@ -608,6 +629,11 @@ export async function putAddresses(
             city = EXCLUDED.city, region = EXCLUDED.region,
             postal_code = EXCLUDED.postal_code, country_code = EXCLUDED.country_code,
             phone = EXCLUDED.phone, district = EXCLUDED.district,
+            /* CLEARED BY A SUBMISSION THAT NAMES NONE, like the pin above and
+             * for the same reason: leaving the abandoned zone attached to an
+             * address the customer has since corrected ships the parcel
+             * somewhere they did not ask for. */
+            routing_city = EXCLUDED.routing_city,
             location_lat_e6 = EXCLUDED.location_lat_e6,
             location_lng_e6 = EXCLUDED.location_lng_e6,
             location_accuracy_m = EXCLUDED.location_accuracy_m,

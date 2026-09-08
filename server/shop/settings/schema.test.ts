@@ -214,3 +214,49 @@ describe('shop_addresses location columns (migration 0780)', () => {
     await expect(insertAddress("9057850, 7495080, -1, 'device', 1")).rejects.toThrow();
   });
 });
+
+/**
+ * MIGRATION 1020 — the routing city, migration 1000's other half.
+ *
+ * A DELIVERY ZONE, NOT A DESCRIPTION OF WHERE ANYBODY LIVES. Terminal refuses a
+ * city that is not on its own list with a 400 that kills the whole quote, and
+ * "Gwarinpa" is not on it. The shopper picks a zone the courier accepts, that
+ * pick lands here, and `city` keeps the words they typed.
+ */
+describe('shop_addresses.routing_city (migration 1020)', () => {
+  it('is one nullable text column', async () => {
+    const applied = await columns('shop_addresses');
+    expect(applied.get('routing_city')).toEqual({ type: 'text', nullable: true });
+  });
+
+  /*
+   * NO CHECK ON THE VALUE, deliberately. The grammar belongs to the COURIER's
+   * list — migration 1000's cache, refreshed by a button press and different for
+   * each courier — so a copy of it here would drift the first time that list
+   * moved, and would refuse an address the courier was ready to accept. Exactly
+   * the argument migration 0460 makes for `district`.
+   */
+  it('constrains nothing about the value — the grammar belongs to the courier', async () => {
+    const names = await checkNames('shop_addresses');
+    expect(names.filter((name) => name.includes('routing'))).toEqual([]);
+  });
+
+  /*
+   * NULL IS THE ORDINARY CASE, and stays so: every address written before this
+   * migration, every shop whose courier enforces no city list, and every
+   * storefront still rendering a cached config that has not heard of the field.
+   */
+  it('accepts an address that names no zone at all', async () => {
+    await db.execute(sql`
+      INSERT INTO shop_carts (id, currency, status, created_at, updated_at, expires_at, revision)
+      VALUES ('cart_rc', 'NGN', 'open', 1, 1, 9999999999999, 1)
+      ON CONFLICT (id) DO NOTHING`);
+    await db.execute(sql`DELETE FROM shop_addresses WHERE cart_id = 'cart_rc'`);
+    await db.execute(sql`
+      INSERT INTO shop_addresses (id, cart_id, kind, name, line1, city, country_code)
+      VALUES ('addr_rc', 'cart_rc', 'shipping', 'A Shopper', '1 Street', 'Gwarinpa', 'NG')`);
+    const res = await db.execute(sql`
+      SELECT routing_city FROM shop_addresses WHERE id = 'addr_rc'`);
+    expect(res.rows[0]?.routing_city).toBeNull();
+  });
+});

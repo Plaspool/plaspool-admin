@@ -1,11 +1,11 @@
 import { sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { toEpochMs } from '../../db/client';
-import { BadRequestError, NotFoundError } from '../../repo/errors';
+import { BadRequestError } from '../../repo/errors';
 import type { ResolvedLogisticsDeps } from './deps';
 import { LogisticsError } from './port';
 import type { PlaceCity, PlaceRegion, ProviderId } from './port';
-import { getLogisticsSettings } from './repo';
+import { activeCourier, getLogisticsSettings } from './repo';
 import type { ProviderSetting } from './repo';
 
 /**
@@ -161,18 +161,13 @@ export async function publicPlaces(db: Db, country: string): Promise<PublicPlace
   const code = normaliseCountry(country) ?? PLACES_DEFAULT_COUNTRY;
 
   /*
-   * ONLY `NotFoundError` IS SWALLOWED, and that precision is the point. The
-   * missing row is a shop with no courier configuration, which `manual`
-   * describes exactly. A dropped connection or a syntax error is NOT that, and
-   * catching it here would serve a confident empty list out of a broken
-   * database while every monitor stayed green.
+   * `activeCourier` SWALLOWS ONLY `NotFoundError`, and that precision is the
+   * point. The missing row is a shop with no courier configuration, which
+   * `manual` describes exactly. A dropped connection or a syntax error is NOT
+   * that, and catching it here would serve a confident empty list out of a
+   * broken database while every monitor stayed green.
    */
-  let provider: ProviderSetting = 'manual';
-  try {
-    provider = (await getLogisticsSettings(db)).provider;
-  } catch (err) {
-    if (!(err instanceof NotFoundError)) throw err;
-  }
+  const provider = await activeCourier(db);
 
   const cached = provider === 'manual' ? null : await readPlaces(db, provider, code);
   return {

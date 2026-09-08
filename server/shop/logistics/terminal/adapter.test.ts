@@ -57,6 +57,9 @@ const DEFAULT_TO = {
   name: 'Jane Doe', phone: '+2348012345678' as string | null, email: null as string | null,
   line1: '1 Test Close', line2: 'Flat 2' as string | null, city: 'Gwarinpa',
   region: 'Abuja', postalCode: null as string | null, countryCode: 'NG',
+  /* No zone picked — every order placed before migration 1020, which is what
+     most of this file is exercising. The routing-city cases opt in. */
+  routingCity: null as string | null,
 };
 
 function item(o: Partial<ParcelLine> = {}): ParcelLine {
@@ -701,5 +704,60 @@ describe('places', () => {
     /* One `/states` plus the handful already in flight — nowhere near 21. */
     expect(calls.length).toBeGreaterThan(1);
     expect(calls.length).toBeLessThanOrEqual(9);
+  });
+});
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE ROUTING CITY IS WHAT TERMINAL IS TOLD `city` IS.
+ *
+ * Terminal validates `city` against the list above and refuses anything else
+ * with a 400 that kills the whole quote — ten place names inside the FCT,
+ * measured 2026-09-07, and "Gwarinpa" is not one of them. So the zone the
+ * shopper PICKED from Terminal's own list goes here, while the words they
+ * typed stay on `line1`/`line2` (which Terminal passes through untouched) and
+ * in Fez's free-text address, where a rider reads them.
+ *
+ * ONE FIELD, AND NOTHING ELSE MOVES. The state still goes through
+ * `terminalStateName` and the zip still keys off `region` — neither is
+ * derived from the city, and making either follow the routing value would
+ * change where the parcel is priced to.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+describe('routing city', () => {
+  /** The `delivery_address` of the one quick-ship call a cached packaging makes. */
+  async function deliveryAddress(to: Partial<typeof DEFAULT_TO>): Promise<Record<string, unknown>> {
+    const { fetchImpl, calls } = terminalFetch([
+      OK({ shipment_id: 'SH-1' }),
+      OK([{ rate_id: 'RT-1', carrier_name: 'DHL', amount: 10 }]),
+    ]);
+    await createTerminalProvider(ENV, { fetchImpl }).quote(
+      parcel({ from: shipFrom(), packagingRef: 'PA-9', to }),
+    );
+    return (calls[0]!.body as { delivery_address: Record<string, unknown> }).delivery_address;
+  }
+
+  it('sends the picked zone as `city`, leaving the state and the zip alone', async () => {
+    expect(await deliveryAddress({ city: 'Gwarinpa', routingCity: 'Maitama' })).toEqual({
+      first_name: 'Jane', last_name: 'Doe', phone: '+2348012345678',
+      line1: '1 Test Close', line2: 'Flat 2',
+      city: 'Maitama',
+      state: 'Abuja', country: 'NG', zip: '900001', is_residential: true,
+    });
+  });
+
+  /* THE FALLBACK IS TODAY'S BEHAVIOUR, and it is what every order placed
+     before migration 1020 gets. Not a blank, not a guess — the real city. */
+  it('sends the real city when no zone was picked', async () => {
+    expect((await deliveryAddress({ city: 'Gwarinpa', routingCity: null })).city).toBe('Gwarinpa');
+    expect((await deliveryAddress({ city: 'Gwarinpa' })).city).toBe('Gwarinpa');
+  });
+
+  /* The customer's own words are NOT overwritten — they ride the street lines,
+     which Terminal prints on the label and passes through untouched. */
+  it('never substitutes the zone into the lines a rider reads', async () => {
+    const address = await deliveryAddress({ city: 'Gwarinpa', routingCity: 'Maitama' });
+    expect(address.line1).toBe('1 Test Close');
+    expect(address.line2).toBe('Flat 2');
   });
 });

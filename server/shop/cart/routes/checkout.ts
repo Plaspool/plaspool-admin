@@ -651,6 +651,28 @@ const Address = z
     // and a switched-off one is refused by the repo, not the schema.
     district: str().max(ADDRESS_MAX_LENGTHS.district).nullable().optional(),
     /*
+     * THE COURIER'S DELIVERY ZONE (migration 1020), CHOSEN from the active
+     * courier's own list — the one the public config points at — and never
+     * parsed out of `city`.
+     *
+     * ═══ IT MUST NEVER BECOME REQUIRED. ═══
+     *
+     * The config that advertises this field is cached `s-maxage=60,
+     * stale-while-revalidate=300`, so for up to SIX MINUTES after the courier
+     * is switched on a storefront can still be rendering a form that has never
+     * heard of it. A required check here would 400 the whole address for every
+     * one of those submissions — a shopper who has typed everything correctly
+     * told only that a field they cannot see is missing. The courier's fallback
+     * to `city` is what covers that window, and it covers every order placed
+     * before this column just as well. Same discipline `district` has followed
+     * since 0460.
+     *
+     * NO SHAPE CHECK BEYOND LENGTH: the grammar belongs to the courier's list,
+     * a copy of it here would drift, and a value the courier does not know is
+     * refused by the courier — where the message names the acceptable ones.
+     */
+    routingCity: str().max(ADDRESS_MAX_LENGTHS.routingCity).nullable().optional(),
+    /*
      * OPTIONAL, AND THE STOREFRONT SENDS IT ONLY WHEN THE PUBLIC CONFIG SAYS
      * `location.offer` IS TRUE. This object is `.strict()`, so a server old
      * enough to reject this key is also old enough to never advertise the
@@ -670,6 +692,7 @@ const Address = z
     countryCode: a.countryCode,
     phone: a.phone ?? null,
     district: a.district ?? null,
+    routingCity: a.routingCity ?? null,
     location: a.location ?? null,
   }));
 
