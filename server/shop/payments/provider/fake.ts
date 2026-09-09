@@ -54,16 +54,19 @@ export interface FakeProviderOptions {
   capabilities?: Partial<ProviderCapabilities>;
   /** The HMAC key for `parseWebhook`. Any non-empty string. */
   secretKey?: string;
+  /** Optional name override. Defaults to 'fake'. */
+  name?: string;
 }
 
 const DEFAULTS: ProviderCapabilities = {
   separateCapture: false,
   remoteCancel: false,
   partialRefunds: true,
+  currencies: ['NGN', 'USD'],
 };
 
 export class FakeProvider implements PaymentProvider {
-  readonly name = 'fake';
+  readonly name: string;
   readonly capabilities: ProviderCapabilities;
 
   /** Every call, in order, with the idempotency key it carried. */
@@ -76,6 +79,7 @@ export class FakeProvider implements PaymentProvider {
   #refundSeq = 0;
 
   constructor(options: FakeProviderOptions = {}) {
+    this.name = options.name ?? 'fake';
     this.capabilities = { ...DEFAULTS, ...options.capabilities };
     this.#secretKey = options.secretKey ?? 'fake-secret-key';
   }

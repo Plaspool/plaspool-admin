@@ -83,6 +83,13 @@ const CAPABILITIES: ProviderCapabilities = {
    */
   remoteCancel: false,
   partialRefunds: true,
+  /**
+   * A Nigeria-registered business may charge NGN and USD and nothing else.
+   * One currency per account, plus USD as the only addition; GHS/ZAR/KES/XOF/EGP
+   * each need a separate business registered in that country, so there is no
+   * "other African currencies" tier to add here later.
+   */
+  currencies: ['NGN', 'USD'],
 };
 
 /** Paystack's transaction states → ours. */

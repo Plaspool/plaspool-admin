@@ -68,6 +68,19 @@ export interface ProviderCapabilities {
   remoteCancel: boolean;
   /** True when partial refunds are supported. Paystack: yes. */
   partialRefunds: boolean;
+  /**
+   * Every currency this gateway's API can charge. ISO 4217, uppercase.
+   *
+   * THE GATEWAY'S DOCUMENTED MAXIMUM, NOT THIS ACCOUNT'S STATE. What an
+   * account has actually switched on is data — `shop_payment_settings`'
+   * per-gateway columns — because a capability list in code would lie the
+   * moment an account differs from the docs, and this one does: Paystack's
+   * USD needs a USD request and a Zenith domiciliary account that this
+   * business has not completed. Routing reads the row; this list bounds what
+   * the admin screen may offer, so nobody can switch on a currency the API
+   * cannot charge.
+   */
+  currencies: readonly string[];
 }
 
 /**
