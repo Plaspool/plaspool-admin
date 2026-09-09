@@ -740,6 +740,29 @@ export interface ShopCourierPlaces {
   updatedAt: number;
 }
 
+/**
+ * What `POST /shop/admin/logistics/exports/refresh` answers - where the courier
+ * carries to outside Nigeria, re-fetched and cached (migration 1080).
+ *
+ * `maxKg` IS THE NUMBER THAT DECIDES WHETHER THIS IS A REAL CHANNEL. It is the
+ * heaviest ceiling any bracket the courier publishes carries, and `null` when
+ * none publishes one. A courier topping out at 2 kg can send one spool abroad
+ * and no more, which the screen has to say out loud rather than leave an owner
+ * to discover one refused checkout at a time.
+ *
+ * `unmapped` NAMES THE COURIER PUBLISHED THAT WE COULD NOT TURN INTO A COUNTRY.
+ * Those rows are cached and offered to nobody, so an operator seeing a country
+ * that never appears has somewhere to look instead of a mystery.
+ */
+export interface ShopCourierExports {
+  provider: CourierProviderId;
+  destinations: number;
+  weights: number;
+  unmapped: string[];
+  maxKg: number | null;
+  updatedAt: number;
+}
+
 export interface ShopCourierOption {
   id: string; carrier: string; label: string; amountMinor: number; currency: 'NGN'; eta?: string; pickupEta?: string;
 }
@@ -2067,6 +2090,14 @@ export const shopApi = {
    * here) and 409 `places_unsupported` (that courier publishes no list —
    * nothing is broken, and retrying cannot change it).
    */
+  async refreshCourierExports(): Promise<ShopCourierExports> {
+    /* NO BODY: a courier publishes its whole export catalogue in one call, so
+       there is no country to ask about - unlike places, which is per country. */
+    return shopFetch<ShopCourierExports>(`${BASE}/logistics/exports/refresh`, {
+      method: 'POST',
+    });
+  },
+
   async refreshCourierPlaces(country?: string): Promise<ShopCourierPlaces> {
     return shopFetch<ShopCourierPlaces>(`${BASE}/logistics/places/refresh`, {
       method: 'POST',

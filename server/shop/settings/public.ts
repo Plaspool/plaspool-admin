@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { currentDb } from '../../app-env';
 import { publicPlaces } from '../logistics/places';
+import { exportCountries } from '../logistics/exports';
 import { activeCourier } from '../logistics/repo';
 import { deliveryConfigFor } from './config';
 import { DEFAULT_DELIVERY_SETTINGS, getDeliverySettings } from './repo';
@@ -101,10 +102,18 @@ export function createDeliveryConfigRoutes(): Hono<AppEnv> {
      * every other field on this payload, so `Cache-Control: public` holds.
      */
     const courier = await activeCourier(currentDb(c));
+    /*
+     * AND WHERE THAT COURIER CAN ACTUALLY CARRY (migration 1080). From the
+     * cache and never from the courier — this response is on every storefront
+     * page load and carries `Cache-Control: public`, so a courier call here
+     * would put a third party's uptime in front of the checkout form. `null`
+     * means nobody has pressed refresh yet, and narrows nothing.
+     */
+    const reach = await exportCountries(currentDb(c), courier);
 
     c.header('cache-control', CACHE);
     c.header(CORS_HEADER, CORS_VALUE);
-    return c.json({ config: deliveryConfigFor(settings, courier) });
+    return c.json({ config: deliveryConfigFor(settings, courier, reach) });
   });
 
   /**

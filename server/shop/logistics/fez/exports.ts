@@ -1,3 +1,4 @@
+import { fezStateName } from '../address';
 import { LogisticsError, type ExportCatalogue, type ExportDestination, type ExportWeight, type ProviderExports } from '../port';
 import type { FezClient } from './client';
 
@@ -182,7 +183,11 @@ export function createFezExports(
       const res = await client.call('POST', '/orders/export-price', {
         exportLocationId: a.destinationId,
         weightId: a.weightId,
-        ...(a.pickUpState ? { pickUpState: a.pickUpState } : {}),
+        /* NORMALISED THE SAME WAY THE DOMESTIC CALL NORMALISES IT — Fez wants
+           its own state spelling ("FCT", not "Federal Capital Territory"), and
+           an export quote that skipped that would refuse on exactly the
+           addresses the domestic one accepts. */
+        ...(a.pickUpState ? { pickUpState: fezStateName(a.pickUpState) } : {}),
       });
       const data = (res.data ?? {}) as Record<string, unknown>;
       /* The discounted rate is what is actually charged when Fez is running one,
