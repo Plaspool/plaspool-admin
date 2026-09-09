@@ -48,7 +48,7 @@ export const COURIER_COPY = {
     webhookNotReady: (p: 'fez' | 'terminal') =>
       `Bookings will work, but ${p === 'fez' ? 'Fez' : 'Terminal'} cannot send status updates until ${PROVIDER_WEBHOOK_ENV[p]} is set on this server.`,
     shipFromTitle: 'Ship-from address',
-    shipFromHint: 'Where the courier collects parcels. Required for Terminal Africa; Fez uses the address on your Fez account unless you fill this in.',
+    shipFromHint: "Where the courier collects parcels. Terminal Africa needs it. Fez can price without it, using your Fez account address — but until you fill in the state, Fez won't tell shoppers how long delivery takes.",
     packagingTitle: 'Packaging',
     packagingHint: 'The box Terminal quotes against. Change it if your parcels are usually a different size.',
     webhooksTitle: 'Courier updates',
