@@ -300,6 +300,8 @@ export default function SettingsDeliveryCourier() {
      to be excluded from everywhere. */
   const [placesBusy, setPlacesBusy] = useState(false);
   const [placesOut, setPlacesOut] = useState<DiagnosticOutcome | undefined>(undefined);
+  const [exportsBusy, setExportsBusy] = useState(false);
+  const [exportsOut, setExportsOut] = useState<DiagnosticOutcome | undefined>(undefined);
 
   const adopt = useCallback((s: ShopCourierSettings) => {
     setSettings(s);
@@ -494,6 +496,30 @@ export default function SettingsDeliveryCourier() {
    * fetch actually reached the courier, and a silent success is
    * indistinguishable from a no-op.
    */
+  /**
+   * WHERE THIS COURIER SHIPS TO ABROAD, and how heavy a parcel it will take.
+   *
+   * THE CEILING IS THE POINT, not the country count. A courier carrying to
+   * seventeen countries at up to 2 kg is a one-spool channel; the same list at
+   * 20 kg is a business. Putting that number on the screen is the difference
+   * between an owner knowing that and finding it out from refused checkouts.
+   *
+   * Pressing this also NARROWS THE COUNTRIES THE CHECKOUT OFFERS to what this
+   * courier can actually reach - which is why the hint says so, since a button
+   * that quietly changes what a storefront sells would be a surprise.
+   */
+  async function refreshExports(p: 'fez' | 'terminal') {
+    setExportsBusy(true);
+    try {
+      const out = await shopApi.refreshCourierExports();
+      setExportsOut({ ok: true, summary: D.exportsRefreshed(PROVIDER_LABEL[p], out.destinations, out.maxKg, out.unmapped.length) });
+    } catch (cause) {
+      setExportsOut({ ok: false, summary: describeCheckFailure(cause, p) });
+    } finally {
+      setExportsBusy(false);
+    }
+  }
+
   async function refreshPlaces(p: 'fez' | 'terminal') {
     setPlacesBusy(true);
     try {
@@ -766,6 +792,20 @@ export default function SettingsDeliveryCourier() {
                   <span className="field__hint">{D.refreshPlacesHint}</span>
                 </div>
                 <Outcome name={D.refreshPlaces} result={placesOut} />
+              </div>
+
+              {/* Beside the places button because it is the same kind of act -
+                  ask the courier what it accepts and cache the answer - and
+                  because an owner thinking about reach is thinking about both
+                  at once. */}
+              <div className="stack stack--tight">
+                <div className="row" style={{ gap: 'var(--s3)', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <Button busy={exportsBusy} onClick={() => void refreshExports(testable)}>
+                    {D.refreshExports}
+                  </Button>
+                  <span className="field__hint">{D.refreshExportsHint}</span>
+                </div>
+                <Outcome name={D.refreshExports} result={exportsOut} />
               </div>
 
               <div className="stack stack--tight">

@@ -238,6 +238,21 @@ export interface ShippingQuote {
    * carries a price and nothing else.
    */
   eta?: string;
+  /**
+   * WHAT THIS OPTION ACTUALLY MEANS, in one plain sentence — "A rider brings it
+   * to the address you gave", "Sent out of Nigeria to Ghana".
+   *
+   * A PRICE AND A COURIER'S NAME DO NOT TELL A SHOPPER WHAT THEY ARE BUYING,
+   * and the moment there is more than one option they have to choose between
+   * things they cannot tell apart. Door delivery and locker collection are the
+   * case this exists for: same courier, same country, entirely different
+   * errand at the far end.
+   *
+   * OPTIONAL, and absent for a flat zone rate, which is a price and not a
+   * service description. Like `eta`, it is NOT carried into frozen totals — it
+   * describes the choosing, not the invoice.
+   */
+  description?: string;
 }
 
 /**

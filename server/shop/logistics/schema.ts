@@ -161,6 +161,28 @@ export interface PlaceCityJson {
   name: string;
 }
 
+/** One row of a courier's export catalogue — a COUNTRY AND A WEIGHT BRACKET,
+ *  since that is what the courier sells. `countryCodes` is a LIST because a row
+ *  may name a region rather than a country (Fez sells one called "Europe"), and
+ *  EMPTY for a name nothing recognised: such a row is offered to nobody rather
+ *  than guessed at. */
+export interface ExportDestinationJson {
+  id: number;
+  name: string;
+  place: string;
+  countryCodes: string[];
+  minKg: number | null;
+  maxKg: number | null;
+}
+
+/** A bracket the courier sells. `"0 - 2"` is a RANGE, so `maxKg` is a ceiling. */
+export interface ExportWeightJson {
+  id: number;
+  name: string;
+  minKg: number | null;
+  maxKg: number | null;
+}
+
 /**
  * WHAT EACH COURIER SAYS IT WILL ACCEPT, cached (migration 1000).
  *
@@ -204,6 +226,37 @@ export const shopLogisticsPlaces = pgTable(
   ],
 );
 
+/**
+ * WHERE THE COURIER CARRIES TO OUTSIDE NIGERIA (migration 1080).
+ *
+ * ONE ROW PER PROVIDER, not per provider and country: a courier publishes its
+ * whole export catalogue in one call, and a row per destination would invent a
+ * shape the source does not have plus a partial refresh that could leave two
+ * halves disagreeing about the same fetch.
+ */
+export const shopLogisticsExports = pgTable(
+  'shop_logistics_exports',
+  {
+    provider: text('provider').$type<'fez' | 'terminal'>().notNull(),
+    /** `[{ id, name, place, countryCodes, minKg, maxKg }]`. A row is a country
+     *  AND a weight bracket — "Ghana(0-2kg)" — so heavier parcels to the same
+     *  country are different rows with different ids. */
+    destinations: jsonb('destinations').$type<ExportDestinationJson[]>().notNull(),
+    /** `[{ id, name, minKg, maxKg }]`. `"0 - 2"` is a RANGE: 2 kg is the
+     *  bracket's ceiling, never a floor. */
+    weights: jsonb('weights').$type<ExportWeightJson[]>().notNull(),
+    fetchedAt: bigint('fetched_at', { mode: 'number' }).notNull(),
+  },
+  (t) => [
+    primaryKey({ name: 'shop_logistics_exports_pk', columns: [t.provider] }),
+    check('shop_logistics_exports_provider_ck', sql`${t.provider} IN ('fez', 'terminal')`),
+    check('shop_logistics_exports_destinations_ck', sql`jsonb_typeof(${t.destinations}) = 'array'`),
+    check('shop_logistics_exports_weights_ck', sql`jsonb_typeof(${t.weights}) = 'array'`),
+    check('shop_logistics_exports_fetched_at_ck', sql`${t.fetchedAt} > 0`),
+  ],
+);
+
 export type DbShopLogisticsSettings = typeof shopLogisticsSettings.$inferSelect;
 export type DbShopLogisticsWebhook = typeof shopLogisticsWebhooks.$inferSelect;
 export type DbShopLogisticsPlaces = typeof shopLogisticsPlaces.$inferSelect;
+export type DbShopLogisticsExports = typeof shopLogisticsExports.$inferSelect;

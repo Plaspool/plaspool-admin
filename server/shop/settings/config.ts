@@ -138,14 +138,46 @@ export interface DeliveryConfig {
  * rate, which is the ₦50,000 fail-safe. Set the zone's rate FIRST; the admin
  * card says so, and it is why the two live on the same screen.
  */
-function countryFor(servedCountries: readonly string[]): DeliveryConfig['country'] {
+/**
+ * WHERE THE SHOP SELLS, NARROWED TO WHERE THE COURIER CAN ACTUALLY CARRY.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE OWNER'S LIST GATES IT AND THE COURIER CAN ONLY EVER NARROW IT. Adding a
+ * country stays a decision somebody makes in the admin; the courier's list only
+ * removes ones it cannot reach. Egypt is the case this was built for: it sits
+ * on the shop's list and not on Fez's, so before this a shopper in Cairo could
+ * complete a checkout for a parcel nobody could send.
+ *
+ * `courierCountries === null` MEANS "NO OPINION" AND CHANGES NOTHING, which is
+ * what makes this additive. Nobody has pressed refresh, or the shop ships by
+ * hand, or the read failed — in every one of those the owner's list stands
+ * exactly as it did. An EMPTY ARRAY is the opposite answer: the courier was
+ * asked and carries nowhere abroad.
+ *
+ * NIGERIA IS NEVER NARROWED AWAY. A courier's EXPORT list says where it sends
+ * parcels OUT to; it does not mention the country it operates in, and reading
+ * that silence as "cannot deliver domestically" would close the shop with one
+ * button press.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+function countryFor(
+  servedCountries: readonly string[],
+  courierCountries: readonly string[] | null = null,
+): DeliveryConfig['country'] {
+  const home = servedCountries[0];
+  const reach = courierCountries === null ? null : new Set([...courierCountries, home]);
+  const allowed = reach === null ? servedCountries : servedCountries.filter((c) => reach.has(c));
+  /* A narrowing that removed EVERYTHING would be a shop that cannot sell at
+     all, which is never the right reading of a courier's list. `home` is kept
+     above, so this is belt and braces rather than a path. */
+  const served = allowed.length > 0 ? allowed : [home];
   return {
     /* The CHECK guarantees at least one element, so the head is total. A row
      * hand-edited past the constraint would render an empty selector, which is
      * visibly broken rather than silently permissive — the right way round. */
-    default: servedCountries[0],
-    allowed: servedCountries,
-    locked: servedCountries.length === 1,
+    default: served[0],
+    allowed: served,
+    locked: served.length === 1,
   };
 }
 
@@ -423,6 +455,10 @@ const VALIDATES_CITY: Record<ProviderSetting, boolean> = {
 export function deliveryConfigFor(
   settings: DeliverySettings,
   courier: ProviderSetting = 'manual',
+  /* Where the active courier exports to (`logistics/exports.ts`). `null` — the
+     default — means no opinion, so a caller written before couriers had a reach
+     describes exactly the country list it described before. */
+  courierCountries: readonly string[] | null = null,
 ): DeliveryConfig {
   const simple = settings.addressMode === 'simple';
   const routingCity = VALIDATES_CITY[courier] ?? false;
@@ -432,7 +468,7 @@ export function deliveryConfigFor(
   return {
     mode: settings.addressMode,
     revision: settings.revision,
-    country: countryFor(settings.servedCountries),
+    country: countryFor(settings.servedCountries, courierCountries),
     fields: simple ? simpleFields(routingCity) : districtFields(routingCity, courierPrices),
     districts: simple
       ? null

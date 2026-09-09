@@ -13,6 +13,7 @@ import { shipFromMissing } from './address';
 import { FEZ_LIVE_URL, TERMINAL_LIVE_URL, environmentOf, logisticsEnv } from './config';
 import { resolveLogisticsDeps } from './deps';
 import { DiagnosticsBody, acceptedNames, runDiagnostic } from './diagnostics';
+import { refreshExports } from './exports';
 import { PLACES_DEFAULT_COUNTRY, refreshPlaces } from './places';
 import { LogisticsError, PROVIDER_LABEL } from './port';
 import type { ProviderId } from './port';
@@ -392,6 +393,28 @@ const PlacesRefreshBody = z
  * broken, that courier simply publishes no list, and a 502 would invite a retry
  * for a verdict that cannot change.
  */
+/**
+ * WHERE THIS COURIER EXPORTS TO — the other half of the places button.
+ *
+ * NO BODY, unlike places: a courier publishes its whole export catalogue in one
+ * call, so there is no country to ask about. Accepting one would invite a
+ * caller to believe the answer could be narrower than it is.
+ *
+ * A COURIER WITH NO INTERNATIONAL ARM IS A 409 AND NOT A 502, exactly as
+ * `places_unsupported` is: nothing is broken, that courier simply does not do
+ * this, and a 502 would invite a retry for a verdict that cannot change.
+ */
+logisticsRoutes.post('/admin/logistics/exports/refresh', requireAdmin(), async (c) => {
+  const deps = resolveLogisticsDeps();
+  try {
+    const out = await refreshExports(currentDb(c), deps);
+    if ('refused' in out) return c.json({ error: out.refused, provider: out.provider }, 409);
+    return c.json(out);
+  } catch (err) {
+    return providerFailure(c, err);
+  }
+});
+
 logisticsRoutes.post('/admin/logistics/places/refresh', requireAdmin(), async (c) => {
   const body = await readJsonOrEmpty(c, PlacesRefreshBody);
   const deps = resolveLogisticsDeps();

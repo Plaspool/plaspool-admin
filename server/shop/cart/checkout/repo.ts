@@ -695,7 +695,22 @@ export async function putAddresses(
 
 // ------------------------------------------------------------------- shipping
 
-export async function shippingOptionsForCart(
+/**
+ * WHAT THE DELIVERY STEP CAN OFFER, AND WHY IT CANNOT.
+ *
+ * `refusal` IS NOT AN ERROR AND NOT AN EMPTY LIST WITH A NOTE ON IT. There are
+ * two ways to have no options and they deserve different sentences: nothing is
+ * known yet (no address, a district switched off) and the courier has SAID NO
+ * (this country, or this weight). Only the second is something a shopper can
+ * act on - "try ordering fewer items" turns a dead end back into a sale - and
+ * an empty array alone cannot carry that.
+ */
+export interface ShippingOffer {
+  options: ShippingQuote[];
+  refusal: { code: string; message: string } | null;
+}
+
+export async function shippingOffer(
   db: Db,
   config: CheckoutConfig,
   cartId: string,
@@ -705,21 +720,22 @@ export async function shippingOptionsForCart(
      a caller that cannot supply them must not get a half-described parcel
      quoted at a courier and billed to a customer. */
   catalog?: CatalogPort,
-): Promise<ShippingQuote[]> {
+): Promise<ShippingOffer> {
+  const none = (): ShippingOffer => ({ options: [], refusal: null });
   const address = await getAddress(db, cartId, 'shipping');
   // NO OPTIONS WITHOUT AN ADDRESS. A shop that shows domestic delivery prices
   // before it knows the destination shows a number that goes up at the last
   // step, which is when a customer abandons.
-  if (!address) return [];
+  if (!address) return none();
   // AND NONE TO A REFUSED DISTRICT. `putAddresses` already refuses these, but
   // the owner can switch a district off while a cart is mid-checkout; an empty
   // list is the honest answer, and the freeze backs it with a hard refusal.
   const ruling = await districtRuling(db, config, address.district ?? null);
-  if (ruling.refused) return [];
+  if (ruling.refused) return none();
   // AND NONE OUTSIDE THE SERVED REGIONS, for the same reason: the restriction
   // can be added while a cart is mid-checkout, and an empty list is the honest
   // answer until the shopper changes the address.
-  if (serviceRefusalFor(config, address)) return [];
+  if (serviceRefusalFor(config, address)) return none();
   const zone = zoneFor(config.zones, address.countryCode, address.region);
   /* THE COURIER PRICES DELIVERY WHENEVER ONE IS SWITCHED ON, and the zone and
      district rates below become what the shop charges when it cannot be reached
@@ -733,10 +749,35 @@ export async function shippingOptionsForCart(
         catalog,
       })
     : null;
-  if (courier) return courier;
-  return shippingOptionsFor(zone, config.storeCurrency).map((option) =>
-    districtPriced(option, ruling),
-  );
+  if (courier?.kind === 'quoted') return { options: courier.options, refusal: null };
+  /* A COURIER'S REFUSAL IS NOT FALLEN BACK FROM. It has already said it will
+     not carry this parcel, so pricing it at the shop's own flat rate would
+     sell a delivery nobody can perform - see `CourierOutcome`. */
+  if (courier?.kind === 'refused') {
+    return { options: [], refusal: { code: courier.code, message: courier.message } };
+  }
+  return {
+    options: shippingOptionsFor(zone, config.storeCurrency).map((option) =>
+      districtPriced(option, ruling),
+    ),
+    refusal: null,
+  };
+}
+
+/**
+ * The options alone.
+ *
+ * KEPT AS ITS OWN FUNCTION rather than folded into `shippingOffer`'s callers,
+ * because every caller that predates international shipping wants exactly this
+ * and gains nothing from learning a second shape.
+ */
+export async function shippingOptionsForCart(
+  db: Db,
+  config: CheckoutConfig,
+  cartId: string,
+  catalog?: CatalogPort,
+): Promise<ShippingQuote[]> {
+  return (await shippingOffer(db, config, cartId, catalog)).options;
 }
 
 export async function setShipping(
@@ -770,7 +811,9 @@ export async function setShipping(
           catalog,
         })
       : null;
-    option = courier?.[0] ?? null;
+    /* A refusal resolves to no option, and the `shipping_option` refusal below
+       is the right answer to a client asking for one the courier declined. */
+    option = courier?.kind === 'quoted' ? (courier.options[0] ?? null) : null;
   } else {
     option = shippingOptionById(zone, config.storeCurrency, a.optionId);
   }

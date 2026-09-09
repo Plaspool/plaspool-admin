@@ -12,7 +12,7 @@ import {
   putAddresses,
   removeDiscount,
   setShipping,
-  shippingOptionsForCart,
+  shippingOffer,
   startCheckout,
   thawCheckout,
 } from '../checkout/repo';
@@ -157,17 +157,19 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
       billing: body.billing ?? null,
       baseRevision: body.baseRevision,
     });
-    return c.json({
-      zone,
-      options: await shippingOptionsForCart(db, config, cart.id, deps.catalog),
-    });
+    /* `refusal` RIDES BESIDE THE OPTIONS AND NEVER REPLACES A 4xx. The address
+       itself was accepted; it is the DELIVERY that cannot be arranged, and a
+       storefront needs to keep the address on screen while it says so. */
+    const offer = await shippingOffer(db, config, cart.id, deps.catalog);
+    return c.json({ zone, options: offer.options, refusal: offer.refusal });
   });
 
   routes.get('/checkout/shipping-options', async (c) => {
     const db = shopDb(c);
     const cart = await requireCart(c, db);
     const config = await loadConfig(db);
-    return c.json({ options: await shippingOptionsForCart(db, config, cart.id, deps.catalog) });
+    const offer = await shippingOffer(db, config, cart.id, deps.catalog);
+    return c.json({ options: offer.options, refusal: offer.refusal });
   });
 
   routes.put('/checkout/shipping', async (c) => {

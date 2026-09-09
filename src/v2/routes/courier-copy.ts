@@ -146,6 +146,23 @@ export const COURIER_COPY = {
           ? `${label} listed ${regions} state${regions === 1 ? '' : 's'}, and checks no place names below them.`
           : `${label} listed ${regions} state${regions === 1 ? '' : 's'} and ${cities} place${cities === 1 ? '' : 's'} inside them.`,
       placesUnsupported: (label: string) => `${label} does not publish a list of places, so there is nothing to keep.`,
+      /* THE CEILING IS THE HEADLINE, not the country count: seventeen
+         countries at 2 kg is a one-spool channel and the same list at 20 kg is
+         a business, and only one of those is worth building a shop around.
+         Said in kilograms rather than "brackets", because nobody buys a
+         bracket. */
+      refreshExports: 'Refresh countries abroad',
+      refreshExportsHint: "Ask this courier which countries it will carry to outside Nigeria, and how heavy a parcel it takes. Checkout will then only offer the countries it can actually reach \u2014 so a country you allow but it cannot carry stops appearing.",
+      exportsRefreshed: (label: string, countries: number, maxKg: number | null, unmapped: number) => {
+        const reach = `${label} carries to ${countries} place${countries === 1 ? '' : 's'} outside Nigeria`;
+        const weight = maxKg === null ? '.' : `, up to ${maxKg} kg a parcel.`;
+        /* A name we could not turn into a country is cached and offered to
+           nobody, so an operator watching for a country that never appears is
+           told where to look rather than left with a mystery. */
+        const rest = unmapped === 0 ? '' : ` ${unmapped} name${unmapped === 1 ? '' : 's'} we don't recognise were skipped.`;
+        return reach + weight + rest;
+      },
+      exportsUnsupported: (label: string) => `${label} does not ship out of Nigeria, so there is nothing to keep.`,
     },
   },
   parcel: {

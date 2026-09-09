@@ -3,6 +3,7 @@ import type { AddressSnapshot } from '../../../../shared/commerce/events';
 import type { ShippingQuote } from '../../../../shared/commerce/ports';
 import type { Db } from '../../../db/client';
 import { resolveLogisticsDeps } from '../../logistics/deps';
+import { matchExport, readExports } from '../../logistics/exports';
 import type { ParcelInput, ParcelLine, ProviderId } from '../../logistics/port';
 import { activeCourier, getLogisticsSettings } from '../../logistics/repo';
 import { declaredValueMinor } from '../../logistics/weights';
@@ -148,6 +149,26 @@ const cache = new Map<string, { amountMinor: number; eta?: string; at: number }>
  * is a fact about the jurisdiction, and the zone rows already carry it; a
  * courier knows what it charges and nothing about VAT.
  */
+/**
+ * THREE ANSWERS, NOT TWO, and the third is what this file gained when it
+ * learned to ship abroad.
+ *
+ *   `quoted`  - the courier priced it.
+ *   `null`    - NO OPINION: no courier, none configured, a refusal, a timeout.
+ *               The hand-set zone and district rates answer, as they always did.
+ *   `refused` - the courier has SAID IT WILL NOT CARRY THIS. Too heavy for any
+ *               bracket it publishes, or a country it does not serve.
+ *
+ * THE LAST TWO MUST NOT BE COLLAPSED. Falling back to a flat rate on a refusal
+ * would sell a delivery the courier has already declined - the shop takes the
+ * money and then finds it has no way to send the parcel. `null` means "we could
+ * not ask"; `refused` means "we asked, and the answer was no".
+ */
+export type CourierOutcome =
+  | { kind: 'quoted'; options: ShippingQuote[] }
+  | { kind: 'refused'; code: string; message: string }
+  | null;
+
 export async function courierShippingOptions(
   db: Db,
   a: {
@@ -164,7 +185,7 @@ export async function courierShippingOptions(
      */
     catalog: CatalogPort;
   },
-): Promise<ShippingQuote[] | null> {
+): Promise<CourierOutcome> {
   if (a.lines.length === 0) return null;
 
   let provider: ProviderId;
@@ -195,7 +216,10 @@ export async function courierShippingOptions(
     const hit = cache.get(key);
     const now = Date.now();
     if (hit && now - hit.at < CACHE_TTL_MS) {
-      return [toQuote(provider, hit.amountMinor, hit.eta, a.currency, a.taxable)];
+      return {
+        kind: 'quoted',
+        options: [toQuote(provider, hit.amountMinor, hit.eta, a.currency, a.taxable, DOOR_DESCRIPTION)],
+      };
     }
 
     const items: ParcelLine[] = quotes.map(({ line, q }) => ({
@@ -215,6 +239,19 @@ export async function courierShippingOptions(
          agrees with the one this cache was keyed on. */
       weightGrams: q?.weightGrams ?? DEFAULT_ITEM_GRAMS,
     }));
+
+    /*
+     * ======================================================================
+     * ABROAD IS A DIFFERENT API, NOT A DIFFERENT ARGUMENT. The domestic quote
+     * takes a Nigerian state name, so an address in Accra came back as "The
+     * selected state is invalid" and every international shopper silently got
+     * the flat rate. Exports have their own endpoints, their own integer
+     * destination ids and their own weight brackets.
+     * ======================================================================
+     */
+    if (a.address.countryCode.trim().toUpperCase() !== HOME_COUNTRY) {
+      return await exportQuote(db, provider, adapter, a, kg, settings.shipFrom?.region ?? null);
+    }
 
     const input: ParcelInput = {
       /* NO FULFILMENT EXISTS YET — there is no order. Both fields are read by
@@ -261,7 +298,10 @@ export async function courierShippingOptions(
 
     const amountMinor = roundUp(cheapest.amountMinor);
     cache.set(key, { amountMinor, eta: cheapest.eta, at: now });
-    return [toQuote(provider, amountMinor, cheapest.eta, a.currency, a.taxable)];
+    return {
+      kind: 'quoted',
+      options: [toQuote(provider, amountMinor, cheapest.eta, a.currency, a.taxable, DOOR_DESCRIPTION)],
+    };
   } catch (err) {
     /* EVERY refusal lands here on purpose — bad credentials, a state the courier
        does not serve, a timeout, a 500. The shopper gets the owner's hand-set
@@ -293,13 +333,112 @@ function toQuote(
   eta: string | undefined,
   currency: string,
   taxable: boolean,
+  description: string,
 ): ShippingQuote {
   return {
     id: courierOptionId(provider, amountMinor),
     label: COURIER_LABEL[provider],
     amount: money(amountMinor, currency),
     taxable,
+    description,
     ...(eta ? { eta } : {}),
+  };
+}
+
+/** The country the shop itself operates in. Everything else is an export. */
+const HOME_COUNTRY = 'NG';
+
+/**
+ * What the ordinary courier option actually is, said plainly.
+ *
+ * IT IS DOOR DELIVERY, and that is a fact about the request rather than a
+ * hope: the domestic cost call carries a `locker` flag that defaults to
+ * false, and we never set it. When locker collection becomes a second option
+ * this sentence is what tells the two apart on the screen.
+ */
+const DOOR_DESCRIPTION = 'A rider brings it to the address you gave.';
+
+/**
+ * A PARCEL LEAVING THE COUNTRY, priced against the courier's export catalogue.
+ *
+ * REFUSES RATHER THAN FALLING BACK when the courier publishes no row that
+ * fits. A basket heavier than every bracket is one the courier has already
+ * declined, and quoting the shop's flat international rate over that would
+ * sell a delivery nobody can perform. `null` is kept for "we could not ask"
+ * alone - an empty cache, or a courier with no international arm.
+ */
+async function exportQuote(
+  db: Db,
+  provider: ProviderId,
+  adapter: {
+    exports?: {
+      quote(a: {
+        destinationId: number;
+        weightId: number;
+        pickUpState: string | null;
+      }): Promise<{ amountMinor: number }>;
+    };
+  },
+  a: { address: AddressSnapshot; currency: string; taxable: boolean },
+  kg: number,
+  pickUpState: string | null,
+): Promise<CourierOutcome> {
+  if (!adapter.exports) return null;
+  /* NEVER REFRESHED IS NOT THE SAME AS CARRIES NOWHERE. A shop that has not
+     pressed the button yet keeps its flat international rate rather than
+     refusing every foreign address it has ever accepted. */
+  const cached = await readExports(db, provider);
+  if (cached === null || cached.destinations.length === 0) return null;
+
+  const match = matchExport(cached, a.address.countryCode, kg);
+  if (!match.ok) {
+    if (match.reason === 'not_carried') {
+      return {
+        kind: 'refused',
+        code: 'country_not_carried',
+        message: COURIER_LABEL[provider] + " doesn't deliver to this country yet.",
+      };
+    }
+    return {
+      kind: 'refused',
+      code: 'too_heavy',
+      message:
+        match.maxKg === null
+          ? 'This order is too heavy to send abroad. Try ordering fewer items, or get in touch.'
+          : 'We can only send up to ' +
+            match.maxKg +
+            ' kg to this country. Try ordering fewer items, or get in touch.',
+    };
+  }
+
+  const key = provider + ':export:' + match.destination.id + ':' + match.weight.id;
+  const hit = cache.get(key);
+  const now = Date.now();
+  let amountMinor: number;
+  if (hit && now - hit.at < CACHE_TTL_MS) {
+    amountMinor = hit.amountMinor;
+  } else {
+    const priced = await adapter.exports.quote({
+      destinationId: match.destination.id,
+      weightId: match.weight.id,
+      pickUpState,
+    });
+    amountMinor = roundUp(priced.amountMinor);
+  }
+  cache.set(key, { amountMinor, at: now });
+
+  return {
+    kind: 'quoted',
+    options: [
+      toQuote(
+        provider,
+        amountMinor,
+        undefined,
+        a.currency,
+        a.taxable,
+        'Sent out of Nigeria to ' + match.destination.place + '.',
+      ),
+    ],
   };
 }
 
