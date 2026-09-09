@@ -280,6 +280,13 @@ export async function courierShippingOptions(
   }
 }
 
+/**
+ * THE ESTIMATE IS ITS OWN FIELD AND NOT PART OF THE LABEL, so a storefront can
+ * style it apart from the courier's name — and so nothing has to parse a
+ * display string to get at it. It was glued into the label first; a label that
+ * two different reads of the same option word differently is a label somebody
+ * eventually writes a regex against.
+ */
 function toQuote(
   provider: ProviderId,
   amountMinor: number,
@@ -289,9 +296,10 @@ function toQuote(
 ): ShippingQuote {
   return {
     id: courierOptionId(provider, amountMinor),
-    label: eta ? `${COURIER_LABEL[provider]} · ${eta}` : COURIER_LABEL[provider],
+    label: COURIER_LABEL[provider],
     amount: money(amountMinor, currency),
     taxable,
+    ...(eta ? { eta } : {}),
   };
 }
 
