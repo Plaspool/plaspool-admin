@@ -58,9 +58,16 @@ import type { ImageRow } from './images';
  *    title, description and status; it is history for the same reason `revisions`
  *    is, and it is absent here for the same reason `revisions` is absent above.
  *
- * The two scopes are OR-ed, not merged: an image may be a post's cover, a
- * product's cover, or both, and losing either reference must not un-publish it
- * while the other still stands.
+ * THE THIRD SCOPE — AN ACTIVE CHECKOUT ADD-ON (MIGRATION 0940) — IS THE SAME
+ * ARGUMENT AGAIN. An add-on's picture is shown on the checkout offer card to a
+ * shopper who may have no session at all, so it must be servable anonymously;
+ * `shop_add_ons` has no `deleted_at`, so 'active' alone is its live predicate.
+ * The collector counts an add-on in every status and this counts only an
+ * offered one, which is the same opposition the post and product halves carry.
+ *
+ * The three scopes are OR-ed, not merged: an image may be a post's cover, a
+ * product's cover, an add-on's picture, or several at once, and losing any one
+ * reference must not un-publish it while another still stands.
  */
 
 /**
@@ -172,6 +179,60 @@ export function publicProductImageRefExists(
 }
 
 /**
+ * "Offered" — the add-on predicate (migration 0940).
+ *
+ * `shop_add_ons` has NO `deleted_at` column: 'archived' is how an add-on is
+ * withdrawn, so `status = 'active'` is the whole predicate rather than half of
+ * one. That is the same shape as the product scope for the same reason — an
+ * image is servable exactly when the checkout card that would show it is
+ * offered — but it is a SEPARATE predicate because the two tables retire a row
+ * differently, and folding them would tie one surface's notion of "live" to the
+ * other's.
+ *
+ * Named and exported so a mutation test can drop it and watch a draft add-on's
+ * picture become servable, exactly as `ACTIVE_PRODUCT_PREDICATE` and
+ * `PUBLIC_POST_PREDICATE` each allow.
+ */
+export const ACTIVE_ADD_ON_PREDICATE: SQL = sql`sa.status = 'active'`;
+
+/**
+ * The ADD-ON half of the reference check.
+ *
+ * `server/repo/images.ts#REFERENCE_SET` already unions `shop_add_ons.image_id`
+ * so the collector cannot sweep a picture referenced only from here; this is the
+ * other side of that pair, and its absence is what served
+ * `GET /api/public/images/<id>` a 404 for every add-on image while the admin —
+ * authenticated, on a different route — rendered them fine.
+ *
+ * The two remain deliberately opposed, per the file header: the collector counts
+ * an add-on in EVERY status (a draft is one somebody can switch on, and its
+ * bytes must survive the wait), while this counts only an active one, so
+ * archiving an add-on takes its picture off every anonymous surface in the same
+ * moment it takes the offer down. The accepted consequence is that a draft
+ * add-on shows no picture anywhere anonymous.
+ *
+ * `image_id` is a plain text column never normalised on write, so it is compared
+ * with the scheme stripped, exactly as the product cover and the variant image
+ * are. THE `IS NOT NULL` / `<> ''` GUARDS ARE LOAD-BEARING for the reason
+ * `publicProductImageRefExists` states: without them the empty id matches every
+ * add-on carrying no picture at all.
+ */
+export function publicAddOnImageRefExists(
+  imageId: string,
+  scope: SQL = ACTIVE_ADD_ON_PREDICATE,
+): SQL {
+  const id = normalizeBlobId(imageId);
+  return sql`EXISTS (
+    SELECT 1
+      FROM shop_add_ons sa
+     WHERE ${scope}
+       AND sa.image_id IS NOT NULL
+       AND sa.image_id <> ''
+       AND regexp_replace(sa.image_id, ${COVER_PREFIX}, '') = ${id}
+     LIMIT 1)`;
+}
+
+/**
  * The POST half of the reference check.
  *
  * `scope` exists for the mutation tests and DEFAULTS to the real predicate.
@@ -232,7 +293,7 @@ export function publicPostImageRefExists(
  * The whole check, so `isPubliclyReferencedImage` and `getPublicImage` ask
  * exactly the same question in exactly one place.
  *
- * TWO SCOPES, OR-ED, NEVER MERGED INTO ONE QUERY. They read different tables with
+ * THREE SCOPES, OR-ED, NEVER MERGED INTO ONE QUERY. They read different tables with
  * different notions of "live", and folding them together would mean one predicate
  * that has to be widened whenever either surface changes — which is how the
  * narrow side loses. Each half keeps its own default scope and its own test
@@ -245,18 +306,21 @@ export function publicImageRefExists(
   imageId: string,
   scope: SQL = PUBLIC_POST_PREDICATE,
   productScope: SQL = ACTIVE_PRODUCT_PREDICATE,
+  addOnScope: SQL = ACTIVE_ADD_ON_PREDICATE,
 ): SQL {
   return sql`(${publicPostImageRefExists(imageId, scope)}
-              OR ${publicProductImageRefExists(imageId, productScope)})`;
+              OR ${publicProductImageRefExists(imageId, productScope)}
+              OR ${publicAddOnImageRefExists(imageId, addOnScope)})`;
 }
 
 /**
  * TRUE only if `imageId` is referenced by the CURRENT content or cover of a post
  * matching `PUBLIC_POST_PREDICATE`, or by the cover or gallery of a product
- * matching `ACTIVE_PRODUCT_PREDICATE`.
+ * matching `ACTIVE_PRODUCT_PREDICATE`, or by the picture of an add-on matching
+ * `ACTIVE_ADD_ON_PREDICATE`.
  *
  * Drafts, archived posts, trashed posts, post revisions, draft/archived/trashed
- * products and product revisions all answer FALSE.
+ * products, product revisions and draft or archived add-ons all answer FALSE.
  */
 export async function isPubliclyReferencedImage(db: Db, imageId: string): Promise<boolean> {
   const res = await db.execute(sql`SELECT ${publicImageRefExists(imageId)} AS referenced`);
