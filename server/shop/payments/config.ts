@@ -1,6 +1,8 @@
 import { z } from 'zod';
+import { FlutterwaveProvider } from './provider/flutterwave';
 import { PaystackProvider } from './provider/paystack';
 import { scrubbedProvider } from './provider/scrub';
+import type { ProviderName } from './schema';
 import type { PaymentProvider } from './provider/types';
 
 /**
@@ -48,6 +50,29 @@ const Schema = z.object({
    * it lands on re-asks the provider through `fetchIntent`.
    */
   PAYMENTS_CALLBACK_URL: z.string().optional(),
+  /**
+   * `FLWSECK_TEST-…` in test mode, `FLWSECK-…` in live.
+   *
+   * The prefix is CHECKED for the same reason `PAYSTACK_SECRET_KEY`'s is: the
+   * PUBLIC key (`FLWPUBK…`) is the one that appears in frontend snippets, and
+   * pasting it here produces a 401 on the first charge with the gateway blamed.
+   *
+   * OPTIONAL AT THE SCHEMA LEVEL, REQUIRED AT USE. A deployment that has not
+   * set up Flutterwave must still take Paystack payments and still boot.
+   */
+  FLUTTERWAVE_SECRET_KEY: z
+    .string()
+    .min(20)
+    .regex(/^FLWSECK[-_]/, 'must be a Flutterwave SECRET key')
+    .optional(),
+  /**
+   * The dashboard's secret hash. UNLIKE PAYSTACK, THIS IS A SECOND, SEPARATE
+   * VALUE — `PAYSTACK_SECRET_KEY` is both API credential and signing key;
+   * Flutterwave's two are independent and rotate independently.
+   */
+  FLUTTERWAVE_WEBHOOK_HASH: z.string().min(8).optional(),
+  /** Overridden only by tests. Never set in a deployment. */
+  FLUTTERWAVE_BASE_URL: z.string().optional(),
 });
 
 export type PaymentsEnv = z.infer<typeof Schema>;
@@ -98,4 +123,52 @@ export function paystackProvider(): PaymentProvider {
       baseUrl: env.PAYSTACK_BASE_URL,
     }),
   );
+}
+
+/**
+ * The Flutterwave provider, wrapped in the same scrub.
+ *
+ * REQUIRED AT USE, NOT AT THE SCHEMA — see the fields' own comments. Both
+ * `FLUTTERWAVE_SECRET_KEY` and `FLUTTERWAVE_WEBHOOK_HASH` are `.optional()` in
+ * the schema so that a deployment with no Flutterwave configured still parses
+ * `paymentsEnv()` and still takes Paystack payments; the requirement that
+ * BOTH be present is enforced here instead, at the moment a Flutterwave
+ * payment is actually attempted.
+ */
+export function flutterwaveProvider(): PaymentProvider {
+  const env = paymentsEnv();
+  if (!env.FLUTTERWAVE_SECRET_KEY || !env.FLUTTERWAVE_WEBHOOK_HASH) {
+    // NAMES ONLY. Never the value, and never zod's own message, which quotes
+    // the offending input for several issue codes.
+    throw new Error(
+      'Invalid payments environment: FLUTTERWAVE_SECRET_KEY, FLUTTERWAVE_WEBHOOK_HASH',
+    );
+  }
+  return scrubbedProvider(
+    new FlutterwaveProvider({
+      secretKey: env.FLUTTERWAVE_SECRET_KEY,
+      webhookHash: env.FLUTTERWAVE_WEBHOOK_HASH,
+      baseUrl: env.FLUTTERWAVE_BASE_URL,
+    }),
+  );
+}
+
+/**
+ * Which gateways this deployment can authenticate to. A BOOLEAN PER GATEWAY —
+ * never the key, never a prefix, never a length. Feeds the admin card's
+ * warning, so the owner cannot switch onto a gateway that will 401.
+ *
+ * READS `process.env` DIRECTLY RATHER THAN `paymentsEnv()`, because that
+ * function THROWS when the schema does not parse — and "the key is malformed"
+ * is exactly a case this must be able to report rather than crash on. A
+ * presence check that cannot run when something is wrong is useless precisely
+ * when it is needed.
+ */
+export function providerKeyPresence(): Record<ProviderName, boolean> {
+  return {
+    paystack: Boolean(process.env.PAYSTACK_SECRET_KEY),
+    flutterwave: Boolean(
+      process.env.FLUTTERWAVE_SECRET_KEY && process.env.FLUTTERWAVE_WEBHOOK_HASH,
+    ),
+  };
 }
