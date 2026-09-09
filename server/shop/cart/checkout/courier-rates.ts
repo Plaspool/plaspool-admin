@@ -175,8 +175,14 @@ export async function courierShippingOptions(
     const items: ParcelLine[] = a.lines.map((line) => ({
       orderLineId: line.id,
       variantId: line.variantId,
-      title: '',
-      sku: '',
+      /* NON-EMPTY BECAUSE TERMINAL REFUSES A PARCEL WHOSE ITEMS HAVE NO
+         DESCRIPTION ("1 or more of your items is missing a description"),
+         where Fez reads neither field. Measured against Terminal's sandbox
+         2026-09-09, and the reason a quote does not need the real ones: this
+         parcel is never booked or printed. `bookParcel` builds its own input
+         from the placed ORDER, with the title and SKU the customer bought. */
+      title: 'Item',
+      sku: line.variantId,
       qty: line.qty,
       unitMinor: a.unitMinorFor?.(line.variantId) ?? 0,
       /* The SAME substitution `basketGrams` made, so the adapter's own total
