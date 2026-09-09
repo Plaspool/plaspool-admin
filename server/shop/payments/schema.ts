@@ -44,6 +44,16 @@ function sqlLiterals(values: readonly string[]) {
   );
 }
 
+/**
+ * THE GATEWAY NAMES, and this is the one definition of them.
+ *
+ * On the wire and in the database, so §7's copy rules do not apply: these are
+ * contract, not display strings. The screen may say "Flutterwave"; the column
+ * says `flutterwave` and must keep doing so.
+ */
+export const PROVIDER_NAMES = ['paystack', 'flutterwave'] as const;
+export type ProviderName = (typeof PROVIDER_NAMES)[number];
+
 export const shopPaymentIntents = pgTable(
   'shop_payment_intents',
   {
@@ -76,6 +86,21 @@ export const shopPaymentIntents = pgTable(
     amount: integer('amount').notNull(),
     currency: text('currency').notNull(),
     status: text('status').$type<(typeof PAYMENT_STATUSES)[number]>().notNull(),
+    /**
+     * WHICH GATEWAY TOOK THIS PAYMENT. Set once, at creation, and never
+     * rewritten — flipping the admin switch must not re-route money that has
+     * already moved.
+     *
+     * The migration adds this with a DEFAULT and then drops it, so an INSERT
+     * that forgets the column now fails loudly rather than claiming Paystack.
+     */
+    provider: text('provider').$type<ProviderName>().notNull(),
+    /**
+     * The gateway's OWN id, when it differs from the reference we supply.
+     * NULL for Paystack, which transacts under ours. Flutterwave needs it for
+     * refunds and mints it at charge time, so it arrives later than the row.
+     */
+    providerChargeId: text('provider_charge_id'),
     /**
      * The caller's key. UNIQUE — this column IS the idempotency mechanism.
      *
@@ -125,6 +150,7 @@ export const shopPaymentIntents = pgTable(
   },
   (t) => [
     check('shop_payment_intents_status_ck', sql`${t.status} IN (${sqlLiterals(PAYMENT_STATUSES)})`),
+    check('shop_payment_intents_provider_ck', sql`${t.provider} IN ('paystack', 'flutterwave')`),
     check('shop_payment_intents_revision_ck', sql`${t.revision} > 0`),
     /** A charge of nothing is not a charge; negative would be a credit. */
     check('shop_payment_intents_amount_ck', sql`${t.amount} > 0`),
@@ -154,6 +180,12 @@ export const shopPaymentEvents = pgTable(
   {
     /** `pev_…`. */
     id: text('id').primaryKey(),
+    /**
+     * WHICH GATEWAY sent this event. Two gateways will eventually deliver to
+     * two different webhook endpoints, so this is known the instant the event
+     * is verified and stored — never inferred from the payload.
+     */
+    provider: text('provider').$type<ProviderName>().notNull(),
     /**
      * THE DEDUPE KEY — a UNIQUE constraint, never a prior read.
      *
@@ -193,6 +225,7 @@ export const shopPaymentEvents = pgTable(
     anomaly: text('anomaly'),
   },
   (t) => [
+    check('shop_payment_events_provider_ck', sql`${t.provider} IN ('paystack', 'flutterwave')`),
     index('shop_payment_events_intent_idx').on(t.intentId),
     index('shop_payment_events_pending_idx').on(t.processedAt, t.receivedAt),
   ],
@@ -250,6 +283,55 @@ export const shopRefunds = pgTable(
       .where(sql`${t.providerRefundId} IS NOT NULL`),
   ],
 );
+
+/**
+ * WHICH GATEWAY TAKES A PAYMENT — one row, `id = 'main'` (migration 1100).
+ *
+ * A CHECK-CONSTRAINED SINGLETON rather than one row by convention, following
+ * `shop_delivery_settings`: "there is exactly one configuration" becomes
+ * something the database enforces, so a second row cannot appear and leave two
+ * answers to "who takes the money" for whichever sorted first.
+ *
+ * TWO CURRENCY LISTS EXIST IN THIS SYSTEM AND THESE ARE THE OTHER ONES.
+ * `ProviderCapabilities.currencies` in the adapter is what a gateway's API
+ * CAN charge. These columns are what each account has SWITCHED ON. Routing
+ * reads these. The split exists because a capability list in code would lie:
+ * Paystack's USD is not enabled on this account, so a hardcoded ['NGN','USD']
+ * would route a dollar charge to a gateway that refuses it.
+ */
+export const shopPaymentSettings = pgTable(
+  'shop_payment_settings',
+  {
+    /** Pinned to `'main'` by a CHECK. */
+    id: text('id').primaryKey(),
+    /** The gateway everyone gets, unless a rule below overrides it. */
+    activeProvider: text('active_provider').$type<ProviderName>().notNull(),
+    /**
+     * The gateway for orders shipping outside Nigeria, or NULL for "no country
+     * rule — everyone gets `activeProvider`".
+     */
+    internationalProvider: text('international_provider').$type<ProviderName>(),
+    /** ISO 4217, uppercase. Never empty — the CHECK forbids it. */
+    paystackCurrencies: text('paystack_currencies').array().notNull(),
+    flutterwaveCurrencies: text('flutterwave_currencies').array().notNull(),
+    /** CAS, as on `posts.revision`. Moves on every write. */
+    revision: integer('revision').notNull(),
+    updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
+    updatedBy: uuid('updated_by'),
+  },
+  (t) => [
+    check('shop_payment_settings_id_ck', sql`${t.id} = 'main'`),
+    check('shop_payment_settings_active_ck', sql`${t.activeProvider} IN ('paystack', 'flutterwave')`),
+    check(
+      'shop_payment_settings_intl_ck',
+      sql`${t.internationalProvider} IS NULL
+          OR ${t.internationalProvider} IN ('paystack', 'flutterwave')`,
+    ),
+    check('shop_payment_settings_revision_ck', sql`${t.revision} > 0`),
+  ],
+);
+
+export type DbShopPaymentSettings = typeof shopPaymentSettings.$inferSelect;
 
 export type DbPaymentIntent = typeof shopPaymentIntents.$inferSelect;
 export type DbPaymentEvent = typeof shopPaymentEvents.$inferSelect;
