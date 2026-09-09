@@ -699,6 +699,12 @@ export async function shippingOptionsForCart(
   db: Db,
   config: CheckoutConfig,
   cartId: string,
+  /* OPTIONAL, AND ABSENT MEANS NO COURIER PRICE — the zone and district rates
+     answer, exactly as they did before couriers priced anything. A courier
+     needs a title, a value and a weight per line, all of which are Catalog's;
+     a caller that cannot supply them must not get a half-described parcel
+     quoted at a courier and billed to a customer. */
+  catalog?: CatalogPort,
 ): Promise<ShippingQuote[]> {
   const address = await getAddress(db, cartId, 'shipping');
   // NO OPTIONS WITHOUT AN ADDRESS. A shop that shows domestic delivery prices
@@ -718,12 +724,15 @@ export async function shippingOptionsForCart(
   /* THE COURIER PRICES DELIVERY WHENEVER ONE IS SWITCHED ON, and the zone and
      district rates below become what the shop charges when it cannot be reached
      — `null` is every failure a courier can have (`courier-rates.ts`). */
-  const courier = await courierShippingOptions(db, {
-    lines: await listLines(db, cartId),
-    address,
-    currency: config.storeCurrency,
-    taxable: zone.shippingTaxable,
-  });
+  const courier = catalog
+    ? await courierShippingOptions(db, {
+        lines: await listLines(db, cartId),
+        address,
+        currency: config.storeCurrency,
+        taxable: zone.shippingTaxable,
+        catalog,
+      })
+    : null;
   if (courier) return courier;
   return shippingOptionsFor(zone, config.storeCurrency).map((option) =>
     districtPriced(option, ruling),
@@ -734,6 +743,9 @@ export async function setShipping(
   db: Db,
   config: CheckoutConfig,
   a: { cartId: string; optionId: string; baseRevision?: number },
+  /* Same contract as `shippingOptionsForCart`: absent means the courier is not
+     consulted, so a courier option id would simply not resolve and be refused. */
+  catalog?: CatalogPort,
 ): Promise<ShippingQuote> {
   const address = await getAddress(db, a.cartId, 'shipping');
   if (!address) throw new BadRequestError('shipping_address');
@@ -749,12 +761,15 @@ export async function setShipping(
      the cart is the one this server has just been quoted itself. */
   let option: ShippingQuote | null;
   if (isCourierOptionId(a.optionId)) {
-    const courier = await courierShippingOptions(db, {
-      lines: await listLines(db, a.cartId),
-      address,
-      currency: config.storeCurrency,
-      taxable: zone.shippingTaxable,
-    });
+    const courier = catalog
+      ? await courierShippingOptions(db, {
+          lines: await listLines(db, a.cartId),
+          address,
+          currency: config.storeCurrency,
+          taxable: zone.shippingTaxable,
+          catalog,
+        })
+      : null;
     option = courier?.[0] ?? null;
   } else {
     option = shippingOptionById(zone, config.storeCurrency, a.optionId);

@@ -7,6 +7,7 @@ import type { ParcelInput, ParcelLine, ProviderId } from '../../logistics/port';
 import { activeCourier, getLogisticsSettings } from '../../logistics/repo';
 import { declaredValueMinor } from '../../logistics/weights';
 import type { CartLine } from '../cart/repo';
+import type { CatalogPort } from '../catalog-port';
 
 /**
  * DELIVERY PRICED BY THE COURIER, WHEN ONE IS SWITCHED ON.
@@ -136,7 +137,14 @@ export async function courierShippingOptions(
     address: AddressSnapshot;
     currency: string;
     taxable: boolean;
-    unitMinorFor?: (variantId: string) => number;
+    /**
+     * TITLE, SKU, PRICE AND WEIGHT PER LINE, all four of which a courier
+     * wants and none of which Cart owns. Terminal refuses a parcel whose
+     * items have no description or no value (both measured against its
+     * sandbox, 2026-09-09); Fez reads only the weight. Asking Catalog once
+     * per line is what `priceCheckout` already does a few lines further on.
+     */
+    catalog: CatalogPort;
   },
 ): Promise<ShippingQuote[] | null> {
   if (a.lines.length === 0) return null;
@@ -156,10 +164,10 @@ export async function courierShippingOptions(
 
   try {
     const settings = await getLogisticsSettings(db);
-    const weights = await deps.catalog.weightsFor(
-      db,
-      a.lines.map((l) => l.variantId),
+    const quotes = await Promise.all(
+      a.lines.map((line) => a.catalog.quote(db, line.variantId).then((q) => ({ line, q }))),
     );
+    const weights = new Map(quotes.map(({ line, q }) => [line.variantId, q?.weightGrams ?? null]));
     const grams = basketGrams(a.lines, weights, settings.packaging.weightKg);
 
     /* The courier's own banding is coarser than this, so a cache keyed on whole
@@ -172,22 +180,22 @@ export async function courierShippingOptions(
       return [toQuote(provider, hit.amountMinor, hit.eta, a.currency, a.taxable)];
     }
 
-    const items: ParcelLine[] = a.lines.map((line) => ({
+    const items: ParcelLine[] = quotes.map(({ line, q }) => ({
       orderLineId: line.id,
       variantId: line.variantId,
-      /* NON-EMPTY BECAUSE TERMINAL REFUSES A PARCEL WHOSE ITEMS HAVE NO
-         DESCRIPTION ("1 or more of your items is missing a description"),
-         where Fez reads neither field. Measured against Terminal's sandbox
-         2026-09-09, and the reason a quote does not need the real ones: this
-         parcel is never booked or printed. `bookParcel` builds its own input
-         from the placed ORDER, with the title and SKU the customer bought. */
-      title: 'Item',
-      sku: line.variantId,
+      /* TERMINAL REFUSES A PARCEL WHOSE ITEMS CARRY NO DESCRIPTION OR NO
+         VALUE — "1 or more of your items is missing a description", then
+         "...has an invalid value" — where Fez reads neither. Both measured
+         against Terminal's sandbox, 2026-09-09. The fallbacks below are for
+         a variant Catalog cannot resolve at all, which is rare and must not
+         cost the shopper a delivery price. */
+      title: q?.title || 'Item',
+      sku: q?.sku || line.variantId,
       qty: line.qty,
-      unitMinor: a.unitMinorFor?.(line.variantId) ?? 0,
+      unitMinor: q?.price.amount ?? 0,
       /* The SAME substitution `basketGrams` made, so the adapter's own total
          agrees with the one this cache was keyed on. */
-      weightGrams: weights.get(line.variantId) ?? DEFAULT_ITEM_GRAMS,
+      weightGrams: q?.weightGrams ?? DEFAULT_ITEM_GRAMS,
     }));
 
     const input: ParcelInput = {
