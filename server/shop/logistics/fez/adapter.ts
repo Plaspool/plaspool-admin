@@ -8,6 +8,7 @@ import {
   type PlaceList,
   type PlaceRegion,
   type ProviderDiagnostics,
+  type ProviderExports,
   type ProviderLockers,
   type LockerList,
   type ProviderPlaces,
@@ -19,6 +20,7 @@ import {
 import { fezState } from '../status';
 import { declaredValueMinor, fezKg, missingWeights, totalGrams } from '../weights';
 import { FezClient, type FezClientOptions } from './client';
+import { createFezExports } from './exports';
 import { verifyFezWebhook } from './webhook';
 
 export const FEZ_LABEL = 'Fez Delivery';
@@ -138,12 +140,15 @@ export function createFezProvider(env: FezEnv, opts: FezClientOptions = {}): Log
     },
   };
 
+  const exportsApi: ProviderExports = createFezExports(client, toMinor);
+
   return {
     id: 'fez',
     label: FEZ_LABEL,
     diagnostics,
     places,
     lockers,
+    exports: exportsApi,
 
     async quote(input: ParcelInput): Promise<QuoteResult> {
       const missing = missingWeights(input.items);
