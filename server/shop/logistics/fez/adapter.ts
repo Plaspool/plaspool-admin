@@ -167,7 +167,12 @@ export function createFezProvider(env: FezEnv, opts: FezClientOptions = {}): Log
           drop_off_state: dropState,
         });
         const e = (est.data as Record<string, unknown> | undefined)?.eta;
-        if (typeof e === 'string') eta = e;
+        /* TRIMMED AND CHECKED FOR EMPTINESS, not merely for being a string.
+           `typeof '' === 'string'`, so a blank estimate passed the old test,
+           was assigned, and then vanished again at the truthiness check that
+           builds the option — present enough to skip every diagnostic and
+           absent from the wire. An estimate is a sentence or it is nothing. */
+        if (typeof e === 'string' && e.trim() !== '') eta = e.trim();
         else {
           /* ANSWERED, BUT NOT WITH AN ETA WE RECOGNISE. Distinct from the throw
              below and worth saying so: a shape that differs between Fez's
@@ -175,7 +180,9 @@ export function createFezProvider(env: FezEnv, opts: FezClientOptions = {}): Log
              endpoint that refused. The KEYS only — never the body, which is
              somebody's address. */
           console.warn(
-            '[fez] delivery-time-estimate answered without a string eta; keys:',
+            '[fez] delivery-time-estimate answered with no usable eta:',
+            JSON.stringify(e),
+            '| keys:',
             Object.keys(est ?? {}),
             'data keys:',
             Object.keys((est.data as Record<string, unknown> | undefined) ?? {}),
