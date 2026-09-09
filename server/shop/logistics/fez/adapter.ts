@@ -168,8 +168,34 @@ export function createFezProvider(env: FezEnv, opts: FezClientOptions = {}): Log
         });
         const e = (est.data as Record<string, unknown> | undefined)?.eta;
         if (typeof e === 'string') eta = e;
-      } catch {
-        /* An ETA is a nicety; the price is the quote. */
+        else {
+          /* ANSWERED, BUT NOT WITH AN ETA WE RECOGNISE. Distinct from the throw
+             below and worth saying so: a shape that differs between Fez's
+             sandbox and its live API looks identical, from the outside, to an
+             endpoint that refused. The KEYS only — never the body, which is
+             somebody's address. */
+          console.warn(
+            '[fez] delivery-time-estimate answered without a string eta; keys:',
+            Object.keys(est ?? {}),
+            'data keys:',
+            Object.keys((est.data as Record<string, unknown> | undefined) ?? {}),
+            'pick_up_state:',
+            pickState ?? '(omitted — no ship-from saved)',
+          );
+        }
+      } catch (err) {
+        /* An ETA is a nicety and the price is still the quote, so this must not
+           throw — but a nicety that fails silently on one deployment and works
+           on another is a difference nobody can see. Measured 2026-09-09: the
+           sandbox answers and the live API does not, and no log said why. */
+        console.warn(
+          '[fez] delivery-time-estimate refused:',
+          err instanceof Error ? err.message : err,
+          '| pick_up_state:',
+          pickState ?? '(omitted — no ship-from saved)',
+          '| drop_off_state:',
+          dropState,
+        );
       }
 
       return {
