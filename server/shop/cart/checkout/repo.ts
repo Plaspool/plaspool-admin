@@ -21,6 +21,13 @@ import type { ShippingZone } from './shipping';
 import { DEFAULT_DELIVERY_RULES, serviceRefusal } from '../../settings/repo';
 import type { DeliveryRules } from '../../settings/repo';
 import type { CatalogPort } from '../catalog-port';
+import {
+  amountFromCourierOptionId,
+  courierLabel,
+  courierShippingOptions,
+  isCourierOptionId,
+} from './courier-rates';
+import { money } from '../../../../shared/commerce/money';
 import type { Reservation, Shortfall } from '../reservations/repo';
 import type { TotalsInputLine } from '../totals/compute';
 import type {
@@ -707,10 +714,20 @@ export async function shippingOptionsForCart(
   // can be added while a cart is mid-checkout, and an empty list is the honest
   // answer until the shopper changes the address.
   if (serviceRefusalFor(config, address)) return [];
-  return shippingOptionsFor(
-    zoneFor(config.zones, address.countryCode, address.region),
-    config.storeCurrency,
-  ).map((option) => districtPriced(option, ruling));
+  const zone = zoneFor(config.zones, address.countryCode, address.region);
+  /* THE COURIER PRICES DELIVERY WHENEVER ONE IS SWITCHED ON, and the zone and
+     district rates below become what the shop charges when it cannot be reached
+     — `null` is every failure a courier can have (`courier-rates.ts`). */
+  const courier = await courierShippingOptions(db, {
+    lines: await listLines(db, cartId),
+    address,
+    currency: config.storeCurrency,
+    taxable: zone.shippingTaxable,
+  });
+  if (courier) return courier;
+  return shippingOptionsFor(zone, config.storeCurrency).map((option) =>
+    districtPriced(option, ruling),
+  );
 }
 
 export async function setShipping(
@@ -725,7 +742,23 @@ export async function setShipping(
   const shippingRefusal = serviceRefusalFor(config, address);
   if (shippingRefusal) throw refusalError(shippingRefusal);
   const zone = zoneFor(config.zones, address.countryCode, address.region);
-  const option = shippingOptionById(zone, config.storeCurrency, a.optionId);
+
+  /* A COURIER OPTION IS RE-QUOTED HERE, NEVER READ OFF THE REQUEST. Its id
+     carries the amount, and this one arrived over HTTP — so the only thing
+     trusted from it is that the shopper meant the courier. The price written to
+     the cart is the one this server has just been quoted itself. */
+  let option: ShippingQuote | null;
+  if (isCourierOptionId(a.optionId)) {
+    const courier = await courierShippingOptions(db, {
+      lines: await listLines(db, a.cartId),
+      address,
+      currency: config.storeCurrency,
+      taxable: zone.shippingTaxable,
+    });
+    option = courier?.[0] ?? null;
+  } else {
+    option = shippingOptionById(zone, config.storeCurrency, a.optionId);
+  }
   // An option from ANOTHER zone is refused rather than honoured: accepting the
   // UK next-day price for a parcel to France is a real loss on every order.
   if (!option) throw new BadRequestError('shipping_option');
@@ -742,7 +775,10 @@ export async function setShipping(
   // Re-priced on the way OUT, not on the way in: the cart stores the option ID
   // and the freeze re-derives the amount, so what matters is that the number
   // shown here is the number the freeze will reach — same ruling, same result.
-  return districtPriced(option, ruling);
+  /* A COURIER'S PRICE IS ALREADY THE PRICE. The district override exists to
+     correct a zone's flat rate for one area; a quote for this exact basket to
+     this exact state is not a flat rate and has nothing to correct. */
+  return isCourierOptionId(option.id) ? option : districtPriced(option, ruling);
 }
 
 // ---------------------------------------------------------------------- start
@@ -968,13 +1004,32 @@ async function priceCart(
   }
 
   const zone = zoneFor(config.zones, address.countryCode, address.region);
-  const chosen = cart.shippingOptionId
-    ? shippingOptionById(zone, config.storeCurrency, cart.shippingOptionId)
-    : null;
+
+  /* A COURIER-PRICED OPTION CARRIES ITS OWN AMOUNT in the id `setShipping`
+     wrote (`courier-rates.ts`), and that is what makes this re-derivable with
+     no second call to the courier at the payment step. The alternative —
+     re-quoting here — would put a network call in the money path and let the
+     number move after the shopper had agreed to it, which is the exact drift
+     `putAddresses` stores the zone to avoid. */
+  const storedOptionId = cart.shippingOptionId;
+  const courierMinor = storedOptionId ? amountFromCourierOptionId(storedOptionId) : null;
+  let chosen: ShippingQuote | null = null;
+  if (storedOptionId && courierMinor != null) {
+    chosen = {
+      id: storedOptionId,
+      label: courierLabel(storedOptionId),
+      amount: money(courierMinor, config.storeCurrency),
+      taxable: zone.shippingTaxable,
+    };
+  } else if (storedOptionId) {
+    chosen = shippingOptionById(zone, config.storeCurrency, storedOptionId);
+  }
   // The district's flat rate replaces the zone amount HERE, before the totals
   // engine runs — so the frozen number, the only number ever charged, is the
-  // district one. `setShipping` showed the customer this same figure.
-  const shipping = chosen ? districtPriced(chosen, districts) : null;
+  // district one. `setShipping` showed the customer this same figure. A
+  // courier's own quote is left alone, for the reason `setShipping` gives.
+  const shipping =
+    chosen == null ? null : courierMinor != null ? chosen : districtPriced(chosen, districts);
 
   /*
    * ONE `quote` PER LINE, and the result is carried forward rather than

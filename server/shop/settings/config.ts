@@ -280,7 +280,20 @@ function routingCityField(show: boolean): AddressFieldConfig {
  * pick is what `shop_delivery_areas` prices by and refuses by. Nothing in this
  * branch is new.
  */
-function districtFields(routingCity: boolean): AddressFieldConfig[] {
+/**
+ * `courierPrices` CHANGES WHAT THE AREA FIELD IS FOR, so it changes what the
+ * field says. With no courier the area IS the price (`shop_delivery_areas`).
+ * With one, the courier quotes on the STATE and the area only tells the rider
+ * where to go — and a form that still promised to set the price there would be
+ * describing a rule the checkout no longer follows.
+ */
+function districtHelp(courierPrices: boolean): string {
+  return courierPrices
+    ? 'Pick the area closest to you, so the rider can find you.'
+    : 'Pick the area closest to you. It sets your delivery price.';
+}
+
+function districtFields(routingCity: boolean, courierPrices: boolean): AddressFieldConfig[] {
   return [
     ...IDENTITY,
     REGION,
@@ -289,7 +302,7 @@ function districtFields(routingCity: boolean): AddressFieldConfig[] {
       show: true,
       required: true,
       label: 'Area',
-      help: 'Pick the area closest to you. It sets your delivery price.',
+      help: districtHelp(courierPrices),
       maxLength: ADDRESS_MAX_LENGTHS.district,
       autocomplete: 'off',
       source: 'areas',
@@ -413,17 +426,20 @@ export function deliveryConfigFor(
 ): DeliveryConfig {
   const simple = settings.addressMode === 'simple';
   const routingCity = VALIDATES_CITY[courier] ?? false;
+  /* Any courier at all prices delivery at checkout (`courier-rates.ts`); only
+     `manual` leaves it to the zone and district rates the owner typed in. */
+  const courierPrices = courier !== 'manual';
   return {
     mode: settings.addressMode,
     revision: settings.revision,
     country: countryFor(settings.servedCountries),
-    fields: simple ? simpleFields(routingCity) : districtFields(routingCity),
+    fields: simple ? simpleFields(routingCity) : districtFields(routingCity, courierPrices),
     districts: simple
       ? null
       : {
           source: AREAS_SOURCE,
           groupBy: 'region',
-          help: 'Pick the area closest to you. It sets your delivery price.',
+          help: districtHelp(courierPrices),
           unlistedMessage: "We don't deliver there yet. Pick another area, or get in touch.",
         },
     routingCity: routingCity

@@ -12,7 +12,7 @@ export const PROVIDER_LABEL: Record<CourierProviderId, string> = {
 
 export const PROVIDER_BLURB: Record<CourierProviderId, string> = {
   manual: 'You type the carrier and tracking number yourself when a parcel goes out.',
-  fez: 'One courier across Nigeria. Priced by state and weight; picks up from your address.',
+  fez: 'One courier across Nigeria. Prices delivery at checkout by state and weight, rounded up to the next ₦1,000, and picks up from your address.',
   terminal: 'Many couriers behind one account — GIG, Kwik, DHL and more. Needs a weight on every item and a complete ship-from address.',
 };
 
