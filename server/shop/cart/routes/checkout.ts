@@ -157,14 +157,17 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
       billing: body.billing ?? null,
       baseRevision: body.baseRevision,
     });
-    return c.json({ zone, options: await shippingOptionsForCart(db, config, cart.id) });
+    return c.json({
+      zone,
+      options: await shippingOptionsForCart(db, config, cart.id, deps.catalog),
+    });
   });
 
   routes.get('/checkout/shipping-options', async (c) => {
     const db = shopDb(c);
     const cart = await requireCart(c, db);
     const config = await loadConfig(db);
-    return c.json({ options: await shippingOptionsForCart(db, config, cart.id) });
+    return c.json({ options: await shippingOptionsForCart(db, config, cart.id, deps.catalog) });
   });
 
   routes.put('/checkout/shipping', async (c) => {
@@ -172,11 +175,12 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     const body = await readJson(c, ShippingBody);
     const cart = await requireCart(c, db);
     const config = await loadConfig(db);
-    const option = await setShipping(db, config, {
-      cartId: cart.id,
-      optionId: body.optionId,
-      baseRevision: body.baseRevision,
-    });
+    const option = await setShipping(
+      db,
+      config,
+      { cartId: cart.id, optionId: body.optionId, baseRevision: body.baseRevision },
+      deps.catalog,
+    );
     return c.json({ shipping: option });
   });
 
