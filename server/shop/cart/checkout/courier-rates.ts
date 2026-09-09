@@ -65,6 +65,24 @@ export const DEFAULT_ITEM_GRAMS = 1000;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
 /**
+ * HOW LONG A SHOPPER WAITS FOR A COURIER BEFORE THE FLAT RATE ANSWERS.
+ *
+ * SHORTER THAN THE CLIENTS' OWN 8s ON PURPOSE, because this is the one call
+ * path where somebody is watching a spinner. Terminal drafts a shipment and
+ * then rates several carriers, and was measured timing out at 8s against its
+ * sandbox (2026-09-09); Fez posts one small body and answers well inside
+ * this. Waiting the client's full budget only to fall back anyway spends
+ * eight seconds of a checkout to reach the same number.
+ */
+const QUOTE_DEADLINE_MS = 4_000;
+
+class QuoteTimeout extends Error {
+  constructor() {
+    super(`no answer within ${QUOTE_DEADLINE_MS}ms`);
+  }
+}
+
+/**
  * The option id a courier-priced delivery carries: the provider, then the
  * price it was quoted at, in minor units — `fez:400000`.
  *
@@ -226,7 +244,15 @@ export async function courierShippingOptions(
       packagingRef: settings.terminalPackagingId,
     };
 
-    const result = await adapter.quote(input);
+    /* The courier's own client has a timeout; this one bounds the SHOPPER's
+       wait, whichever courier is on and whatever it was built with. */
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const result = await Promise.race([
+      adapter.quote(input),
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(() => reject(new QuoteTimeout()), QUOTE_DEADLINE_MS);
+      }),
+    ]).finally(() => clearTimeout(deadline));
     const cheapest = result.options.reduce<(typeof result.options)[number] | null>(
       (best, o) => (best == null || o.amountMinor < best.amountMinor ? o : best),
       null,
