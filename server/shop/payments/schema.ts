@@ -91,8 +91,10 @@ export const shopPaymentIntents = pgTable(
      * rewritten — flipping the admin switch must not re-route money that has
      * already moved.
      *
-     * The migration adds this with a DEFAULT and then drops it, so an INSERT
-     * that forgets the column now fails loudly rather than claiming Paystack.
+     * The default is added here and dropped in a later task, once every INSERT
+     * names the column. It backfills the existing rows, all Paystack. Dropping it
+     * before the code names the column is a 23502, which hides the intent rather
+     * than showing it: an INSERT that forgets the column now fails loudly.
      */
     provider: text('provider').$type<ProviderName>().notNull(),
     /**

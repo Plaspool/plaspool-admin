@@ -6,14 +6,12 @@
 -- would therefore answer "unknown" precisely when a customer is stuck and
 -- somebody needs to finish the job. A column is answerable always.
 --
--- THE DEFAULT IS ADDED AND THEN DROPPED. It exists to backfill the rows that
--- already exist, all of which are Paystack because Paystack was the only
--- gateway. Leaving it would let a future INSERT that forgot the column claim
--- Paystack silently, which is the same class of bug as a fixture that never
--- exercises the real default.
+-- THE DEFAULT IS ADDED HERE AND DROPPED IN A LATER TASK, once every INSERT
+-- names the column. It exists to backfill the rows that already exist, all of
+-- which are Paystack because Paystack was the only gateway. The default stays
+-- until the code lands because dropping it before the code names the column
+-- turns every INSERT into a 23502, which hides the intent rather than showing it.
 ALTER TABLE shop_payment_intents ADD COLUMN provider text NOT NULL DEFAULT 'paystack';
---> statement-breakpoint
-ALTER TABLE shop_payment_intents ALTER COLUMN provider DROP DEFAULT;
 --> statement-breakpoint
 ALTER TABLE shop_payment_intents
   ADD CONSTRAINT shop_payment_intents_provider_ck
@@ -29,8 +27,6 @@ ALTER TABLE shop_payment_intents
 ALTER TABLE shop_payment_intents ADD COLUMN provider_charge_id text;
 --> statement-breakpoint
 ALTER TABLE shop_payment_events ADD COLUMN provider text NOT NULL DEFAULT 'paystack';
---> statement-breakpoint
-ALTER TABLE shop_payment_events ALTER COLUMN provider DROP DEFAULT;
 --> statement-breakpoint
 ALTER TABLE shop_payment_events
   ADD CONSTRAINT shop_payment_events_provider_ck
