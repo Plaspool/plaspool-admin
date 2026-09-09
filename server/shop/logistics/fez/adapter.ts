@@ -167,9 +167,42 @@ export function createFezProvider(env: FezEnv, opts: FezClientOptions = {}): Log
           drop_off_state: dropState,
         });
         const e = (est.data as Record<string, unknown> | undefined)?.eta;
-        if (typeof e === 'string') eta = e;
-      } catch {
-        /* An ETA is a nicety; the price is the quote. */
+        /* TRIMMED AND CHECKED FOR EMPTINESS, not merely for being a string.
+           `typeof '' === 'string'`, so a blank estimate passed the old test,
+           was assigned, and then vanished again at the truthiness check that
+           builds the option — present enough to skip every diagnostic and
+           absent from the wire. An estimate is a sentence or it is nothing. */
+        if (typeof e === 'string' && e.trim() !== '') eta = e.trim();
+        else {
+          /* ANSWERED, BUT NOT WITH AN ETA WE RECOGNISE. Distinct from the throw
+             below and worth saying so: a shape that differs between Fez's
+             sandbox and its live API looks identical, from the outside, to an
+             endpoint that refused. The KEYS only — never the body, which is
+             somebody's address. */
+          console.warn(
+            '[fez] delivery-time-estimate answered with no usable eta:',
+            JSON.stringify(e),
+            '| keys:',
+            Object.keys(est ?? {}),
+            'data keys:',
+            Object.keys((est.data as Record<string, unknown> | undefined) ?? {}),
+            'pick_up_state:',
+            pickState ?? '(omitted — no ship-from saved)',
+          );
+        }
+      } catch (err) {
+        /* An ETA is a nicety and the price is still the quote, so this must not
+           throw — but a nicety that fails silently on one deployment and works
+           on another is a difference nobody can see. Measured 2026-09-09: the
+           sandbox answers and the live API does not, and no log said why. */
+        console.warn(
+          '[fez] delivery-time-estimate refused:',
+          err instanceof Error ? err.message : err,
+          '| pick_up_state:',
+          pickState ?? '(omitted — no ship-from saved)',
+          '| drop_off_state:',
+          dropState,
+        );
       }
 
       return {
