@@ -221,6 +221,23 @@ export interface ShippingQuote {
   amount: Money;
   /** Most jurisdictions tax delivery; some do not. Explicit rather than assumed. */
   taxable: boolean;
+  /**
+   * HOW LONG THE COURIER SAYS IT WILL TAKE — "2 - 5 day(s)" — as the courier
+   * words it, for a storefront to render beside the price.
+   *
+   * OPTIONAL, AND ABSENT IS THE ORDINARY CASE. A flat zone rate has no estimate
+   * at all, and a courier's own answer is best-effort: Fez's adapter asks for
+   * one in a try/catch because "an ETA is a nicety; the price is the quote", and
+   * measured 2026-09-09 the SANDBOX answers while the LIVE API does not. So a
+   * storefront must render the price with no estimate and be right, rather than
+   * treat a missing one as a fault.
+   *
+   * NOT CARRIED INTO FROZEN TOTALS, deliberately. It is an estimate made at the
+   * moment of quoting; putting it on the invoice turns it into a promise the
+   * shop never made, and the frozen option is rebuilt from a stored id that
+   * carries a price and nothing else.
+   */
+  eta?: string;
 }
 
 /**
