@@ -83,6 +83,9 @@
  * Vercel bakes env vars AT BUILD TIME, so a push changes nothing until the
  * next deploy.
  *
+ * The international catalogue — every country Fez exports to from Nigeria and
+ * the weight brackets it sells — is printed on every run; it is a read.
+ *
  * Other flags: `--state=Abuja`, `--weight=2.5`, `--states` (print every state
  * Fez ships to rather than just the count).
  *
@@ -196,6 +199,68 @@ function env(): FezEnv {
 
 const naira = (minor: number): string => `₦${(minor / 100).toLocaleString('en-NG')}`;
 
+/**
+ * WHERE FEZ WILL CARRY TO OUTSIDE NIGERIA, AND HOW HEAVY A PARCEL MAY BE.
+ *
+ * THIS EXISTS BECAUSE THE PUBLISHED DOCUMENTATION CONTRADICTS ITSELF. Its
+ * sample response lists exactly one weight bracket (`0 - 2` kg) while its own
+ * example request posts `weightId: 5`, an id that cannot exist in that list.
+ * Since a destination row is a country AND a bracket ("Ghana(0-2kg)"), the
+ * difference between those two readings is the difference between an
+ * international channel that can carry one spool and one that can carry a
+ * boxful — so it is not a detail to design around, and only a real account can
+ * answer it.
+ *
+ * A READ, AND IT BOOKS NOTHING, like everything else this script does.
+ */
+async function reportExports(provider: LogisticsProvider): Promise<void> {
+  console.log('');
+  if (!provider.exports) {
+    console.log('· This courier has no international arm.');
+    return;
+  }
+  let cat;
+  try {
+    cat = await provider.exports.catalogue();
+  } catch (err) {
+    /* NOT FATAL. The credentials have already proven themselves above; an
+       account without the international product switched on is a fact to
+       report, not a failed probe. */
+    console.log(`· GET /orders/export-locations — ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  console.log(`✓ GET /orders/export-locations — ${cat.destinations.length} destinations, ${cat.weights.length} weight bracket(s).`);
+  console.log('');
+  console.log('    WEIGHT BRACKETS (this is the number that decides what can ship)');
+  for (const w of cat.weights) {
+    console.log(`      id ${String(w.id).padEnd(4)} ${w.name.padEnd(12)} ${w.maxKg === null ? '(no ceiling published)' : `up to ${w.maxKg} kg`}`);
+  }
+  const ceiling = cat.weights.reduce<number | null>(
+    (best, w) => (w.maxKg === null ? best : best === null || w.maxKg > best ? w.maxKg : best),
+    null,
+  );
+  console.log(
+    ceiling === null
+      ? '      → no ceiling published on any bracket.'
+      : `      → heaviest bracket tops out at ${ceiling} kg.`,
+  );
+
+  console.log('');
+  console.log('    DESTINATIONS');
+  for (const d of cat.destinations) {
+    const bracket = d.maxKg === null ? '' : `  [${d.minKg ?? 0}-${d.maxKg}kg]`;
+    const codes = d.countryCodes.length ? d.countryCodes.join(',') : 'UNMAPPED — add it to COUNTRY_CODES in fez/exports.ts';
+    console.log(`      id ${String(d.id).padEnd(4)} ${d.place.padEnd(24)}${bracket.padEnd(12)} ${codes}`);
+  }
+
+  const unmapped = cat.destinations.filter((d) => d.countryCodes.length === 0);
+  if (unmapped.length > 0) {
+    console.log('');
+    console.log(`    ⚠ ${unmapped.length} destination(s) have no country code and would be offered to nobody.`);
+  }
+}
+
 async function main(): Promise<void> {
   const fez = env();
   const provider = createFezProvider(fez);
@@ -242,6 +307,8 @@ async function main(): Promise<void> {
   console.log(`✓ GET /states — ${names.length} states.`);
   if (has('states')) for (const name of names) console.log(`    ${name}`);
   else console.log(`    ${names.slice(0, 6).join(', ')}${names.length > 6 ? ', …  (--states for all)' : ''}`);
+
+  await reportExports(provider);
 
   console.log('');
   console.log(`These credentials work against ${where === 'live' ? 'PROD' : 'dev'}.`);

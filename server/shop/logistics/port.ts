@@ -106,6 +106,71 @@ export interface PlaceCity {
   name: string;
 }
 
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * SHIPPING OUT OF THE COUNTRY, which for Fez is a SEPARATE API and not a
+ * parameter on the domestic one.
+ *
+ * The domestic quote takes a Nigerian state name; hand it "Greater Accra" and
+ * Fez answers "The selected state is invalid" (measured on production
+ * 2026-09-09). Exports go through `/orders/export-locations` and
+ * `/orders/export-price` instead, and address a destination by an INTEGER ID
+ * of Fez's own rather than by a country code.
+ *
+ * A ROW IS A COUNTRY *AND* A WEIGHT BRACKET, not a country. Fez publishes
+ * names like "Ghana(0-2kg)", so heavier parcels to the same country are
+ * DIFFERENT ROWS WITH DIFFERENT IDS. That is why `maxKg` lives on the
+ * destination and not only on the weight list, and why picking a destination
+ * means picking a bracket at the same time.
+ *
+ * OPTIONAL ON `LogisticsProvider`, so a courier with no international arm is
+ * still a valid provider rather than one that throws when asked.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+export interface ExportDestination {
+  /** The courier's own id, sent back verbatim when quoting. */
+  id: number;
+  /** Exactly as the courier published it — "Ghana(0-2kg)". Kept for display and for support conversations. */
+  name: string;
+  /** The country part, with any weight bracket stripped — "Ghana". */
+  place: string;
+  /** ISO-3166-1 alpha-2 codes this row can carry. Empty when we cannot map the
+   *  name, which is honest: an unmapped row is offered to nobody rather than
+   *  guessed at. More than one for a row naming a REGION rather than a country
+   *  ("Europe"), which is not a country and cannot be one code. */
+  countryCodes: string[];
+  /** Bracket floor/ceiling in kg, parsed off the name. Both null when the
+   *  courier published no bracket for this row. */
+  minKg: number | null;
+  maxKg: number | null;
+}
+
+/** One entry from the courier's own weight list. `"0 - 2"` is a RANGE — 2 kg is
+ *  the bracket's ceiling, not a floor. */
+export interface ExportWeight {
+  id: number;
+  name: string;
+  minKg: number | null;
+  maxKg: number | null;
+}
+
+export interface ExportCatalogue {
+  destinations: ExportDestination[];
+  weights: ExportWeight[];
+}
+
+export interface ProviderExports {
+  /** Everywhere this courier will carry to, and the brackets it sells. */
+  catalogue(): Promise<ExportCatalogue>;
+  /** What one bracket to one destination costs. Minor units, like every price here. */
+  quote(a: {
+    destinationId: number;
+    weightId: number;
+    /** Omitted lets the courier assume the business address. */
+    pickUpState: string | null;
+  }): Promise<{ amountMinor: number }>;
+}
+
 export interface PlaceList {
   regions: PlaceRegion[];
   /**
@@ -155,6 +220,9 @@ export interface LogisticsProvider {
   /** The courier's own parcel lockers. Absent on a courier that runs none —
    *  see `ProviderLockers`. */
   readonly lockers?: ProviderLockers;
+  /** Shipping out of the country. Absent on a courier with no international
+   *  arm — see `ProviderExports`. */
+  readonly exports?: ProviderExports;
 }
 
 /**
