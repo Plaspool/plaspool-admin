@@ -330,6 +330,18 @@ export const shopPaymentSettings = pgTable(
           OR ${t.internationalProvider} IN ('paystack', 'flutterwave')`,
     ),
     check('shop_payment_settings_revision_ck', sql`${t.revision} > 0`),
+    check(
+      'shop_payment_settings_paystack_ccy_ck',
+      sql`cardinality(${t.paystackCurrencies}) > 0
+          AND array_position(${t.paystackCurrencies}, NULL) IS NULL
+          AND array_to_string(${t.paystackCurrencies}, ',') ~ '^[A-Z]{3}(,[A-Z]{3})*$'`,
+    ),
+    check(
+      'shop_payment_settings_flutterwave_ccy_ck',
+      sql`cardinality(${t.flutterwaveCurrencies}) > 0
+          AND array_position(${t.flutterwaveCurrencies}, NULL) IS NULL
+          AND array_to_string(${t.flutterwaveCurrencies}, ',') ~ '^[A-Z]{3}(,[A-Z]{3})*$'`,
+    ),
   ],
 );
 
