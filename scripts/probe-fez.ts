@@ -300,11 +300,15 @@ function linkedRoot(): string {
  * that made this run necessary in the first place.
  */
 function vercelEnv(args: string[], cwd: string, value?: string): { ok: boolean; out: string } {
-  const res = spawnSync('npx', ['vercel', 'env', ...args, '--scope', SCOPE], {
+  /* `npx.cmd` RATHER THAN `shell: true`. Windows will not spawn a bare `npx`
+     (it is a .cmd, not an .exe), and the obvious fix — `shell: true` — makes
+     Node concatenate the arguments into a command line instead of passing them
+     as a vector, which it warns about as DEP0190. Naming the real executable
+     keeps the vector, so no argument is ever re-parsed by a shell. */
+  const res = spawnSync(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['vercel', 'env', ...args, '--scope', SCOPE], {
     cwd,
     input: value === undefined ? undefined : `${value}\n`,
     encoding: 'utf8',
-    shell: process.platform === 'win32',
   });
   return { ok: res.status === 0, out: `${res.stdout ?? ''}${res.stderr ?? ''}`.trim() };
 }
