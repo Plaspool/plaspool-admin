@@ -560,3 +560,113 @@ describe('routing city', () => {
     ]);
   });
 });
+
+/**
+ * LOCKERS. The shapes here are the ones production actually answers, read off
+ * the live API on 2026-09-09 rather than invented: Lagos has 9 lockers, the
+ * FCT has 2, and a state Fez has built none in answers with the array empty
+ * and BOTH caps absent — which is the case a fixture would never have thought
+ * to include, and the one the storefront meets most often.
+ */
+describe('lockers', () => {
+  const LAGOS_OK = {
+    status: 200,
+    json: {
+      status: 'Success',
+      Lockers: [
+        { lockerID: '2100015344', lockerAddress: 'AP Filling Station, Admiralty Way, Lekki 1, Lagos' },
+        { lockerID: '2100015345', lockerAddress: 'Ap Filling Station, Oniru, Lekki Phase 1, Lagos' },
+      ],
+      maxWeight: '5',
+      maxValueOfItem: '100000',
+    },
+  };
+
+  it('lists a state, and converts the caps Fez sends as quoted naira', async () => {
+    const { fetchImpl, calls } = fezFetch([AUTH_OK(), LAGOS_OK]);
+    const provider = createFezProvider(ENV, { fetchImpl });
+
+    const out = await provider.lockers!.list('Lagos');
+
+    expect(calls[1]?.url).toBe('https://fez.test/v1/Lockers/Lagos');
+    expect(calls[1]?.method).toBe('GET');
+    expect(calls[1]?.headers['secret-key']).toBe('env-secret-key');
+    expect(out.lockers).toEqual([
+      { id: '2100015344', address: 'AP Filling Station, Admiralty Way, Lekki 1, Lagos' },
+      { id: '2100015345', address: 'Ap Filling Station, Oniru, Lekki Phase 1, Lagos' },
+    ]);
+    /* Weight stays kilograms; value becomes MINOR units, so ₦100,000 is
+       10,000,000 and a caller comparing against a cart total never has to
+       remember which side of the wire it came from. */
+    expect(out.maxWeightKg).toBe(5);
+    expect(out.maxValueMinor).toBe(10_000_000);
+  });
+
+  it('sends the courier its own name for the capital, so Abuja reaches FCT', async () => {
+    const { fetchImpl, calls } = fezFetch([AUTH_OK(), LAGOS_OK]);
+    const provider = createFezProvider(ENV, { fetchImpl });
+
+    await provider.lockers!.list('Abuja');
+
+    /* The whole reason `fezStateName` is applied here: Terminal says Abuja,
+       Fez says FCT, and a shopper's address may carry either. */
+    expect(calls[1]?.url).toBe('https://fez.test/v1/Lockers/FCT');
+  });
+
+  it('answers a state with no lockers as an empty list, not a failure', async () => {
+    const { fetchImpl } = fezFetch([
+      AUTH_OK(),
+      { status: 200, json: { status: 'Success', Lockers: [] } },
+    ]);
+    const provider = createFezProvider(ENV, { fetchImpl });
+
+    const out = await provider.lockers!.list('Kano');
+
+    expect(out.lockers).toEqual([]);
+    /* NULL, NOT ZERO. Fez omits both caps for a state it has no lockers in,
+       and a zero would read as "nothing may ever be sent", which would filter
+       out every cart rather than simply offering no locker. */
+    expect(out.maxWeightKg).toBeNull();
+    expect(out.maxValueMinor).toBeNull();
+  });
+
+  it('drops a row missing either half, because neither can be used alone', async () => {
+    const { fetchImpl } = fezFetch([
+      AUTH_OK(),
+      {
+        status: 200,
+        json: {
+          Lockers: [
+            { lockerID: '1', lockerAddress: '   ' },
+            { lockerAddress: 'An address nobody can book' },
+            { lockerID: '2', lockerAddress: 'Usable' },
+          ],
+        },
+      },
+    ]);
+    const provider = createFezProvider(ENV, { fetchImpl });
+
+    expect((await provider.lockers!.list('Lagos')).lockers).toEqual([{ id: '2', address: 'Usable' }]);
+  });
+
+  it('escapes the state rather than pasting it into the path', async () => {
+    const { fetchImpl, calls } = fezFetch([AUTH_OK(), { status: 200, json: { Lockers: [] } }]);
+    const provider = createFezProvider(ENV, { fetchImpl });
+
+    await provider.lockers!.list('Akwa Ibom');
+
+    expect(calls[1]?.url).toBe('https://fez.test/v1/Lockers/Akwa%20Ibom');
+  });
+
+  it('lets a refusal out as a LogisticsError, like every other Fez call', async () => {
+    const { fetchImpl } = fezFetch([
+      AUTH_OK(),
+      { status: 401, json: { status: 'Error', description: 'Organization Secret Key is Required' } },
+    ]);
+    const provider = createFezProvider(ENV, { fetchImpl });
+
+    /* Two 401s: the client re-authenticates once and gives up on the second,
+       so the queue running dry IS the second attempt. */
+    await expect(provider.lockers!.list('Lagos')).rejects.toBeInstanceOf(LogisticsError);
+  });
+});

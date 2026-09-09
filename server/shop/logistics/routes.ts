@@ -16,7 +16,7 @@ import { DiagnosticsBody, acceptedNames, runDiagnostic } from './diagnostics';
 import { PLACES_DEFAULT_COUNTRY, refreshPlaces } from './places';
 import { LogisticsError, PROVIDER_LABEL } from './port';
 import type { ProviderId } from './port';
-import { getLogisticsSettings, listRecentWebhooks, patchLogisticsSettings } from './repo';
+import { activeCourier, getLogisticsSettings, listRecentWebhooks, patchLogisticsSettings } from './repo';
 import type { LogisticsSettings } from './repo';
 import { bookParcel, cancelParcelCourier, quoteParcel, refreshParcel } from './service';
 import type { Refusal } from './service';
@@ -399,6 +399,45 @@ logisticsRoutes.post('/admin/logistics/places/refresh', requireAdmin(), async (c
     const out = await refreshPlaces(currentDb(c), deps, body.country ?? PLACES_DEFAULT_COUNTRY);
     if ('refused' in out) return c.json({ error: out.refused, provider: out.provider }, 409);
     return c.json(out);
+  } catch (err) {
+    return providerFailure(c, err);
+  }
+});
+
+/**
+ * THE ACTIVE COURIER'S PARCEL LOCKERS IN ONE STATE.
+ *
+ * `auth` AND NOT `requireAdmin()`, UNLIKE ITS NEIGHBOURS ABOVE. Every other
+ * `/admin/logistics/` route configures the shop; this one only reads a list a
+ * shopper will be offered, and the teammate arranging a collection needs it for
+ * the same reason they need `/logistics/provider`. Nothing here is a setting
+ * and nothing here writes.
+ *
+ * NOT CACHED, DELIBERATELY, WHERE `places` IS. Fez keys lockers by state, so
+ * caching the country means 37 calls and a migration; asking about the ONE
+ * state somebody just picked is a single call. That trade only holds while the
+ * caller is a person on a screen — see `ProviderLockers` before putting this
+ * on a checkout path.
+ *
+ * `lockers_unsupported` MIRRORS `places_unsupported`: a 409 naming the courier,
+ * because Terminal runs no locker network and that verdict cannot change on a
+ * retry, which is what a 502 would invite.
+ */
+logisticsRoutes.get('/admin/logistics/lockers/:state', auth, async (c) => {
+  const state = c.req.param('state').trim();
+  if (!state) return c.json({ error: 'state_required' }, 400);
+
+  const deps = resolveLogisticsDeps();
+  /* `manual` is a shop shipping by hand: no adapter exists and none is
+     missing, so it takes the same 409 as a courier with no credentials
+     rather than being narrowed to a ProviderId it is not. */
+  const provider = await activeCourier(currentDb(c));
+  const adapter = provider === 'manual' ? null : deps.providerFor(provider);
+  if (!adapter) return c.json({ error: 'provider_not_configured', provider }, 409);
+  if (!adapter.lockers) return c.json({ error: 'lockers_unsupported', provider }, 409);
+
+  try {
+    return c.json({ provider, state, ...(await adapter.lockers.list(state)) });
   } catch (err) {
     return providerFailure(c, err);
   }

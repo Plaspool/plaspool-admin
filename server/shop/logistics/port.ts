@@ -152,6 +152,63 @@ export interface LogisticsProvider {
   /** The courier's own place lists. Absent on a courier that publishes none —
    *  see `ProviderPlaces`. */
   readonly places?: ProviderPlaces;
+  /** The courier's own parcel lockers. Absent on a courier that runs none —
+   *  see `ProviderLockers`. */
+  readonly lockers?: ProviderLockers;
+}
+
+/**
+ * ONE PARCEL LOCKER: a place a shopper collects from instead of receiving at
+ * an address.
+ *
+ * `address` IS FREE TEXT THE COURIER WROTE, not a structured address, because
+ * that is all Fez publishes (`lockerAddress`, one string). It is for a shopper
+ * to read on a screen; nothing routes on it. `id` is what routes — it goes
+ * back on the order as `lockerID`.
+ */
+export interface Locker {
+  id: string;
+  address: string;
+}
+
+/**
+ * A STATE'S LOCKERS, WITH THE TWO LIMITS THAT DECIDE WHETHER A GIVEN CART MAY
+ * USE ONE AT ALL.
+ *
+ * The caps are per-locker-network rather than per-locker — Fez publishes
+ * `maxWeight` and `maxValueOfItem` once, beside the array, not on each entry —
+ * so they are held here rather than on `Locker`. A cart heavier than
+ * `maxWeightKg` or worth more than `maxValueMinor` cannot be delivered to ANY
+ * locker in that state, and offering the choice anyway earns a refusal at
+ * booking time, long after the shopper has committed to it.
+ *
+ * `null` on either cap means the courier published no limit, which is NOT the
+ * same as a limit of zero: it means do not filter on that axis.
+ */
+export interface LockerList {
+  lockers: Locker[];
+  maxWeightKg: number | null;
+  maxValueMinor: number | null;
+}
+
+/**
+ * WHERE A COURIER WILL HOLD A PARCEL FOR COLLECTION.
+ *
+ * OPTIONAL ON `LogisticsProvider`, exactly as `ProviderPlaces` is: Terminal
+ * runs no locker network and `manual` has no adapter, so the absence IS the
+ * answer rather than a failure to report.
+ *
+ * ⚠️  ONE CALL PER STATE, AND NEVER ON A REQUEST PATH FOR ALL OF THEM. Fez
+ *     keys this by state (`GET /Lockers/{state}`), so a whole-country list is
+ *     37 round trips — the same arithmetic that put `ProviderPlaces` behind an
+ *     admin button and a cache. A single state, asked because a shopper just
+ *     picked that state, is one call and is fine.
+ */
+export interface ProviderLockers {
+  /** The courier's own state name — what `PlaceRegion.name` carries, which for
+   *  Fez means `FCT` and not `Abuja`. Throws a `LogisticsError` when the
+   *  courier refuses; an unknown state is an EMPTY list, not a throw. */
+  list(state: string): Promise<LockerList>;
 }
 
 export type LogisticsErrorCode =

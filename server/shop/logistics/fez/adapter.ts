@@ -8,6 +8,8 @@ import {
   type PlaceList,
   type PlaceRegion,
   type ProviderDiagnostics,
+  type ProviderLockers,
+  type LockerList,
   type ProviderPlaces,
   type QuoteOption,
   type QuoteResult,
@@ -20,6 +22,13 @@ import { FezClient, type FezClientOptions } from './client';
 import { verifyFezWebhook } from './webhook';
 
 export const FEZ_LABEL = 'Fez Delivery';
+
+/** Fez sends its locker caps as QUOTED numbers (`"maxWeight": "5"`), so a
+ *  plain typeof check would drop both. */
+const numberOrNull = (v: unknown): number | null => {
+  const n = typeof v === 'string' ? Number(v) : typeof v === 'number' ? v : NaN;
+  return Number.isFinite(n) ? n : null;
+};
 
 const toMinor = (v: unknown): number | null => {
   const n = typeof v === 'string' ? Number(v) : typeof v === 'number' ? v : NaN;
@@ -91,11 +100,50 @@ export function createFezProvider(env: FezEnv, opts: FezClientOptions = {}): Log
     },
   };
 
+  /**
+   * FEZ'S PARCEL LOCKERS FOR ONE STATE.
+   *
+   * ONE STATE PER CALL because that is how Fez keys the endpoint, and the
+   * caller is expected to ask only about the state a shopper just picked —
+   * `ProviderLockers` says why a whole-country sweep is not this interface's
+   * job.
+   *
+   * AN UNKNOWN STATE IS AN EMPTY LIST, NOT A THROW. Fez answers a state with no
+   * lockers and a state that does not exist the same way, and neither is a
+   * fault the shopper can act on: both mean "no locker here", which the
+   * storefront renders as "have it delivered instead". A throw would turn a
+   * shop in a state Fez has not built lockers in into a broken checkout.
+   *
+   * THE CAPS ARE STRINGS ON THE WIRE. Fez sends `"maxWeight": "5"` and
+   * `"maxValueOfItem": "100000"` — quoted, and the value in NAIRA rather than
+   * in minor units, unlike every price this codebase handles. `maxValueMinor`
+   * converts, so callers keep the one money convention (100 per naira) and no
+   * comparison against a cart total has to remember which side is which.
+   */
+  const lockers: ProviderLockers = {
+    async list(state: string): Promise<LockerList> {
+      const res = await client.call('GET', `/Lockers/${encodeURIComponent(fezStateName(state))}`);
+      const rows = Array.isArray(res.Lockers) ? (res.Lockers as Record<string, unknown>[]) : [];
+      return {
+        lockers: rows.flatMap((row) => {
+          const id = row.lockerID == null ? null : String(row.lockerID);
+          const address = typeof row.lockerAddress === 'string' ? row.lockerAddress.trim() : '';
+          /* Both or neither: an id with no address cannot be shown to a
+             shopper, and an address with no id cannot be booked. */
+          return id && address ? [{ id, address }] : [];
+        }),
+        maxWeightKg: numberOrNull(res.maxWeight),
+        maxValueMinor: toMinor(res.maxValueOfItem),
+      };
+    },
+  };
+
   return {
     id: 'fez',
     label: FEZ_LABEL,
     diagnostics,
     places,
+    lockers,
 
     async quote(input: ParcelInput): Promise<QuoteResult> {
       const missing = missingWeights(input.items);
