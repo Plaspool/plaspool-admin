@@ -222,11 +222,20 @@ export async function courierShippingOptions(
     const amountMinor = roundUp(cheapest.amountMinor);
     cache.set(key, { amountMinor, eta: cheapest.eta, at: now });
     return [toQuote(provider, amountMinor, cheapest.eta, a.currency, a.taxable)];
-  } catch {
-    /* EVERY refusal lands here on purpose — bad credentials, a state Fez does
-       not serve, a timeout, a 500. The shopper gets the owner's hand-set rate
-       and the checkout keeps working; nothing about a courier's bad afternoon
-       should be able to stop the shop taking money. */
+  } catch (err) {
+    /* EVERY refusal lands here on purpose — bad credentials, a state the courier
+       does not serve, a timeout, a 500. The shopper gets the owner's hand-set
+       rate and the checkout keeps working; nothing about a courier's bad
+       afternoon should be able to stop the shop taking money.
+       BUT IT IS SAID OUT LOUD. A silent fallback is indistinguishable from a
+       working courier — the shop would quietly sell delivery at a flat rate it
+       thought it had stopped using, which is the failure this whole change
+       exists to end. One line in the function log is what makes "Fez priced it"
+       and "Fez was down" different events. */
+    console.warn(
+      `[courier-rates] ${provider} did not quote; falling back to the hand-set rate:`,
+      err instanceof Error ? err.message : err,
+    );
     return null;
   }
 }
