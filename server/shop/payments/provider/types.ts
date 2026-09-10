@@ -105,6 +105,16 @@ export interface ProviderIntent {
    * `gateway_response` is free text that can quote the input that caused it.
    */
   failureReason: ProviderFailureReason | null;
+  /**
+   * The gateway's OWN identifier for this charge, when it differs from the
+   * reference we supplied. NULL for Paystack, which transacts under ours.
+   *
+   * EXISTS BECAUSE FLUTTERWAVE REFUNDS REQUIRE IT: `POST /v3/transactions/
+   * {id}/refund` takes their numeric id, while verification and the webhook
+   * both accept our `tx_ref`. So the reference stays OURS — which is what
+   * makes a retry safe — and this carries theirs.
+   */
+  providerChargeId?: string | null;
 }
 
 export type ProviderIntentStatus =
