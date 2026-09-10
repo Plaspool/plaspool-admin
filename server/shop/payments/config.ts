@@ -203,21 +203,39 @@ export function flutterwaveProvider(): PaymentProvider {
 
 /**
  * Which gateways this deployment can authenticate to. A BOOLEAN PER GATEWAY —
- * never the key, never a prefix, never a length. Feeds the admin card's
- * warning, so the owner cannot switch onto a gateway that will 401.
+ * the check below may READ a prefix, but never RETURNS the key, the prefix
+ * or a length. Feeds the admin card's warning, so the owner cannot switch
+ * onto a gateway that will 401.
  *
- * READS `process.env` DIRECTLY RATHER THAN `paymentsEnv()`, because that
- * function THROWS when the schema does not parse — and "the key is malformed"
- * is exactly a case this must be able to report rather than crash on. A
- * presence check that cannot run when something is wrong is useless precisely
- * when it is needed.
+ * THE SAME PREFIX SHAPE `Schema`/`FlutterwaveSchema` ALREADY REQUIRE
+ * (`sk_(test|live)_`, `FLWSECK[-_]`), tested directly rather than by running
+ * either schema's `safeParse` — see the next paragraph for why. A bare
+ * `Boolean(process.env…)` used to be here, and it reported `true` for
+ * exactly the input the regex exists to catch: Paystack's or Flutterwave's
+ * PUBLIC key pasted where the secret belongs — which authenticates nothing —
+ * so the admin card showed no warning in the one case it exists for, and
+ * `flutterwaveProvider()`/`paystackProvider()` threw anyway the moment a
+ * charge was attempted.
+ *
+ * A PREFIX TEST IS NOT A PARSE. It does not check length or any other rule
+ * `Schema`/`FlutterwaveSchema` enforce, so a string that merely starts right
+ * but is otherwise short or malformed can still report `true` here and still
+ * fail `paymentsEnv()`/`flutterwaveEnv()` a moment later. That narrower gap
+ * is accepted: closing it needs the real parse, which is exactly what the
+ * next paragraph says this function must not run.
+ *
+ * READS `process.env` DIRECTLY RATHER THAN `paymentsEnv()`/`flutterwaveEnv()`,
+ * because those THROW when the schema does not parse — and "the key is
+ * malformed" is exactly a case this must be able to report rather than crash
+ * on. A presence check that cannot run when something is wrong is useless
+ * precisely when it is needed.
  */
 export function providerKeyPresence(): Record<ProviderName, boolean> {
   return {
-    paystack: Boolean(process.env.PAYSTACK_SECRET_KEY),
-    flutterwave: Boolean(
-      process.env.FLUTTERWAVE_SECRET_KEY && process.env.FLUTTERWAVE_WEBHOOK_HASH,
-    ),
+    paystack: /^sk_(test|live)_/.test(process.env.PAYSTACK_SECRET_KEY ?? ''),
+    flutterwave:
+      Boolean(process.env.FLUTTERWAVE_WEBHOOK_HASH) &&
+      /^FLWSECK[-_]/.test(process.env.FLUTTERWAVE_SECRET_KEY ?? ''),
   };
 }
 
