@@ -14,6 +14,7 @@ import { PageHeader } from '../ui/Page';
 import { Banner, Button, EmptyState, Loading } from '../ui/primitives';
 import { Card } from '../ui/Card';
 import { Checkbox, SelectField } from '../ui/Field';
+import { Modal } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
 
 /**
@@ -49,6 +50,19 @@ import { useToast } from '../ui/Toast';
  * SWITCHED ON. Paystack's adapter cannot charge cedis at all — offering the
  * box would let the owner "switch on" a currency that would fail on every
  * order — so each gateway's editor only ever renders `canCharge`'s codes.
+ *
+ * TWO GUARDS IN `toggleCurrency`, NEITHER OF THEM THE SERVER'S JOB TO EXPLAIN.
+ * `writePaymentSettings` (`settings.ts`) refuses an empty currency list with
+ * a bare `BadRequestError` naming the field, not a sentence — right for a
+ * function with no UI to render into, wrong for a checkbox that would
+ * otherwise spring back with no explanation, so the LAST currency for a
+ * gateway is refused locally, before the request. Naira off the gateway
+ * TAKING PAYMENTS is different: the resulting list is not empty, the server
+ * has nothing to refuse, and `POST /shop/payments/intents` would only start
+ * answering `no_provider_for_currency` the next time an NGN order tries to
+ * route — so that one is a `Modal` confirmation instead of a hard refusal,
+ * matching the missing-key `Banner` above it in register (name the state,
+ * say the consequence) while still letting the owner proceed on purpose.
  */
 
 const GATEWAY_NAMES: readonly PaymentProviderName[] = ['paystack', 'flutterwave'];
@@ -131,6 +145,14 @@ export default function SettingsPayments() {
   /* Set only by a lost CAS, cleared the moment another change is tried —
      the banner it draws is about one refusal, not a standing condition. */
   const [conflict, setConflict] = useState(false);
+  /* Non-null while the "switch naira off the gateway taking payments" modal
+     is open, carrying exactly what `commit` needs if the owner proceeds.
+     Cleared by either button — Cancel drops it, and Confirm reads it once
+     and drops it in the same handler, so the modal can never fire twice. */
+  const [pendingNgnWarn, setPendingNgnWarn] = useState<{
+    name: PaymentProviderName;
+    next: string[];
+  } | null>(null);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -207,6 +229,28 @@ export default function SettingsPayments() {
     if (!settings) return;
     const current = settings.gateways[name].currencies;
     const next = checked ? [...current, code] : current.filter((c) => c !== code);
+
+    /* THE LAST CURRENCY: refused HERE, before the request. The server's
+       BadRequestError names the field and nothing else — right for a
+       function with no screen to render into, wrong for a checkbox that
+       would otherwise spring back with no explanation. */
+    if (next.length === 0) {
+      toast.show(
+        `${GATEWAY_LABEL[name]} needs at least one currency switched on. Switch on another one first.`,
+        'critical',
+      );
+      return;
+    }
+
+    /* NAIRA, OFF THE GATEWAY TAKING PAYMENTS: this list is not empty, so the
+       server has nothing to refuse — every NGN checkout simply starts
+       failing the next time it tries to route. That needs a human decision,
+       not a silent save, so it asks rather than blocks. */
+    if (!checked && code === 'NGN' && name === settings.activeProvider) {
+      setPendingNgnWarn({ name, next });
+      return;
+    }
+
     void commit({ currencies: currencyPatchFor(name, next) });
   }
 
@@ -316,6 +360,33 @@ export default function SettingsPayments() {
         A gateway switched off here refuses nothing already in flight — an order already paid for
         keeps the gateway it was actually charged through.
       </p>
+
+      {pendingNgnWarn ? (
+        <Modal
+          title="Switch naira off?"
+          onClose={() => setPendingNgnWarn(null)}
+          footer={
+            <>
+              <Button onClick={() => setPendingNgnWarn(null)}>Cancel</Button>
+              <Button
+                tone="critical"
+                onClick={() => {
+                  const warn = pendingNgnWarn;
+                  setPendingNgnWarn(null);
+                  void commit({ currencies: currencyPatchFor(warn.name, warn.next) });
+                }}
+              >
+                Switch off anyway
+              </Button>
+            </>
+          }
+        >
+          <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
+            Naira is switched off for the gateway taking payments. Nigerian customers can’t check
+            out.
+          </p>
+        </Modal>
+      ) : null}
     </div>
   );
 }
