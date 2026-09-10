@@ -30,10 +30,15 @@
  * compared for equality, not an HMAC over anything, so it proves only that
  * the sender knows a static value — never that the body is unmodified.
  * Anyone who ever learns that value can replay it on a body claiming ANY
- * `tx_ref` was captured for ANY amount. So `parseWebhook` below reads
- * exactly one fact from the payload (`data.tx_ref`) and asks `fetchIntent`
- * for everything else — see that method's own comment, which is the real
- * documentation of this property; this paragraph is only the pointer to it.
+ * `tx_ref` was captured, under ANY event name, at ANY status, for ANY
+ * amount. So `parseWebhook` below TRUSTS exactly one fact from the payload
+ * (`data.tx_ref`) and asks `fetchIntent` for everything else — including
+ * the STATUS half of the dedupe key (`flutterwaveEventIdOf`), never the
+ * body's own claimed `data.status`, and the `type` it reports, which is
+ * PATTERN-MATCHED against one known-safe literal (`safeEventType`) rather
+ * than passed through verbatim. See that method's own comment, which is the
+ * real documentation of this property; this paragraph is only the pointer
+ * to it.
  *
  * WHAT ELSE IS DIFFERENT FROM PAYSTACK:
  *
@@ -310,26 +315,53 @@ function toMinorUnits(value: unknown): number | null {
  * unconditionally is what makes this adapter's keys structurally unable to
  * collide with another gateway's, rather than merely unlikely to.
  *
- * THE COMPOSITE IS `tx_ref` — OURS, unique per charge, and the same kind of
- * discriminant `providerEventIdOf`'s own `charge.*` branch uses Paystack's
- * `reference` as, for the same reason. Reading it here is not a breach of
- * `parseWebhook`'s "trust nothing but `tx_ref`" rule — it IS that field —
- * and a forged value can only affect DEDUPE housekeeping, never
- * `intentStatus`/`amount`/`currency`/`failureReason`, which always come
- * from `fetchIntent` and never from this function. A body with no usable
- * `tx_ref` falls back to a digest of the raw bytes, so a redelivery
- * (identical bytes) still dedupes and two different malformed bodies do
- * not collide.
+ * THE COMPOSITE IS `tx_ref` PLUS THE TRUSTED STATUS `fetchIntent` RESOLVED —
+ * NEVER THE BODY'S `event` FIELD, AND NEVER THE BODY'S CLAIMED `data.status`.
+ * This function used to take `event` as its discriminant
+ * (`flutterwave:${event}:${txRef}`), and that was wrong in a way a stub
+ * proved directly: Flutterwave sends ONE constant event name —
+ * `charge.completed` — across a charge's entire lifecycle, so `event`
+ * contributed no variability at all and the key reduced to `tx_ref` alone.
+ * A webhook delivered while a charge is still pending and a second once it
+ * clears then produced the SAME key; the second collided on
+ * `ON CONFLICT (provider_event_id) DO NOTHING` (`webhook.ts`'s
+ * `storeEvent`), came back `duplicate: true`, and `processEvent` was never
+ * called for it — the success was silently swallowed, with no automatic
+ * recovery for a delayed method (bank transfer, USSD) whose customer has
+ * already closed the tab.
+ *
+ * SWITCHING THE DISCRIMINANT TO THE BODY'S CLAIMED `data.status` WOULD BE
+ * THE WRONG FIX, NOT A SMALLER VERSION OF THE RIGHT ONE. `verif-hash` is a
+ * static shared secret sent back for equality, not an HMAC over the bytes
+ * (see this file's header) — so anyone who has ever learned it can vary
+ * `data.status` freely and mint unlimited distinct keys for one real
+ * reference, defeating dedupe entirely and spamming `shop_payment_events`
+ * with rows this adapter would then treat as all genuinely new.
+ *
+ * So `status` below is the CALLER's resolved `ProviderIntentStatus` —
+ * `fetchIntent`'s answer, fetched fresh over TLS with the secret key on
+ * every call, which is the one channel a webhook replay cannot forge. A
+ * genuine identical redelivery (same reference, same fetched status) still
+ * produces the same key; a pending-then-successful pair for the same
+ * reference now produces two different ones, because the status actually
+ * changed at the gateway between the two lookups.
+ *
+ * Reading `tx_ref` out of the body here is not a breach of `parseWebhook`'s
+ * "trust nothing but `tx_ref`" rule — it IS that field — and a forged
+ * `tx_ref` can only ever resolve to SOME real charge's own trusted status
+ * (or fail to resolve at all, throwing before this is ever called), never to
+ * a status the caller invented. A body with no usable `tx_ref` falls back to
+ * a digest of the raw bytes, so a redelivery (identical bytes) still
+ * dedupes and two different malformed bodies do not collide.
  */
 export function flutterwaveEventIdOf(
-  event: string,
+  status: ProviderIntentStatus,
   data: Record<string, unknown> | null,
   raw: Uint8Array,
 ): string {
-  const bodyDigest = () =>
-    `flutterwave:${event}:body:${createHash('sha256').update(raw).digest('hex')}`;
+  const bodyDigest = () => `flutterwave:body:${createHash('sha256').update(raw).digest('hex')}`;
   const txRef = data ? str(data.tx_ref) : null;
-  return txRef ? `flutterwave:${event}:${txRef}` : bodyDigest();
+  return txRef ? `flutterwave:${txRef}:${status}` : bodyDigest();
 }
 
 /**
@@ -353,6 +385,60 @@ export function verifyFlutterwaveHash(headers: Headers, expected: string): boole
   const b = Buffer.from(expected);
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
+}
+
+/**
+ * THE ONLY EVENT NAME THIS ADAPTER RECOGNISES BY STRING — see this file's
+ * header. Flutterwave uses one constant event name across a charge's whole
+ * lifecycle; the state that actually changes lives in `data.status`, read
+ * (trusted) via `fetchIntent`, never here. Matching this exact literal is
+ * safe precisely because a match never CARRIES the attacker's own bytes
+ * anywhere — `safeEventType` below returns this hardcoded constant on a
+ * match, not the `event` variable.
+ */
+const CHARGE_EVENT = 'charge.completed';
+
+/**
+ * THE SENTINEL FOR EVERY `event` STRING THIS ADAPTER DOES NOT RECOGNISE.
+ *
+ * `event` is read from the UNVERIFIED body: `verif-hash` proves only that
+ * the sender knows a static secret, never that the body is unmodified (this
+ * file's header). Paystack's `parseWebhook` returns its own `event` field
+ * verbatim as `ProviderEvent.type`, and that is safe there ONLY because
+ * Paystack HMACs the whole body before this application ever sees it —
+ * there is no equivalent guarantee here. `storeEvent` (`webhook.ts`)
+ * persists `type` with no allow-list of its own, and `processEvent` then
+ * branches on it: `row.type.startsWith('refund.')` reads a refund's id and
+ * status STRAIGHT OUT OF THE UNVERIFIED STORED PAYLOAD, and
+ * `row.type === 'charge.success'` marks an intent captured. This adapter's
+ * `parseWebhook` never populates a refund event — `providerRefundId` and
+ * `refundStatus` are always `null` below, because this adapter has no
+ * endpoint that reports a refund's own state by reference — so a `type`
+ * that could ever satisfy either check would be a lie `processEvent` has no
+ * way to catch: a forged `event: 'refund.completed'`, with nothing else
+ * about the body verified, would mark a REAL refund succeeded on an
+ * attacker's say-so, the moment a route mounts this adapter's webhook.
+ *
+ * So this value is deliberately inert against BOTH checks: it does not
+ * start with `refund.`, and it is not equal to `charge.success` (Paystack's
+ * spelling — this gateway's own recognised event is `charge.completed`,
+ * `CHARGE_EVENT` above, which `webhook.ts`'s `processEvent` does not yet
+ * recognise either; teaching it to dispatch on the fields `parseWebhook`
+ * already computes, rather than re-deriving decisions from `type` plus the
+ * raw stored payload, is Task 9's fix, not this file's).
+ */
+const UNRECOGNISED_EVENT_TYPE = 'flutterwave.unrecognized_event';
+
+/**
+ * Collapse the body's `event` field to one of exactly two hardcoded string
+ * literals. NEVER returns the `event` argument itself — even a
+ * byte-for-byte correct `'charge.completed'` comes back as the
+ * `CHARGE_EVENT` constant, not the variable that held it — so nothing
+ * downstream ever receives a `ProviderEvent.type` this adapter did not
+ * choose.
+ */
+function safeEventType(event: string): string {
+  return event === CHARGE_EVENT ? CHARGE_EVENT : UNRECOGNISED_EVENT_TYPE;
 }
 
 export class FlutterwaveProvider implements PaymentProvider {
@@ -680,14 +766,26 @@ export class FlutterwaveProvider implements PaymentProvider {
    * and `verifyFlutterwaveHash` would accept it exactly as it accepts a
    * genuine one.
    *
-   * SO THE BODY IS NEVER TRUSTED FOR ANYTHING BUT `data.tx_ref`. No
+   * SO THE BODY IS TRUSTED FOR EXACTLY ONE FACT: `data.tx_ref`. No
    * `status`, no `amount`, no `currency` — not even as a fallback when the
    * lookup below fails. Every fact this method actually reports —
-   * `intentStatus`, `amount`, `currency`, `failureReason` — comes from
-   * `fetchIntent`: a fresh call to Flutterwave's API, over TLS, carrying
-   * the secret key, which is the one channel a webhook replay cannot forge.
-   * The webhook is a TRIGGER telling this adapter to go look. It is never
-   * the source of truth for what it claims happened.
+   * `intentStatus`, `amount`, `currency`, `failureReason`, and the STATUS
+   * half of `providerEventId`'s dedupe key (`flutterwaveEventIdOf`) — comes
+   * from `fetchIntent`: a fresh call to Flutterwave's API, over TLS,
+   * carrying the secret key, which is the one channel a webhook replay
+   * cannot forge. The webhook is a TRIGGER telling this adapter to go look.
+   * It is never the source of truth for what it claims happened.
+   *
+   * `event` IS READ, BUT NEVER TRUSTED FOR CONTENT — only PATTERN-MATCHED
+   * against one known-safe literal (`safeEventType`), the same discipline
+   * `#classify` already applies to Paystack's error `message` elsewhere in
+   * this codebase. The `type` on the returned `ProviderEvent` is therefore
+   * always one of exactly two hardcoded strings this adapter chose, never
+   * the attacker's own bytes — see `safeEventType`'s own comment for why an
+   * unconstrained passthrough would be unsafe SPECIFICALLY FOR THIS GATEWAY
+   * (Paystack's `parseWebhook` returns its `event` verbatim, and that is
+   * safe there only because Paystack HMACs the whole body before this
+   * application ever sees it).
    *
    * THIS IS THE ONE PROPERTY IN THIS FILE A TEST CANNOT PROVE — exercising
    * it for real means forging a webhook, which is exactly the attack it
@@ -748,8 +846,16 @@ export class FlutterwaveProvider implements PaymentProvider {
     const intent = await this.fetchIntent(txRef);
 
     return {
-      providerEventId: flutterwaveEventIdOf(event, data, raw),
-      type: event,
+      // THE STATUS HALF OF THIS KEY IS `intent.status` — FETCHED, TRUSTED —
+      // NEVER `event` and NEVER the body's own `data.status`. See
+      // `flutterwaveEventIdOf`'s own comment for why both alternatives are
+      // unsafe (one drops the success event, the other lets a leaked hash
+      // mint unlimited keys).
+      providerEventId: flutterwaveEventIdOf(intent.status, data, raw),
+      // NEVER `event` VERBATIM — see `safeEventType` and this method's own
+      // header for why an unconstrained passthrough of the body's claimed
+      // event name is unsafe for this gateway specifically.
+      type: safeEventType(event),
       providerIntentId: intent.providerIntentId,
       // No refund-event handling: this adapter has no endpoint that reports
       // a refund's own state by reference, and nothing here derives one
