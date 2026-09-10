@@ -114,13 +114,16 @@ export interface StoreEventResult {
  * carries no such field, and never guessed from `event.type`. A real caller
  * knows which adapter's `parseWebhook` produced this event, because it is the
  * one that called it, and that is the one place this fact can be known
- * honestly. It defaults to `'paystack'` — correct for every caller today,
- * this router's own one webhook route included, since a second gateway has
- * no route delivering to it yet — and ONLY so that `server/shop/composition.test.ts`'s
- * pre-existing two-argument call (predating this task, and one this task
- * must not edit) keeps compiling and keeps meaning what it always meant.
- * `routes.ts` names it explicitly rather than relying on the default, and any
- * future caller should too.
+ * honestly.
+ *
+ * @deprecated THE `= 'paystack'` DEFAULT — not this function. Exists ONLY so
+ * `server/shop/composition.test.ts`'s pre-existing two-argument call (predating
+ * this task, and one this project's mode change forbids editing right now)
+ * keeps compiling and keeps meaning what it always meant — the identical
+ * reason `intents.ts`'s legacy `createIntent` overload gives for its own
+ * `@deprecated` default. It is not a shape to copy: both webhook routes name
+ * the gateway explicitly today (`routes.ts`'s `createWebhookRoutes`, bound
+ * per-route to `'paystack'`/`'flutterwave'`), and any future caller must too.
  */
 export async function storeEvent(
   db: Db,
