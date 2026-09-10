@@ -447,7 +447,23 @@ logisticsRoutes.post('/admin/logistics/places/refresh', requireAdmin(), async (c
  * retry, which is what a 502 would invite.
  */
 logisticsRoutes.get('/admin/logistics/lockers/:state', auth, async (c) => {
-  const state = c.req.param('state').trim();
+  /*
+   * `pathParam`, NOT `c.req.param`, and the difference is the NUL check.
+   *
+   * This route read the parameter raw while its four neighbours below all go
+   * through `pathParam`, so it was the one path segment in the file with no
+   * boundary check on it. A NUL byte survives `.trim()` — U+0000 is not
+   * whitespace in JS, so the emptiness guard below passes it straight through
+   * — and the request then reached `activeCourier` and answered 409 about the
+   * courier instead of 400 about the input. `nul-bytes.test.ts` walks every
+   * registered route for exactly this and named this one.
+   *
+   * It must refuse BEFORE any lookup: U+0000 cannot be stored in a Postgres
+   * text or jsonb value, so anything downstream can only end in a scrubbed
+   * `internal` 5xx that the client then retries five times for input that can
+   * never be accepted.
+   */
+  const state = pathParam(c, 'state').trim();
   if (!state) return c.json({ error: 'state_required' }, 400);
 
   const deps = resolveLogisticsDeps();
