@@ -470,6 +470,13 @@
                         "when":  1786600005730,
                         "tag":  "1080_courier_exports",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  67,
+                        "version":  "7",
+                        "when":  1786600005740,
+                        "tag":  "1100_payment_providers",
+                        "breakpoints":  true
                     }
                 ]
 }

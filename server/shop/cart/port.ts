@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { completeCheckout, frozenTotals, setCheckoutContact } from './checkout/repo';
 import { CartPreconditionError, CartStaleWriteError } from './errors';
 import { NotFoundError } from '../../repo/errors';
@@ -96,6 +97,34 @@ export function checkoutPort(): CheckoutPort<Db> {
         // re-drive the same row for ever. Let it out.
         throw err;
       }
+    },
+
+    /**
+     * `CheckoutPort.destination` — the shipping address's country, read
+     * straight off `shop_addresses` rather than through `frozen_totals`. See
+     * the port's doc comment in `shared/commerce/ports.ts` for why this lives
+     * outside `FrozenTotals` and why it must never throw.
+     *
+     * A PLAIN SELECT, NOT `getAddress`. `getAddress` pulls every address column
+     * through `rowToAddress` for callers that need the whole snapshot; this
+     * needs one column and returns `null` for the two cases `getAddress`
+     * cannot distinguish from "found nothing" anyway — no address row, and no
+     * such checkout at all. Neither is an exception here: a `SELECT` against a
+     * cart id that does not exist simply returns zero rows, which is what
+     * makes "answers `null` rather than throwing for a checkout that does not
+     * exist" true by construction rather than by a caught error.
+     *
+     * `country_code` is `NOT NULL` with a `CHECK` of `^[A-Z]{2}$` on the address
+     * row, so the null-country branch below is defensive rather than reachable
+     * today — the same posture this codebase takes reading `FrozenTotals`
+     * jsonb rather than trusting a constraint to have always held.
+     */
+    async destination(db: Db, checkoutId: string): Promise<{ country: string } | null> {
+      const res = await db.execute(sql`
+        SELECT country_code FROM shop_addresses
+         WHERE cart_id = ${checkoutId} AND kind = 'shipping' LIMIT 1`);
+      const code = res.rows[0]?.country_code;
+      return code == null ? null : { country: String(code).toUpperCase() };
     },
   };
 }

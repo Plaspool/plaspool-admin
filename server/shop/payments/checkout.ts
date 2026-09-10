@@ -47,7 +47,10 @@ export type PaymentsCheckoutPort = CheckoutPort<Db>;
  * plausible one.
  */
 export function fakeCheckoutPort(
-  entries: Record<string, { total: number; currency: string; checkoutId?: string }>,
+  entries: Record<
+    string,
+    { total: number; currency: string; checkoutId?: string; country?: string }
+  >,
 ): PaymentsCheckoutPort {
   /*
    * WHICH CHECKOUTS THIS FAKE HAS ALREADY COMPLETED, so `complete()` answers
@@ -107,6 +110,20 @@ export function fakeCheckoutPort(
       if (completed.has(checkoutId)) return Promise.resolve('already-completed');
       completed.add(checkoutId);
       return Promise.resolve('completed');
+    },
+
+    /**
+     * Defaults to `'NG'` when an entry names no `country`, deliberately: every
+     * existing fixture is a Nigerian order, and answering `null` by default
+     * would silently exercise the "unknown destination" routing branch in
+     * every test that never thought about routing at all — the same class of
+     * mistake as a fixture that never carries the value the code actually
+     * writes.
+     */
+    destination(_db: Db, checkoutId: string): Promise<{ country: string } | null> {
+      void _db;
+      const entry = entries[checkoutId];
+      return Promise.resolve(entry ? { country: entry.country ?? 'NG' } : null);
     },
   };
 }

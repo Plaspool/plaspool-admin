@@ -1,6 +1,8 @@
 import { z } from 'zod';
+import { FlutterwaveProvider } from './provider/flutterwave';
 import { PaystackProvider } from './provider/paystack';
 import { scrubbedProvider } from './provider/scrub';
+import type { ProviderName } from './schema';
 import type { PaymentProvider } from './provider/types';
 
 /**
@@ -19,6 +21,13 @@ import type { PaymentProvider } from './provider/types';
  *    the variable is required, and it is required *at the moment a payment is
  *    attempted*, so a missing key is a loud failure on the payment path and no
  *    failure at all anywhere else.
+ *
+ * THE SAME SCOPING APPLIES BETWEEN GATEWAYS, NOT ONLY BETWEEN THIS FILE AND
+ * `server/env.ts`. `Schema` below covers what is genuinely shared
+ * (`PAYMENTS_CALLBACK_URL`) or Paystack's own. Flutterwave's three variables
+ * live in their own `FlutterwaveSchema`, with their own cache and their own
+ * `safeParse`, further down this file — see that schema's comment for why a
+ * single shared schema was the wrong shape once a second gateway existed.
  *
  * `PAYSTACK_SECRET_KEY` IS BOTH THE API CREDENTIAL AND THE WEBHOOK SIGNING KEY.
  * Paystack has no separate signing secret: `x-paystack-signature` is an
@@ -75,9 +84,77 @@ export function paymentsEnv(): PaymentsEnv {
   return (cached = parsed.data);
 }
 
-/** Test-only: drop the memoised environment between cases. */
+/**
+ * Flutterwave's own environment — its OWN schema, its OWN cache and its OWN
+ * `safeParse`, entirely separate from `Schema`/`paymentsEnv()` above.
+ *
+ * THIS SEPARATION IS THE FIX FOR A REAL INCIDENT SHAPE, NOT A STYLE CHOICE.
+ * Before this, Flutterwave's three variables lived inside the same
+ * `z.object()` that `paystackProvider()` also parses, so ONE malformed
+ * Flutterwave value — someone pasting the public `FLWPUBK…` key where the
+ * secret belongs, which is exactly what the prefix regex below exists to
+ * catch — failed `safeParse` for the *whole* schema and made `paymentsEnv()`
+ * throw for every caller, Paystack included. A typo in the gateway being
+ * added would have disabled the gateway that is currently taking this shop's
+ * live payments. Each gateway gets its own schema, cache and parse so that
+ * can never happen again: a broken key disables only the gateway it belongs
+ * to.
+ *
+ * REQUIRED HERE, NOT `.optional()` WITH A HAND-ROLLED CHECK AFTERWARDS. That
+ * was the previous shape (see git history) and it is unnecessary now: nothing
+ * calls this function except `flutterwaveProvider()`, and reaching
+ * `flutterwaveProvider()` at all already means a Flutterwave payment is being
+ * attempted, so there is no "not configured yet, and that's fine" case left
+ * for this parse to be lenient about. `providerKeyPresence()` below answers
+ * "is it configured" without ever calling this function, which is what keeps
+ * a deployment with no Flutterwave configured bootable.
+ */
+const FlutterwaveSchema = z.object({
+  /**
+   * `FLWSECK_TEST-…` in test mode, `FLWSECK-…` in live.
+   *
+   * The prefix is CHECKED for the same reason `PAYSTACK_SECRET_KEY`'s is: the
+   * PUBLIC key (`FLWPUBK…`) is the one that appears in frontend snippets, and
+   * pasting it here produces a 401 on the first charge with the gateway blamed.
+   */
+  FLUTTERWAVE_SECRET_KEY: z
+    .string()
+    .min(20)
+    .regex(/^FLWSECK[-_]/, 'must be a Flutterwave SECRET key'),
+  /**
+   * The dashboard's secret hash. UNLIKE PAYSTACK, THIS IS A SECOND, SEPARATE
+   * VALUE — `PAYSTACK_SECRET_KEY` is both API credential and signing key;
+   * Flutterwave's two are independent and rotate independently.
+   */
+  FLUTTERWAVE_WEBHOOK_HASH: z.string().min(8),
+  /** Overridden only by tests. Never set in a deployment. */
+  FLUTTERWAVE_BASE_URL: z.string().optional(),
+});
+
+export type FlutterwaveEnv = z.infer<typeof FlutterwaveSchema>;
+
+let flutterwaveCached: FlutterwaveEnv | null = null;
+
+/** Parsed lazily — only when `flutterwaveProvider()` is actually called. */
+function flutterwaveEnv(): FlutterwaveEnv {
+  if (flutterwaveCached) return flutterwaveCached;
+  const parsed = FlutterwaveSchema.safeParse(process.env);
+  if (!parsed.success) {
+    // NAMES ONLY — never `parsed.error.message`, never the value. Same reason
+    // `paymentsEnv()` gives above: the offending input here is a live secret.
+    throw new Error(
+      `Invalid payments environment: ${parsed.error.issues
+        .map((i) => i.path.join('.'))
+        .join(', ')}`,
+    );
+  }
+  return (flutterwaveCached = parsed.data);
+}
+
+/** Test-only: drop the memoised environment for BOTH gateways between cases. */
 export function resetPaymentsEnv(): void {
   cached = null;
+  flutterwaveCached = null;
 }
 
 /**
@@ -98,4 +175,99 @@ export function paystackProvider(): PaymentProvider {
       baseUrl: env.PAYSTACK_BASE_URL,
     }),
   );
+}
+
+/**
+ * The Flutterwave provider, wrapped in the same scrub.
+ *
+ * READS `flutterwaveEnv()`, NEVER `paymentsEnv()` — see `FlutterwaveSchema`'s
+ * own comment for why the two must not share a parse. Both
+ * `FLUTTERWAVE_SECRET_KEY` and `FLUTTERWAVE_WEBHOOK_HASH` are required inside
+ * that schema now rather than `.optional()` with a hand-rolled "both present"
+ * check afterwards (the previous shape): calling this function at all already
+ * means a Flutterwave payment is being attempted, so there is nothing left to
+ * be lenient about here. A deployment with no Flutterwave configured simply
+ * never calls this function, and `paystackProvider()` is unaffected either
+ * way — including when Flutterwave's configuration is present but broken.
+ */
+export function flutterwaveProvider(): PaymentProvider {
+  const env = flutterwaveEnv();
+  return scrubbedProvider(
+    new FlutterwaveProvider({
+      secretKey: env.FLUTTERWAVE_SECRET_KEY,
+      webhookHash: env.FLUTTERWAVE_WEBHOOK_HASH,
+      baseUrl: env.FLUTTERWAVE_BASE_URL,
+    }),
+  );
+}
+
+/**
+ * Which gateways this deployment can authenticate to. A BOOLEAN PER GATEWAY —
+ * the check below may READ a prefix, but never RETURNS the key, the prefix
+ * or a length. Feeds the admin card's warning, so the owner cannot switch
+ * onto a gateway that will 401.
+ *
+ * THE SAME PREFIX SHAPE `Schema`/`FlutterwaveSchema` ALREADY REQUIRE
+ * (`sk_(test|live)_`, `FLWSECK[-_]`), tested directly rather than by running
+ * either schema's `safeParse` — see the next paragraph for why. A bare
+ * `Boolean(process.env…)` used to be here, and it reported `true` for
+ * exactly the input the regex exists to catch: Paystack's or Flutterwave's
+ * PUBLIC key pasted where the secret belongs — which authenticates nothing —
+ * so the admin card showed no warning in the one case it exists for, and
+ * `flutterwaveProvider()`/`paystackProvider()` threw anyway the moment a
+ * charge was attempted.
+ *
+ * A PREFIX TEST IS NOT A PARSE. It does not check length or any other rule
+ * `Schema`/`FlutterwaveSchema` enforce, so a string that merely starts right
+ * but is otherwise short or malformed can still report `true` here and still
+ * fail `paymentsEnv()`/`flutterwaveEnv()` a moment later. That narrower gap
+ * is accepted: closing it needs the real parse, which is exactly what the
+ * next paragraph says this function must not run.
+ *
+ * READS `process.env` DIRECTLY RATHER THAN `paymentsEnv()`/`flutterwaveEnv()`,
+ * because those THROW when the schema does not parse — and "the key is
+ * malformed" is exactly a case this must be able to report rather than crash
+ * on. A presence check that cannot run when something is wrong is useless
+ * precisely when it is needed.
+ */
+export function providerKeyPresence(): Record<ProviderName, boolean> {
+  return {
+    paystack: /^sk_(test|live)_/.test(process.env.PAYSTACK_SECRET_KEY ?? ''),
+    flutterwave:
+      Boolean(process.env.FLUTTERWAVE_WEBHOOK_HASH) &&
+      /^FLWSECK[-_]/.test(process.env.FLUTTERWAVE_SECRET_KEY ?? ''),
+  };
+}
+
+/**
+ * `capabilities.currencies` for BOTH gateways — the adapter's declared
+ * CEILING (`provider/types.ts`) — readable with NO credentials at all.
+ *
+ * NEITHER `paystackProvider()` NOR `flutterwaveProvider()` ABOVE MAY BE USED
+ * FOR THIS. `capabilities` is a plain, static property that does not depend
+ * on the secret's VALUE — see each adapter's own module-scope `CAPABILITIES`
+ * constant — but reaching a live Flutterwave instance through
+ * `flutterwaveProvider()` means surviving `flutterwaveEnv()`'s parse first,
+ * and that parse THROWS on a deployment that has not configured Flutterwave
+ * at all. That is exactly the deployment `GET /shop/admin/payments/settings`
+ * must still describe: the settings screen has to show what configuring a
+ * gateway would unlock (`canCharge`) even while `providerKeyPresence()`
+ * reports it absent (`hasKey: false`) — the two are independent facts, and a
+ * settings read that could 500 for the one deployment that most needs to see
+ * this would be worse than not showing it at all.
+ *
+ * A PLACEHOLDER CONFIG IS THEREFORE THE CORRECT INPUT HERE, NOT A SHORTCUT.
+ * Neither constructor validates or dials out with what it is given — see
+ * each class's own constructor — so a value that will never authenticate
+ * anything is exactly as good as a real one for reading a property that
+ * never varies with it.
+ */
+export function providerCeilings(): Record<ProviderName, readonly string[]> {
+  return {
+    paystack: new PaystackProvider({ secretKey: 'unconfigured' }).capabilities.currencies,
+    flutterwave: new FlutterwaveProvider({
+      secretKey: 'unconfigured',
+      webhookHash: 'unconfigured',
+    }).capabilities.currencies,
+  };
 }

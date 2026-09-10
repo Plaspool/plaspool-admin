@@ -6,9 +6,12 @@ import { requireAdmin } from '../../middleware/session';
 import { NotFoundError } from '../../repo/errors';
 import { currentDb, currentUser } from '../../app-env';
 import { ProviderError } from './provider/scrub';
-import { paystackProvider, paymentsEnv } from './config';
+import { flutterwaveProvider, paystackProvider, paymentsEnv, providerCeilings, providerKeyPresence } from './config';
 import { cancelIntent, createIntent, getIntent, applyIntentStatus } from './intents';
 import { createRefund, listRefunds } from './refunds';
+import { chooseProvider, providerFor, NoGatewayAvailableError, NoProviderForCurrencyError } from './routing';
+import { readPaymentSettings, writePaymentSettings } from './settings';
+import { PROVIDER_NAMES } from './schema';
 import { completeCheckoutForIntent, drainPaymentEvents, processEvent, storeEvent } from './webhook';
 import type { Context } from 'hono';
 import type { AppEnv } from '../../app-env';
@@ -16,6 +19,9 @@ import { paymentsCallbackUrl } from './utils/callback-url';
 import type { Db } from '../../db/client';
 import type { PaymentsCheckoutPort } from './checkout';
 import type { PaymentProvider } from './provider/types';
+import type { ProviderFactories } from './routing';
+import type { PaymentSettingsPatch } from './settings';
+import type { ProviderName } from './schema';
 import { storefrontOrigin } from '../storefront-url';
 
 /**
@@ -63,6 +69,24 @@ export interface PaymentDeps {
    * every test that cares only about the status ladder, and the cron still runs.
    */
   sweepEvents?: (db: Db, origin: string | null) => Promise<unknown>;
+
+  /**
+   * BOTH GATEWAYS, for ROUTING — `chooseProvider`/`providerFor` (`routing.ts`)
+   * — and for the Flutterwave webhook's STATIC binding below. Defaults to
+   * `{ paystack: () => resolveProvider(deps), flutterwave: flutterwaveProvider }`
+   * (see `resolveFactories`), which is what keeps this field additive rather
+   * than a second, competing way to inject a gateway: every existing caller
+   * that supplies only `provider` — every test file written before this task
+   * — keeps resolving that SAME handle through the new routing-aware paths,
+   * because `factories.paystack()` reaches it too.
+   *
+   * NEITHER FACTORY IS CALLED HERE, ONLY REFERENCED, for the identical reason
+   * `provider` above is never called at construction: a deployment with no
+   * Flutterwave configured must still boot and still take Paystack payments.
+   * `flutterwaveProvider` (`config.ts`) only throws once something actually
+   * asks it for a charge.
+   */
+  factories?: ProviderFactories;
 }
 
 /**
@@ -97,6 +121,18 @@ function unwiredCheckoutPort(): PaymentsCheckoutPort {
     recordContact() {
       return Promise.reject(unwired());
     },
+    /*
+     * REJECTS TOO, THE SAME AS ITS SIBLINGS ABOVE, RATHER THAN THE `null` A
+     * CONFIGURED PORT WOULD ANSWER. `destination`'s contract elsewhere is
+     * "never throw, degrade to domestic routing" — but that promise is about a
+     * checkout the port can actually see, not about a deployment that forgot
+     * to wire the port at all. Answering `null` here would let a missing
+     * composition root look like an ordinary checkout with no address yet,
+     * which is exactly the failure mode this stand-in exists to make loud.
+     */
+    destination() {
+      return Promise.reject(unwired());
+    },
   };
 }
 
@@ -127,6 +163,46 @@ const CreateRefundBody = z
   .strict();
 
 /**
+ * The `PATCH /shop/admin/payments/settings` body. `.strict()`, carries
+ * `revision`, every other field optional.
+ *
+ * `currencies` IS ITS OWN `.strict()` OBJECT WITH BOTH GATEWAYS OPTIONAL,
+ * NOT `z.record(...)` — the shape is `Partial<Record<ProviderName,
+ * string[]>>` exactly, and there are only ever two keys, so naming both
+ * explicitly reads the same way `settings.ts`'s own `PaymentSettingsPatch`
+ * type does rather than through a more general map type nothing else here
+ * needs.
+ *
+ * EACH ELEMENT IS AN ISO 4217 CODE, EXACTLY THREE UPPERCASE LETTERS — the
+ * same shape `shop_payment_settings_paystack_ccy_ck`/`..._flutterwave_ccy_ck`
+ * (migration 1100) enforce over the joined array. `str().min(1).max(10)`
+ * used to be the only bound here, which let a hand-crafted `PATCH` carrying
+ * `['ABCD']` pass zod AND `normalizeCurrencyCodes` (`settings.ts`, which
+ * only rejects an EMPTY list) and reach that CHECK constraint as an
+ * unlabelled 500 instead of a named 400. `readPaymentSettings`/every real
+ * response already returns codes uppercase (`settings.ts`: "Never empty for
+ * either gateway"), so the one real caller (`SettingsPayments.tsx`, which
+ * only ever round-trips what it was given) is unaffected.
+ */
+const CurrencyList = z.array(str().regex(/^[A-Z]{3}$/, 'ISO 4217 code')).optional();
+
+const PatchPaymentSettingsBody = z
+  .object({
+    activeProvider: z.enum(PROVIDER_NAMES).optional(),
+    /** `null` clears the country rule; absent (the default) leaves it alone. */
+    internationalProvider: z.enum(PROVIDER_NAMES).nullable().optional(),
+    currencies: z
+      .object({
+        paystack: CurrencyList,
+        flutterwave: CurrencyList,
+      })
+      .strict()
+      .optional(),
+    revision: z.number().int().positive(),
+  })
+  .strict();
+
+/**
  * A Paystack payload is a few kilobytes. Vercel Functions accept request bodies
  * up to 100 MB, and this endpoint is public and unauthenticated by session — so
  * without a cap, anyone can make the process buffer 100 MB and HMAC it before
@@ -139,6 +215,35 @@ function resolveProvider(deps: PaymentDeps): PaymentProvider {
   const p = deps.provider;
   if (typeof p === 'function') return p();
   return p ?? paystackProvider();
+}
+
+/**
+ * `deps.factories`, or the real default — built lazily, and built the SAME
+ * way every time this is called (once per router construction; see the two
+ * call sites below).
+ *
+ * `paystack` ROUTES THROUGH `resolveProvider(deps)` RATHER THAN
+ * `paystackProvider()` DIRECTLY, and that indirection is what makes this
+ * field additive. `deps.provider` is the existing, single-gateway seam every
+ * test file in this subsystem already injects a `FakeProvider` through; a
+ * default that ignored it and always built a real `PaystackProvider` would
+ * leave every one of those tests reaching the network the moment a route
+ * switched from `resolveProvider(deps)` to `providerFor('paystack',
+ * factories)` for the identical intent. Going through `resolveProvider`
+ * keeps the two spellings resolving to the one handle.
+ *
+ * `flutterwave` IS `flutterwaveProvider` ITSELF, NOT A WRAPPING ARROW
+ * FUNCTION — it already has the right shape, `() => PaymentProvider`, and
+ * writing `() => flutterwaveProvider()` would only add a frame that does
+ * nothing.
+ */
+function resolveFactories(deps: PaymentDeps): ProviderFactories {
+  return (
+    deps.factories ?? {
+      paystack: () => resolveProvider(deps),
+      flutterwave: flutterwaveProvider,
+    }
+  );
 }
 
 /**
@@ -173,123 +278,210 @@ function afterResponse(c: Context<AppEnv>, work: () => Promise<unknown>): void {
 }
 
 /**
- * THE WEBHOOK. The highest-severity route in the commerce system.
+ * THE WEBHOOK HANDLER BODY — factored out so BOTH gateways' URLs share ONE
+ * implementation and neither can drift, per Task 10. `provider` and
+ * `providerName` arrive ALREADY RESOLVED, as a pair, from the caller below;
+ * this function never chooses between gateways and never reads `deps.provider`
+ * or `deps.factories` itself, so there is no path through which the wrong URL
+ * could end up verifying with the wrong key.
  *
- * IT MUST BYPASS `originGuard`, AND THE EXEMPTION IS THIS SEPARATE ROUTER
+ * `providerName` IS A PLAIN PARAMETER, NEVER DERIVED FROM `provider.name`.
+ * That handle is wrapped by `scrubbedProvider` (`provider/scrub.ts`), and
+ * depending on a wrapper to keep preserving a field it happens to preserve
+ * today is exactly how this breaks silently later — the identical argument
+ * `intents.ts`'s `createIntent` makes for its own `providerName` parameter.
+ *
+ * EVERY PROPERTY OF THE ORIGINAL SINGLE-ROUTE HANDLER IS KEPT: the raw-bytes
+ * read (not `c.req.text()` — a re-decode substitutes U+FFFD and destroys the
+ * bytes a signature covers), `MAX_WEBHOOK_BYTES`, verify-before-parse, the
+ * 401-on-bad-signature (never 500, which a gateway retries for days, and
+ * never 200, which tells a forger their body was accepted), `storeEvent`
+ * BEFORE processing, and `afterResponse` for the post-ack work.
+ */
+async function handleProviderWebhook(
+  c: Context<AppEnv>,
+  deps: PaymentDeps,
+  provider: PaymentProvider,
+  providerName: ProviderName,
+): Promise<Response> {
+  const db = currentDb(c);
+
+  /*
+   * RAW BYTES. Not `c.req.json()`, not `c.req.text()`.
+   *
+   * `03-payments.md` §4: verify the signature "on the raw bytes… not the
+   * JSON-round-tripped body — signature schemes sign bytes, and a
+   * re-serialise changes them." `text()` would already have decoded; a body
+   * that is not valid UTF-8 comes back with U+FFFD substituted and the bytes
+   * that were signed are gone before the verifier sees them.
+   */
+  const buffer = await c.req.arrayBuffer();
+  if (buffer.byteLength > MAX_WEBHOOK_BYTES) {
+    return c.json({ error: 'payload_too_large' }, 413);
+  }
+  const raw = new Uint8Array(buffer);
+
+  let event;
+  try {
+    // VERIFY BEFORE PARSING. `parseWebhook` throws rather than returning a
+    // flag, so there is no way to reach the body having forgotten to check.
+    event = await provider.parseWebhook(raw, c.req.raw.headers);
+  } catch (err) {
+    /*
+     * 401, NOT 500 AND NOT 200.
+     *
+     * A 500 would be retried by the gateway every few minutes and then for
+     * days, so a single forged request would become a sustained one. A 200
+     * would tell a forger their body was accepted. 401 is terminal and says
+     * nothing about why.
+     *
+     * NOTHING FROM `err` IS RETURNED OR LOGGED HERE beyond its enumerated
+     * code: a signature failure is attacker-controlled input by definition.
+     */
+    const code = err instanceof ProviderError ? err.code : 'unknown';
+    return c.json({ error: code === 'signature_invalid' ? 'invalid_signature' : 'bad_request' }, 401);
+  }
+
+  /*
+   * DURABLE FIRST. Everything after this line can fail without losing the
+   * event.
+   *
+   * `providerName` IS THE CALLER'S FIXED ARGUMENT, NEVER GUESSED. Each of the
+   * two routes below binds this function to exactly one gateway, so there is
+   * no branch here that could attribute a Flutterwave event to Paystack (or
+   * the reverse) — see this function's own header for why `provider.name` is
+   * not used for this instead.
+   */
+  const stored = await storeEvent(db, event, providerName);
+
+  /*
+   * A REPEAT DELIVERY IS A 200 AND NOTHING ELSE. It is not an error — it is
+   * the provider doing exactly what it promises — and processing it again is
+   * prevented by the `processed_at IS NULL` gate rather than by this branch.
+   */
+  if (!stored.duplicate) {
+    /*
+     * `unwiredCheckoutPort()` RATHER THAN `undefined`, so a deployment that
+     * forgot to inject Cart's port gets a logged rejection on every capture
+     * instead of a pipeline that quietly never completes a checkout. That
+     * silence is exactly what admin#27 was.
+     */
+    const captureDeps = { checkout: deps.checkout ?? unwiredCheckoutPort() };
+    const origin = storefrontOrigin();
+    afterResponse(c, () =>
+      processEvent(db, stored.rowId, Date.now(), captureDeps)
+        .then(() => drainPaymentEvents(db, 5, Date.now(), captureDeps))
+        /*
+         * THE INLINE OUTBOX DRAIN (admin#29), AND IT IS THE LAST THING AND THE
+         * LEAST IMPORTANT THING.
+         *
+         * It runs after the capture is already committed, it is bounded to a
+         * handful of rows — the events for one checkout, not a backlog — and
+         * its failure is swallowed exactly the way `createCustomerSession`'s
+         * opportunistic sweep and Cart's lazy `runCartMaintenance` swallow
+         * theirs. A drain that could fail the webhook would turn a slow or
+         * unlucky Orders sweep into a redelivery storm for an event we had
+         * already recorded correctly.
+         *
+         * NOTHING IS LOST WHEN IT FAILS. It deletes nothing and claims
+         * nothing: an event it did not reach is simply still in
+         * `commerce_events` with no consumption row, which is the same state
+         * it was in a moment ago, and the cart-maintenance cron drains it.
+         */
+        /*
+         * `.catch` ON THE SWEEP ALONE, NOT ON THE WHOLE CHAIN.
+         *
+         * Wrapping the lot would swallow a `processEvent` or
+         * `drainPaymentEvents` failure as well — and `afterResponse`'s
+         * `swallow()` is the ONLY thing that logs a post-acknowledgement
+         * failure anywhere. Recovery would be unaffected either way (the row
+         * stays `processed_at IS NULL` and the next drain re-drives it), but a
+         * stuck capture would produce no line at all, and invisibility is how
+         * this entire class of bug reached production in the first place.
+         */
+        .then(() => deps.sweepEvents?.(db, origin)?.catch(() => undefined)),
+    );
+  }
+
+  return c.json({ received: true, duplicate: stored.duplicate });
+}
+
+/**
+ * THE WEBHOOKS. The highest-severity routes in the commerce system.
+ *
+ * THEY MUST BYPASS `originGuard`, AND THE EXEMPTION IS THIS SEPARATE ROUTER
  * RATHER THAN AN ACCIDENT. `server/middleware/origin.ts` refuses any unsafe
  * method with no `Origin` header, and it is right to: "treating absence as
  * permission is the hole a `SameSite=Lax` cookie plus a top-level form POST
- * walks straight through." But Paystack is a server, not a browser; it sends no
- * `Origin`, so mounted behind that guard this endpoint answers 403 to every
- * genuine event and Paystack retries each one for 72 hours.
+ * walks straight through." But a payment gateway is a server, not a browser;
+ * it sends no `Origin`, so mounted behind that guard these endpoints answer
+ * 403 to every genuine event and the gateway retries each one for days.
  *
  * The exemption is SAFE HERE AND NOWHERE ELSE, for a reason that has nothing to
  * do with origins: CSRF is an attack that borrows the victim's AMBIENT
- * AUTHORITY — their cookie. This route reads no cookie, resolves no session and
- * trusts nothing about the caller. Its authority comes entirely from an
- * HMAC-SHA512 signature over the request body, which a cross-origin form post
- * cannot produce. Dropping the origin check costs nothing an attacker could use
- * and buys the endpoint working at all.
+ * AUTHORITY — their cookie. Neither route reads a cookie, resolves a session
+ * or trusts anything about the caller. Their authority comes entirely from a
+ * signature (Paystack's HMAC-SHA512) or a constant-time hash comparison
+ * (Flutterwave's `verif-hash`) over the request, which a cross-origin form
+ * post cannot produce. Dropping the origin check costs nothing an attacker
+ * could use and buys the endpoint working at all.
  *
  * `server/index.ts` is Catalog's file (contract §3), so the mount is
- * AMENDMENTS A-001 and the two lines are written out there.
+ * AMENDMENTS A-001 and the lines are written out there.
+ *
+ * THE FLUTTERWAVE ROUTE IS STATICALLY BOUND — never resolved dynamically,
+ * never guessing which key to verify with. `factories.flutterwave()` is a
+ * fixed reference decided once, at router construction, never re-chosen per
+ * request the way `chooseProvider` (`routing.ts`) picks a gateway for a NEW
+ * payment. `shop_payment_settings.active_provider` — the admin switch — has
+ * no bearing on which key either webhook verifies against: Paystack's own
+ * URL is equally fixed to `factories.paystack()`, which is what makes it safe
+ * for the SAME `/shop/payments/webhook` URL registered in Paystack's
+ * dashboard today to keep working exactly as it does now.
  */
 export function createWebhookRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
+  const factories = resolveFactories(deps);
 
-  app.post('/shop/payments/webhook', async (c) => {
-    const db = currentDb(c);
-    const provider = resolveProvider(deps);
+  // THE EXISTING URL. Registered in Paystack's dashboard and live — this
+  // keeps answering exactly as it always has.
+  app.post('/shop/payments/webhook', (c) =>
+    handleProviderWebhook(c, deps, factories.paystack(), 'paystack'),
+  );
 
+  // THE NEW URL. Never shared with the Paystack route above, and never
+  // resolved through `chooseProvider`/`readPaymentSettings` — see this
+  // function's own header.
+  app.post('/shop/payments/webhook/flutterwave', (c) => {
     /*
-     * RAW BYTES. Not `c.req.json()`, not `c.req.text()`.
+     * 503, NOT AN UNCAUGHT THROW. This route exists and is reachable by any
+     * unauthenticated caller the moment it is deployed, whether or not
+     * Flutterwave itself is configured on this deployment — and today it is
+     * not (CLAUDE.md: built but inert until the owner sets
+     * `FLUTTERWAVE_SECRET_KEY`/`FLUTTERWAVE_WEBHOOK_HASH`). `factories.flutterwave()`
+     * throws in exactly that state (`config.ts`'s `flutterwaveEnv()`), and
+     * calling it inline as `handleProviderWebhook`'s argument — as this line
+     * used to — throws BEFORE a single byte of the body is read, so every
+     * caller gets the generic unmapped `{ error: 'internal' }` 500 and the
+     * 401-on-bad-signature path never even runs.
      *
-     * `03-payments.md` §4: verify the signature "on the raw bytes… not the
-     * JSON-round-tripped body — signature schemes sign bytes, and a
-     * re-serialise changes them." `text()` would already have decoded; a body
-     * that is not valid UTF-8 comes back with U+FFFD substituted and the bytes
-     * that were signed are gone before the verifier sees them.
+     * Constructed here, wrapped, so that failure is a NAMED, EXPECTED
+     * response instead: a 5xx (this deployment cannot take a Flutterwave
+     * payment right now, which is true and not the caller's fault) but a
+     * distinct code from an unmapped crash, and nothing about WHY beyond
+     * that — never the caught error, matching `config.ts`'s own names-only
+     * discipline for this exact throw.
      */
-    const buffer = await c.req.arrayBuffer();
-    if (buffer.byteLength > MAX_WEBHOOK_BYTES) {
-      return c.json({ error: 'payload_too_large' }, 413);
-    }
-    const raw = new Uint8Array(buffer);
-
-    let event;
+    let provider: PaymentProvider;
     try {
-      // VERIFY BEFORE PARSING. `parseWebhook` throws rather than returning a
-      // flag, so there is no way to reach the body having forgotten to check.
-      event = await provider.parseWebhook(raw, c.req.raw.headers);
-    } catch (err) {
-      /*
-       * 401, NOT 500 AND NOT 200.
-       *
-       * A 500 would be retried by Paystack every 3 minutes and then hourly for
-       * 72 hours, so a single forged request would become a sustained one. A
-       * 200 would tell a forger their body was accepted. 401 is terminal and
-       * says nothing about why.
-       *
-       * NOTHING FROM `err` IS RETURNED OR LOGGED HERE beyond its enumerated
-       * code: a signature failure is attacker-controlled input by definition.
-       */
-      const code = err instanceof ProviderError ? err.code : 'unknown';
-      return c.json({ error: code === 'signature_invalid' ? 'invalid_signature' : 'bad_request' }, 401);
+      provider = factories.flutterwave();
+    } catch {
+      return c.json({ error: 'gateway_not_configured' }, 503);
     }
-
-    // DURABLE FIRST. Everything after this line can fail without losing the event.
-    const stored = await storeEvent(db, event);
-
-    /*
-     * A REPEAT DELIVERY IS A 200 AND NOTHING ELSE. It is not an error — it is
-     * the provider doing exactly what it promises — and processing it again is
-     * prevented by the `processed_at IS NULL` gate rather than by this branch.
-     */
-    if (!stored.duplicate) {
-      /*
-       * `unwiredCheckoutPort()` RATHER THAN `undefined`, so a deployment that
-       * forgot to inject Cart's port gets a logged rejection on every capture
-       * instead of a pipeline that quietly never completes a checkout. That
-       * silence is exactly what admin#27 was.
-       */
-      const captureDeps = { checkout: deps.checkout ?? unwiredCheckoutPort() };
-      const origin = storefrontOrigin();
-      afterResponse(c, () =>
-        processEvent(db, stored.rowId, Date.now(), captureDeps)
-          .then(() => drainPaymentEvents(db, 5, Date.now(), captureDeps))
-          /*
-           * THE INLINE OUTBOX DRAIN (admin#29), AND IT IS THE LAST THING AND THE
-           * LEAST IMPORTANT THING.
-           *
-           * It runs after the capture is already committed, it is bounded to a
-           * handful of rows — the events for one checkout, not a backlog — and
-           * its failure is swallowed exactly the way `createCustomerSession`'s
-           * opportunistic sweep and Cart's lazy `runCartMaintenance` swallow
-           * theirs. A drain that could fail the webhook would turn a slow or
-           * unlucky Orders sweep into a Paystack redelivery storm for an event
-           * we had already recorded correctly.
-           *
-           * NOTHING IS LOST WHEN IT FAILS. It deletes nothing and claims
-           * nothing: an event it did not reach is simply still in
-           * `commerce_events` with no consumption row, which is the same state
-           * it was in a moment ago, and the cart-maintenance cron drains it.
-           */
-          /*
-           * `.catch` ON THE SWEEP ALONE, NOT ON THE WHOLE CHAIN.
-           *
-           * Wrapping the lot would swallow a `processEvent` or
-           * `drainPaymentEvents` failure as well — and `afterResponse`'s
-           * `swallow()` is the ONLY thing that logs a post-acknowledgement
-           * failure anywhere. Recovery would be unaffected either way (the row
-           * stays `processed_at IS NULL` and the next drain re-drives it), but a
-           * stuck capture would produce no line at all, and invisibility is how
-           * this entire class of bug reached production in the first place.
-           */
-          .then(() => deps.sweepEvents?.(db, origin)?.catch(() => undefined)),
-      );
-    }
-
-    return c.json({ received: true, duplicate: stored.duplicate });
+    // THE CONFIGURED CASE IS UNCHANGED: `handleProviderWebhook` still reads
+    // the raw body, verifies it, and answers 401 on a bad signature exactly
+    // as it always has.
+    return handleProviderWebhook(c, deps, provider, 'flutterwave');
   });
 
   return app;
@@ -298,6 +490,7 @@ export function createWebhookRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
 export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const checkout = deps.checkout ?? unwiredCheckoutPort();
+  const factories = resolveFactories(deps);
 
   /*
    * THE RESPONSE-SIDE CORS HEADER, ON THE PUBLIC `/shop/payments/*` ROUTES
@@ -328,10 +521,76 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
    * exists before any identity does. The customer session middleware is Cart's
    * to build; when it lands, this route gains it as a *reader* of who the
    * customer is, never as a gate that would break guest checkout.
+   *
+   * ROUTES THE PAYMENT (Task 10): `checkout.destination(...)`, then
+   * `chooseProvider(...)`, then the CHOSEN name and handle go into
+   * `createIntent`'s six-argument form — never the legacy five-argument
+   * overload, which silently defaults to `'paystack'` and is exactly the
+   * hazard this task exists to remove.
    */
   app.post('/shop/payments/intents', async (c) => {
+    const db = currentDb(c);
     const body = await readJson(c, CreateIntentBody);
-    const result = await createIntent(currentDb(c), resolveProvider(deps), checkout, {
+
+    /*
+     * THE CURRENCY, FROM STORAGE. `chooseProvider` needs it before an intent
+     * can exist to read it from, so this reads the SAME frozen total
+     * `createIntent` reads again a few lines down — a second cheap SELECT,
+     * never a recomputation (`CheckoutPort.totals`'s own contract: "reads
+     * storage, never recomputes"), and not something to optimise away at the
+     * cost of routing on a stale or absent figure.
+     */
+    const totals = await checkout.totals(db, body.checkoutId);
+
+    /*
+     * BARE — NO TRY/CATCH. This reverses an instinct that would otherwise
+     * feel obviously safer, and it is a deliberate ruling (Task 10):
+     * `unwiredCheckoutPort().destination()` rejects like its siblings, so a
+     * composition-root wiring gap is NAMED. A defensive catch here would
+     * swallow exactly that and silently recreate the failure class this
+     * codebase has shipped twice (CLAUDE.md §2) — `createIntent` already
+     * calls `checkout.totals()` bare, immediately above, for the same reason.
+     */
+    const destination = await checkout.destination(db, body.checkoutId);
+
+    let chosen: { name: ProviderName; provider: PaymentProvider };
+    try {
+      chosen = await chooseProvider(
+        db,
+        { currency: totals.grandTotal.currency, country: destination?.country ?? null },
+        factories,
+      );
+    } catch (err) {
+      /*
+       * A CLEAN REFUSAL, NOT A 500. `NoProviderForCurrencyError` means every
+       * gateway this account has switched on for this currency is either not
+       * switched on at all or cannot charge it — a configuration state, not a
+       * bug, so the caller gets a named, permanent 400 rather than an
+       * unmapped exception falling through to `{ error: 'internal' }`.
+       */
+      if (err instanceof NoProviderForCurrencyError) {
+        return c.json({ error: 'no_provider_for_currency' }, 400);
+      }
+      /*
+       * NOT A CLEAN REFUSAL — AN OUTAGE, AND IT MUST READ AS ONE.
+       * `NoGatewayAvailableError` means every gateway the settings row
+       * pointed at for this currency could not even be constructed (see its
+       * own comment in `routing.ts`) — most likely a missing or malformed
+       * secret key on the gateway taking live money. A 400 here would read
+       * as a deliberate, permanent configuration state exactly like the one
+       * above, and it is the opposite: transient from the caller's point of
+       * view and something an operator needs paged for. 503, not 500,
+       * because the cause is named and specific (this deployment cannot
+       * reach a payment gateway right now) rather than unmapped — the same
+       * choice item 9's webhook route makes for the same reason.
+       */
+      if (err instanceof NoGatewayAvailableError) {
+        return c.json({ error: 'no_gateway_available' }, 503);
+      }
+      throw err;
+    }
+
+    const result = await createIntent(db, chosen.provider, chosen.name, checkout, {
       checkoutId: body.checkoutId,
       email: body.email,
       idempotencyKey: body.idempotencyKey,
@@ -385,7 +644,14 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
     const intent = await getIntent(db, pathParam(c, 'id'));
     if (!intent?.providerIntentId) throw new NotFoundError('intent');
 
-    const truth = await resolveProvider(deps).fetchIntent(intent.providerIntentId);
+    /*
+     * `providerFor(intent.provider, factories)`, NEVER `resolveProvider(deps)`
+     * — a single fixed handle. This is the guarantee the whole project rests
+     * on: money already taken must resolve to the gateway that took it,
+     * forever, whatever the admin switch says now. `providerFor` takes no
+     * `db` and reads no settings row for exactly this reason (`routing.ts`).
+     */
+    const truth = await providerFor(intent.provider, factories).fetchIntent(intent.providerIntentId);
     if (truth.status === 'requires_payment') return c.json(publicIntent(intent));
 
     /*
@@ -394,19 +660,29 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
      * recorded in the same append-only log with `type = 'verify:…'`, so the
      * dispute record shows that this state change came from us asking rather
      * than from the provider telling.
+     *
+     * `intent.provider`, NOT a fixed literal — unlike the webhook route above,
+     * this one already has the ONE intent this event is about in hand, so the
+     * gateway that actually took its money is a plain field read rather than a
+     * guess. This is exactly the "resolve per intent" property `refunds.ts`
+     * documents: the row's own recorded gateway, never a global setting.
      */
-    const stored = await storeEvent(db, {
-      providerEventId: `verify:${intent.providerIntentId}:${truth.status}`,
-      type: `verify.${truth.status}`,
-      providerIntentId: intent.providerIntentId,
-      providerRefundId: null,
-      intentStatus: truth.status,
-      refundStatus: null,
-      failureReason: truth.failureReason,
-      amount: truth.amount,
-      currency: truth.currency,
-      payload: { source: 'fetchIntent', status: truth.status },
-    });
+    const stored = await storeEvent(
+      db,
+      {
+        providerEventId: `verify:${intent.providerIntentId}:${truth.status}`,
+        type: `verify.${truth.status}`,
+        providerIntentId: intent.providerIntentId,
+        providerRefundId: null,
+        intentStatus: truth.status,
+        refundStatus: null,
+        failureReason: truth.failureReason,
+        amount: truth.amount,
+        currency: truth.currency,
+        payload: { source: 'fetchIntent', status: truth.status },
+      },
+      intent.provider,
+    );
 
     if (!stored.duplicate) {
       /*
@@ -454,11 +730,23 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
    * is no customer-initiated RMA flow), so `requireOwner()` and not
    * `requireAuth()`: a writer can publish posts and has no business moving
    * money.
+   *
+   * RESOLVES THE GATEWAY PER INTENT. `getIntent` is read FIRST, purely to
+   * learn `intent.provider` — the row's own recorded gateway — before
+   * `createRefund` is ever called, because `refunds.ts`'s own header is
+   * explicit that the caller must resolve this from THIS intent's stored
+   * gateway and never from `shop_payment_settings.active_provider`, which an
+   * owner can flip at any time after the original payment went through the
+   * OTHER one.
    */
   app.post('/shop/admin/payments/intents/:id/refunds', admin, async (c) => {
+    const db = currentDb(c);
     const body = await readJson(c, CreateRefundBody);
-    const result = await createRefund(currentDb(c), resolveProvider(deps), {
-      intentId: pathParam(c, 'id'),
+    const intentId = pathParam(c, 'id');
+    const intent = await getIntent(db, intentId);
+    if (!intent) throw new NotFoundError(intentId);
+    const result = await createRefund(db, providerFor(intent.provider, factories), {
+      intentId,
       amount: body.amount,
       reason: body.reason,
       idempotencyKey: body.idempotencyKey,
@@ -467,7 +755,19 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
     return c.json({ refund: result.refund }, result.created ? 201 : 200);
   });
 
-  /** Cancel a checkout that was never paid. */
+  /**
+   * Cancel a checkout that was never paid.
+   *
+   * NO GATEWAY IS RESOLVED HERE, AND THAT IS NOT AN OMISSION —
+   * `cancelIntent` (`intents.ts`) takes no provider at all: both adapters
+   * declare `capabilities.remoteCancel: false` (`provider/paystack.ts`,
+   * `provider/flutterwave.ts`), so cancelling an uncompleted charge is
+   * ALWAYS a local state change with nothing sent to either gateway. There is
+   * therefore no `resolveProvider(deps)` call here to switch to
+   * `providerFor(...)` — confirmed by reading `cancelIntent`'s own signature
+   * and both adapters' capabilities before concluding this, rather than
+   * assuming it.
+   */
   app.post('/shop/admin/payments/intents/:id/cancel', admin, async (c) =>
     c.json(publicIntent(await cancelIntent(currentDb(c), pathParam(c, 'id')))),
   );
@@ -483,6 +783,57 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
       processed: await drainPaymentEvents(currentDb(c), 50, Date.now(), { checkout }),
     }),
   );
+
+  /**
+   * The gateway switch. Owner and developer only (`requireAdmin()`) — the
+   * `payments` domain gate in `server/middleware/permissions.ts` already
+   * covers everything under `/api/shop/admin/payments`, so no change there
+   * was needed for this pair.
+   *
+   * THE RESPONSE SHAPE IS FIXED: the admin card is built against it in a
+   * parallel dispatch, so `GET` and `PATCH` both answer through
+   * `paymentSettingsResponse` and must keep matching it exactly.
+   */
+  app.get('/shop/admin/payments/settings', admin, async (c) => {
+    const settings = await readPaymentSettings(currentDb(c));
+    return c.json(paymentSettingsResponse(settings));
+  });
+
+  /**
+   * `.strict()`, carries `revision`, 409 on `StaleWriteError` — the last of
+   * those falls out of the generic mapping in `middleware/errors.ts` and
+   * needs no special handling here.
+   *
+   * ⚠ THE TRAP: `writePaymentSettings` distinguishes "leave alone" from
+   * "clear" with `'internationalProvider' in patch` — a KEY-PRESENCE test on
+   * the object passed to it (`settings.ts`'s own header explains why
+   * `COALESCE`/`??`/`!== undefined` cannot substitute). Building the patch as
+   * `{ internationalProvider: body.internationalProvider }` unconditionally
+   * would pass `undefined` whenever the caller omits the field, and
+   * `undefined` under a literal key still reads as PRESENT — silently
+   * clearing the country rule on every ordinary save that does not mention
+   * it. So the patch below copies each key ONLY when the parsed body
+   * actually carries it. (Verified separately: this exact Zod schema already
+   * drops an absent optional key from `safeParse`'s result rather than
+   * setting it to `undefined`, so checking `in` on `body` here is sufficient
+   * — this loop is what keeps a future edit from reaching for a spread and
+   * reopening the trap regardless.)
+   */
+  app.patch('/shop/admin/payments/settings', admin, async (c) => {
+    const body = await readJson(c, PatchPaymentSettingsBody);
+    const patch: PaymentSettingsPatch = {};
+    if ('activeProvider' in body) patch.activeProvider = body.activeProvider;
+    if ('internationalProvider' in body) patch.internationalProvider = body.internationalProvider;
+    if ('currencies' in body) patch.currencies = body.currencies;
+
+    const settings = await writePaymentSettings(
+      currentDb(c),
+      patch,
+      body.revision,
+      currentUser(c).id,
+    );
+    return c.json(paymentSettingsResponse(settings));
+  });
 
   return app;
 }
@@ -513,6 +864,60 @@ function publicIntent(intent: {
     currency: intent.currency,
     authorizationUrl: intent.authorizationUrl,
     refundedTotal: intent.refundedTotal,
+  };
+}
+
+/**
+ * `GET`/`PATCH /shop/admin/payments/settings`'s response — THE FROZEN SHAPE
+ * the admin card is built against in a parallel dispatch, so it must match
+ * exactly:
+ *
+ * ```ts
+ * interface PaymentSettingsResponse {
+ *   activeProvider: ProviderName;
+ *   internationalProvider: ProviderName | null;
+ *   revision: number;
+ *   gateways: Record<ProviderName, {
+ *     hasKey: boolean;      // a BOOLEAN. Never the key, never a prefix, never a length.
+ *     currencies: string[]; // switched on for this account (the settings row)
+ *     canCharge: string[];  // the adapter's ceiling (capabilities.currencies)
+ *   }>;
+ * }
+ * ```
+ *
+ * `hasKey` COMES FROM `providerKeyPresence()` AND `canCharge` FROM
+ * `providerCeilings()` — READ FRESH ON EVERY CALL, NEVER CACHED ON THIS
+ * MODULE. Both are cheap (`providerKeyPresence` reads `process.env` directly;
+ * `providerCeilings` constructs a throwaway, credential-free instance purely
+ * to read a static property — see each function's own header in
+ * `config.ts`), and a deployment's configured keys can change between two
+ * requests to a long-lived process without either being a reason to hold a
+ * stale answer.
+ */
+function paymentSettingsResponse(settings: {
+  activeProvider: ProviderName;
+  internationalProvider: ProviderName | null;
+  currencies: Record<ProviderName, string[]>;
+  revision: number;
+}) {
+  const hasKey = providerKeyPresence();
+  const canCharge = providerCeilings();
+  const gateways = {} as Record<
+    ProviderName,
+    { hasKey: boolean; currencies: string[]; canCharge: string[] }
+  >;
+  for (const name of PROVIDER_NAMES) {
+    gateways[name] = {
+      hasKey: hasKey[name],
+      currencies: settings.currencies[name],
+      canCharge: [...canCharge[name]],
+    };
+  }
+  return {
+    activeProvider: settings.activeProvider,
+    internationalProvider: settings.internationalProvider,
+    revision: settings.revision,
+    gateways,
   };
 }
 

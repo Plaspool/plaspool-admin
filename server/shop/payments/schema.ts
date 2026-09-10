@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { bigint, check, index, integer, jsonb, pgTable, text, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { users } from '../../db/schema';
 import { PAYMENT_STATUSES } from '../../../shared/commerce/ports';
+import type { ProviderIntentStatus, ProviderRefundStatus } from './provider/types';
 
 /**
  * The Payments tables (contract §4, `03-payments.md` §3).
@@ -44,6 +45,16 @@ function sqlLiterals(values: readonly string[]) {
   );
 }
 
+/**
+ * THE GATEWAY NAMES, and this is the one definition of them.
+ *
+ * On the wire and in the database, so §7's copy rules do not apply: these are
+ * contract, not display strings. The screen may say "Flutterwave"; the column
+ * says `flutterwave` and must keep doing so.
+ */
+export const PROVIDER_NAMES = ['paystack', 'flutterwave'] as const;
+export type ProviderName = (typeof PROVIDER_NAMES)[number];
+
 export const shopPaymentIntents = pgTable(
   'shop_payment_intents',
   {
@@ -76,6 +87,29 @@ export const shopPaymentIntents = pgTable(
     amount: integer('amount').notNull(),
     currency: text('currency').notNull(),
     status: text('status').$type<(typeof PAYMENT_STATUSES)[number]>().notNull(),
+    /**
+     * WHICH GATEWAY TOOK THIS PAYMENT. Set once, at creation, and never
+     * rewritten — flipping the admin switch must not re-route money that has
+     * already moved.
+     *
+     * The default is added here and dropped in a later task, once every INSERT
+     * names the column. It backfills the existing rows, all Paystack. Dropping it
+     * before the code names the column is a 23502, which hides the intent rather
+     * than showing it: an INSERT that forgets the column now fails loudly.
+     *
+     * NOT YET SAFE TO DROP as of task 9, even though `createIntent` and
+     * `storeEvent` both name it now: see the matching comment in migration
+     * `1100_payment_providers.sql` for the six test files that raw-INSERT
+     * into this table (and `shop_payment_events`) without naming it, and the
+     * 57-test breakage measured directly when the drop was tried.
+     */
+    provider: text('provider').$type<ProviderName>().notNull(),
+    /**
+     * The gateway's OWN id, when it differs from the reference we supply.
+     * NULL for Paystack, which transacts under ours. Flutterwave needs it for
+     * refunds and mints it at charge time, so it arrives later than the row.
+     */
+    providerChargeId: text('provider_charge_id'),
     /**
      * The caller's key. UNIQUE — this column IS the idempotency mechanism.
      *
@@ -125,6 +159,7 @@ export const shopPaymentIntents = pgTable(
   },
   (t) => [
     check('shop_payment_intents_status_ck', sql`${t.status} IN (${sqlLiterals(PAYMENT_STATUSES)})`),
+    check('shop_payment_intents_provider_ck', sql`${t.provider} IN ('paystack', 'flutterwave')`),
     check('shop_payment_intents_revision_ck', sql`${t.revision} > 0`),
     /** A charge of nothing is not a charge; negative would be a credit. */
     check('shop_payment_intents_amount_ck', sql`${t.amount} > 0`),
@@ -155,6 +190,15 @@ export const shopPaymentEvents = pgTable(
     /** `pev_…`. */
     id: text('id').primaryKey(),
     /**
+     * WHICH GATEWAY sent this event. Two gateways will eventually deliver to
+     * two different webhook endpoints, so this is known the instant the event
+     * is verified and stored — never inferred from the payload. `storeEvent`
+     * (`webhook.ts`) names it explicitly as of task 9. Its column default is
+     * NOT yet dropped, for the same reason `shopPaymentIntents.provider`'s
+     * is not — see that field's comment.
+     */
+    provider: text('provider').$type<ProviderName>().notNull(),
+    /**
      * THE DEDUPE KEY — a UNIQUE constraint, never a prior read.
      *
      * Paystack redelivers a non-200 every 3 minutes for four attempts and then
@@ -175,6 +219,19 @@ export const shopPaymentEvents = pgTable(
      */
     intentId: text('intent_id'),
     type: text('type').notNull(),
+    /**
+     * WHAT THE EVENT SAID THE CHARGE'S STATE NOW IS — computed by the adapter
+     * at verification time (`ProviderEvent.intentStatus`) and persisted here
+     * so `processEvent` (`webhook.ts`) can dispatch on IT rather than
+     * re-deriving the same decision from `payload` using one gateway's own
+     * field names (task-9). NULLABLE: an event may legitimately name neither a
+     * charge nor a refund state at all.
+     */
+    intentStatus: text('intent_status').$type<ProviderIntentStatus>(),
+    /** Same discipline as `intentStatus`, for a refund event. */
+    refundStatus: text('refund_status').$type<ProviderRefundStatus>(),
+    /** The provider's OWN refund id, for a refund event. NULL otherwise. */
+    providerRefundId: text('provider_refund_id'),
     /** The verified raw body, as received. */
     payload: jsonb('payload').notNull(),
     receivedAt: bigint('received_at', { mode: 'number' }).notNull(),
@@ -193,6 +250,16 @@ export const shopPaymentEvents = pgTable(
     anomaly: text('anomaly'),
   },
   (t) => [
+    check('shop_payment_events_provider_ck', sql`${t.provider} IN ('paystack', 'flutterwave')`),
+    check(
+      'shop_payment_events_intent_status_ck',
+      sql`${t.intentStatus} IS NULL
+          OR ${t.intentStatus} IN ('requires_payment', 'authorized', 'captured', 'failed', 'cancelled')`,
+    ),
+    check(
+      'shop_payment_events_refund_status_ck',
+      sql`${t.refundStatus} IS NULL OR ${t.refundStatus} IN ('pending', 'succeeded', 'failed')`,
+    ),
     index('shop_payment_events_intent_idx').on(t.intentId),
     index('shop_payment_events_pending_idx').on(t.processedAt, t.receivedAt),
   ],
@@ -250,6 +317,67 @@ export const shopRefunds = pgTable(
       .where(sql`${t.providerRefundId} IS NOT NULL`),
   ],
 );
+
+/**
+ * WHICH GATEWAY TAKES A PAYMENT — one row, `id = 'main'` (migration 1100).
+ *
+ * A CHECK-CONSTRAINED SINGLETON rather than one row by convention, following
+ * `shop_delivery_settings`: "there is exactly one configuration" becomes
+ * something the database enforces, so a second row cannot appear and leave two
+ * answers to "who takes the money" for whichever sorted first.
+ *
+ * TWO CURRENCY LISTS EXIST IN THIS SYSTEM AND THESE ARE THE OTHER ONES.
+ * `ProviderCapabilities.currencies` in the adapter is what a gateway's API
+ * CAN charge. These columns are what each account has SWITCHED ON. Routing
+ * reads these. The split exists because a capability list in code would lie:
+ * Paystack's USD is not enabled on this account, so a hardcoded ['NGN','USD']
+ * would route a dollar charge to a gateway that refuses it.
+ */
+export const shopPaymentSettings = pgTable(
+  'shop_payment_settings',
+  {
+    /** Pinned to `'main'` by a CHECK. */
+    id: text('id').primaryKey(),
+    /** The gateway everyone gets, unless a rule below overrides it. */
+    activeProvider: text('active_provider').$type<ProviderName>().notNull(),
+    /**
+     * The gateway for orders shipping outside Nigeria, or NULL for "no country
+     * rule — everyone gets `activeProvider`".
+     */
+    internationalProvider: text('international_provider').$type<ProviderName>(),
+    /** ISO 4217, uppercase. Never empty — the CHECK forbids it. */
+    paystackCurrencies: text('paystack_currencies').array().notNull(),
+    flutterwaveCurrencies: text('flutterwave_currencies').array().notNull(),
+    /** CAS, as on `posts.revision`. Moves on every write. */
+    revision: integer('revision').notNull(),
+    updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
+    updatedBy: uuid('updated_by'),
+  },
+  (t) => [
+    check('shop_payment_settings_id_ck', sql`${t.id} = 'main'`),
+    check('shop_payment_settings_active_ck', sql`${t.activeProvider} IN ('paystack', 'flutterwave')`),
+    check(
+      'shop_payment_settings_intl_ck',
+      sql`${t.internationalProvider} IS NULL
+          OR ${t.internationalProvider} IN ('paystack', 'flutterwave')`,
+    ),
+    check('shop_payment_settings_revision_ck', sql`${t.revision} > 0`),
+    check(
+      'shop_payment_settings_paystack_ccy_ck',
+      sql`cardinality(${t.paystackCurrencies}) > 0
+          AND array_position(${t.paystackCurrencies}, NULL) IS NULL
+          AND array_to_string(${t.paystackCurrencies}, ',') ~ '^[A-Z]{3}(,[A-Z]{3})*$'`,
+    ),
+    check(
+      'shop_payment_settings_flutterwave_ccy_ck',
+      sql`cardinality(${t.flutterwaveCurrencies}) > 0
+          AND array_position(${t.flutterwaveCurrencies}, NULL) IS NULL
+          AND array_to_string(${t.flutterwaveCurrencies}, ',') ~ '^[A-Z]{3}(,[A-Z]{3})*$'`,
+    ),
+  ],
+);
+
+export type DbShopPaymentSettings = typeof shopPaymentSettings.$inferSelect;
 
 export type DbPaymentIntent = typeof shopPaymentIntents.$inferSelect;
 export type DbPaymentEvent = typeof shopPaymentEvents.$inferSelect;

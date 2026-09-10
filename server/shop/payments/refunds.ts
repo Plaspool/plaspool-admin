@@ -102,6 +102,25 @@ export interface CreateRefundResult {
   created: boolean;
 }
 
+/**
+ * `provider` MUST BE RESOLVED PER INTENT, NEVER FROM A GLOBAL "the active
+ * gateway" SETTING. This function already takes it as a plain call argument
+ * rather than reading one off a module-level handle — that part of "per
+ * intent, not from a global" was always true here — but the CALLER'S choice
+ * of which handle to pass is where the real hazard lives: `shop_payment_settings.
+ * active_provider` is an admin-editable switch, and `shop_payment_intents.provider`
+ * (`intents.ts`) is fixed forever at the moment a specific intent was created.
+ * Those two can disagree the instant an owner flips the switch after a
+ * payment has already gone through one gateway. The caller must resolve this
+ * argument from THIS intent's own `getIntent(db, intentId).provider` — e.g.
+ * `providerFor(intent.provider, factories)` in `routing.ts`, which
+ * deliberately takes no `db` and reads no settings row, precisely so it can
+ * never be tempted to re-route an already-taken payment — and never from
+ * `chooseProvider`/`readPaymentSettings`, which answer "where should a NEW
+ * payment go" and are the wrong question for a refund. Passing the currently
+ * active gateway's handle here for an intent that was actually taken by the
+ * OTHER one refunds through a gateway that never took the money.
+ */
 export async function createRefund(
   db: Db,
   provider: PaymentProvider,
