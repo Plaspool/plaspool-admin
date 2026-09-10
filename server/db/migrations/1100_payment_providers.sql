@@ -119,3 +119,56 @@ ALTER TABLE shop_payment_events
 -- The provider's OWN refund id, for a refund event -- the same value
 -- processEvent used to read out of the raw payload as refundIdOf(data).
 ALTER TABLE shop_payment_events ADD COLUMN provider_refund_id text;
+--> statement-breakpoint
+-- BACKFILL (final-review finding, added after task 9): a PRE-EXISTING
+-- refund event has refund_status and provider_refund_id NULL, because those
+-- two columns are only populated for events storeEvent inserts from here on
+-- -- and processEvent's refund arm now gates on `row.refundStatus !== null`
+-- (webhook.ts). A NULL there sends a genuine unprocessed refund straight to
+-- the `unhandled_type:` fallback: marked processed, applyRefundEvent never
+-- called. Its shop_refunds row then stays 'pending' forever with its amount
+-- still reserved against the intent, because drainPaymentEvents only ever
+-- looks at processed_at IS NULL -- and this row would already read NOT
+-- NULL there. The capture arm has a compensating fallback for the
+-- equivalent gap (processEvent's own comment, the `type === 'charge.success'`
+-- literal); the refund arm deliberately has none, so a backfill is the only
+-- fix.
+--
+-- SAFE TO DERIVE FROM payload HERE, UNLIKE IN processEvent: every row this
+-- WHERE can match is Paystack's -- the Flutterwave webhook route does not
+-- exist before this same migration's code ships, and flutterwave.ts's own
+-- parseWebhook never populates a refund.* type or a refundStatus at all, so
+-- nothing else could ever have written one of these rows -- and Paystack
+-- HMACs the raw bytes BEFORE JSON.parse ever runs (paystack.ts's
+-- parseWebhook checks the signature first and rejects an invalid one before
+-- touching the body), so a stored payload for a Paystack event is exactly
+-- as trustworthy here as the columns storeEvent would have written from it
+-- at verification time.
+--
+-- MIRRORS paystack.ts EXACTLY -- read both functions before changing this:
+--   * mapRefundStatus: 'processed' -> 'succeeded', 'failed' -> 'failed',
+--     anything else (including absent) -> 'pending'.
+--   * refundIdOf: data.id when it is a JSON number or a non-empty JSON
+--     string, else data.refund_reference when non-empty, else NULL. The one
+--     thing not reproduced is the JS Number.isSafeInteger guard on a
+--     numeric id -- not reachable here, since Paystack refund ids are small
+--     sequential integers, always far inside that range.
+UPDATE shop_payment_events
+   SET refund_status = CASE payload -> 'data' ->> 'status'
+         WHEN 'processed' THEN 'succeeded'
+         WHEN 'failed' THEN 'failed'
+         ELSE 'pending'
+       END,
+       provider_refund_id = COALESCE(
+         CASE WHEN jsonb_typeof(payload -> 'data' -> 'id') IN ('number', 'string')
+              THEN NULLIF(payload -> 'data' ->> 'id', '')
+         END,
+         NULLIF(payload -> 'data' ->> 'refund_reference', '')
+       )
+ WHERE processed_at IS NULL
+   AND type LIKE 'refund.%'
+   -- Always true at this point in the file -- the provider column added
+   -- above defaults every pre-existing row to 'paystack' -- stated
+   -- explicitly so this predicate still says the right thing if a later
+   -- edit ever reorders these statements.
+   AND provider = 'paystack';
