@@ -41,6 +41,8 @@ import { shopCors } from './shop/cart/cors';
 import { paymentPort } from './shop/payments/port';
 import { drainPaymentEvents } from './shop/payments/webhook';
 import { createRefund } from './shop/payments/refunds';
+import { getIntent } from './shop/payments/intents';
+import { providerFor } from './shop/payments/routing';
 import { flutterwaveProvider, paystackProvider } from './shop/payments/config';
 import { redemptionPort } from './marketing/redemption/port';
 import { discountPort } from './marketing/discounts/port';
@@ -286,12 +288,36 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
      * :id/refunds` calls (`payments/routes.ts`) — not a second implementation
      * of the sum-check or the provider-call ordering, both of which stay
      * exactly where `refunds.ts`'s header says they must.
+     *
+     * RESOLVES THE GATEWAY PER INTENT, EXACTLY AS THAT ROUTE ALREADY DOES —
+     * `resolveAppProvider(deps)` alone (the previous shape here) is the single
+     * globally-configured handle (`deps.provider ?? paystackProvider()`) with
+     * no reference to which intent is being refunded. `shop_payment_settings.
+     * active_provider` is an admin-editable switch and can disagree with
+     * `shop_payment_intents.provider` — fixed forever at creation — the instant
+     * an owner flips it after a payment already went through the OTHER
+     * gateway; passing the switch's handle here would refund a Flutterwave
+     * charge through Paystack's API with a Flutterwave reference. `getIntent`
+     * is read FIRST, purely to learn `intent.provider` — the row's own
+     * recorded gateway — before `createRefund` is ever called, then
+     * `providerFor(intent.provider, factories)` (`routing.ts`) resolves the
+     * FIXED handle for that gateway and never re-routes on today's switch
+     * (`providerFor` takes no `db`, reads no settings row, by design). If the
+     * intent cannot be found, this throws NAMED (`NotFoundError`) rather than
+     * silently falling back to a default gateway — a wrong-gateway refund is
+     * the bug being fixed, so a fallback here would only reintroduce it under
+     * a different name.
      */
-    refund: (db, args) =>
-      createRefund(db, resolveAppProvider(deps), args).then((result) => ({
-        refundId: result.refund.id,
-        status: result.refund.status,
-      })),
+    refund: async (db, args) => {
+      const intent = await getIntent(db, args.intentId);
+      if (!intent) throw new NotFoundError(args.intentId);
+      const result = await createRefund(
+        db,
+        providerFor(intent.provider, resolveAppFactories(deps)),
+        args,
+      );
+      return { refundId: result.refund.id, status: result.refund.status };
+    },
     /*
      * THE SIXTH SEAM: ASK THE COURIERS WHERE THE PARCELS ARE.
      *
@@ -813,13 +839,17 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
     API_PREFIX,
     createPaymentRoutes({
       checkout: checkoutPort(),
-      // Same provider the `refund` seam above resolves — see `resolveAppProvider`.
       // `undefined` here is exactly what `createPaymentRoutes` already defaults
       // on its own, so this changes nothing when `deps.provider` is unset.
       provider: deps.provider,
       // BOTH GATEWAYS, for `POST /shop/payments/intents`'s routing decision
       // and for resolving `/confirm`, refunds and cancel back to the gateway
       // that actually took an existing intent's money — see `resolveAppFactories`.
+      // The `refund` seam above resolves through this SAME function
+      // (`providerFor(intent.provider, resolveAppFactories(deps))`), not
+      // through `resolveAppProvider` alone, precisely so a Flutterwave-paid
+      // intent refunds through Flutterwave even when `provider`/`deps.provider`
+      // above still names Paystack.
       factories: resolveAppFactories(deps),
       // The `/confirm` route is a genuine capture path too — a customer back
       // from Paystack whose webhook is late reaches `captured` there.

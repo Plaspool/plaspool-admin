@@ -87,30 +87,84 @@ export async function chooseProvider(
       ? settings.internationalProvider
       : settings.activeProvider;
 
-  // Constructed at most once per gateway per call, and the same instance is
-  // what gets returned — a real adapter (an HTTP client) should not be built
-  // twice over one routing decision just because `canCharge` also needs it.
+  // Constructed at most once per gateway per call — success OR failure alike
+  // (`failed` below), so a gateway whose factory throws is not re-attempted,
+  // and not re-logged, just because it is checked twice in one call (e.g.
+  // once as `start`, again inside the fallback loop).  The same instance is
+  // what gets returned on success — a real adapter (an HTTP client) should
+  // not be built twice over one routing decision just because `canCharge`
+  // also needs it.
   const providers = new Map<ProviderName, PaymentProvider>();
-  const providerNamed = (name: ProviderName): PaymentProvider => {
-    let provider = providers.get(name);
-    if (!provider) {
-      provider = factories[name]();
+  const failed = new Set<ProviderName>();
+
+  /*
+   * A GATEWAY THIS DEPLOYMENT CANNOT CONSTRUCT CANNOT CHARGE ANYTHING, SO A
+   * THROWING FACTORY IS TREATED AS "NOT CHARGEABLE" HERE RATHER THAN LET TO
+   * ESCAPE.
+   *
+   * The likely real sequence: an owner switches a gateway on in the admin,
+   * then goes to add its secret keys — and until that lands,
+   * `flutterwaveProvider()`/`paystackProvider()` (`config.ts`) throw a plain
+   * `Error` for the whole window. Left uncaught, that throw would escape this
+   * function and reach `POST /shop/payments/intents` as an unlabelled 500,
+   * killing checkout even when a currency it CAN still reach (the other,
+   * actually-configured gateway) should have taken the charge instead.
+   * Consistent with the intersection rule this file already documents above:
+   * a gateway that cannot authenticate genuinely cannot take a payment, same
+   * as one the settings row never switched on for this currency — so it
+   * falls out of `canCharge` the same way, and the fallback order or the
+   * final `NoProviderForCurrencyError` takes it from there.
+   *
+   * `providerFor` BELOW MUST NOT GET THIS TREATMENT. It resolves an EXISTING
+   * intent's gateway, fixed forever at creation — a missing key there is a
+   * real, loud failure, and silently substituting another gateway would
+   * refund (or re-verify) a payment through a gateway that never took it,
+   * exactly the hazard `refunds.ts`'s header warns about. Only THIS routing
+   * decision, for a payment that has not happened yet, is allowed to degrade.
+   */
+  const providerNamed = (name: ProviderName): PaymentProvider | null => {
+    if (failed.has(name)) return null;
+    const cached = providers.get(name);
+    if (cached) return cached;
+    try {
+      const provider = factories[name]();
       providers.set(name, provider);
+      return provider;
+    } catch {
+      failed.add(name);
+      // NAMES ONLY — the gateway and an ENUMERATED reason, never the caught
+      // error's message and never anything that could carry a key.
+      // `config.ts` throws a names-only error by design (its own header);
+      // logging the message here would undo that one layer up.
+      // eslint-disable-next-line no-console -- the only record a routing decision silently degraded
+      console.error(
+        '[payments] gateway unavailable for routing',
+        JSON.stringify({ gateway: name, reason: 'construction_failed' }),
+      );
+      return null;
     }
-    return provider;
   };
 
   /** The intersection rule: the row's switched-on list AND the adapter's ceiling. */
   const canCharge = (name: ProviderName): boolean => {
     const switchedOn = new Set(settings.currencies[name].map((code) => code.toUpperCase()));
     if (!switchedOn.has(currency)) return false;
-    const chargeable = providerNamed(name).capabilities.currencies;
+    const provider = providerNamed(name);
+    if (!provider) return false;
+    const chargeable = provider.capabilities.currencies;
     return chargeable.some((code) => code.toUpperCase() === currency);
   };
 
-  if (canCharge(start)) return { name: start, provider: providerNamed(start) };
+  if (canCharge(start)) {
+    // Non-null: `canCharge` only returns true after `providerNamed` above
+    // already returned a real provider for this exact name, which the cache
+    // in `providers` now returns again rather than reconstructing.
+    return { name: start, provider: providerNamed(start) as PaymentProvider };
+  }
   for (const name of PROVIDER_FALLBACK_ORDER) {
-    if (canCharge(name)) return { name, provider: providerNamed(name) };
+    if (canCharge(name)) {
+      return { name, provider: providerNamed(name) as PaymentProvider };
+    }
   }
   throw new NoProviderForCurrencyError(currency);
 }
