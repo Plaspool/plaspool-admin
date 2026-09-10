@@ -114,23 +114,48 @@ export interface StoreEventResult {
  * carries no such field, and never guessed from `event.type`. A real caller
  * knows which adapter's `parseWebhook` produced this event, because it is the
  * one that called it, and that is the one place this fact can be known
- * honestly.
- *
- * @deprecated THE `= 'paystack'` DEFAULT — not this function. Exists ONLY so
- * `server/shop/composition.test.ts`'s pre-existing two-argument call (predating
- * this task, and one this project's mode change forbids editing right now)
- * keeps compiling and keeps meaning what it always meant — the identical
- * reason `intents.ts`'s legacy `createIntent` overload gives for its own
- * `@deprecated` default. It is not a shape to copy: both webhook routes name
- * the gateway explicitly today (`routes.ts`'s `createWebhookRoutes`, bound
- * per-route to `'paystack'`/`'flutterwave'`), and any future caller must too.
+ * honestly. TWO OVERLOADS, THE SAME SHAPE `intents.ts`'s `createIntent` USES
+ * FOR ITS OWN LEGACY CALL SITE — not a default on the one signature, which
+ * would mark every caller `@deprecated`, correct three-argument call sites
+ * (`routes.ts`, both of them) included. Splitting it means only the shape
+ * that actually needs the default is flagged.
  */
 export async function storeEvent(
   db: Db,
   event: ProviderEvent,
-  providerName: ProviderName = 'paystack',
-  now: number = Date.now(),
+  providerName: ProviderName,
+  now?: number,
+): Promise<StoreEventResult>;
+/**
+ * LEGACY, PROVIDER-NAME-OMITTED OVERLOAD.
+ *
+ * Kept ONLY because `server/shop/composition.test.ts`'s one pre-existing call
+ * — predating the gateway column entirely, and a test file this project's
+ * mode change forbids editing right now — uses this shape. A caller using
+ * this form gets `'paystack'`, correct today because that call only ever
+ * stores a Paystack-shaped event. Both webhook routes name the gateway
+ * explicitly (`routes.ts`'s `createWebhookRoutes`, bound per-route to
+ * `'paystack'`/`'flutterwave'`), and any future caller must too.
+ *
+ * @deprecated Exists only for `composition.test.ts`'s pre-existing call, not
+ * a shape to copy. A new caller must pass the gateway name explicitly,
+ * through the three-argument form above.
+ */
+export async function storeEvent(
+  db: Db,
+  event: ProviderEvent,
+  now?: number,
+): Promise<StoreEventResult>;
+export async function storeEvent(
+  db: Db,
+  event: ProviderEvent,
+  arg3?: ProviderName | number,
+  arg4?: number,
 ): Promise<StoreEventResult> {
+  const namedExplicitly = typeof arg3 === 'string';
+  const providerName: ProviderName = namedExplicitly ? arg3 : 'paystack';
+  const now: number = (namedExplicitly ? arg4 : arg3) ?? Date.now();
+
   const intent = event.providerIntentId
     ? await getIntentByProviderRef(db, event.providerIntentId)
     : null;
