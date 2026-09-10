@@ -9,7 +9,7 @@ import { ProviderError } from './provider/scrub';
 import { flutterwaveProvider, paystackProvider, paymentsEnv, providerCeilings, providerKeyPresence } from './config';
 import { cancelIntent, createIntent, getIntent, applyIntentStatus } from './intents';
 import { createRefund, listRefunds } from './refunds';
-import { chooseProvider, providerFor, NoProviderForCurrencyError } from './routing';
+import { chooseProvider, providerFor, NoGatewayAvailableError, NoProviderForCurrencyError } from './routing';
 import { readPaymentSettings, writePaymentSettings } from './settings';
 import { PROVIDER_NAMES } from './schema';
 import { completeCheckoutForIntent, drainPaymentEvents, processEvent, storeEvent } from './webhook';
@@ -172,8 +172,19 @@ const CreateRefundBody = z
  * explicitly reads the same way `settings.ts`'s own `PaymentSettingsPatch`
  * type does rather than through a more general map type nothing else here
  * needs.
+ *
+ * EACH ELEMENT IS AN ISO 4217 CODE, EXACTLY THREE UPPERCASE LETTERS — the
+ * same shape `shop_payment_settings_paystack_ccy_ck`/`..._flutterwave_ccy_ck`
+ * (migration 1100) enforce over the joined array. `str().min(1).max(10)`
+ * used to be the only bound here, which let a hand-crafted `PATCH` carrying
+ * `['ABCD']` pass zod AND `normalizeCurrencyCodes` (`settings.ts`, which
+ * only rejects an EMPTY list) and reach that CHECK constraint as an
+ * unlabelled 500 instead of a named 400. `readPaymentSettings`/every real
+ * response already returns codes uppercase (`settings.ts`: "Never empty for
+ * either gateway"), so the one real caller (`SettingsPayments.tsx`, which
+ * only ever round-trips what it was given) is unaffected.
  */
-const CurrencyList = z.array(str().min(1).max(10)).optional();
+const CurrencyList = z.array(str().regex(/^[A-Z]{3}$/, 'ISO 4217 code')).optional();
 
 const PatchPaymentSettingsBody = z
   .object({
@@ -441,9 +452,37 @@ export function createWebhookRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
   // THE NEW URL. Never shared with the Paystack route above, and never
   // resolved through `chooseProvider`/`readPaymentSettings` — see this
   // function's own header.
-  app.post('/shop/payments/webhook/flutterwave', (c) =>
-    handleProviderWebhook(c, deps, factories.flutterwave(), 'flutterwave'),
-  );
+  app.post('/shop/payments/webhook/flutterwave', (c) => {
+    /*
+     * 503, NOT AN UNCAUGHT THROW. This route exists and is reachable by any
+     * unauthenticated caller the moment it is deployed, whether or not
+     * Flutterwave itself is configured on this deployment — and today it is
+     * not (CLAUDE.md: built but inert until the owner sets
+     * `FLUTTERWAVE_SECRET_KEY`/`FLUTTERWAVE_WEBHOOK_HASH`). `factories.flutterwave()`
+     * throws in exactly that state (`config.ts`'s `flutterwaveEnv()`), and
+     * calling it inline as `handleProviderWebhook`'s argument — as this line
+     * used to — throws BEFORE a single byte of the body is read, so every
+     * caller gets the generic unmapped `{ error: 'internal' }` 500 and the
+     * 401-on-bad-signature path never even runs.
+     *
+     * Constructed here, wrapped, so that failure is a NAMED, EXPECTED
+     * response instead: a 5xx (this deployment cannot take a Flutterwave
+     * payment right now, which is true and not the caller's fault) but a
+     * distinct code from an unmapped crash, and nothing about WHY beyond
+     * that — never the caught error, matching `config.ts`'s own names-only
+     * discipline for this exact throw.
+     */
+    let provider: PaymentProvider;
+    try {
+      provider = factories.flutterwave();
+    } catch {
+      return c.json({ error: 'gateway_not_configured' }, 503);
+    }
+    // THE CONFIGURED CASE IS UNCHANGED: `handleProviderWebhook` still reads
+    // the raw body, verifies it, and answers 401 on a bad signature exactly
+    // as it always has.
+    return handleProviderWebhook(c, deps, provider, 'flutterwave');
+  });
 
   return app;
 }
@@ -531,6 +570,22 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
        */
       if (err instanceof NoProviderForCurrencyError) {
         return c.json({ error: 'no_provider_for_currency' }, 400);
+      }
+      /*
+       * NOT A CLEAN REFUSAL — AN OUTAGE, AND IT MUST READ AS ONE.
+       * `NoGatewayAvailableError` means every gateway the settings row
+       * pointed at for this currency could not even be constructed (see its
+       * own comment in `routing.ts`) — most likely a missing or malformed
+       * secret key on the gateway taking live money. A 400 here would read
+       * as a deliberate, permanent configuration state exactly like the one
+       * above, and it is the opposite: transient from the caller's point of
+       * view and something an operator needs paged for. 503, not 500,
+       * because the cause is named and specific (this deployment cannot
+       * reach a payment gateway right now) rather than unmapped — the same
+       * choice item 9's webhook route makes for the same reason.
+       */
+      if (err instanceof NoGatewayAvailableError) {
+        return c.json({ error: 'no_gateway_available' }, 503);
       }
       throw err;
     }

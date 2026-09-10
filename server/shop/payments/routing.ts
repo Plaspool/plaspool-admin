@@ -48,6 +48,32 @@ export class NoProviderForCurrencyError extends Error {
 }
 
 /**
+ * Thrown when EVERY gateway this routing decision reached for was switched
+ * on for the currency in `shop_payment_settings` AND could not even be
+ * CONSTRUCTED — every one of those factories threw.
+ *
+ * DISTINCT FROM `NoProviderForCurrencyError` ON PURPOSE. That one means the
+ * currency is legitimately unroutable today — nothing is switched on for it,
+ * or the switched-on gateway's adapter ceiling does not admit it — a
+ * configuration STATE, and a permanent 4xx the client should not retry. This
+ * one means a gateway the settings row says SHOULD be able to take this
+ * currency cannot even authenticate — a missing or malformed secret key, most
+ * likely — which is a deployment PROBLEM, not a state, and the classic real
+ * sequence is the owner switching a gateway on in the admin before its keys
+ * are set (`config.ts`'s header). Collapsing the two into one 400 is exactly
+ * what let a missing `PAYSTACK_SECRET_KEY` — an outage on the gateway taking
+ * every live payment — read as a deliberate, permanent "not configured"
+ * response instead of the loud, pageable 5xx a broken live gateway must be.
+ */
+export class NoGatewayAvailableError extends Error {
+  readonly code = 'no_gateway_available';
+  constructor() {
+    super('no_gateway_available');
+    this.name = 'NoGatewayAvailableError';
+  }
+}
+
+/**
  * Where a NEW payment should go.
  *
  * 1. Start from the switch: `activeProvider`, unless the destination is
@@ -66,8 +92,12 @@ export class NoProviderForCurrencyError extends Error {
  *    and what its adapter's `capabilities.currencies` admits. Otherwise walk
  *    `PROVIDER_FALLBACK_ORDER` and use the first gateway that can.
  *
- * 3. If nothing can, refuse with a typed `NoProviderForCurrencyError` rather
- *    than letting an unroutable charge reach a gateway that 4xxs on it.
+ * 3. If nothing can, refuse — with `NoProviderForCurrencyError` when the
+ *    reason is that no switched-on gateway can take this currency, or with
+ *    `NoGatewayAvailableError` when the reason is that every gateway the
+ *    settings row pointed at for this currency could not even be
+ *    constructed. See that class's own comment for why the two must not
+ *    collapse into one.
  */
 export async function chooseProvider(
   db: Db,
@@ -112,8 +142,10 @@ export async function chooseProvider(
    * Consistent with the intersection rule this file already documents above:
    * a gateway that cannot authenticate genuinely cannot take a payment, same
    * as one the settings row never switched on for this currency — so it
-   * falls out of `canCharge` the same way, and the fallback order or the
-   * final `NoProviderForCurrencyError` takes it from there.
+   * falls out of `canCharge` the same way, and the fallback order takes it
+   * from there. The two are NOT the same failure once every option is
+   * exhausted, though — see the choice between `NoGatewayAvailableError` and
+   * `NoProviderForCurrencyError` at the bottom of this function.
    *
    * `providerFor` BELOW MUST NOT GET THIS TREATMENT. It resolves an EXISTING
    * intent's gateway, fixed forever at creation — a missing key there is a
@@ -165,6 +197,29 @@ export async function chooseProvider(
     if (canCharge(name)) {
       return { name, provider: providerNamed(name) as PaymentProvider };
     }
+  }
+
+  /*
+   * WHICH OF THE TWO ERRORS, DECIDED FROM `providers`/`failed` — the exact
+   * record of every construction this call attempted, kept by `providerNamed`
+   * above. `failed` is non-empty only when a gateway switched on for THIS
+   * currency was actually reached for and threw; `providers` is non-empty
+   * whenever at least one construction succeeded, whether or not that gateway
+   * turned out to admit this currency.
+   *
+   * `providers.size === 0 && failed.size > 0` therefore means every gateway
+   * this decision was entitled to try — the settings row named it for this
+   * currency — came back unable to authenticate, and NONE came back merely
+   * "constructed fine, does not take this currency". That is an outage, not a
+   * configuration state, and it must not read as one. The moment even one
+   * gateway constructs successfully (`providers.size > 0`), there is a real,
+   * working gateway behind this decision and the failure is squarely about
+   * the currency — `NoProviderForCurrencyError` stays correct, exactly as it
+   * is when nothing was switched on for this currency at all (`failed.size
+   * === 0`, nothing was even attempted).
+   */
+  if (providers.size === 0 && failed.size > 0) {
+    throw new NoGatewayAvailableError();
   }
   throw new NoProviderForCurrencyError(currency);
 }
