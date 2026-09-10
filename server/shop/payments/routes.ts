@@ -97,6 +97,18 @@ function unwiredCheckoutPort(): PaymentsCheckoutPort {
     recordContact() {
       return Promise.reject(unwired());
     },
+    /*
+     * REJECTS TOO, THE SAME AS ITS SIBLINGS ABOVE, RATHER THAN THE `null` A
+     * CONFIGURED PORT WOULD ANSWER. `destination`'s contract elsewhere is
+     * "never throw, degrade to domestic routing" — but that promise is about a
+     * checkout the port can actually see, not about a deployment that forgot
+     * to wire the port at all. Answering `null` here would let a missing
+     * composition root look like an ordinary checkout with no address yet,
+     * which is exactly the failure mode this stand-in exists to make loud.
+     */
+    destination() {
+      return Promise.reject(unwired());
+    },
   };
 }
 

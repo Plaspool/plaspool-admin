@@ -460,6 +460,26 @@ export interface CheckoutPort<Db> {
    * throw when the cart is gone or no longer accepting writes.
    */
   recordContact(db: Db, checkoutId: string, email: string): Promise<void>;
+
+  /**
+   * Where this checkout is going, for ROUTING ONLY — which payment gateway
+   * takes the charge. `null` when no address has been given, or the checkout
+   * is gone.
+   *
+   * NOT A FIELD ON `FrozenTotals`, DELIBERATELY. That object is jsonb, copied
+   * into every order and never recomputed, so a new field there makes every
+   * historical order read as corrupt unless every reader is defensive — a trap
+   * this codebase has fallen into twice. A method answers from live storage and
+   * leaves the frozen payload alone.
+   *
+   * NEVER USED FOR PRICING. `totals()` is the only thing that decides money;
+   * this decides which gateway that money travels through.
+   *
+   * A CAVEAT WORTH KNOWING: shipping country is a proxy for card-ISSUING
+   * country, which is what actually drives acceptance rates. It is the best
+   * signal available before a payment exists.
+   */
+  destination(db: Db, checkoutId: string): Promise<{ country: string } | null>;
 }
 
 /** What `CheckoutPort.complete` answers. See the doc comment above. */
