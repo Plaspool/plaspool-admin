@@ -1,9 +1,9 @@
 /**
- * The Flutterwave adapter — the charging half (task 6 of the flutterwave-
- * gateway plan). `createIntent`, `fetchIntent`, `capture` and `cancel` are
- * real now. `refund` and `parseWebhook` still throw the placeholder `Error`
- * task 5 left them with — task 7 replaces those two bodies, and nothing here
- * should be read as settled behaviour for either of them.
+ * The Flutterwave adapter — complete now (task 7 of the flutterwave-gateway
+ * plan). `createIntent`, `fetchIntent`, `capture` and `cancel` were task 6's;
+ * `refund` and `parseWebhook` are this task's, and the webhook is the one
+ * piece of this whole file that cannot be proven by a test — see its own
+ * doc comment before touching it.
  *
  * MIRRORS `./paystack.ts` ON PURPOSE: the same `#request` helper shape, the
  * same network/timeout/auth/rate-limit/5xx classification, the same
@@ -24,6 +24,17 @@
  * why a kobo-bearing amount is ORDINARY here — bulk discounts and percent
  * discount codes both produce one — and never evidence of corruption).
  *
+ * ⚠ THE WEBHOOK IS A TRIGGER, NEVER A SOURCE OF TRUTH — THE OTHER PROPERTY
+ * THIS FILE EXISTS TO PROTECT. Flutterwave v3 does not sign the webhook
+ * body: `verif-hash` is the dashboard's secret hash SENT BACK VERBATIM and
+ * compared for equality, not an HMAC over anything, so it proves only that
+ * the sender knows a static value — never that the body is unmodified.
+ * Anyone who ever learns that value can replay it on a body claiming ANY
+ * `tx_ref` was captured for ANY amount. So `parseWebhook` below reads
+ * exactly one fact from the payload (`data.tx_ref`) and asks `fetchIntent`
+ * for everything else — see that method's own comment, which is the real
+ * documentation of this property; this paragraph is only the pointer to it.
+ *
  * WHAT ELSE IS DIFFERENT FROM PAYSTACK:
  *
  * - **`tx_ref` is ours**, exactly like Paystack's `reference`: supplied by
@@ -35,12 +46,18 @@
  *   no id yet — only a redirect link — so its result carries
  *   `providerChargeId: null`; `GET /v3/transactions/verify_by_reference`
  *   (`fetchIntent`) does return one, and it is carried forward as a STRING
- *   because task 7's refund call (`POST /v3/transactions/{id}/refund`) needs
- *   it and nothing here ever does arithmetic on it.
+ *   because `refund`'s call to `POST /v3/transactions/{id}/refund` needs it
+ *   and nothing here ever does arithmetic on it.
+ * - **`refund` never has a charge id to start with.** `RefundRequest`
+ *   carries our reference, not theirs — nothing upstream has ever needed
+ *   Flutterwave's numeric id before this file. So `refund` resolves it
+ *   itself, via the same `verify_by_reference` lookup `fetchIntent` already
+ *   makes, before it can call the refund endpoint at all.
  * - **No authorize/capture split, same as Paystack.** `capture()` and
  *   `cancel()` stay `unsupported`: a Flutterwave charge succeeds or fails
  *   outright, with no held authorization to take later.
  */
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { ProviderError } from './scrub';
 import type {
   CreateIntentRequest,
@@ -51,6 +68,7 @@ import type {
   ProviderIntent,
   ProviderIntentStatus,
   ProviderRefund,
+  ProviderRefundStatus,
   RefundRequest,
 } from './types';
 
@@ -72,12 +90,13 @@ export interface FlutterwaveConfig {
   secretKey: string;
   /**
    * The dashboard's webhook secret hash — verifies `verif-hash` on incoming
-   * webhooks. INDEPENDENT of `secretKey`: unlike Paystack's single value that
-   * is both API credential and signing key, Flutterwave's two rotate apart.
+   * webhooks (`parseWebhook`, via `verifyFlutterwaveHash`). INDEPENDENT of
+   * `secretKey`: unlike Paystack's single value that is both API credential
+   * and signing key, Flutterwave's two rotate apart.
    *
-   * Not read anywhere in this file yet — `parseWebhook` is task 7's — but the
-   * constructor shape is fixed (task 5's ruling) and stores it now so task 7
-   * needs no constructor change.
+   * NOT A SIGNATURE KEY — see `parseWebhook`'s own comment. This value is
+   * compared for EQUALITY against what the webhook sends, not used to
+   * compute an HMAC, because Flutterwave v3 does not sign the body at all.
    */
   webhookHash: string;
   /** Overridden by tests to point at a local server. */
@@ -160,6 +179,26 @@ function mapFailureReason(status: string): ProviderFailureReason | null {
   return status === 'failed' ? 'declined' : null;
 }
 
+/**
+ * Flutterwave's refund states → our three, the same SAFE direction as
+ * `paystack.ts`'s own `mapRefundStatus`: anything not positively known to
+ * be finished stays `pending` rather than `failed`. A refund wrongly called
+ * `failed` releases the amount it held against the intent, and a second
+ * attempt could then refund the same money twice.
+ */
+function mapRefundStatus(status: string): ProviderRefundStatus {
+  switch (status) {
+    case 'completed':
+      return 'succeeded';
+    case 'failed':
+      return 'failed';
+    default:
+      // pending / processing — and anything Flutterwave adds that this
+      // adapter does not yet recognise.
+      return 'pending';
+  }
+}
+
 interface FlutterwaveEnvelope {
   status?: unknown;
   message?: unknown;
@@ -240,7 +279,80 @@ function toMajorUnits(minor: number): number {
 function toMinorUnits(value: unknown): number | null {
   const n = typeof value === 'string' ? Number(value) : value;
   if (typeof n !== 'number' || !Number.isFinite(n)) return null;
-  return Math.round(n * 100);
+  const minor = Math.round(n * 100);
+  /*
+   * THE UPPER BOUND THIS FUNCTION LOST WHEN BIT-EXACTNESS WAS REMOVED,
+   * RESTORED — but on the OUTPUT, not the input, which is the distinction
+   * that matters. The bit-exactness demand this function used to make on
+   * `n * 100` rejected perfectly ordinary values (`19.99 * 100 !==
+   * 1998.9999999999998`'s rounded `1999`) and is gone for good — see the
+   * comment above. This check is a different thing: a SAFE-INTEGER ceiling
+   * on the result, restraining how large an amount `fetchIntent` will ever
+   * report rather than how it was computed. `Math.round` still runs
+   * unconditionally; only a result that overflows `Number.MAX_SAFE_INTEGER`
+   * (2^53 - 1, ≈ ₦90 trillion in minor units) is refused, through the same
+   * `null` this function already returns for a non-numeric `value` — the
+   * caller (`#toIntent`) already turns that into `malformed_response`
+   * rather than defaulting the amount to zero.
+   */
+  return Number.isSafeInteger(minor) ? minor : null;
+}
+
+/**
+ * A stable, unique identity for a webhook event — the same problem
+ * `providerEventIdOf` solves for Paystack, and for the same reason:
+ * Flutterwave's envelope carries no event id of its own, either in the body
+ * or in a header.
+ *
+ * NAMESPACED ON EVERY BRANCH, INCLUDING THE FALLBACK.
+ * `shop_payment_events.provider_event_id` is ONE globally unique column
+ * shared by every gateway (`03-payments.md` §4); prefixing `flutterwave:`
+ * unconditionally is what makes this adapter's keys structurally unable to
+ * collide with another gateway's, rather than merely unlikely to.
+ *
+ * THE COMPOSITE IS `tx_ref` — OURS, unique per charge, and the same kind of
+ * discriminant `providerEventIdOf`'s own `charge.*` branch uses Paystack's
+ * `reference` as, for the same reason. Reading it here is not a breach of
+ * `parseWebhook`'s "trust nothing but `tx_ref`" rule — it IS that field —
+ * and a forged value can only affect DEDUPE housekeeping, never
+ * `intentStatus`/`amount`/`currency`/`failureReason`, which always come
+ * from `fetchIntent` and never from this function. A body with no usable
+ * `tx_ref` falls back to a digest of the raw bytes, so a redelivery
+ * (identical bytes) still dedupes and two different malformed bodies do
+ * not collide.
+ */
+export function flutterwaveEventIdOf(
+  event: string,
+  data: Record<string, unknown> | null,
+  raw: Uint8Array,
+): string {
+  const bodyDigest = () =>
+    `flutterwave:${event}:body:${createHash('sha256').update(raw).digest('hex')}`;
+  const txRef = data ? str(data.tx_ref) : null;
+  return txRef ? `flutterwave:${event}:${txRef}` : bodyDigest();
+}
+
+/**
+ * Constant-time compare of `verif-hash` against the dashboard's webhook
+ * secret. Mirrors `verifyPaystackSignature`'s shape exactly — a boolean,
+ * leaving the `throw` to `parseWebhook`, where the `ProviderError`'s
+ * `provider`/`operation` fields are already in scope — but proves a much
+ * weaker thing than an HMAC does. See this file's header and
+ * `parseWebhook`'s own comment for what that gap means and why the rest of
+ * this file is built around it.
+ *
+ * `timingSafeEqual` THROWS on a length mismatch, which would itself leak a
+ * bit — whether the attacker's guess happened to be the right length.
+ * Compare lengths first and fail identically on both paths, exactly like
+ * `paystack.ts`'s `verifyPaystackSignature` does for its own HMAC digest.
+ */
+export function verifyFlutterwaveHash(headers: Headers, expected: string): boolean {
+  const got = headers.get('verif-hash');
+  if (!got) return false;
+  const a = Buffer.from(got);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
 
 export class FlutterwaveProvider implements PaymentProvider {
@@ -486,21 +598,172 @@ export class FlutterwaveProvider implements PaymentProvider {
     return this.#toIntent(data, providerIntentId);
   }
 
-  /** Not implemented — task 7. */
-  refund(req: RefundRequest, key: string): Promise<ProviderRefund> {
-    void req;
+  /**
+   * `req.providerIntentId` IS OUR REFERENCE (`tx_ref`), exactly like every
+   * other method in this file — but `POST /v3/transactions/{id}/refund`
+   * takes ONLY Flutterwave's own numeric transaction id, and
+   * `RefundRequest` (the port's shared shape, `types.ts`) carries no such
+   * field, because nothing upstream has ever needed one before this method.
+   * So the id is resolved FIRST, via the exact `verify_by_reference` lookup
+   * `fetchIntent` already makes — reused rather than duplicated, which is
+   * also why a failure resolving the id surfaces tagged
+   * `operation: 'fetchIntent'` rather than `'refund'`: that is genuinely
+   * which network call failed, and preserving it costs nothing a caller
+   * needs, since `code`/`retryable`/`indeterminate` — the fields that drive
+   * behaviour — are unaffected either way.
+   *
+   * `key` IS ACCEPTED AND DELIBERATELY NOT SENT, same as `paystack.ts`'s own
+   * `refund`: this endpoint takes no idempotency parameter, so the only
+   * thing standing between a retry and a double refund is the UNIQUE
+   * `idempotency_key` already claimed in `shop_refunds` BEFORE this is ever
+   * called — see `refunds.ts`; that ordering is not an implementation
+   * detail here either.
+   *
+   * THE AMOUNT CONVERSION APPLIES HERE TOO — `toMajorUnits` going out,
+   * `toMinorUnits` coming back — the same two functions `createIntent` and
+   * `fetchIntent` use, and the only two places this file crosses the 100
+   * line (see this file's header).
+   */
+  async refund(req: RefundRequest, key: string): Promise<ProviderRefund> {
     void key;
-    return Promise.reject(
-      new Error('FlutterwaveProvider.refund is not implemented yet'),
+
+    const intent = await this.fetchIntent(req.providerIntentId);
+    const chargeId = intent.providerChargeId;
+    if (!chargeId) {
+      throw new ProviderError({
+        code: 'malformed_response',
+        provider: this.name,
+        operation: 'refund',
+      });
+    }
+
+    const data = await this.#request(
+      'refund',
+      'POST',
+      `/transactions/${encodeURIComponent(chargeId)}/refund`,
+      {
+        amount: toMajorUnits(req.amount),
+        ...(req.merchantNote ? { comments: req.merchantNote } : {}),
+      },
     );
+
+    const rawId = data.id;
+    const providerRefundId =
+      typeof rawId === 'number' && Number.isSafeInteger(rawId) ? String(rawId) : str(rawId);
+    if (!providerRefundId) {
+      throw new ProviderError({
+        code: 'malformed_response',
+        provider: this.name,
+        operation: 'refund',
+      });
+    }
+
+    return {
+      providerRefundId,
+      status: mapRefundStatus(str(data.status) ?? ''),
+      amount: toMinorUnits(data.amount_refunded) ?? req.amount,
+      currency: str(data.currency) ?? req.currency,
+    };
   }
 
-  /** Not implemented — task 7. */
-  parseWebhook(raw: Uint8Array, headers: Headers): Promise<ProviderEvent> {
-    void raw;
-    void headers;
-    return Promise.reject(
-      new Error('FlutterwaveProvider.parseWebhook is not implemented yet'),
-    );
+  /**
+   * VERIFY, THEN PARSE — but what verification proves here is much weaker
+   * than `paystack.ts`'s HMAC, and every line below exists because of that
+   * gap. Read this comment before changing anything in this method.
+   *
+   * ⚠ `verif-hash` IS NOT A SIGNATURE. It is the dashboard's webhook secret
+   * hash sent back VERBATIM and compared for equality — proving only that
+   * the sender knows one static value, never that the body arrived
+   * unmodified. Anyone who ever learns that value — a leaked env var, a
+   * misconfigured log, a support ticket pasted in full — can replay it
+   * forever on a body claiming ANY `tx_ref` was captured for ANY amount,
+   * and `verifyFlutterwaveHash` would accept it exactly as it accepts a
+   * genuine one.
+   *
+   * SO THE BODY IS NEVER TRUSTED FOR ANYTHING BUT `data.tx_ref`. No
+   * `status`, no `amount`, no `currency` — not even as a fallback when the
+   * lookup below fails. Every fact this method actually reports —
+   * `intentStatus`, `amount`, `currency`, `failureReason` — comes from
+   * `fetchIntent`: a fresh call to Flutterwave's API, over TLS, carrying
+   * the secret key, which is the one channel a webhook replay cannot forge.
+   * The webhook is a TRIGGER telling this adapter to go look. It is never
+   * the source of truth for what it claims happened.
+   *
+   * THIS IS THE ONE PROPERTY IN THIS FILE A TEST CANNOT PROVE — exercising
+   * it for real means forging a webhook, which is exactly the attack it
+   * defends against — and there will be no dev check either. It has to be
+   * correct by construction, which is the entire reason this comment is as
+   * long as it is.
+   */
+  async parseWebhook(raw: Uint8Array, headers: Headers): Promise<ProviderEvent> {
+    if (!verifyFlutterwaveHash(headers, this.#webhookHash)) {
+      throw new ProviderError({
+        code: 'signature_invalid',
+        provider: this.name,
+        operation: 'parseWebhook',
+      });
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(Buffer.from(raw).toString('utf8'));
+    } catch {
+      /*
+       * A body that carried a valid hash and is not JSON is not an attack —
+       * knowing the static secret is not the same as controlling the
+       * bytes' shape — so `malformed_response` rather than
+       * `signature_invalid` keeps the two distinguishable in a log without
+       * either carrying the body.
+       */
+      throw new ProviderError({
+        code: 'malformed_response',
+        provider: this.name,
+        operation: 'parseWebhook',
+      });
+    }
+
+    const envelope = asRecord(parsed);
+    const event = str(envelope?.event) ?? '';
+    const data = asRecord(envelope?.data);
+
+    /*
+     * `data.tx_ref` AND NOTHING ELSE FROM THIS PAYLOAD — see this method's
+     * own header above. A body with no `tx_ref` cannot be resolved against
+     * the API at all, so it is malformed rather than something to guess
+     * at.
+     */
+    const txRef = str(data?.tx_ref);
+    if (!txRef) {
+      throw new ProviderError({
+        code: 'malformed_response',
+        provider: this.name,
+        operation: 'parseWebhook',
+      });
+    }
+
+    // THE ONLY SOURCE OF TRUTH. `fetchIntent` throws its own `ProviderError`
+    // on failure, and that is left to propagate unchanged — a reference
+    // this adapter cannot confirm against the API must not be reported as
+    // anything, which is the entire point of this method.
+    const intent = await this.fetchIntent(txRef);
+
+    return {
+      providerEventId: flutterwaveEventIdOf(event, data, raw),
+      type: event,
+      providerIntentId: intent.providerIntentId,
+      // No refund-event handling: this adapter has no endpoint that reports
+      // a refund's own state by reference, and nothing here derives one
+      // from a payload it does not trust regardless.
+      providerRefundId: null,
+      intentStatus: intent.status,
+      refundStatus: null,
+      failureReason: intent.failureReason,
+      amount: intent.amount,
+      currency: intent.currency,
+      // The VERIFIED RAW BODY, parsed but not reshaped — evidence, not
+      // truth. Every fact ABOVE this line came from `fetchIntent`, never
+      // from `parsed`.
+      payload: parsed,
+    };
   }
 }
