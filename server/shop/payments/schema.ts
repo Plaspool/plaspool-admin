@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { bigint, check, index, integer, jsonb, pgTable, text, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { users } from '../../db/schema';
 import { PAYMENT_STATUSES } from '../../../shared/commerce/ports';
+import type { ProviderIntentStatus, ProviderRefundStatus } from './provider/types';
 
 /**
  * The Payments tables (contract §4, `03-payments.md` §3).
@@ -95,6 +96,12 @@ export const shopPaymentIntents = pgTable(
      * names the column. It backfills the existing rows, all Paystack. Dropping it
      * before the code names the column is a 23502, which hides the intent rather
      * than showing it: an INSERT that forgets the column now fails loudly.
+     *
+     * NOT YET SAFE TO DROP as of task 9, even though `createIntent` and
+     * `storeEvent` both name it now: see the matching comment in migration
+     * `1100_payment_providers.sql` for the six test files that raw-INSERT
+     * into this table (and `shop_payment_events`) without naming it, and the
+     * 57-test breakage measured directly when the drop was tried.
      */
     provider: text('provider').$type<ProviderName>().notNull(),
     /**
@@ -185,7 +192,10 @@ export const shopPaymentEvents = pgTable(
     /**
      * WHICH GATEWAY sent this event. Two gateways will eventually deliver to
      * two different webhook endpoints, so this is known the instant the event
-     * is verified and stored — never inferred from the payload.
+     * is verified and stored — never inferred from the payload. `storeEvent`
+     * (`webhook.ts`) names it explicitly as of task 9. Its column default is
+     * NOT yet dropped, for the same reason `shopPaymentIntents.provider`'s
+     * is not — see that field's comment.
      */
     provider: text('provider').$type<ProviderName>().notNull(),
     /**
@@ -209,6 +219,19 @@ export const shopPaymentEvents = pgTable(
      */
     intentId: text('intent_id'),
     type: text('type').notNull(),
+    /**
+     * WHAT THE EVENT SAID THE CHARGE'S STATE NOW IS — computed by the adapter
+     * at verification time (`ProviderEvent.intentStatus`) and persisted here
+     * so `processEvent` (`webhook.ts`) can dispatch on IT rather than
+     * re-deriving the same decision from `payload` using one gateway's own
+     * field names (task-9). NULLABLE: an event may legitimately name neither a
+     * charge nor a refund state at all.
+     */
+    intentStatus: text('intent_status').$type<ProviderIntentStatus>(),
+    /** Same discipline as `intentStatus`, for a refund event. */
+    refundStatus: text('refund_status').$type<ProviderRefundStatus>(),
+    /** The provider's OWN refund id, for a refund event. NULL otherwise. */
+    providerRefundId: text('provider_refund_id'),
     /** The verified raw body, as received. */
     payload: jsonb('payload').notNull(),
     receivedAt: bigint('received_at', { mode: 'number' }).notNull(),
@@ -228,6 +251,15 @@ export const shopPaymentEvents = pgTable(
   },
   (t) => [
     check('shop_payment_events_provider_ck', sql`${t.provider} IN ('paystack', 'flutterwave')`),
+    check(
+      'shop_payment_events_intent_status_ck',
+      sql`${t.intentStatus} IS NULL
+          OR ${t.intentStatus} IN ('requires_payment', 'authorized', 'captured', 'failed', 'cancelled')`,
+    ),
+    check(
+      'shop_payment_events_refund_status_ck',
+      sql`${t.refundStatus} IS NULL OR ${t.refundStatus} IN ('pending', 'succeeded', 'failed')`,
+    ),
     index('shop_payment_events_intent_idx').on(t.intentId),
     index('shop_payment_events_pending_idx').on(t.processedAt, t.receivedAt),
   ],

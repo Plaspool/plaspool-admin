@@ -249,8 +249,21 @@ export function createWebhookRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
       return c.json({ error: code === 'signature_invalid' ? 'invalid_signature' : 'bad_request' }, 401);
     }
 
-    // DURABLE FIRST. Everything after this line can fail without losing the event.
-    const stored = await storeEvent(db, event);
+    /*
+     * DURABLE FIRST. Everything after this line can fail without losing the
+     * event.
+     *
+     * `'paystack'`, NAMED EXPLICITLY. This router has exactly one webhook
+     * route and `resolveProvider(deps)` resolves exactly one gateway per
+     * deployment today — `deps.provider` defaults to `paystackProvider()`,
+     * and nothing here yet lets a second gateway's deliveries reach this
+     * endpoint. A composition root that mounts a Flutterwave webhook route
+     * must name its OWN gateway here the same explicit way, never derive it
+     * from `provider.name` (see `intents.ts`'s `createIntent` for why that
+     * handle cannot be trusted to keep carrying the right value) and never
+     * from `event`, which carries no such field.
+     */
+    const stored = await storeEvent(db, event, 'paystack');
 
     /*
      * A REPEAT DELIVERY IS A 200 AND NOTHING ELSE. It is not an error — it is
@@ -406,19 +419,29 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
      * recorded in the same append-only log with `type = 'verify:…'`, so the
      * dispute record shows that this state change came from us asking rather
      * than from the provider telling.
+     *
+     * `intent.provider`, NOT a fixed literal — unlike the webhook route above,
+     * this one already has the ONE intent this event is about in hand, so the
+     * gateway that actually took its money is a plain field read rather than a
+     * guess. This is exactly the "resolve per intent" property `refunds.ts`
+     * documents: the row's own recorded gateway, never a global setting.
      */
-    const stored = await storeEvent(db, {
-      providerEventId: `verify:${intent.providerIntentId}:${truth.status}`,
-      type: `verify.${truth.status}`,
-      providerIntentId: intent.providerIntentId,
-      providerRefundId: null,
-      intentStatus: truth.status,
-      refundStatus: null,
-      failureReason: truth.failureReason,
-      amount: truth.amount,
-      currency: truth.currency,
-      payload: { source: 'fetchIntent', status: truth.status },
-    });
+    const stored = await storeEvent(
+      db,
+      {
+        providerEventId: `verify:${intent.providerIntentId}:${truth.status}`,
+        type: `verify.${truth.status}`,
+        providerIntentId: intent.providerIntentId,
+        providerRefundId: null,
+        intentStatus: truth.status,
+        refundStatus: null,
+        failureReason: truth.failureReason,
+        amount: truth.amount,
+        currency: truth.currency,
+        payload: { source: 'fetchIntent', status: truth.status },
+      },
+      intent.provider,
+    );
 
     if (!stored.duplicate) {
       /*

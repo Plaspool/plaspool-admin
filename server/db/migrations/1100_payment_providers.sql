@@ -11,6 +11,20 @@
 -- which are Paystack because Paystack was the only gateway. The default stays
 -- until the code lands because dropping it before the code names the column
 -- turns every INSERT into a 23502, which hides the intent rather than showing it.
+--
+-- STILL TRUE AFTER TASK 9, AND MEASURED RATHER THAN ASSUMED (2026-09-10):
+-- createIntent and storeEvent (server/shop/payments/intents.ts, webhook.ts)
+-- name this column explicitly as of task 9, but the CODE naming it was never
+-- the whole condition -- six test files raw-INSERT into shop_payment_intents
+-- or shop_payment_events without naming provider at all, predating a second
+-- gateway and left untouched because task 9's own mode change forbids editing
+-- any *.test.ts file: schema.test.ts, intents.test.ts, refunds.test.ts,
+-- webhook.test.ts (all under server/shop/payments/), plus
+-- server/shop/composition.test.ts and server/shop/cart/routes/routes.test.ts.
+-- Dropping both defaults now was tried and reverted in the same sitting:
+-- 57 tests across exactly those 6 files turn red with 23502, matching this
+-- comment's own prediction almost exactly. Drop the defaults only once those
+-- six files' fixtures are updated to name provider too.
 ALTER TABLE shop_payment_intents ADD COLUMN provider text NOT NULL DEFAULT 'paystack';
 --> statement-breakpoint
 ALTER TABLE shop_payment_intents
@@ -26,6 +40,10 @@ ALTER TABLE shop_payment_intents
 -- getIntentByProviderRef working -- and this column holds theirs.
 ALTER TABLE shop_payment_intents ADD COLUMN provider_charge_id text;
 --> statement-breakpoint
+-- Same default, same reason, same NOT-YET-SAFE-TO-DROP note as
+-- shop_payment_intents.provider above -- storeEvent (webhook.ts) names this
+-- column explicitly as of task 9, but several *.test.ts files' raw INSERTs
+-- into this table do not, and cannot be edited from that task.
 ALTER TABLE shop_payment_events ADD COLUMN provider text NOT NULL DEFAULT 'paystack';
 --> statement-breakpoint
 ALTER TABLE shop_payment_events
@@ -71,3 +89,33 @@ INSERT INTO shop_payment_settings
 VALUES
   ('main', 'paystack', NULL, '{NGN}', '{NGN}', 1, 0, NULL)
 ON CONFLICT (id) DO NOTHING;
+--> statement-breakpoint
+-- task-9 (plan defect repair, added mid-execution): the fields parseWebhook
+-- already computes, persisted, so processEvent can dispatch on them instead
+-- of re-deriving every decision from the raw stored payload using one
+-- gateway's own field names. See webhook.ts's storeEvent and processEvent
+-- for the account of what that hid: no Flutterwave payment would ever be
+-- captured (its charge event name matches nothing this dispatched on), and a
+-- forged refund body could have driven a payout, because reading an
+-- unverified payload for a decision is only safe for a gateway that HMACs
+-- its bytes -- Paystack does, Flutterwave's verif-hash does not.
+--
+-- All three NULLABLE. An event may legitimately carry none of them -- a
+-- subscription.create names no charge and no refund -- and NULL is exactly
+-- that, not a missing measurement.
+ALTER TABLE shop_payment_events ADD COLUMN intent_status text;
+--> statement-breakpoint
+ALTER TABLE shop_payment_events
+  ADD CONSTRAINT shop_payment_events_intent_status_ck
+  CHECK (intent_status IS NULL
+         OR intent_status IN ('requires_payment', 'authorized', 'captured', 'failed', 'cancelled'));
+--> statement-breakpoint
+ALTER TABLE shop_payment_events ADD COLUMN refund_status text;
+--> statement-breakpoint
+ALTER TABLE shop_payment_events
+  ADD CONSTRAINT shop_payment_events_refund_status_ck
+  CHECK (refund_status IS NULL OR refund_status IN ('pending', 'succeeded', 'failed'));
+--> statement-breakpoint
+-- The provider's OWN refund id, for a refund event -- the same value
+-- processEvent used to read out of the raw payload as refundIdOf(data).
+ALTER TABLE shop_payment_events ADD COLUMN provider_refund_id text;

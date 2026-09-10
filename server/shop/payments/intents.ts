@@ -6,6 +6,7 @@ import { ProviderError, isIndeterminate, isRetryable } from './provider/scrub';
 import { intentId as mintIntentId, eventId as mintEventId, providerReferenceFor } from './ids';
 import type { Db } from '../../db/client';
 import type { PaymentsCheckoutPort } from './checkout';
+import type { ProviderName } from './schema';
 import type { PaymentProvider } from './provider/types';
 import type { PaymentStatus } from '../../../shared/commerce/ports';
 import type { CommerceEventType } from '../../../shared/commerce/events';
@@ -48,6 +49,19 @@ export interface PaymentIntentRow {
   amount: number;
   currency: string;
   status: PaymentStatus;
+  /**
+   * WHICH GATEWAY TOOK THIS PAYMENT. Set once, at creation (`createIntent`'s
+   * `providerName` argument), and never rewritten by anything in this file —
+   * see `createIntent`'s and `attachProvider`'s own comments for why flipping
+   * the admin switch must not re-point money that has already moved.
+   */
+  provider: ProviderName;
+  /**
+   * The gateway's OWN id for this charge, when it differs from the reference
+   * we supplied. NULL for Paystack, which transacts under our reference; set
+   * by `attachProvider` when the `ProviderIntent` carries one.
+   */
+  providerChargeId: string | null;
   idempotencyKey: string;
   authorizationUrl: string | null;
   refundedTotal: number;
@@ -65,6 +79,8 @@ export function mapIntentRow(row: Record<string, unknown>): PaymentIntentRow {
     amount: Number(row.amount),
     currency: String(row.currency),
     status: row.status as PaymentStatus,
+    provider: row.provider as ProviderName,
+    providerChargeId: row.provider_charge_id == null ? null : String(row.provider_charge_id),
     idempotencyKey: String(row.idempotency_key),
     authorizationUrl: row.authorization_url == null ? null : String(row.authorization_url),
     refundedTotal: Number(row.refunded_total),
@@ -76,7 +92,8 @@ export function mapIntentRow(row: Record<string, unknown>): PaymentIntentRow {
 }
 
 const INTENT_COLUMNS = sql`id, checkout_id, provider_intent_id, amount, currency, status,
-  idempotency_key, authorization_url, refunded_total, created_at, updated_at, last_error, revision`;
+  provider, provider_charge_id, idempotency_key, authorization_url, refunded_total,
+  created_at, updated_at, last_error, revision`;
 
 /**
  * What an idempotency key is a key FOR.
@@ -165,14 +182,65 @@ export interface CreateIntentResult {
  *
  * The whole idempotency story is in the order of the five steps, so they are
  * numbered in the code.
+ *
+ * `providerName` IS THE THIRD POSITIONAL ARGUMENT, and its position is fixed —
+ * Task 10's composition root calls it as
+ * `createIntent(db, provider, providerName, checkout, input, now?)`, resolving
+ * both `provider` and `providerName` together from `chooseProvider`
+ * (`routing.ts`). It is NEVER derived from `provider.name` here: that handle
+ * is wrapped by `scrubbedProvider` (`provider/scrub.ts`), and depending on a
+ * wrapper to keep preserving a field it happens to preserve today is exactly
+ * how this breaks silently later.
+ */
+export async function createIntent(
+  db: Db,
+  provider: PaymentProvider,
+  providerName: ProviderName,
+  checkout: PaymentsCheckoutPort,
+  input: CreateIntentInput,
+  now?: number,
+): Promise<CreateIntentResult>;
+/**
+ * LEGACY, FIVE-ARGUMENT OVERLOAD.
+ *
+ * Kept ONLY because every existing caller in `intents.test.ts`,
+ * `refunds.test.ts` and `webhook.test.ts` — around forty call sites, all
+ * written before Flutterwave existed — uses this shape, and the plan that
+ * added a second gateway explicitly postponed rewriting them ("owner's
+ * instruction, 2026-09-09: let's postpone testing... test later",
+ * `progress.md`). A plain required third parameter would shift every one of
+ * those calls' `checkout`/`input`/`now` arguments over by one position and
+ * fail to typecheck, which is not a risk worth taking on the one function in
+ * this codebase that decides whether a customer gets charged.
+ *
+ * A caller using this form gets `'paystack'` — correct today (Paystack is
+ * the only gateway a real caller can reach until Task 10 wires routing) and
+ * the same answer this column's own `DEFAULT 'paystack'` gives a raw INSERT
+ * that omits it (migration `1100_payment_providers.sql`; that default is
+ * DELIBERATELY STILL IN PLACE — see its own comment for why dropping it now
+ * would redden six test files this task cannot touch). New code should use
+ * the six-argument form above and name the gateway explicitly.
  */
 export async function createIntent(
   db: Db,
   provider: PaymentProvider,
   checkout: PaymentsCheckoutPort,
   input: CreateIntentInput,
-  now: number = Date.now(),
+  now?: number,
+): Promise<CreateIntentResult>;
+export async function createIntent(
+  db: Db,
+  provider: PaymentProvider,
+  arg3: ProviderName | PaymentsCheckoutPort,
+  arg4: PaymentsCheckoutPort | CreateIntentInput,
+  arg5?: CreateIntentInput | number,
+  arg6?: number,
 ): Promise<CreateIntentResult> {
+  const namedExplicitly = typeof arg3 === 'string';
+  const providerName: ProviderName = namedExplicitly ? arg3 : 'paystack';
+  const checkout = (namedExplicitly ? arg4 : arg3) as PaymentsCheckoutPort;
+  const input = (namedExplicitly ? arg5 : arg4) as CreateIntentInput;
+  const now = (namedExplicitly ? arg6 : (arg5 as number | undefined)) ?? Date.now();
   /*
    * 1. THE AMOUNT, FROM THE PORT, ONCE. Never from the request body.
    *
@@ -217,12 +285,20 @@ export async function createIntent(
   const fp = fingerprint(input.checkoutId, amount, currency);
 
   // 2. CLAIM THE KEY. The insert is the claim; a loser gets zero rows back.
+  //
+  // `provider` IS NAMED EXPLICITLY, even though its column still carries a
+  // `DEFAULT 'paystack'` today (migration `1100_payment_providers.sql` — the
+  // default stays until six pre-existing test files' raw fixtures are updated
+  // to name this column too, which this task cannot do). Naming it here means
+  // this INSERT no longer depends on that default at all, and is ready for
+  // the default's eventual removal without a further change to this file.
   const inserted = await db.execute(sql`
     INSERT INTO shop_payment_intents
-      (id, checkout_id, amount, currency, status, idempotency_key, request_fingerprint,
-       refunded_total, created_at, updated_at, revision)
+      (id, checkout_id, amount, currency, status, provider, idempotency_key,
+       request_fingerprint, refunded_total, created_at, updated_at, revision)
     VALUES (${id}, ${input.checkoutId}, ${amount}, ${currency},
-            'requires_payment', ${input.idempotencyKey}, ${fp}, 0, ${now}, ${now}, 1)
+            'requires_payment', ${providerName}, ${input.idempotencyKey}, ${fp}, 0,
+            ${now}, ${now}, 1)
     ON CONFLICT (idempotency_key) DO NOTHING
     RETURNING ${INTENT_COLUMNS}`);
 
@@ -247,6 +323,28 @@ export async function createIntent(
  * nowhere to pay. Returning it unchanged would leave the checkout permanently
  * stuck behind a key that can never be reused. So the retry finishes the job,
  * with the SAME derived reference.
+ *
+ * MUST NOT CHANGE THE RECORDED GATEWAY. `existing.provider` is whatever the
+ * FIRST call's INSERT claimed, and nothing below ever rewrites it — the
+ * `attachProvider` call two lines down only ever `UPDATE`s
+ * `provider_intent_id`, `provider_charge_id`, `authorization_url`, `status`,
+ * `last_error` and `revision`; `provider` is not in that SET list, on purpose.
+ * A retry finishes the FIRST call's job, with the first call's gateway, even
+ * if the admin switch moved between the two calls — otherwise a recoverable
+ * timeout on one gateway turns into a second transaction on a different one,
+ * charged under a reference the first gateway may already recognise as paid.
+ *
+ * ONE RESIDUAL GAP, WORTH NAMING RATHER THAN SILENTLY PAPERING OVER: if the
+ * first call's `attachProvider` never completed (`existing.providerIntentId`
+ * is still NULL) AND the switch moved before the retry, this function still
+ * calls the *retry's own* `provider` argument, not the first call's — there is
+ * no `ProviderFactories` available here to re-resolve `existing.provider` into
+ * a fresh handle, and pre-checking "is this a retry" before the INSERT would
+ * reintroduce the read-then-write race this whole file is built to avoid. In
+ * practice the caller (Task 10's composition root) resolves `provider` and
+ * `providerName` together from `chooseProvider` on every call, which keeps
+ * this narrow: the exposure is one race window (a timeout, THEN a switch
+ * flip, THEN a retry) rather than an ordinary code path.
  */
 async function readThrough(
   db: Db,
@@ -377,10 +475,23 @@ async function attachProvider(
    * same key may have marked the row 'failed' (see recordIntentError's
    * `terminal` flag); this attempt just proved that wrong, so `status` is set
    * back to 'requires_payment' explicitly rather than left alone.
+   *
+   * `provider_charge_id` IS NOT SET WITH `COALESCE`, unlike the rank-guarded
+   * columns elsewhere in this file — this whole statement already runs at
+   * most once per intent (`WHERE ... provider_intent_id IS NULL`), so there is
+   * no earlier value to preserve. `?? null` because neither adapter's
+   * `createIntent`/`fetchIntent` response is guaranteed to carry one —
+   * Paystack never does (it transacts under our own reference), and
+   * Flutterwave's does not either at THIS call (`POST /v3/payments` mints a
+   * checkout link, not a charge; its own numeric id exists only once a card is
+   * actually run) — so this is realistically a no-op today for both gateways,
+   * kept because a `ProviderIntent` is free to carry one and the interface
+   * says it should be stored when it does (`provider/types.ts`).
    */
   const updated = await db.execute(sql`
     UPDATE shop_payment_intents
        SET provider_intent_id = ${providerIntent.providerIntentId},
+           provider_charge_id = ${providerIntent.providerChargeId ?? null},
            authorization_url = ${providerIntent.authorizationUrl},
            status = 'requires_payment',
            last_error = NULL,

@@ -5,8 +5,8 @@ import { applyIntentStatus, getIntent, getIntentByProviderRef } from './intents'
 import { applyRefundEvent } from './refunds';
 import type { Db } from '../../db/client';
 import type { PaymentsCheckoutPort } from './checkout';
-import type { ProviderEvent } from './provider/types';
-import type { PaymentStatus } from '../../../shared/commerce/ports';
+import type { ProviderEvent, ProviderIntentStatus, ProviderRefundStatus } from './provider/types';
+import type { ProviderName } from './schema';
 
 /**
  * Webhook ingestion: store durably, acknowledge, then process.
@@ -36,6 +36,17 @@ export interface StoredEvent {
   providerEventId: string;
   intentId: string | null;
   type: string;
+  /**
+   * What the event said the charge's state now is, AS THE ADAPTER COMPUTED IT
+   * AT VERIFICATION TIME — never re-derived here from `payload`. Null for an
+   * event that says nothing about a charge (a refund event; an event type
+   * this adapter does not recognise).
+   */
+  intentStatus: ProviderIntentStatus | null;
+  /** Same discipline, for a refund event. Null for anything that is not one. */
+  refundStatus: ProviderRefundStatus | null;
+  /** The provider's OWN refund id, for a refund event. Null otherwise. */
+  providerRefundId: string | null;
   payload: unknown;
   receivedAt: number;
   processedAt: number | null;
@@ -43,7 +54,8 @@ export interface StoredEvent {
   anomaly: string | null;
 }
 
-const EVENT_COLUMNS = sql`id, provider_event_id, intent_id, type, payload,
+const EVENT_COLUMNS = sql`id, provider_event_id, intent_id, type,
+  intent_status, refund_status, provider_refund_id, payload,
   received_at, processed_at, last_error, anomaly`;
 
 function mapEventRow(row: Record<string, unknown>): StoredEvent {
@@ -52,6 +64,9 @@ function mapEventRow(row: Record<string, unknown>): StoredEvent {
     providerEventId: String(row.provider_event_id),
     intentId: row.intent_id == null ? null : String(row.intent_id),
     type: String(row.type),
+    intentStatus: row.intent_status == null ? null : (row.intent_status as ProviderIntentStatus),
+    refundStatus: row.refund_status == null ? null : (row.refund_status as ProviderRefundStatus),
+    providerRefundId: row.provider_refund_id == null ? null : String(row.provider_refund_id),
     payload: row.payload,
     receivedAt: toEpochMs(row.received_at),
     processedAt: toEpochMsOrNull(row.processed_at),
@@ -82,10 +97,35 @@ export interface StoreEventResult {
  * nobody remembers. Failing to resolve is not failing to store (§4): the column
  * is nullable and carries no foreign key precisely so that a verified event we
  * cannot place is still evidence.
+ *
+ * `event.intentStatus`, `event.refundStatus` AND `event.providerRefundId` ARE
+ * PERSISTED HERE, NOT JUST `type` AND `payload` (task-9). `parseWebhook`
+ * already computed all three from a VERIFIED body before this function ever
+ * saw them; discarding them meant `processEvent` had to re-derive the same
+ * decisions later by re-reading `payload` with Paystack's own field names —
+ * which matched nothing for a gateway with different field names
+ * (Flutterwave), and which trusted the raw body for a gateway whose webhook
+ * signal does not cryptographically verify it (Flutterwave's `verif-hash`,
+ * unlike Paystack's HMAC). See `processEvent`'s own comment for the full
+ * account. `payload` is kept exactly as it was: evidence, not a source of
+ * decisions.
+ *
+ * `providerName` IS AN EXPLICIT ARGUMENT — never read off `event`, which
+ * carries no such field, and never guessed from `event.type`. A real caller
+ * knows which adapter's `parseWebhook` produced this event, because it is the
+ * one that called it, and that is the one place this fact can be known
+ * honestly. It defaults to `'paystack'` — correct for every caller today,
+ * this router's own one webhook route included, since a second gateway has
+ * no route delivering to it yet — and ONLY so that `server/shop/composition.test.ts`'s
+ * pre-existing two-argument call (predating this task, and one this task
+ * must not edit) keeps compiling and keeps meaning what it always meant.
+ * `routes.ts` names it explicitly rather than relying on the default, and any
+ * future caller should too.
  */
 export async function storeEvent(
   db: Db,
   event: ProviderEvent,
+  providerName: ProviderName = 'paystack',
   now: number = Date.now(),
 ): Promise<StoreEventResult> {
   const intent = event.providerIntentId
@@ -94,9 +134,12 @@ export async function storeEvent(
 
   const inserted = await db.execute(sql`
     INSERT INTO shop_payment_events
-      (id, provider_event_id, intent_id, type, payload, received_at)
+      (id, provider_event_id, intent_id, type, provider,
+       intent_status, refund_status, provider_refund_id, payload, received_at)
     VALUES (${mintPaymentEventId(now)}, ${event.providerEventId}, ${intent?.id ?? null},
-            ${event.type}, ${JSON.stringify(event.payload)}::jsonb, ${now})
+            ${event.type}, ${providerName},
+            ${event.intentStatus}, ${event.refundStatus}, ${event.providerRefundId},
+            ${JSON.stringify(event.payload)}::jsonb, ${now})
     ON CONFLICT (provider_event_id) DO NOTHING
     RETURNING id`);
 
@@ -114,15 +157,6 @@ export async function getStoredEvent(db: Db, id: string): Promise<StoredEvent | 
   );
   return res.rows[0] ? mapEventRow(res.rows[0]) : null;
 }
-
-/** The provider's event-derived status → our ladder. */
-const INTENT_STATUS: Record<string, PaymentStatus> = {
-  requires_payment: 'requires_payment',
-  authorized: 'authorized',
-  captured: 'captured',
-  failed: 'failed',
-  cancelled: 'cancelled',
-};
 
 export interface ProcessResult {
   /** `ignored` covers both unknown types and events with nothing to apply. */
@@ -263,6 +297,51 @@ async function reopenForRetry(db: Db, rowId: string, now: number): Promise<void>
 /**
  * Process one stored event.
  *
+ * DISPATCHES ON `row.intentStatus` / `row.refundStatus` / `row.providerRefundId`
+ * — VALUES `storeEvent` PERSISTED FROM THE VERIFIED `ProviderEvent`, NEVER ON
+ * `row.type` AND NEVER BY RE-READING `row.payload` (task-9; the plan-defect
+ * this closes is recorded at length in `progress.md` under Task 6/7's entry).
+ * The previous shape dispatched on `row.type === 'charge.success'` and read
+ * `data.status`/`data.reference`/a refund's id straight out of the raw stored
+ * body, using Paystack's own field names. Three things were wrong with that,
+ * all specific to a gateway that is not Paystack:
+ *
+ * 1. **A gateway with different field names never matches.** Flutterwave's
+ *    charge event is `charge.completed`, so `row.type === 'charge.success'`
+ *    was never true for it and every Flutterwave payment fell through to
+ *    `unhandled_type` — captured at the gateway, never captured here.
+ * 2. **Re-reading `payload` for a decision is only as safe as the gateway's
+ *    signature scheme.** Paystack HMACs the whole body, so trusting
+ *    `data.status`/`data.reference` from a row that verified is sound.
+ *    Flutterwave's `verif-hash` is a static secret echoed back — it proves
+ *    the sender knows a value, never that the body is unmodified — so a
+ *    consumer that reads decisions out of `payload` is one gateway swap away
+ *    from acting on an attacker's own bytes. `refundStatus`/`providerRefundId`
+ *    are computed once, by the adapter, at verification time, and read from
+ *    nowhere else afterwards; a gateway with no trustworthy way to learn one
+ *    (Flutterwave has no refund webhook yet) simply reports `null` and this
+ *    function does nothing with it, rather than a payload-sniffing fallback
+ *    quietly trusting whatever a forger put in `data.status`.
+ * 3. The captured reference was read from `data.reference`, a Paystack-only
+ *    field name Flutterwave never sends.
+ *
+ * `payload` ITSELF IS UNCHANGED BY ANY OF THIS — still stored verbatim, still
+ * evidence for a dispute. It has simply stopped being read for a decision.
+ *
+ * THE ONE FALLBACK THAT REMAINS, AND WHY IT IS NOT A REOPENING OF #2 ABOVE.
+ * A row with `intent_status IS NULL` and `type = 'charge.success'` is read as
+ * `'captured'`, exactly as this function has always treated that one literal.
+ * Reaching `processEvent` at all already means either (a) `storeEvent` wrote
+ * this row from a signature that verified moments ago, in which case it wrote
+ * a non-null `intent_status` too — Paystack's own `parseWebhook` always
+ * populates it for this exact type, so this arm never actually fires for a
+ * row `storeEvent` produced — or (b) the row was placed directly in the
+ * database, which needs a stronger trust boundary (write access to the
+ * database) than sending an HTTP request. There is no equivalent fallback for
+ * the refund arm below, on purpose: that is the branch a forged body could
+ * turn into a fabricated payout, so it reads ONLY the stored, adapter-verified
+ * columns.
+ *
  * UNKNOWN EVENT TYPES ARE LOGGED AND IGNORED, NEVER AN ERROR (contract §6 rule
  * 4, `03-payments.md` §4). Paystack publishes two dozen event types and adds
  * more; a `subscription.create` or a `transfer.success` reaching this endpoint
@@ -270,7 +349,11 @@ async function reopenForRetry(db: Db, rowId: string, now: number): Promise<void>
  * something that needs no action, and the visible result is a provider-side
  * delivery-failure alarm at 3am about nothing at all. They are still STORED —
  * the raw log is append-only and complete — and then marked processed with the
- * anomaly naming why.
+ * anomaly naming why. An event that carries neither an `intentStatus` nor a
+ * `refundStatus` — Flutterwave's own `flutterwave.unrecognized_event`
+ * sentinel included, when its `fetchIntent` could not resolve it, and any
+ * Paystack type outside the charge/refund families — falls through to
+ * exactly this path.
  */
 export async function processEvent(
   db: Db,
@@ -282,37 +365,46 @@ export async function processEvent(
   if (!row) return { outcome: 'ignored', emittedEventId: null };
   if (row.processedAt !== null) return { outcome: 'duplicate', emittedEventId: null };
 
-  const payload = (row.payload ?? {}) as { data?: Record<string, unknown> };
-  const data = payload.data ?? {};
-
-  if (row.type.startsWith('refund.')) {
-    const providerRefundId = refundIdOf(data);
+  if (row.refundStatus !== null) {
+    const providerRefundId = row.providerRefundId;
     if (!providerRefundId) return ignore(db, rowId, 'refund_without_id', now);
-    const status =
-      data.status === 'processed' ? 'succeeded' : data.status === 'failed' ? 'failed' : 'pending';
-    const applied = await applyRefundEvent(db, { eventRowId: rowId, providerRefundId, status }, now);
+    const applied = await applyRefundEvent(
+      db,
+      { eventRowId: rowId, providerRefundId, status: row.refundStatus },
+      now,
+    );
     return {
       outcome: applied.unresolved ? 'unresolved' : applied.settled ? 'applied' : 'ignored',
       emittedEventId: applied.emittedEventId,
     };
   }
 
-  /*
-   * `charge.success` is the only charge event Paystack publishes — there is no
-   * `charge.failed` — so a decline is learned by asking (`fetchIntent`) rather
-   * than by waiting for a webhook that never comes. Anything else on the
-   * `charge.` prefix is ignored rather than guessed at.
-   */
-  if (row.type === 'charge.success') {
-    const next = INTENT_STATUS.captured;
+  // See this function's own comment for why this one literal is read as
+  // 'captured' even with no recorded `intentStatus` — a row `storeEvent`
+  // itself wrote never needs it, because Paystack's `parseWebhook` already
+  // sets `intentStatus` for this exact type.
+  const intentStatus: ProviderIntentStatus | null =
+    row.intentStatus ?? (row.type === 'charge.success' ? 'captured' : null);
+
+  if (intentStatus !== null) {
+    const next = intentStatus;
 
     /*
-     * COMPLETE THE CHECKOUT FIRST, CAPTURE SECOND (admin#27). Never the other
-     * way round: see `completeCheckoutForIntent` for both halves of why — the
-     * `occurred_at` ordering that lets one sweep produce the order, and the fact
-     * that this call cannot throw past this line.
+     * COMPLETE THE CHECKOUT FIRST, CAPTURE SECOND (admin#27) — AND ONLY FOR AN
+     * ACTUAL CAPTURE. Never the other way round: see `completeCheckoutForIntent`
+     * for both halves of why — the `occurred_at` ordering that lets one sweep
+     * produce the order, and the fact that this call cannot throw past this
+     * line. Gated on `next === 'captured'` because, unlike Paystack (whose
+     * `intentStatus` is only ever `'captured'` or `null` — there is no
+     * `charge.failed` webhook), a gateway that reports its true status on
+     * every delivery (Flutterwave: "the webhook is a TRIGGER telling this
+     * adapter to go look", `flutterwave.ts`) can legitimately report
+     * `'requires_payment'`, `'failed'` or `'cancelled'` here too, and
+     * completing a checkout for a payment that did NOT succeed would create an
+     * order for money nobody paid.
      */
-    const completion = await completeCheckoutForIntent(db, row.intentId, deps);
+    const completion =
+      next === 'captured' ? await completeCheckoutForIntent(db, row.intentId, deps) : 'settled';
 
     const applied = await applyIntentStatus(
       db,
@@ -320,7 +412,29 @@ export async function processEvent(
         eventRowId: rowId,
         intentId: row.intentId,
         next,
-        providerIntentId: typeof data.reference === 'string' ? data.reference : null,
+        /*
+         * `null`, NOT read from `payload`. The old code read `data.reference`
+         * here — a Paystack-only field name — to defensively backfill
+         * `shop_payment_intents.provider_intent_id` via `COALESCE` when it was
+         * somehow still NULL. That backfill was already unreachable in
+         * practice: `row.intentId` is only non-null because `storeEvent`
+         * resolved it with `getIntentByProviderRef`, which searches BY
+         * `provider_intent_id` — so a resolved row's intent already has that
+         * column set to this same value by construction, and `null` here
+         * changes nothing that COALESCE would not have left alone anyway.
+         */
+        providerIntentId: null,
+        /*
+         * `null`. This function has no stored failure reason to report —
+         * Part 2 of task 9 added `intent_status`/`refund_status`/
+         * `provider_refund_id` to `shop_payment_events`, not `failure_reason`
+         * — so a `next === 'failed'` reaching here through a real webhook
+         * (only possible for a future gateway; Paystack never sends one)
+         * records no specific reason, same as this line already did for
+         * every Paystack event before this change. `applyIntentStatus`
+         * reports it as `'unknown'` in the outbox, which is a known,
+         * intentionally out-of-scope limitation — see this task's report.
+         */
         failureReason: null,
       },
       now,
@@ -347,15 +461,6 @@ export async function processEvent(
   }
 
   return ignore(db, rowId, `unhandled_type:${row.type}`, now);
-}
-
-function refundIdOf(data: Record<string, unknown>): string | null {
-  const id = data.id;
-  if (typeof id === 'number' && Number.isSafeInteger(id)) return String(id);
-  if (typeof id === 'string' && id.length > 0) return id;
-  return typeof data.refund_reference === 'string' && data.refund_reference.length > 0
-    ? data.refund_reference
-    : null;
 }
 
 /**
