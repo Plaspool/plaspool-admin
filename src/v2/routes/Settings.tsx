@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   Bell,
   ChevronRight,
+  CreditCard,
   MapPin,
   MapPinned,
   PenLine,
@@ -37,6 +38,12 @@ interface SettingsDoor {
 }
 
 const DOORS: SettingsDoor[] = [
+  {
+    to: '/settings/payments',
+    icon: <CreditCard />,
+    title: 'Payments',
+    body: 'Which gateway takes a payment, and which currencies each one can charge.',
+  },
   {
     to: '/settings/shipping',
     icon: <Truck />,

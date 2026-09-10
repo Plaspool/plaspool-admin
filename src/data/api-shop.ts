@@ -1408,6 +1408,57 @@ export type CancelRefundChoice =
   | { kind: 'amount'; amount: number }
   | { kind: 'none' };
 
+/**
+ * The two gateways a payment can route through (`server/shop/payments/schema.ts`'s
+ * `PROVIDER_NAMES`, copied rather than imported — see this file's header for why).
+ */
+export type PaymentProviderName = 'paystack' | 'flutterwave';
+
+/** One gateway's row of `GET`/`PATCH /shop/admin/payments/settings`. */
+export interface PaymentGatewaySettings {
+  /** Whether THIS DEPLOYMENT has the gateway's key(s). A boolean — never the key. */
+  hasKey: boolean;
+  /** Switched on for this account — `shop_payment_settings`' own column. */
+  currencies: string[];
+  /**
+   * The adapter's ceiling: every currency its API can charge at all, whether or
+   * not this account has switched it on. Bounds what the card may OFFER, so
+   * nobody can switch on a currency the gateway cannot actually take.
+   */
+  canCharge: string[];
+}
+
+/**
+ * `GET`/`PATCH /shop/admin/payments/settings`'s response — THE SAME SHAPE
+ * both ways, so the settings card re-renders from a PATCH response rather
+ * than guessing what it just saved.
+ */
+export interface PaymentSettings {
+  activeProvider: PaymentProviderName;
+  /** `null` means "same as `activeProvider`". */
+  internationalProvider: PaymentProviderName | null;
+  revision: number;
+  gateways: Record<PaymentProviderName, PaymentGatewaySettings>;
+}
+
+/**
+ * The PATCH body. `revision` is REQUIRED and named exactly that — unlike every
+ * other settings patch in this file, the server's own field is `revision`, not
+ * `expectedRevision`.
+ *
+ * ⚠ A KEY-PRESENCE CONTRACT. The server tells "leave alone" from "clear" by
+ * whether `internationalProvider` is PRESENT on the body, so
+ * `{ internationalProvider: undefined }` is not the same as omitting the key —
+ * build this object with only the keys actually meant, never by spreading a
+ * partial object that might carry an `undefined` value under a real key.
+ */
+export interface PaymentSettingsPatch {
+  activeProvider?: PaymentProviderName;
+  internationalProvider?: PaymentProviderName | null;
+  currencies?: Partial<Record<PaymentProviderName, string[]>>;
+  revision: number;
+}
+
 // ============================================================================
 // ROUTES
 // ============================================================================
@@ -2419,6 +2470,34 @@ export const shopApi = {
       { method: 'POST', body, id: intentId, subject: 'Payment' },
     );
     return res.refund;
+  },
+
+  // ------------------------------------------------------ payment settings
+  /**
+   * Which gateway takes a charge, and which currencies each one is switched
+   * on for. Owner/developer only (`payments` domain). The response is the
+   * FLAT shape, not wrapped in `{ settings }` — `routes.ts`'s
+   * `paymentSettingsResponse` answers it directly, and `PATCH` answers the
+   * identical shape.
+   */
+  async getPaymentSettings(signal?: AbortSignal): Promise<PaymentSettings> {
+    return shopFetch<PaymentSettings>(`${BASE}/payments/settings`, {
+      subject: 'Payment settings',
+      signal,
+    });
+  },
+
+  /**
+   * CAS on `revision`. A lost race is a 409 `stale_write`, which `api.ts` maps
+   * to `StaleWriteError` — the card re-reads off that rather than retrying,
+   * the same rule every other settings screen in this file follows.
+   */
+  async savePaymentSettings(patch: PaymentSettingsPatch): Promise<PaymentSettings> {
+    return shopFetch<PaymentSettings>(`${BASE}/payments/settings`, {
+      method: 'PATCH',
+      body: patch,
+      subject: 'Payment settings',
+    });
   },
 
   // -------------------------------------------------------------- customers
