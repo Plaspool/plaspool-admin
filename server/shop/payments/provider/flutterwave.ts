@@ -21,7 +21,8 @@
  * multiplies or divides by 100, and every call site that touches an amount
  * goes through one of them — one line per direction to check against the
  * live sandbox before real money moves (see each function's own comment for
- * why a non-multiple-of-100 is refused rather than rounded).
+ * why a kobo-bearing amount is ORDINARY here — bulk discounts and percent
+ * discount codes both produce one — and never evidence of corruption).
  *
  * WHAT ELSE IS DIFFERENT FROM PAYSTACK:
  *
@@ -180,16 +181,31 @@ function str(value: unknown): string | null {
  * wants MAJOR units: `3000` where we hold `300000`. See this file's header —
  * this is one of the two lines the whole conversion goes through.
  *
- * REFUSES RATHER THAN ROUNDING. `CreateIntentRequest.amount` arrives from
- * `CheckoutPort` as a whole number of the major unit already (₦3,000, never
- * ₦30.005), so a minor amount that is not an exact multiple of 100 is not a
- * fraction of a naira to round away — it is evidence the number reaching this
- * adapter is not what it claims to be. Letting `Number` round it away is
- * exactly the silent failure mode the amount-conversion rule warns against,
- * so this throws a permanent, non-retryable error instead of guessing.
+ * VALIDATES ONLY THAT THE INPUT IS A SAFE, POSITIVE INTEGER, then divides by
+ * 100 UNCONDITIONALLY — no remainder check. That division is exact for every
+ * realistic amount (it is a divide by a power of ten of an integer minor-unit
+ * figure, not a decimal operation that can go wrong), and `JSON.stringify`
+ * emits the shortest round-trippable decimal for the result — `127015 / 100`
+ * serialises as `1270.15` on the wire, not `1270.1499999999999`.
+ *
+ * THIS USED TO THROW WHENEVER `minor % 100 !== 0`, on the theory that a
+ * non-whole-naira minor amount was evidence of corruption. THAT PREMISE IS
+ * FALSE IN THIS CODEBASE. Kobo is the ORDINARY output of two features that
+ * already ship: the bulk-discount ladder and percent-based discount codes.
+ * Both go through `scale()` in `server/shop/cart/totals/compute.ts` — the
+ * bulk tier (`effectiveUnit = scale(unit, BPS - bulkPercentBps, BPS, …)`,
+ * ~line 316) and the discount-code percent arm (`scale(line.lineTotal,
+ * discount.percentBps, BPS, …)`, ~line 360) — and `CheckoutPort` freezes
+ * whatever they compute. A whole-naira catalogue price of ₦1,337.00
+ * (`133700`) at a 5% bulk tier becomes `133700 * 9500 / 10000 = 127015`
+ * minor units, i.e. ₦1,270.15 — exact arithmetic, not a rounding accident,
+ * and `127015 % 100 === 15`. Refusing that meant refusing to charge exactly
+ * the discounted carts this shop most wants to take: any cart whose discount
+ * did not coincidentally land on a whole hundred naira failed here, before a
+ * single network call was made.
  */
 function toMajorUnits(minor: number): number {
-  if (!Number.isSafeInteger(minor) || minor % 100 !== 0) {
+  if (!Number.isSafeInteger(minor) || minor <= 0) {
     throw new ProviderError({
       code: 'invalid_request',
       provider: 'flutterwave',
@@ -204,21 +220,27 @@ function toMajorUnits(minor: number): number {
  * (minor, ×100). The read-side mirror of `toMajorUnits`, and the other of the
  * two lines the whole conversion goes through.
  *
- * GUARDED LIKE `paystack.ts`'s `minorUnits`: a value that is not a genuine
- * finite number — missing, a string that fails to parse, `null` — comes back
- * `null` rather than `NaN` or `0`, so a caller cannot mistake "we don't know"
- * for "zero". Unlike `minorUnits`, the safe-integer check runs AFTER
- * multiplying by 100 rather than before: the value in hand here is
- * Flutterwave's major unit, not ours, and it is the ×100 RESULT that must be
- * a safe integer minor-unit figure. Every amount this adapter ever sends is
- * already a whole major unit (`toMajorUnits` guarantees that on the way out),
- * so a genuine response reflecting one back always clears this.
+ * `Math.round(n * 100)` — THE STANDARD WAY EVERY MAJOR/MINOR CURRENCY
+ * CONVERSION HAS TO WORK, because IEEE-754 binary floating point does not
+ * represent most decimal fractions exactly. `19.99 * 100 === 1998.9999999999998`,
+ * not `1999` — that is not a malformed response, it is what multiplying an
+ * entirely ordinary decimal by 100 does in floating point. THIS USED TO
+ * DEMAND THE RAW PRODUCT ALREADY BE A SAFE INTEGER, which rejects ordinary
+ * values like `19.99` outright and returns `null` for them — and the caller
+ * (`#toIntent`) used to default a rejected amount to `0`, so a perfectly
+ * normal Flutterwave response silently reported a paid order as worth
+ * nothing. Rounding after multiplying is the fix.
+ *
+ * STILL GUARDED LIKE `paystack.ts`'s `minorUnits`: a value that is not a
+ * genuine finite number — missing, a string that fails to parse, `null` —
+ * comes back `null` rather than `NaN` or `0`, so a caller cannot mistake "we
+ * don't know" for "zero". That guard is correct and stays; only the demand
+ * that the multiplied result be bit-exact is gone.
  */
 function toMinorUnits(value: unknown): number | null {
   const n = typeof value === 'string' ? Number(value) : value;
   if (typeof n !== 'number' || !Number.isFinite(n)) return null;
-  const minor = n * 100;
-  return Number.isSafeInteger(minor) ? minor : null;
+  return Math.round(n * 100);
 }
 
 export class FlutterwaveProvider implements PaymentProvider {
@@ -349,10 +371,34 @@ export class FlutterwaveProvider implements PaymentProvider {
     const rawId = data.id;
     const providerChargeId =
       typeof rawId === 'number' && Number.isSafeInteger(rawId) ? String(rawId) : str(rawId);
+    /*
+     * NO `?? 0` HERE — this diverges from `paystack.ts`'s own `#toIntent`,
+     * which does default a missing amount to zero. `toMinorUnits` now only
+     * returns `null` for a genuinely malformed value (the field absent,
+     * non-numeric, or non-finite); since `#request` above already guarantees
+     * `data` itself is a real record, reaching `null` here can only mean a
+     * 2xx envelope whose body is not the shape the contract promises — the
+     * exact situation `malformed_response` exists for elsewhere in this file
+     * (see `#request`'s own `data` check). `ProviderIntent.amount` is the
+     * RECONCILIATION figure `POST …/confirm` and the sweep write onward into
+     * `commerce_events`; reporting `0` for an amount the gateway actually
+     * sent would poison that figure silently, which is worse than this one
+     * lookup failing loudly and permanently (`malformed_response` is not in
+     * the retryable set, so nothing keeps re-asking a response that will
+     * never parse differently).
+     */
+    const amount = toMinorUnits(data.amount);
+    if (amount === null) {
+      throw new ProviderError({
+        code: 'malformed_response',
+        provider: this.name,
+        operation: 'fetchIntent',
+      });
+    }
     return {
       providerIntentId: str(data.tx_ref) ?? fallbackReference,
       status: mapIntentStatus(status),
-      amount: toMinorUnits(data.amount) ?? 0,
+      amount,
       currency: str(data.currency) ?? '',
       authorizationUrl: str(data.link),
       failureReason: mapFailureReason(status),
