@@ -41,11 +41,12 @@ import { shopCors } from './shop/cart/cors';
 import { paymentPort } from './shop/payments/port';
 import { drainPaymentEvents } from './shop/payments/webhook';
 import { createRefund } from './shop/payments/refunds';
-import { paystackProvider } from './shop/payments/config';
+import { flutterwaveProvider, paystackProvider } from './shop/payments/config';
 import { redemptionPort } from './marketing/redemption/port';
 import { discountPort } from './marketing/discounts/port';
 import type { Mailer } from './mail/port';
 import type { PaymentProvider } from './shop/payments/provider/types';
+import type { ProviderFactories } from './shop/payments/routing';
 import type { AppEnv } from './app-env';
 
 export type { AppEnv } from './app-env';
@@ -115,6 +116,27 @@ export interface AppDeps {
    * WIRING under test is faked.
    */
   provider?: PaymentProvider | (() => PaymentProvider);
+
+  /**
+   * BOTH GATEWAYS, threaded through exactly the way `provider` above is —
+   * defaulted lazily, never called at construction, and passed to the two
+   * mounts below that need to choose or fix a gateway by name
+   * (`chooseProvider`/`providerFor`, `routing.ts`).
+   *
+   * NEVER CONSTRUCTED HERE, for the identical reason `provider` never is: a
+   * deployment with no Flutterwave configured must still boot and must still
+   * take Paystack payments. `resolveAppFactories` below builds the default —
+   * `{ paystack: () => resolveAppProvider(deps), flutterwave: flutterwaveProvider }`
+   * — as two REFERENCES, and `flutterwaveProvider` (`config.ts`) only throws
+   * once something actually calls it, i.e. once a Flutterwave charge or
+   * webhook is actually attempted.
+   *
+   * Absent, a suite that injects only `provider` (every test file that
+   * predates this task) keeps reaching that SAME handle through the
+   * routing-aware paths, because the default's `paystack` factory is
+   * `resolveAppProvider(deps)`, not a fresh `paystackProvider()`.
+   */
+  factories?: ProviderFactories;
 }
 
 /**
@@ -138,6 +160,29 @@ export const API_PREFIX = '/api';
 function resolveAppProvider(deps: AppDeps): PaymentProvider {
   const p = deps.provider;
   return typeof p === 'function' ? p() : (p ?? paystackProvider());
+}
+
+/**
+ * `deps.factories`, or the real default — the identical shape
+ * `server/shop/payments/routes.ts`'s own `resolveFactories` uses, kept as a
+ * SEPARATE function here rather than imported, because `AppDeps` and
+ * `PaymentDeps` are different types with different defaults for `paystack`
+ * (`resolveAppProvider` here, `resolveProvider` there) even though both
+ * bottom out at the same real adapters.
+ *
+ * `paystack` GOES THROUGH `resolveAppProvider(deps)`, NOT `paystackProvider()`
+ * DIRECTLY, so a caller supplying only `deps.provider` — every composition
+ * test written before this task — keeps reaching that exact handle once a
+ * route switches from `resolveAppProvider(deps)` to `providerFor('paystack',
+ * factories)` for the same intent.
+ */
+function resolveAppFactories(deps: AppDeps): ProviderFactories {
+  return (
+    deps.factories ?? {
+      paystack: () => resolveAppProvider(deps),
+      flutterwave: flutterwaveProvider,
+    }
+  );
 }
 
 export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
@@ -370,6 +415,16 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
     API_PREFIX,
     createWebhookRoutes({
       checkout: checkoutPort(),
+      /*
+       * THE FLUTTERWAVE WEBHOOK RIDES THE SAME MOUNT (Task 10). One call to
+       * `createWebhookRoutes` now registers BOTH `POST /shop/payments/webhook`
+       * (Paystack, unchanged) and `POST /shop/payments/webhook/flutterwave` —
+       * see the long note on that function for why the split into two
+       * differently-named URLs, each statically bound to its own gateway, is
+       * what keeps a forged or misrouted delivery from ever being verified
+       * against the wrong key.
+       */
+      factories: resolveAppFactories(deps),
       /*
        * THE INLINE OUTBOX DRAIN (admin#29). Bounded to a handful of rows —
        * enough for the two events one checkout produces, not a backlog — and its
@@ -762,6 +817,10 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
       // `undefined` here is exactly what `createPaymentRoutes` already defaults
       // on its own, so this changes nothing when `deps.provider` is unset.
       provider: deps.provider,
+      // BOTH GATEWAYS, for `POST /shop/payments/intents`'s routing decision
+      // and for resolving `/confirm`, refunds and cancel back to the gateway
+      // that actually took an existing intent's money — see `resolveAppFactories`.
+      factories: resolveAppFactories(deps),
       // The `/confirm` route is a genuine capture path too — a customer back
       // from Paystack whose webhook is late reaches `captured` there.
       sweepEvents: (db, origin) =>

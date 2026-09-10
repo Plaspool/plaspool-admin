@@ -220,6 +220,11 @@ export async function createIntent(
  * DELIBERATELY STILL IN PLACE — see its own comment for why dropping it now
  * would redden six test files this task cannot touch). New code should use
  * the six-argument form above and name the gateway explicitly.
+ *
+ * @deprecated Exists only for call sites that predate the gateway column —
+ * every one of them a test file this project's mode change forbids editing
+ * right now, not a shape to copy. A new caller must pass the gateway name
+ * explicitly, through the six-argument form above.
  */
 export async function createIntent(
   db: Db,

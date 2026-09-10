@@ -40,6 +40,10 @@ export class NoProviderForCurrencyError extends Error {
   readonly code = 'no_provider_for_currency';
   constructor(readonly currency: string) {
     super('no_provider_for_currency');
+    // Every other custom error in `server/repo/errors.ts` sets this, and two
+    // existing paths log `err.name` — left unset here, this class logged as
+    // the generic `Error` instead of naming itself.
+    this.name = 'NoProviderForCurrencyError';
   }
 }
 

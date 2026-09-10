@@ -220,3 +220,36 @@ export function providerKeyPresence(): Record<ProviderName, boolean> {
     ),
   };
 }
+
+/**
+ * `capabilities.currencies` for BOTH gateways — the adapter's declared
+ * CEILING (`provider/types.ts`) — readable with NO credentials at all.
+ *
+ * NEITHER `paystackProvider()` NOR `flutterwaveProvider()` ABOVE MAY BE USED
+ * FOR THIS. `capabilities` is a plain, static property that does not depend
+ * on the secret's VALUE — see each adapter's own module-scope `CAPABILITIES`
+ * constant — but reaching a live Flutterwave instance through
+ * `flutterwaveProvider()` means surviving `flutterwaveEnv()`'s parse first,
+ * and that parse THROWS on a deployment that has not configured Flutterwave
+ * at all. That is exactly the deployment `GET /shop/admin/payments/settings`
+ * must still describe: the settings screen has to show what configuring a
+ * gateway would unlock (`canCharge`) even while `providerKeyPresence()`
+ * reports it absent (`hasKey: false`) — the two are independent facts, and a
+ * settings read that could 500 for the one deployment that most needs to see
+ * this would be worse than not showing it at all.
+ *
+ * A PLACEHOLDER CONFIG IS THEREFORE THE CORRECT INPUT HERE, NOT A SHORTCUT.
+ * Neither constructor validates or dials out with what it is given — see
+ * each class's own constructor — so a value that will never authenticate
+ * anything is exactly as good as a real one for reading a property that
+ * never varies with it.
+ */
+export function providerCeilings(): Record<ProviderName, readonly string[]> {
+  return {
+    paystack: new PaystackProvider({ secretKey: 'unconfigured' }).capabilities.currencies,
+    flutterwave: new FlutterwaveProvider({
+      secretKey: 'unconfigured',
+      webhookHash: 'unconfigured',
+    }).capabilities.currencies,
+  };
+}
