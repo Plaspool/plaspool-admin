@@ -36,4 +36,6 @@ export const ID = {
   emailIntent: 'eml_',
   /** A row of `shop_order_add_ons` — the add-on snapshot beside a line (migration 0940). */
   orderAddOn: 'oao_',
+  /** A row of `shop_order_revisions` — one save of a manual order (migration 1110). */
+  orderRevision: 'orv_',
 } as const;

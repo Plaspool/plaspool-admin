@@ -626,7 +626,16 @@ export interface ShopOrder {
   revision: number;
   checkoutId: string;
   paymentIntentId: string | null;
+  /**
+   * Where the order came from: the online checkout, or a sale somebody
+   * recorded by hand (a payment link, a transfer, cash). OPTIONAL on purpose —
+   * a response from before manual orders shipped has no key, and absent reads
+   * as `'online'`, which is what every such order was.
+   */
+  source?: OrderSource;
 }
+
+export type OrderSource = 'online' | 'manual';
 
 export interface ShopOrderLine {
   id: string;
@@ -848,6 +857,8 @@ export interface ShopTimelineEntry {
   message: string;
   occurredAt: number;
   actorId: string | null;
+  /** The staff member's name, on the admin view only. */
+  actorName?: string | null;
 }
 
 /**
@@ -984,6 +995,125 @@ export interface ShopOrderDetail {
   payment: ShopPayment | null;
   /** Absent on a response from before add-ons shipped. */
   addOns?: ShopOrderAddOn[];
+  /**
+   * How a MANUAL order was paid and who bought it. `null` for an online order,
+   * and absent on a response from before manual orders shipped — both read
+   * the same way: there is nothing to show.
+   */
+  manual?: ShopManualOrderInfo | null;
+}
+
+// ------------------------------------------------------------ manual orders
+
+/** How a sale recorded by hand was paid. Wire values — the labels live in
+ *  `src/v2/routes/manual-order-copy.ts`. */
+export type ManualPaymentMethod =
+  | 'flutterwave_link'
+  | 'paystack_link'
+  | 'bank_transfer'
+  | 'cash'
+  | 'pos'
+  | 'other';
+
+/** Where a sale recorded by hand came from. */
+export type ManualSalesChannel = 'walk_in' | 'whatsapp' | 'instagram' | 'phone' | 'website' | 'other';
+
+export interface ManualCustomer {
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+}
+
+/** The `manual` block of `GET /admin/orders/:id`. Every text field is nullable:
+ *  most of the form is optional, and a blank box is stored as nothing. */
+export interface ShopManualOrderInfo {
+  /** Nullable at the column, though every write sets it. */
+  paymentMethod: ManualPaymentMethod | null;
+  paymentReference: string | null;
+  salesChannel: ManualSalesChannel | null;
+  note: string | null;
+  /** Whether the items were taken out of stock when it was recorded. */
+  stockTaken: boolean;
+  customer: ManualCustomer | null;
+}
+
+/**
+ * The body of `POST /admin/orders/manual` (and, plus `baseRevision`, of
+ * `PUT /admin/orders/:id/manual`). Money is MINOR units throughout.
+ *
+ * Every optional member is OMITTED rather than sent empty when the box was
+ * left blank — `JSON.stringify` drops `undefined`, so a field nobody filled
+ * never travels. An edit is a PUT, so what is absent there is cleared.
+ */
+export interface ManualOrderInput {
+  /** `YYYY-MM-DD`, not in the future. */
+  soldAt: string;
+  lines: { variantId: string; qty: number; unitAmount?: number }[];
+  paymentMethod: ManualPaymentMethod;
+  paymentReference?: string;
+  takeFromStock?: boolean;
+  advanced?: {
+    customer?: { name?: string; email?: string; phone?: string };
+    salesChannel?: ManualSalesChannel;
+    address?: { line1?: string; city?: string; region?: string; countryCode?: string };
+    shippingAmount?: number;
+    discountAmount?: number;
+    taxAmount?: number;
+    note?: string;
+  };
+}
+
+/** Lines the server could not take out of stock. The order is saved anyway. */
+export interface ManualOrderStock {
+  failed: { variantId: string; sku: string; reason: string }[];
+}
+
+/** What a manual create or edit answers with: the detail body, plus stock. */
+export interface ShopManualOrderResult extends ShopOrderDetail {
+  stock?: ManualOrderStock;
+}
+
+/**
+ * One saved state of a manual order, from `GET /admin/orders/:id/revisions`.
+ * Every member is optional because this is jsonb copied at the time of the
+ * save and never recomputed — an older snapshot may lack a field a newer
+ * server writes, and a strict read would make the whole history unreadable.
+ */
+export interface ManualOrderSnapshot {
+  /** Epoch ms. */
+  soldAt?: number;
+  lines?: {
+    variantId: string;
+    sku?: string;
+    title?: string;
+    optionValues?: Record<string, string>;
+    qty: number;
+    unitAmount: number;
+    lineTotal?: number;
+  }[];
+  paymentMethod?: ManualPaymentMethod | string;
+  paymentReference?: string | null;
+  salesChannel?: ManualSalesChannel | string | null;
+  customer?: Partial<ManualCustomer> | null;
+  address?: Record<string, unknown> | null;
+  shippingAmount?: number;
+  discountAmount?: number;
+  taxAmount?: number;
+  subtotal?: number;
+  grandTotal?: number;
+  note?: string | null;
+  takeFromStock?: boolean;
+  status?: string;
+  /** Only on a `voided` entry: the reason typed in the confirm, if any. */
+  voidReason?: string | null;
+}
+
+export interface ManualOrderRevision {
+  revision: number;
+  kind: 'created' | 'edited' | 'voided';
+  editedAt: number;
+  editedBy: { id: string; name: string | null } | null;
+  snapshot: ManualOrderSnapshot;
 }
 
 /**
@@ -2305,6 +2435,56 @@ export const shopApi = {
       subject: 'Order',
       signal,
     });
+  },
+
+  /**
+   * Record a sale made outside the online checkout. 201, answering with the
+   * detail body plus `stock.failed` — lines that could not be taken out of
+   * stock. Those are a warning, not a failure: the order is saved either way.
+   */
+  async createManualOrder(body: ManualOrderInput): Promise<ShopManualOrderResult> {
+    return shopFetch<ShopManualOrderResult>(`${BASE}/orders/manual`, {
+      method: 'POST',
+      body,
+      subject: 'Order',
+    });
+  },
+
+  /**
+   * Replace a manual order's details. A PUT: the body is the WHOLE order
+   * again, so an optional field left out is cleared. 409 when `baseRevision`
+   * is stale — somebody else saved it first.
+   */
+  async updateManualOrder(
+    id: string,
+    body: ManualOrderInput & { baseRevision: number },
+  ): Promise<ShopManualOrderResult> {
+    return shopFetch<ShopManualOrderResult>(`${BASE}/orders/${seg(id)}/manual`, {
+      method: 'PUT',
+      body,
+      id,
+      subject: 'Order',
+    });
+  },
+
+  /** Void a manual order: it stops counting as a sale, and stock taken for
+   *  it goes back. `reason` is omitted, not sent empty, when none was given. */
+  async voidOrder(id: string, baseRevision: number, reason?: string): Promise<ShopOrderDetail> {
+    return shopFetch<ShopOrderDetail>(`${BASE}/orders/${seg(id)}/void`, {
+      method: 'POST',
+      body: reason ? { baseRevision, reason } : { baseRevision },
+      id,
+      subject: 'Order',
+    });
+  },
+
+  /** Every saved state of a manual order, newest first. */
+  async listOrderRevisions(id: string, signal?: AbortSignal): Promise<ManualOrderRevision[]> {
+    const res = await shopFetch<{ items: ManualOrderRevision[] }>(
+      `${BASE}/orders/${seg(id)}/revisions`,
+      { id, subject: 'Order', signal },
+    );
+    return Array.isArray(res?.items) ? res.items : [];
   },
 
   /** 201. `lines` names order lines and quantities — a partial shipment is normal. */

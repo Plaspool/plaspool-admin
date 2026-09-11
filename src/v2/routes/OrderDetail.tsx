@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useParams } from 'react-router-dom';
-import { Ban, Check, CreditCard, PackageCheck, Receipt, Truck, Undo2 } from 'lucide-react';
+import { useLocation, useParams } from 'react-router-dom';
+import { Ban, Check, CreditCard, PackageCheck, Pencil, Receipt, Truck, Undo2 } from 'lucide-react';
 import {
   moneyRefusalMessage,
   parseRefund,
   shopApi,
   type CancelRefundChoice,
+  type ManualOrderRevision,
+  type ManualOrderStock,
   type ShopCourierProvider,
   type ShopEmailIntent,
   type ShopFulfillment,
@@ -13,11 +15,12 @@ import {
   type ShopOrderLine,
   type ShopTimelineEntry,
 } from '../../data/api-shop';
+import { ApiError } from '../../data/errors';
 import { getSession } from '../../data/session';
 import { useAsync } from '../lib/useAsync';
 import { dateTime, humanise, money, orderTone } from '../lib/format';
 import { PageHeader } from '../ui/Page';
-import { Badge, Banner, Button } from '../ui/primitives';
+import { Badge, Banner, Button, ButtonLink } from '../ui/primitives';
 import { Card } from '../ui/Card';
 import { Defs, type DefRow } from '../ui/Defs';
 import { AffixField, Radio, TextField } from '../ui/Field';
@@ -27,6 +30,17 @@ import { Timeline, type TimelineEvent } from '../ui/Timeline';
 import { useToast } from '../ui/Toast';
 import { CourierDialog, describeCourierError } from './CourierDialog';
 import { COURIER_COPY, canBook, courierStateBadge } from './courier-copy';
+import {
+  dayLabel,
+  diffSnapshots,
+  orderStatusLabel,
+  paymentMethodLabel,
+  revisionHeadline,
+  salesChannelLabel,
+  STALE_ORDER,
+  stockReason,
+} from './manual-order-copy';
+import { countryName } from './countries';
 import { isAdminRole } from '../../../shared/roles';
 
 /**
@@ -147,7 +161,7 @@ function timelineEvent(entry: ShopTimelineEntry): TimelineEvent {
     id: entry.id,
     tone,
     message: entry.message,
-    meta: `${dateTime(entry.occurredAt)}${entry.actorId ? ` · ${entry.actorId}` : ''}`,
+    meta: `${dateTime(entry.occurredAt)}${entry.actorName || entry.actorId ? ` · ${entry.actorName || entry.actorId}` : ''}`,
   };
 }
 
@@ -174,7 +188,34 @@ export default function OrderDetail() {
     return () => controller.abort();
   }, [id]);
 
-  const [modal, setModal] = useState<'none' | 'fulfil' | 'cancel' | 'refund'>('none');
+  /* A MANUAL ORDER'S EDIT HISTORY — read only for a manual order, and again
+     after every save or void (the revision moves). Failure-tolerant like the
+     courier read: the order itself must load whatever this says. */
+  const manualRevision =
+    data?.order.source === 'manual' ? data.order.revision : null;
+  const [revisions, setRevisions] = useState<ManualOrderRevision[] | null>(null);
+  const [revisionsError, setRevisionsError] = useState(false);
+  useEffect(() => {
+    if (manualRevision === null || !id) return;
+    const controller = new AbortController();
+    setRevisionsError(false);
+    shopApi
+      .listOrderRevisions(id, controller.signal)
+      .then((items) => setRevisions(items))
+      .catch((cause: unknown) => {
+        if (cause instanceof DOMException && cause.name === 'AbortError') return;
+        setRevisionsError(true);
+      });
+    return () => controller.abort();
+  }, [id, manualRevision]);
+
+  /* Lines a save could not take out of stock, handed over by the form. The
+     order was saved; this is the one moment to say what still needs doing. */
+  const location = useLocation();
+  const stockFailed =
+    (location.state as { stockFailed?: ManualOrderStock['failed'] } | null)?.stockFailed ?? [];
+
+  const [modal, setModal] = useState<'none' | 'fulfil' | 'cancel' | 'refund' | 'void'>('none');
   /** Booking a courier for ONE parcel, so it carries which parcel — the same
    *  shape and the same reason as the ship dialog below. */
   const [courierDialog, setCourierDialog] = useState<{
@@ -208,6 +249,15 @@ export default function OrderDetail() {
   const itemCount = lines.reduce((n, l) => n + l.qty, 0);
   const unfulfilled = lines.some((l) => l.fulfilledQty < l.qty);
 
+  /* A SALE RECORDED BY HAND. It arrives already sent out and paid, has no
+     checkout, no parcels and no payment intent — so the parcel, send-out,
+     refund and cancel controls have nothing to act on, and it gets Edit and
+     Void instead. Every branch below is keyed on this, and an online order
+     (including one from before `source` existed) renders exactly as it did. */
+  const isManual = order.source === 'manual';
+  const voided = isManual && order.status === 'cancelled';
+  const manual = isManual ? (data.manual ?? null) : null;
+
   /* Cancel and refund are OWNER-ONLY at the server; a writer gets no dead
      menu items to click into a 403. */
   const session = getSession();
@@ -216,11 +266,13 @@ export default function OrderDetail() {
   const isOwner = 'user' in session && session.user != null && isAdminRole(session.user.role);
 
   const canFulfil =
-    (order.status === 'paid' || order.status === 'partially_refunded') && unfulfilled;
-  const canCancel = isOwner && (order.status === 'pending' || order.status === 'paid');
+    !isManual && (order.status === 'paid' || order.status === 'partially_refunded') && unfulfilled;
+  const canCancel =
+    !isManual && isOwner && (order.status === 'pending' || order.status === 'paid');
   const intentId = payment?.intentId ?? order.paymentIntentId;
   const refundable = order.grandTotal - order.refundedTotal;
   const canRefund =
+    !isManual &&
     isOwner &&
     Boolean(intentId) &&
     refundable > 0 &&
@@ -305,8 +357,58 @@ export default function OrderDetail() {
     }
   }
 
+  /** A manual order's header: Edit on the row, Void behind More actions —
+   *  and nothing at all once it is void, because nothing is left to do. */
+  const manualHeader = isManual
+    ? {
+        titleBadge: (
+          <>
+            <Badge tone={orderTone(order.status)}>{orderStatusLabel(order)}</Badge>
+            <Badge dot={false}>Manual</Badge>
+          </>
+        ),
+        subtitle: [`Sold ${dayLabel(order.paidAt ?? order.placedAt)}`, manual?.customer?.name, order.email]
+          .filter(Boolean)
+          .join(' · '),
+        actions: voided ? undefined : (
+          <ButtonLink to={`/orders/${order.id}/edit`} size="lg">
+            <Pencil aria-hidden="true" />
+            Edit
+          </ButtonLink>
+        ),
+        /* Void is owner-grade at the server (`requireAdmin`), like cancel —
+           a writer gets no menu item to click into a 403. */
+        menu: voided || !isOwner
+          ? undefined
+          : (close: () => void) => (
+              <MenuItem
+                critical
+                icon={<Ban aria-hidden="true" />}
+                onSelect={() => {
+                  close();
+                  setModal('void');
+                }}
+              >
+                Void order…
+              </MenuItem>
+            ),
+      }
+    : null;
+
   return (
     <div className="page">
+      {manualHeader ? (
+        <PageHeader
+          icon={<Receipt />}
+          title={order.orderNumber}
+          titleBadge={manualHeader.titleBadge}
+          subtitle={manualHeader.subtitle}
+          backTo="/orders"
+          backLabel="Orders"
+          actions={manualHeader.actions}
+          menu={manualHeader.menu}
+        />
+      ) : (
       <PageHeader
         icon={<Receipt />}
         title={order.orderNumber}
@@ -353,6 +455,22 @@ export default function OrderDetail() {
           </>
         )}
       />
+      )}
+
+      {voided ? (
+        <Banner tone="warn" title="This order was voided">
+          It no longer counts as a sale.
+          {manual?.stockTaken ? ' The items it took out of stock were put back.' : ''}
+        </Banner>
+      ) : null}
+
+      {stockFailed.length > 0 ? (
+        <Banner tone="warn" title="Some items weren’t taken out of stock">
+          The order is saved, but the stock count didn’t change for{' '}
+          {stockFailed.map((f) => `${f.sku} (${stockReason(f.reason)})`).join(', ')}
+          . Check {stockFailed.length === 1 ? 'it' : 'them'} in Inventory.
+        </Banner>
+      ) : null}
 
       {order.status === 'pending' ? (
         <Banner tone="warn" title="Waiting for payment">
@@ -383,7 +501,7 @@ export default function OrderDetail() {
                   <tr>
                     <th scope="col">Item</th>
                     <th scope="col" className="th--num">Qty</th>
-                    <th scope="col">Fulfilled</th>
+                    {isManual ? null : <th scope="col">Fulfilled</th>}
                     <th scope="col" className="th--num">Unit</th>
                     <th scope="col" className="th--num">Total</th>
                   </tr>
@@ -403,6 +521,7 @@ export default function OrderDetail() {
                         </span>
                       </td>
                       <td className="cell--num">{line.qty}</td>
+                      {isManual ? null : (
                       <td>
                         <Badge
                           tone={
@@ -416,6 +535,7 @@ export default function OrderDetail() {
                           {line.fulfilledQty} of {line.qty}
                         </Badge>
                       </td>
+                      )}
                       <td className="cell--num">{money(line.unitAmount, currency)}</td>
                       <td className="cell--num">
                         <strong className="num">{money(line.lineTotal, currency)}</strong>
@@ -454,7 +574,15 @@ export default function OrderDetail() {
             </Card>
           ) : null}
 
+          {/* ── a manual order's edit history ─────────────────────────── */}
+          {isManual ? (
+            <EditHistory revisions={revisions} failed={revisionsError} currency={currency} />
+          ) : null}
+
           {/* ── fulfilments ───────────────────────────────────────────── */}
+          {/* A manual order is recorded already sent out and never gets a
+              parcel, so the card would only ever say "Nothing packed yet". */}
+          {isManual && fulfillments.length === 0 ? null : (
           <Card title="Parcels">
             {fulfillments.length === 0 ? (
               <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
@@ -481,8 +609,10 @@ export default function OrderDetail() {
               </div>
             )}
           </Card>
+          )}
 
           {/* ── emails ────────────────────────────────────────────────── */}
+          {isManual && emails.length === 0 ? null : (
           <Card title="Emails">
             {emails.length === 0 ? (
               <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
@@ -496,6 +626,7 @@ export default function OrderDetail() {
               </div>
             )}
           </Card>
+          )}
 
           {/* ── timeline ──────────────────────────────────────────────── */}
           <Card title="History">
@@ -509,6 +640,9 @@ export default function OrderDetail() {
           </Card>
         </div>
 
+        {isManual ? (
+          <ManualRail detail={data} itemCount={itemCount} />
+        ) : (
         <aside className="form2__side">
           <Card title="Customer">
             <Defs
@@ -593,8 +727,12 @@ export default function OrderDetail() {
             />
           </Card>
         </aside>
+        )}
       </div>
 
+      {modal === 'void' ? (
+        <VoidModal order={data} onClose={() => setModal('none')} onDone={done} />
+      ) : null}
       {modal === 'fulfil' ? (
         <FulfilModal orderId={order.id} lines={lines} courier={courier} onClose={() => setModal('none')} onDone={done} />
       ) : null}
@@ -636,6 +774,247 @@ export default function OrderDetail() {
         />
       ) : null}
     </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════ MANUAL ORDERS ═══ */
+
+/**
+ * The rail of a sale recorded by hand. Its own component rather than a branch
+ * per row of the online rail: almost every fact differs (no account, no
+ * checkout, no intent; a payment METHOD instead), and an online order must
+ * render exactly as it did before manual orders existed.
+ */
+function ManualRail({ detail, itemCount }: { detail: ShopOrderDetail; itemCount: number }) {
+  const { order } = detail;
+  const manual = detail.manual ?? null;
+  const currency = order.currency;
+  const customer = manual?.customer ?? null;
+  /* No discount figure rides the detail; it is what the parts add up to
+     beyond the total. Never shown when it is nothing. */
+  const discount =
+    order.subtotal + order.shippingTotal + order.taxTotal + (order.addOnTotal ?? 0) - order.grandTotal;
+  /* The stored address carries the buyer's name and phone too (the same keys
+     an online order's does); both already sit in the rows above, so the
+     address block shows only the place. */
+  const addr: Record<string, unknown> = { ...(order.shippingAddress ?? {}) };
+  delete addr.name;
+  delete addr.phone;
+  const countryCode = typeof addr.countryCode === 'string' ? addr.countryCode : null;
+  const shownAddress =
+    countryCode && !addr.country ? { ...addr, country: countryName(countryCode) } : addr;
+  const hasAddress = addressLines(shownAddress).length > 0;
+  const who: DefRow[] = [
+    ...(customer?.name ? [{ label: 'Name', value: customer.name }] : []),
+    ...(customer?.email ? [{ label: 'Email', value: customer.email }] : []),
+    ...(customer?.phone ? [{ label: 'Phone', value: customer.phone }] : []),
+  ];
+  const num = (minor: number) => <span className="num">{money(minor, currency)}</span>;
+
+  return (
+    <aside className="form2__side">
+      <Card title="How it was paid">
+        <Defs
+          rows={[
+            { label: 'Paid by', value: paymentMethodLabel(manual?.paymentMethod) },
+            {
+              label: 'Reference',
+              value: manual?.paymentReference ? (
+                <span className="mono">{manual.paymentReference}</span>
+              ) : (
+                '—'
+              ),
+            },
+            { label: 'Came from', value: salesChannelLabel(manual?.salesChannel) },
+            {
+              label: 'Stock',
+              value: manual?.stockTaken ? 'Taken out of stock' : 'Not taken out of stock',
+            },
+          ]}
+        />
+        {manual?.note ? (
+          <div className="stack stack--tight">
+            <span className="field__label">Note</span>
+            <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>
+              {manual.note}
+            </p>
+          </div>
+        ) : null}
+      </Card>
+
+      <Card title="Customer">
+        {who.length > 0 ? (
+          <Defs rows={who} />
+        ) : (
+          <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
+            No customer details recorded.
+          </p>
+        )}
+        {hasAddress ? <AddressBlock label="Delivery address" addr={shownAddress} /> : null}
+      </Card>
+
+      <Card title="Payment">
+        <Defs
+          rows={[
+            {
+              label: `Subtotal · ${itemCount} ${itemCount === 1 ? 'item' : 'items'}`,
+              value: num(order.subtotal),
+            },
+            ...(order.shippingTotal > 0 ? [{ label: 'Delivery', value: num(order.shippingTotal) }] : []),
+            ...(order.taxTotal > 0 ? [{ label: 'Tax', value: num(order.taxTotal) }] : []),
+            ...(discount > 0
+              ? [{ label: 'Discount', value: <span className="num">−{money(discount, currency)}</span> }]
+              : []),
+            { label: 'Total', value: num(order.grandTotal), total: true },
+          ]}
+        />
+        <span className="field__hint">Entered by hand when the sale was recorded.</span>
+      </Card>
+
+      <Card title="Details">
+        <Defs
+          rows={[
+            { label: 'Sold', value: dayLabel(order.paidAt ?? order.placedAt) },
+            { label: 'Recorded', value: dateTime(order.placedAt) },
+            ...(order.cancelledAt !== null ? [{ label: 'Voided', value: dateTime(order.cancelledAt) }] : []),
+          ]}
+        />
+      </Card>
+    </aside>
+  );
+}
+
+/**
+ * Every saved state of a manual order, newest first, each with what changed
+ * against the one before it. The oldest entry is the order being recorded, and
+ * has nothing before it to compare with.
+ */
+function EditHistory({
+  revisions,
+  failed,
+  currency,
+}: {
+  revisions: ManualOrderRevision[] | null;
+  failed: boolean;
+  currency: string;
+}) {
+  const quiet = { fontSize: 'var(--t-md)' };
+  return (
+    <Card title="Edit history">
+      {failed ? (
+        <p className="muted" style={quiet}>
+          Couldn’t load the edit history.
+        </p>
+      ) : revisions === null ? (
+        <p className="muted" style={quiet}>
+          Loading the edit history…
+        </p>
+      ) : revisions.length === 0 ? (
+        <p className="muted" style={quiet}>
+          Nothing recorded yet.
+        </p>
+      ) : (
+        <ol className="mo__history">
+          {revisions.map((entry, i) => {
+            const older = revisions[i + 1];
+            const compare = entry.kind !== 'created' && older !== undefined;
+            const changes = compare
+              ? diffSnapshots(older.snapshot ?? {}, entry.snapshot ?? {}, currency)
+              : [];
+            return (
+              <li key={entry.revision}>
+                <div className="mo__history-head">
+                  <strong>{revisionHeadline(entry)}</strong>
+                  <span className="mo__history-when">{dateTime(entry.editedAt)}</span>
+                </div>
+                {compare ? (
+                  changes.length > 0 ? (
+                    <ul className="summary">
+                      {changes.map((change) => (
+                        <li key={change}>{change}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+                      Saved with no changes.
+                    </p>
+                  )
+                ) : null}
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </Card>
+  );
+}
+
+/** Void a manual order — the one way to take a recorded sale back out of the
+ *  figures. Confirmed, because it cannot be edited afterwards. */
+function VoidModal({
+  order: detail,
+  onClose,
+  onDone,
+}: {
+  order: ShopOrderDetail;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const toast = useToast();
+  const { order } = detail;
+  const [reason, setReason] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function commit() {
+    setBusy(true);
+    setError(null);
+    try {
+      await shopApi.voidOrder(order.id, order.revision, reason.trim() || undefined);
+      toast.show(`${order.orderNumber} voided`);
+      onDone();
+    } catch (cause) {
+      setBusy(false);
+      if (cause instanceof ApiError && cause.status === 409) {
+        setError(STALE_ORDER);
+        return;
+      }
+      setError(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
+    }
+  }
+
+  return (
+    <Modal
+      title="Void this order?"
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Keep the order</Button>
+          <Button tone="critical" busy={busy} onClick={() => void commit()}>
+            Void order
+          </Button>
+        </>
+      }
+    >
+      <div className="stack">
+        <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
+          It will no longer count as a sale.
+          {detail.manual?.stockTaken ? ' The items it took out of stock go back in.' : ''} A voided
+          order can’t be edited.
+        </p>
+        <TextField
+          label="Reason (optional)"
+          value={reason}
+          maxLength={500}
+          onChange={(e) => setReason(e.target.value)}
+        />
+        {error ? (
+          <span className="field__error" role="alert">
+            {error}
+          </span>
+        ) : null}
+      </div>
+    </Modal>
   );
 }
 
