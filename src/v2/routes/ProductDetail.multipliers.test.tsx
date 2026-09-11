@@ -228,9 +228,13 @@ describe('the variant modal’s rates in other currencies', () => {
     expect(dialog.textContent).toContain('replaces the currency’s normal rate for this variant only');
     expect(dialog.textContent).toContain('Normal rate: 1 naira = 0.008496 cedis');
 
-    /* The picker offers what a shopper can meet and the variant doesn't already have. */
+    /* The picker offers EVERY currency the shop knows that the variant doesn't
+       already have — switched off ones too, marked, because a rate can be set
+       before the currency is switched on (owner, 2026-09-11). Never naira. */
     const picker = within(dialog).getByLabelText('Currency') as HTMLSelectElement;
-    expect([...picker.options].map((o) => o.value)).toEqual(['', 'USD', 'KES']);
+    expect([...picker.options].map((o) => o.value)).toEqual(['', 'USD', 'EUR', 'KES']);
+    const eur = [...picker.options].find((o) => o.value === 'EUR')!;
+    expect(eur.textContent).toMatch(/switched off/);
     expect(writes()).toEqual([]);
   });
 

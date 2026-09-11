@@ -29,6 +29,8 @@ export function VariantMultipliers({ variantId }: { variantId: string }) {
   const toast = useToast();
   const [items, setItems] = useState<VariantMultiplier[] | null>(null);
   const [currencies, setCurrencies] = useState<CurrencyRow[]>([]);
+  /** Every currency the shop knows how to charge, switched on or not. */
+  const [known, setKnown] = useState<string[]>([]);
   const [loadError, setLoadError] = useState(false);
   const [settingsFailed, setSettingsFailed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -47,8 +49,10 @@ export function VariantMultipliers({ variantId }: { variantId: string }) {
         currencyApi.getSettings(controller.signal),
       ]);
       if (controller.signal.aborted) return;
-      if (settings.status === 'fulfilled') setCurrencies(settings.value.currencies);
-      else setSettingsFailed(true);
+      if (settings.status === 'fulfilled') {
+        setCurrencies(settings.value.currencies);
+        setKnown(settings.value.known);
+      } else setSettingsFailed(true);
       if (overrides.status === 'fulfilled') setItems(overrides.value);
       else setLoadError(true);
     })();
@@ -82,9 +86,13 @@ export function VariantMultipliers({ variantId }: { variantId: string }) {
 
   const normal = new Map(currencies.map((c) => [c.code, c]));
   const taken = new Set(items.map((i) => i.currency));
-  /* The currencies a shopper could actually meet: switched on or offered,
-     never naira (its rate is 1 by definition). */
-  const choices = currencies.filter((c) => !c.store && (c.enabled || c.offered) && !taken.has(c.code));
+  /* EVERY CURRENCY THE SHOP KNOWS, not only the switched-on ones (owner,
+     2026-09-11: "all supported currencies I want to be able to charge them
+     separately"). A rate for a switched-off currency is stored and simply
+     waits until that currency is switched on. Never naira: its rate is 1. */
+  const storeCode = currencies.find((c) => c.store)?.code ?? 'NGN';
+  const choices = known.filter((code) => code !== storeCode && !taken.has(code));
+  const switchedOn = (code: string) => normal.get(code)?.enabled === true;
 
   async function add() {
     if (!addCode) {
@@ -151,12 +159,18 @@ export function VariantMultipliers({ variantId }: { variantId: string }) {
               }}
             >
               <option value="">Choose…</option>
-              {choices.map((c) => (
-                <option key={c.code} value={c.code}>
-                  {currencyLabel(c.code)}
+              {choices.map((code) => (
+                <option key={code} value={code}>
+                  {currencyLabel(code)}
+                  {switchedOn(code) ? '' : ' — switched off'}
                 </option>
               ))}
             </SelectField>
+            {addCode && !switchedOn(addCode) ? (
+              <span className="field__hint">
+                Shoppers won’t see this rate until {currencyLabel(addCode)} is switched on in Settings → Payments.
+              </span>
+            ) : null}
           </div>
           <div style={{ flex: '1 1 10rem' }} className="field">
             <label className="field__label" htmlFor={`vm-add-${variantId}`}>
