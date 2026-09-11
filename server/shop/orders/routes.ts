@@ -1034,6 +1034,17 @@ async function runSweep(c: Context<AppEnv>, d: ResolvedDeps) {
    */
   const couriers = d.syncCouriers ? await d.syncCouriers(db, now) : null;
   /*
+   * THE DAILY EXCHANGE RATES (1160), after the courier pass and for the same
+   * reason: nothing above depends on them. `refreshFeedRates` asks a feed only
+   * when a rate is twelve hours old — twice a day on a ten-minute cadence —
+   * never throws, and never touches a hand-set rate; the `.catch` is only a
+   * belt against a wiring that does. A refresh here is what keeps the
+   * storefront's published multipliers from going stale on a quiet week.
+   */
+  const rates = d.refreshRates
+    ? await d.refreshRates(db, now).catch(() => ({ error: 'refresh_failed' }))
+    : null;
+  /*
    * SEED ANY SYSTEM TEMPLATE THAT IS NOT IN THE TABLE YET, LAST.
    *
    * Last because it is the only step here that nothing depends on: this pass
@@ -1050,7 +1061,7 @@ async function runSweep(c: Context<AppEnv>, d: ResolvedDeps) {
    * `ensureSystemTemplates` never throws and never overwrites an edited row.
    */
   const seeded = await ensureSystemTemplates(db, now);
-  return { payments, events, emails, couriers, seeded, passes: events.passes };
+  return { payments, events, emails, couriers, rates, seeded, passes: events.passes };
 }
 
 /**

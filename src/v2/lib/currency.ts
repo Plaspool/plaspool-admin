@@ -103,6 +103,61 @@ export function hoursWords(hours: number): string {
   return `${hours} hour${hours === 1 ? '' : 's'}`;
 }
 
+/** The margin's ceiling, as the server's zod has it: 5000 bps = 50%. */
+export const MAX_FEED_MARGIN_BPS = 5000;
+
+/**
+ * `"3"` → 300, `"2.5"` → 250, `"0.05"` → 5: the percent the owner typed as
+ * INTEGER basis points, or `null` when it is not 0–50 with at most two
+ * decimals. Parsed digit by digit, never through a float — `Number("0.29")
+ * * 100` is 28.999999999999996, and the server takes integers only.
+ */
+export function percentToBps(text: string): number | null {
+  const match = /^(\d{1,3})?(?:\.(\d{0,2}))?$/.exec(text.trim());
+  if (!match || (match[1] === undefined && !match[2])) return null;
+  const whole = Number(match[1] ?? '0');
+  const fraction = Number((match[2] ?? '').padEnd(2, '0'));
+  const bps = whole * 100 + fraction;
+  return bps <= MAX_FEED_MARGIN_BPS ? bps : null;
+}
+
+/** 300 → `"3"`, 250 → `"2.5"`, 5 → `"0.05"`. */
+export function bpsToPercent(bps: number): string {
+  const whole = Math.floor(bps / 100);
+  const fraction = String(bps % 100).padStart(2, '0').replace(/0+$/, '');
+  return fraction ? `${whole}.${fraction}` : String(whole);
+}
+
+/** `null` when the margin text is one the server will take; otherwise what to fix. */
+export function marginProblem(text: string): string | null {
+  if (text.trim() === '') return 'Type a percentage. Use 0 to add nothing.';
+  return percentToBps(text) === null ? 'Use a number from 0 to 50, with up to 2 decimals.' : null;
+}
+
+/** "GHS" / "GHS and KES" / "GHS, KES and ZAR". */
+function listCodes(codes: string[]): string {
+  if (codes.length <= 1) return codes.join('');
+  return `${codes.slice(0, -1).join(', ')} and ${codes[codes.length - 1]}`;
+}
+
+/** One short line saying what fetching the daily rates did. */
+export function refreshWords(refresh: {
+  skipped: boolean;
+  refreshed: string[];
+  missing: string[];
+  error: string | null;
+}): string {
+  if (refresh.error) return 'Couldn’t reach the rate service. Try again later.';
+  if (refresh.skipped) return 'No switched-on currency uses the daily rate, so there was nothing to update.';
+  const head =
+    refresh.refreshed.length > 0
+      ? `Rates updated: ${listCodes(refresh.refreshed)}.`
+      : 'Rates checked — no change.';
+  return refresh.missing.length > 0
+    ? `${head} The rate service had no rate for ${listCodes(refresh.missing)}.`
+    : head;
+}
+
 /** Why shoppers can't pay in it, in the owner's words. */
 export const REASON_LABEL: Record<NotOfferedReason, string> = {
   disabled: 'Switched off',

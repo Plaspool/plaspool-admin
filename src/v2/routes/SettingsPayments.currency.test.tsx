@@ -170,11 +170,13 @@ const kes: Row = { code: 'KES', exponent: 2, store: false, enabled: true, multip
 const zar: Row = { code: 'ZAR', exponent: 2, store: false, enabled: true, multiplier: '0.011500000000', source: 'manual', updatedAt: NOW - 30 * HOUR, ageHours: 30, gateway: false, offered: false, reason: 'no_gateway' };
 const eur: Row = { code: 'EUR', exponent: 2, store: false, enabled: false, multiplier: '0.000580000000', source: 'feed', updatedAt: NOW - 5 * HOUR, ageHours: 5, gateway: true, offered: false, reason: 'disabled' };
 
-function view(currencies: Row[], revision = 7) {
+function view(currencies: Row[], revision = 7, feedMarginBps = 0) {
   return {
     storeCurrency: 'NGN',
     revision,
     stalenessHours: 168,
+    feedMarginBps,
+    refreshAfterHours: 12,
     fallbackCurrency: 'NGN',
     countries: { GH: 'GHS', KE: 'KES', ZA: 'ZAR', US: 'USD' },
     known: ['NGN', 'GHS', 'USD', 'GBP', 'EUR', 'KES', 'ZAR'],
@@ -184,6 +186,30 @@ function view(currencies: Row[], revision = 7) {
 }
 
 const START = view([ngn, ghs, usd, kes, zar, eur]);
+
+const REFRESH = `${CURRENCY}/refresh`;
+
+/** What one fetch of the daily rates did, as `server/shop/currency/feed.ts` answers it. */
+function refreshOf(over: Partial<{
+  skipped: boolean;
+  source: string | null;
+  refreshed: string[];
+  unchanged: string[];
+  manual: string[];
+  missing: string[];
+  error: null | 'feed_unavailable';
+}> = {}) {
+  return {
+    skipped: false,
+    source: 'test-feed',
+    refreshed: [],
+    unchanged: [],
+    manual: ['ZAR'],
+    missing: [],
+    error: null,
+    ...over,
+  };
+}
 
 function mount() {
   return render(
@@ -392,5 +418,136 @@ describe('Settings → Payments → Currencies', () => {
 
     await user.click(within(await item('Euros (EUR)')).getByRole('switch'));
     expect(await screen.findByText(/You don’t have access to this\./)).toBeTruthy();
+  });
+
+  // ------------------------------------------------------------ daily rates
+
+  /** The one-line result beside "Refresh rates now". */
+  const refreshLine = () => within(screen.getByRole('group', { name: 'Daily rates' })).getByRole('status');
+
+  it('says the daily rates refresh on their own, and how often', async () => {
+    when(PAYMENTS, paymentSettings);
+    when(CURRENCY, START);
+    mount();
+
+    await item('Cedis (GHS)');
+    expect(screen.getByText('Daily rates update on their own about every 12 hours.')).toBeTruthy();
+    expect((screen.getByLabelText('Add to the daily rate') as HTMLInputElement).value).toBe('0');
+    expect(writes()).toEqual([]);
+  });
+
+  it('refreshes the rates now with a bodiless POST, and says which moved and which the service lacked', async () => {
+    const user = userEvent.setup();
+    when(PAYMENTS, paymentSettings);
+    when(CURRENCY, START);
+    when(REFRESH, {
+      ...view([ngn, { ...ghs, multiplier: '0.008600000000', ageHours: 0 }, usd, kes, zar, eur], 8),
+      refresh: refreshOf({ refreshed: ['GHS'], unchanged: ['EUR'], missing: ['USD', 'KES'] }),
+    });
+    mount();
+
+    await item('Cedis (GHS)');
+    await user.click(screen.getByRole('button', { name: 'Refresh rates now' }));
+
+    await waitFor(() => expect(requests(REFRESH, 'POST')).toHaveLength(1));
+    expect(requests(REFRESH, 'POST')[0]!.init.body).toBeUndefined();
+    expect(writes()).toEqual([`POST ${REFRESH}`]);
+
+    await waitFor(() =>
+      expect(refreshLine().textContent).toBe(
+        'Rates updated: GHS. The rate service had no rate for USD and KES.',
+      ),
+    );
+    /* Re-rendered from the response. */
+    expect((await item('Cedis (GHS)')).textContent).toContain('0.008600000000');
+  });
+
+  it('says so when the refresh changed nothing', async () => {
+    const user = userEvent.setup();
+    when(PAYMENTS, paymentSettings);
+    when(CURRENCY, START);
+    when(REFRESH, { ...START, refresh: refreshOf({ unchanged: ['GHS', 'KES', 'EUR'] }) });
+    mount();
+
+    await item('Cedis (GHS)');
+    await user.click(screen.getByRole('button', { name: 'Refresh rates now' }));
+    await waitFor(() => expect(refreshLine().textContent).toBe('Rates checked — no change.'));
+  });
+
+  it('says plainly when the rate service could not be reached', async () => {
+    const user = userEvent.setup();
+    when(PAYMENTS, paymentSettings);
+    when(CURRENCY, START);
+    when(REFRESH, { ...START, refresh: refreshOf({ source: null, error: 'feed_unavailable' }) });
+    mount();
+
+    await item('Cedis (GHS)');
+    await user.click(screen.getByRole('button', { name: 'Refresh rates now' }));
+    await waitFor(() =>
+      expect(refreshLine().textContent).toBe('Couldn’t reach the rate service. Try again later.'),
+    );
+    expect(refreshLine().className).toContain('field__error');
+  });
+
+  it('saves the margin as INTEGER basis points with the revision, and refuses one over 50% first', async () => {
+    const user = userEvent.setup();
+    when(PAYMENTS, paymentSettings);
+    when(CURRENCY, (_url, init) =>
+      (init.method ?? 'GET') === 'GET'
+        ? { body: START }
+        : {
+            body: {
+              ...view([ngn, { ...ghs, multiplier: '0.008751062022', ageHours: 0 }, usd, kes, zar, eur], 8, 300),
+              refresh: refreshOf({ refreshed: ['GHS', 'EUR'] }),
+            },
+          },
+    );
+    mount();
+
+    await item('Cedis (GHS)');
+    const input = screen.getByLabelText('Add to the daily rate') as HTMLInputElement;
+    const save = () => within(screen.getByRole('group', { name: 'Daily rates' })).getByRole('button', { name: 'Save' });
+    /* Nothing to save until the number changes. */
+    expect((save() as HTMLButtonElement).disabled).toBe(true);
+
+    await user.clear(input);
+    await user.type(input, '60');
+    await user.click(save());
+    expect(screen.getByText('Use a number from 0 to 50, with up to 2 decimals.')).toBeTruthy();
+    expect(requests(CURRENCY, 'PATCH')).toHaveLength(0);
+
+    await user.clear(input);
+    await user.type(input, '3');
+    await user.click(save());
+
+    await waitFor(() => expect(requests(CURRENCY, 'PATCH')).toHaveLength(1));
+    const body = bodiesOf(CURRENCY, 'PATCH')[0] as Record<string, unknown>;
+    expect(body).toEqual({ feedMarginBps: 300, revision: 7 });
+    expect(Number.isInteger(body.feedMarginBps)).toBe(true);
+    expect(writes()).toEqual([`PATCH ${CURRENCY}`]);
+
+    /* The new margin re-fetched the rates; that is said too. */
+    await waitFor(() => expect(refreshLine().textContent).toBe('Rates updated: GHS and EUR.'));
+    expect(await screen.findByText('Now adding 3% to daily rates')).toBeTruthy();
+    expect((screen.getByLabelText('Add to the daily rate') as HTMLInputElement).value).toBe('3');
+  });
+
+  it('sends a two-decimal margin without float drift', async () => {
+    const user = userEvent.setup();
+    when(PAYMENTS, paymentSettings);
+    when(CURRENCY, (_url, init) =>
+      (init.method ?? 'GET') === 'GET'
+        ? { body: START }
+        : { body: { ...view([ngn, ghs, usd, kes, zar, eur], 8, 29), refresh: refreshOf({ unchanged: ['GHS'] }) } },
+    );
+    mount();
+
+    await item('Cedis (GHS)');
+    const input = screen.getByLabelText('Add to the daily rate') as HTMLInputElement;
+    await user.clear(input);
+    /* `Number("0.29") * 100` is 28.999999999999996. */
+    await user.type(input, '0.29{Enter}');
+    await waitFor(() => expect(requests(CURRENCY, 'PATCH')).toHaveLength(1));
+    expect(bodiesOf(CURRENCY, 'PATCH')[0]).toEqual({ feedMarginBps: 29, revision: 7 });
   });
 });

@@ -1,25 +1,30 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useState } from 'react';
 import {
   currencyApi,
   type CurrencyRow,
   type CurrencySettings,
+  type RateRefresh,
 } from '../../data/api-currency';
 import { ForbiddenError, StaleWriteError } from '../../data/errors';
 import {
   REASON_LABEL,
   SOURCE_LABEL,
   ageWords,
+  bpsToPercent,
   currencyLabel,
   currencyName,
   hoursWords,
   inverseSentence,
+  marginProblem,
   multiplierProblem,
+  percentToBps,
   rateSentence,
+  refreshWords,
   trimMultiplier,
 } from '../lib/currency';
 import { Badge, Banner, Button, Loading } from '../ui/primitives';
 import { Card } from '../ui/Card';
-import { SelectField, TextField, Toggle } from '../ui/Field';
+import { AffixField, SelectField, TextField, Toggle } from '../ui/Field';
 import { Modal } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
 
@@ -32,12 +37,17 @@ import { useToast } from '../ui/Toast';
  * This card shows each one's rate, where it came from, and whether shoppers
  * are offered it — and when not, why, in the owner's words.
  *
- * EVERY WRITE RE-RENDERS FROM THE RESPONSE. All four routes answer the same
+ * EVERY WRITE RE-RENDERS FROM THE RESPONSE. Every route answers the same
  * object, so nothing here guesses what it saved.
  *
- * THE ON/OFF SWITCH IS CAS on `revision`, like the gateway card above it: a
- * lost race re-reads and says so, never re-sends. The rate writes carry no
- * revision (the server's routes take none), so they cannot conflict.
+ * THE ON/OFF SWITCH AND THE MARGIN ARE CAS on `revision`, like the gateway
+ * card above it: a lost race re-reads and says so, never re-sends. The rate
+ * writes and "Refresh rates now" carry no revision (the server's routes take
+ * none), so they cannot conflict.
+ *
+ * THE DAILY RATES REFRESH ON THEIR OWN — the server's sweep fetches them
+ * every `refreshAfterHours`. "Refresh rates now" and a changed margin both
+ * fetch them at once, and both answer `refresh`, which becomes one line.
  *
  * `refreshKey` re-reads when the gateway card saves: "no payment gateway
  * takes it" is decided by the gateway card's currency boxes, so a box ticked
@@ -53,6 +63,9 @@ export default function CurrenciesCard({ refreshKey }: { refreshKey?: number }) 
   const [saving, setSaving] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [editing, setEditing] = useState<CurrencyRow | null>(null);
+  /* What the last fetch of the daily rates did, in one line — from "Refresh
+     rates now" or from a margin change, which fetches them again too. */
+  const [refreshNote, setRefreshNote] = useState<{ text: string; failed: boolean } | null>(null);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -71,14 +84,19 @@ export default function CurrenciesCard({ refreshKey }: { refreshKey?: number }) 
     return () => controller.abort();
   }, [load, refreshKey]);
 
-  async function run(key: string, write: () => Promise<CurrencySettings>, done?: string): Promise<boolean> {
-    if (saving) return false;
+  async function run<T extends CurrencySettings>(
+    key: string,
+    write: () => Promise<T>,
+    done?: string | ((answer: T) => string),
+  ): Promise<T | null> {
+    if (saving) return null;
     setSaving(key);
     setConflict(false);
     try {
-      setData(await write());
-      if (done) toast.show(done);
-      return true;
+      const answer = await write();
+      setData(answer);
+      if (done) toast.show(typeof done === 'function' ? done(answer) : done);
+      return answer;
     } catch (cause) {
       if (cause instanceof StaleWriteError) {
         /* THEIRS WINS — the same rule as the gateway card. */
@@ -89,7 +107,7 @@ export default function CurrenciesCard({ refreshKey }: { refreshKey?: number }) 
       } else {
         toast.show(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.', 'critical');
       }
-      return false;
+      return null;
     } finally {
       setSaving(null);
     }
@@ -103,6 +121,30 @@ export default function CurrenciesCard({ refreshKey }: { refreshKey?: number }) 
       .map((c) => c.code);
     if (on && !listed) enabled.push(code);
     void run(`switch:${code}`, () => currencyApi.setEnabled(enabled, data.revision));
+  }
+
+  function noteRefresh(refresh: RateRefresh | null) {
+    setRefreshNote(refresh ? { text: refreshWords(refresh), failed: refresh.error !== null } : null);
+  }
+
+  async function refreshNow() {
+    setRefreshNote(null);
+    const answer = await run('refresh', () => currencyApi.refreshRates());
+    if (answer) noteRefresh(answer.refresh);
+  }
+
+  async function saveMargin(bps: number) {
+    if (!data) return;
+    setRefreshNote(null);
+    const answer = await run(
+      'margin',
+      () => currencyApi.setFeedMargin(bps, data.revision),
+      (next) =>
+        next.feedMarginBps === 0
+          ? 'Daily rates are used as they are'
+          : `Now adding ${bpsToPercent(next.feedMarginBps)}% to daily rates`,
+    );
+    if (answer) noteRefresh(answer.refresh);
   }
 
   if (data === null) {
@@ -182,18 +224,51 @@ export default function CurrenciesCard({ refreshKey }: { refreshKey?: number }) 
         {`Shoppers see their own country’s currency when it’s offered. Everyone else pays in ${currencyName(data.fallbackCurrency)}.`}
       </span>
 
+      <div
+        className="stack"
+        role="group"
+        aria-label="Daily rates"
+        style={{ gap: 'var(--s3)', paddingTop: 'var(--s4)', borderTop: '1px solid var(--border)' }}
+      >
+        <h3 style={{ fontSize: 'var(--t-md)', fontWeight: 'var(--w-semi)' }}>Daily rates</h3>
+
+        {/* Keyed on the saved margin: a save, or someone else's that a
+            conflict re-read brought in, puts the field back on the real value. */}
+        <MarginField
+          key={data.feedMarginBps}
+          savedBps={data.feedMarginBps}
+          busy={saving === 'margin'}
+          disabled={saving !== null}
+          onSave={(bps) => void saveMargin(bps)}
+        />
+
+        <div className="row" style={{ flexWrap: 'wrap', gap: 'var(--s3)' }}>
+          <Button busy={saving === 'refresh'} disabled={saving !== null} onClick={() => void refreshNow()}>
+            Refresh rates now
+          </Button>
+          {/* Always mounted, so a screen reader announces the line when it fills. */}
+          <span role="status" className={refreshNote?.failed ? 'field__error' : 'field__hint'}>
+            {refreshNote?.text ?? ''}
+          </span>
+        </div>
+
+        <span className="field__hint">
+          {`Daily rates update on their own about every ${hoursWords(data.refreshAfterHours)}.`}
+        </span>
+      </div>
+
       {editing ? (
         <ManualRateModal
           row={editing}
           busy={saving === `rate:${editing.code}`}
           onClose={() => setEditing(null)}
           onSave={async (text) => {
-            const ok = await run(
+            const saved = await run(
               `rate:${editing.code}`,
               () => currencyApi.setMultiplier(editing.code, text),
               `${currencyLabel(editing.code)} rate saved`,
             );
-            if (ok) setEditing(null);
+            if (saved !== null) setEditing(null);
           }}
         />
       ) : null}
@@ -318,6 +393,82 @@ function ReasonLine({ row, stalenessHours }: { row: CurrencyRow; stalenessHours:
             ? 'The shop doesn’t know how to charge this currency.'
             : null;
   return text ? <span className="field__hint">{text}</span> : null;
+}
+
+/**
+ * "Add to the daily rate: [ 3 ] %". Typed as a percent, sent as INTEGER basis
+ * points (`percentToBps` parses the digits, never a float), on its own Save
+ * button — a margin is money on every non-naira order, so it never saves
+ * from a keystroke alone.
+ */
+function MarginField({
+  savedBps,
+  busy,
+  disabled,
+  onSave,
+}: {
+  savedBps: number;
+  busy: boolean;
+  disabled: boolean;
+  onSave: (bps: number) => void;
+}) {
+  const [text, setText] = useState(bpsToPercent(savedBps));
+  const [error, setError] = useState<string | null>(null);
+  const bps = percentToBps(text);
+  const unchanged = bps === savedBps;
+
+  function save() {
+    const problem = marginProblem(text);
+    if (problem || bps === null) {
+      setError(problem);
+      return;
+    }
+    if (!unchanged) onSave(bps);
+  }
+
+  /* The hint and the error sit BELOW the row, not inside the field, so the
+     Save button lines up with the input rather than with whatever is under
+     it — and are wired to the input by hand for the same reason. */
+  const base = useId();
+  const hintId = `${base}-hint`;
+  const errorId = `${base}-err`;
+
+  return (
+    <div className="stack" style={{ gap: 'var(--s1)' }}>
+      <div className="row" style={{ alignItems: 'flex-end', gap: 'var(--s3)' }}>
+        <div style={{ flex: '0 1 12rem' }}>
+          <AffixField
+            label="Add to the daily rate"
+            suffix="%"
+            inputMode="decimal"
+            autoComplete="off"
+            value={text}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? `${hintId} ${errorId}` : hintId}
+            onChange={(e) => {
+              setText(e.target.value);
+              setError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') save();
+            }}
+          />
+        </div>
+        <Button busy={busy} disabled={disabled || unchanged} onClick={save}>
+          Save
+        </Button>
+      </div>
+      {error ? (
+        <span className="field__error" id={errorId}>
+          {error}
+        </span>
+      ) : null}
+      <span className="field__hint" id={hintId}>
+        Shoppers pay this percentage more than the daily rate, in every currency that uses it. Rates
+        set by hand are not affected.
+      </span>
+    </div>
+  );
 }
 
 /** "Set by hand": a rate as text, checked with the server's own parser before it is sent. */

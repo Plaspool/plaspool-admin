@@ -13,11 +13,13 @@ import {
   notOfferedReason,
   readFxState,
   setEnabledCurrencies,
+  setFeedMargin,
   setManualMultiplier,
   setVariantMultiplier,
   variantMultipliersFor,
   type FxState,
 } from './state';
+import { REFRESH_AFTER_MS, refreshFeedRates, type RateRefresh } from './feed';
 import type { AppEnv } from '../../app-env';
 import type { Db } from '../../db/client';
 
@@ -52,8 +54,14 @@ const MultiplierText = str()
   }, 'a positive decimal with at most 12 fractional digits');
 
 const PatchCurrencyBody = z
-  .object({ enabled: z.array(Currency).min(1).max(32), revision: z.number().int().min(0) })
-  .strict();
+  .object({
+    enabled: z.array(Currency).min(1).max(32).optional(),
+    /** The owner's margin on the daily rate, in basis points: 300 = 3%. */
+    feedMarginBps: z.number().int().min(0).max(5000).optional(),
+    revision: z.number().int().min(0),
+  })
+  .strict()
+  .refine((b) => b.enabled !== undefined || b.feedMarginBps !== undefined, 'nothing to change');
 
 const PutRateBody = z.object({ multiplier: MultiplierText }).strict();
 
@@ -66,6 +74,9 @@ function settingsView(state: FxState) {
     storeCurrency: state.storeCurrency,
     revision: state.revision,
     stalenessHours: state.stalenessHours,
+    feedMarginBps: state.feedMarginBps,
+    /** A daily rate is fetched again once it is this old — by the sweep, on its own. */
+    refreshAfterHours: REFRESH_AFTER_MS / HOUR_MS,
     fallbackCurrency: state.fallbackCurrency,
     countries: state.countries,
     known: KNOWN_CURRENCIES,
@@ -111,16 +122,38 @@ export function currencyAdminRoutes(): Hono<AppEnv> {
     c.json(settingsView(await readFxState(currentDb(c)))),
   );
 
-  /** Switch currencies on and off. CAS on `revision`; the store currency is always on. */
+  /**
+   * Switch currencies on and off, and set the margin on the daily rate. CAS on
+   * `revision`; the store currency is always on. A new margin is applied at
+   * once: the daily rates are fetched again and rewritten with it.
+   */
   routes.patch('/admin/payments/currency', admin, async (c) => {
     const db = currentDb(c);
     const body = await readJson(c, PatchCurrencyBody);
     const state = await readFxState(db);
-    const enabled = [...new Set([state.storeCurrency, ...body.enabled])];
-    const unknown = enabled.find((code) => !isKnownCurrency(code));
-    if (unknown) throw new BadRequestError('enabled');
-    await setEnabledCurrencies(db, enabled, body.revision, currentUser(c).id);
-    return c.json(settingsView(await readFxState(db)));
+    let revision = body.revision;
+    if (body.enabled !== undefined) {
+      const enabled = [...new Set([state.storeCurrency, ...body.enabled])];
+      if (enabled.some((code) => !isKnownCurrency(code))) throw new BadRequestError('enabled');
+      revision = await setEnabledCurrencies(db, enabled, revision, currentUser(c).id);
+    }
+    let refresh: RateRefresh | null = null;
+    if (body.feedMarginBps !== undefined && body.feedMarginBps !== state.feedMarginBps) {
+      await setFeedMargin(db, body.feedMarginBps, revision, currentUser(c).id);
+      refresh = await refreshFeedRates(db, { force: true });
+    }
+    return c.json({ ...settingsView(await readFxState(db)), refresh });
+  });
+
+  /**
+   * "Refresh rates now". Fetches the daily rate for every switched-on currency
+   * that is not set by hand, whatever its age. The sweep does the same on its
+   * own every twelve hours; this is for the owner who does not want to wait.
+   */
+  routes.post('/admin/payments/currency/refresh', admin, async (c) => {
+    const db = currentDb(c);
+    const refresh = await refreshFeedRates(db, { force: true });
+    return c.json({ ...settingsView(await readFxState(db)), refresh });
   });
 
   /** The owner's own multiplier for a currency. Never goes stale; the feed never overwrites it. */

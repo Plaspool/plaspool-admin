@@ -52,6 +52,8 @@ export interface FxState {
   revision: number;
   countries: Record<string, string>;
   fallbackCurrency: string;
+  /** The owner's margin on the daily rate, baked in as each feed multiplier is written (1160). */
+  feedMarginBps: number;
   rates: Map<string, FxRate>;
   /** currency → variantId → multiplier. */
   variantMultipliers: Map<string, Map<string, bigint>>;
@@ -104,7 +106,7 @@ export async function readFxState(db: Db, now: number = Date.now()): Promise<FxS
   const [settingsRes, ratesRes, variantsRes, payments] = await Promise.all([
     db.execute(sql`
       SELECT store_currency, enabled, staleness_hours, revision, country_currency,
-             fallback_currency, updated_at
+             fallback_currency, updated_at, feed_margin_bps
         FROM shop_currency_settings WHERE id = ${SETTINGS_ID}`),
     db.execute(sql`SELECT currency, multiplier_e12, source, updated_at FROM shop_fx_rates`),
     db.execute(sql`SELECT variant_id, currency, multiplier_e12, updated_at FROM shop_variant_multipliers`),
@@ -142,6 +144,7 @@ export async function readFxState(db: Db, now: number = Date.now()): Promise<FxS
     revision: Number(s?.revision ?? 0),
     countries: countriesOf(s?.country_currency),
     fallbackCurrency: String(s?.fallback_currency ?? storeCurrency),
+    feedMarginBps: Number(s?.feed_margin_bps ?? 0),
     rates,
     variantMultipliers,
     chargeable: gatewayCurrencies(payments.currencies, providerCeilings()),
@@ -298,6 +301,28 @@ export async function setEnabledCurrencies(
      WHERE id = ${SETTINGS_ID} AND revision = ${baseRevision}
     RETURNING revision`);
   if (res.rows[0]) return Number(res.rows[0].revision);
+  const cur = await db.execute(sql`SELECT revision FROM shop_currency_settings WHERE id = ${SETTINGS_ID}`);
+  throw new StaleWriteError(baseRevision, Number(cur.rows[0]?.revision ?? 0));
+}
+
+/**
+ * The owner's margin on the daily rate. Moves no number by itself — the
+ * refresh that follows it (`feed.ts`) rewrites the feed multipliers, and that
+ * write moves the revision. CAS on `revision`, like the currency list.
+ */
+export async function setFeedMargin(
+  db: Db,
+  marginBps: number,
+  baseRevision: number,
+  userId: string | null,
+  now: number = Date.now(),
+): Promise<void> {
+  const res = await db.execute(sql`
+    UPDATE shop_currency_settings
+       SET feed_margin_bps = ${marginBps}, updated_at = ${now}, updated_by = ${userId}
+     WHERE id = ${SETTINGS_ID} AND revision = ${baseRevision}
+    RETURNING revision`);
+  if (res.rows[0]) return;
   const cur = await db.execute(sql`SELECT revision FROM shop_currency_settings WHERE id = ${SETTINGS_ID}`);
   throw new StaleWriteError(baseRevision, Number(cur.rows[0]?.revision ?? 0));
 }

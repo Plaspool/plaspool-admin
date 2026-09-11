@@ -44,12 +44,35 @@ export interface CurrencySettings {
   storeCurrency: string;
   revision: number;
   stalenessHours: number;
+  /** The owner's margin on the daily rate, in basis points: 300 = 3%. Hand-set rates ignore it. */
+  feedMarginBps: number;
+  /** The server fetches a daily rate again once it is this old, on its own. */
+  refreshAfterHours: number;
   fallbackCurrency: string;
   countries: Record<string, string>;
   known: string[];
   offered: string[];
   currencies: CurrencyRow[];
 }
+
+/** What one fetch of the daily rates did — `server/shop/currency/feed.ts`. */
+export interface RateRefresh {
+  /** Nothing to fetch: no switched-on currency uses the daily rate. */
+  skipped: boolean;
+  source: string | null;
+  /** Stored, and the number moved. */
+  refreshed: string[];
+  /** Stored, same number. */
+  unchanged: string[];
+  /** Left alone: set by hand. */
+  manual: string[];
+  /** The rate service had no rate for these. */
+  missing: string[];
+  error: null | 'feed_unavailable' | (string & {});
+}
+
+/** The refresh and the PATCH also say what fetching the daily rates did — `null` when nothing was fetched. */
+export type CurrencySettingsWithRefresh = CurrencySettings & { refresh: RateRefresh | null };
 
 export interface VariantMultiplier {
   currency: string;
@@ -69,10 +92,32 @@ export const currencyApi = {
   },
 
   /** CAS on `revision`: a lost race is a 409 `StaleWriteError`. The store currency is always kept on server-side. */
-  async setEnabled(enabled: string[], revision: number): Promise<CurrencySettings> {
-    return apiFetch<CurrencySettings>(`${BASE}/payments/currency`, {
+  async setEnabled(enabled: string[], revision: number): Promise<CurrencySettingsWithRefresh> {
+    return apiFetch<CurrencySettingsWithRefresh>(`${BASE}/payments/currency`, {
       method: 'PATCH',
       body: { enabled, revision },
+      subject: 'Currency settings',
+    });
+  },
+
+  /**
+   * The margin on the daily rate, in basis points — an INTEGER, the server's
+   * zod refuses anything else. CAS on `revision` like the switch. A changed
+   * margin is applied at once: the server fetches the daily rates again with
+   * it and answers what that did in `refresh`.
+   */
+  async setFeedMargin(feedMarginBps: number, revision: number): Promise<CurrencySettingsWithRefresh> {
+    return apiFetch<CurrencySettingsWithRefresh>(`${BASE}/payments/currency`, {
+      method: 'PATCH',
+      body: { feedMarginBps, revision },
+      subject: 'Currency settings',
+    });
+  },
+
+  /** "Refresh rates now": fetch the daily rate for every switched-on currency not set by hand. No body. */
+  async refreshRates(): Promise<CurrencySettingsWithRefresh> {
+    return apiFetch<CurrencySettingsWithRefresh>(`${BASE}/payments/currency/refresh`, {
+      method: 'POST',
       subject: 'Currency settings',
     });
   },
