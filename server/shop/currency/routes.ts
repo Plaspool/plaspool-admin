@@ -141,6 +141,11 @@ export function currencyAdminRoutes(): Hono<AppEnv> {
     if (body.feedMarginBps !== undefined && body.feedMarginBps !== state.feedMarginBps) {
       await setFeedMargin(db, body.feedMarginBps, revision, currentUser(c).id);
       refresh = await refreshFeedRates(db, { force: true });
+    } else if (body.enabled !== undefined) {
+      /* A currency just switched on has no daily rate yet, so it would read
+         "no rate yet" until the next sweep — and on dev nothing sweeps on a
+         schedule. Fetch what is due now: only rows that are missing or old. */
+      refresh = await refreshFeedRates(db);
     }
     return c.json({ ...settingsView(await readFxState(db)), refresh });
   });

@@ -4,7 +4,8 @@
  * converted number must move it, or a storefront showing yesterday's numbers
  * would be charged today's without being told.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { setFeedFetch } from './feed';
 import { sql } from 'drizzle-orm';
 import { freshDb } from '../../test/harness';
 import type { TestCtx } from '../../test/harness';
@@ -23,7 +24,14 @@ afterAll(async () => {
   await ctx.close();
 });
 
+/* No test here reaches a real rate feed: switching a currency on fetches its
+   daily rate, so the feed is down unless a test says otherwise. */
+const feedDown = async () => new Response('down', { status: 503 });
+
+afterEach(() => setFeedFetch(null));
+
 beforeEach(async () => {
+  setFeedFetch(feedDown);
   await ctx.db.execute(sql`DELETE FROM shop_fx_rates`);
   await ctx.db.execute(sql`DELETE FROM shop_variant_multipliers`);
   await ctx.db.execute(sql`UPDATE shop_currency_settings SET enabled = '{NGN}', revision = 1 WHERE id = 'main'`);
@@ -59,6 +67,20 @@ describe('the currency screen', () => {
       multiplier: '0.008500000000',
       source: 'manual',
     });
+  });
+
+  it('fetches the daily rate the moment a currency is switched on', async () => {
+    setFeedFetch(async () =>
+      new Response(JSON.stringify({ result: 'success', rates: { GHS: 0.0085 } }), { status: 200 }),
+    );
+    const client = await owner();
+    const res = await client.patch('/api/shop/admin/payments/currency', { enabled: ['GHS'], revision: 1 }, H);
+    const view = (await res.json()) as {
+      refresh: { refreshed: string[] };
+      currencies: Array<{ code: string; offered: boolean; source: string | null }>;
+    };
+    expect(view.refresh.refreshed).toEqual(['GHS']);
+    expect(view.currencies.find((c) => c.code === 'GHS')).toMatchObject({ offered: true, source: 'feed' });
   });
 
   it('refuses a stale revision rather than undoing another tab', async () => {
