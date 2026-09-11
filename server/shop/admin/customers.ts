@@ -181,6 +181,9 @@ export async function listBuyers(db: Db, q: BuyerQuery): Promise<BuyerPage> {
            (array_agg(o.currency     ORDER BY o.placed_at DESC, o.id ASC))[1] AS currency
       FROM shop_orders o
       LEFT JOIN shop_customers c ON c.email IS NOT NULL AND lower(c.email) = ${EMAIL_KEY}
+     -- A manual sale recorded with no email (migration 1110) belongs to nobody
+     -- here: grouped by email, every one of them would become one blank buyer.
+     WHERE o.email <> ''
      GROUP BY ${EMAIL_KEY}
      ${having.length > 0 ? sql`HAVING ${sql.join(having, sql` AND `)}` : sql``}
      ORDER BY ${LAST_ORDER_AT} DESC, ${EMAIL_KEY} ASC

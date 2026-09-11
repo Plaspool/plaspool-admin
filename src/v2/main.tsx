@@ -7,6 +7,7 @@ import './styles/ui.css';
 import './styles/page.css';
 import './styles/add-ons.css';
 import './styles/shipping.css';
+import './styles/manual-orders.css';
 import './styles/shell.css';
 
 import { getSession, initSession, startSessionWatch, subscribe } from '../data/session';
@@ -17,6 +18,7 @@ import { Gate } from './shell/Gate';
 import Home from './routes/Home';
 import Orders from './routes/Orders';
 import OrderDetail from './routes/OrderDetail';
+import OrderManual from './routes/OrderManual';
 import Products from './routes/Products';
 import ProductDetail from './routes/ProductDetail';
 import Inventory from './routes/Inventory';
@@ -171,6 +173,10 @@ const router = createHashRouter([
 
       /* ── orders ──────────────────────────────────────────────────────── */
       { path: '/orders', element: <Orders /> },
+      /* A sale recorded by hand, and the same form to edit one. Listed
+         before `:id` for the reason given over `/products/new` below. */
+      { path: '/orders/new', element: <OrderManual /> },
+      { path: '/orders/:id/edit', element: <OrderManual /> },
       { path: '/orders/:id', element: <OrderDetail /> },
       { path: '/orders/delivery', element: <DeliveryAreas /> },
 

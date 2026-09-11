@@ -47,6 +47,8 @@ describe('migration 0980_logistics', () => {
         'fulfillment_created', 'shipped', 'delivered', 'fulfillment_cancelled',
         'cancelled', 'refunded', 'refund_failed',
         'courier_booked', 'courier_update', 'courier_cancelled',
+        // Migration 1110: a manual order's edit is a timeline event too.
+        'edited',
       ].sort(),
     );
     const state = await ctx.db.execute(sql`

@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
+import { sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { shopCors } from '../cart/cors';
 import {
@@ -23,6 +24,16 @@ import { mintGuestToken, verifyGuestToken } from './tokens';
 import { resolveDeps, type OrdersDeps, type ResolvedDeps } from './ports';
 import type { AccessLink } from './mailer';
 import { storefrontOrigin } from '../storefront-url';
+import {
+  PAYMENT_METHODS,
+  SALES_CHANNELS,
+  createManualOrder,
+  listOrderRevisions,
+  readManualDetails,
+  updateManualOrder,
+  voidManualOrder,
+  type ManualOrderInput,
+} from './repo/manual';
 import { ensureSystemTemplates, loadTemplates } from '../../email/system-templates';
 import {
   cancelOrder,
@@ -38,6 +49,7 @@ import {
   type OrderAddOn,
   type OrderLine,
   type OrderRead,
+  type OrderTimelineEntry,
 } from './repo/orders';
 import {
   cancelFulfillment,
@@ -473,6 +485,43 @@ function registerAdminRoutes(
     const db = currentDb(c);
     const read = await requireOrder(db, pathParam(c, 'id'));
     return c.json(await orderDetail(db, read, deps()));
+  });
+
+  /*
+   * ═══ MANUAL ORDERS (migration 1110) ═══
+   * A sale made outside the online checkout, recorded complete. `repo/manual.ts`
+   * carries the design; these routes only read the body and pick the actor.
+   * Recording and editing ride the orders domain like fulfilments do; voiding
+   * takes a sale out of the figures, so it is `requireAdmin()`, like cancel.
+   */
+  routes.post('/admin/orders/manual', auth, async (c) => {
+    const db = currentDb(c);
+    const input = manualInput(await readJson(c, ManualOrderBody));
+    const result = await createManualOrder(db, input, currentUser(c));
+    return c.json({ ...(await orderDetail(db, result.read, deps())), stock: result.stock }, 201);
+  });
+
+  routes.put('/admin/orders/:id/manual', auth, async (c) => {
+    const db = currentDb(c);
+    const id = pathParam(c, 'id');
+    const body = await readJson(c, EditManualOrderBody);
+    const result = await updateManualOrder(db, id, manualInput(body), body.baseRevision, currentUser(c));
+    return c.json({ ...(await orderDetail(db, result.read, deps())), stock: result.stock });
+  });
+
+  routes.post('/admin/orders/:id/void', requireAdmin(), async (c) => {
+    const db = currentDb(c);
+    const id = pathParam(c, 'id');
+    const body = await readJson(c, VoidManualOrderBody);
+    const result = await voidManualOrder(db, id, body.baseRevision, emptyToNull(body.reason), currentUser(c));
+    return c.json({ ...(await orderDetail(db, result.read, deps())), stock: result.stock });
+  });
+
+  /** Every save of an order, newest first — the edit history. */
+  routes.get('/admin/orders/:id/revisions', auth, async (c) => {
+    const db = currentDb(c);
+    const read = await requireOrder(db, pathParam(c, 'id'));
+    return c.json({ items: await listOrderRevisions(db, read.order.id) });
   });
 
   /**
@@ -1093,6 +1142,20 @@ async function requireOrder(db: Db, id: string): Promise<OrderRead> {
 }
 
 /**
+ * WHO DID IT, BY NAME — for the admin view only. `actor_id` is a user id, which
+ * tells a reader nothing; the customer's `/events` route reads the same timeline
+ * and must NOT learn staff names, so the lookup lives here, not in `listTimeline`.
+ */
+async function withActorNames(db: Db, timeline: OrderTimelineEntry[]) {
+  const ids = [...new Set(timeline.map((e) => e.actorId).filter((id): id is string => id !== null))];
+  if (ids.length === 0) return timeline.map((e) => ({ ...e, actorName: null }));
+  const res = await db.execute(sql`
+    SELECT id::text AS id, display_name FROM users WHERE id::text = ANY(${sql.param(ids)}::text[])`);
+  const names = new Map(res.rows.map((r) => [String(r.id), String(r.display_name)]));
+  return timeline.map((e) => ({ ...e, actorName: e.actorId ? (names.get(e.actorId) ?? null) : null }));
+}
+
+/**
  * THE support view: one order and everything about it.
  *
  * A FUNCTION RATHER THAN AN INLINE BODY because two routes answer with it — by
@@ -1104,8 +1167,14 @@ async function orderDetail(db: Db, read: OrderRead, deps: ResolvedDeps) {
     order: read.order,
     lines: read.lines,
     addOns: read.addOns,
+    /*
+     * HOW A MANUAL ORDER WAS PAID, and the owner's note — ADMIN ONLY, and that
+     * is why it is here and not on `Order`: the customer's view spreads every
+     * field of `Order`. `null` for an online order.
+     */
+    manual: read.order.source === 'manual' ? await readManualDetails(db, read.order.id) : null,
     fulfillments: await listFulfillments(db, read.order.id),
-    timeline: await listTimeline(db, read.order.id),
+    timeline: await withActorNames(db, await listTimeline(db, read.order.id)),
     /*
      * THE EMAIL INTENTS ARE PART OF THE ADMIN VIEW, and brief §5 says why: "an email you
      * cannot prove you sent is a support ticket you cannot answer." What a customer
@@ -1151,6 +1220,141 @@ function linkFor(c: Context<AppEnv>, read: OrderRead, deps: ResolvedDeps): Acces
       { orderNumber: read.order.orderNumber, email: read.order.email },
       deps.now(),
     ),
+  };
+}
+
+// ------------------------------------------------------------ manual orders
+
+/** Minor units (kobo), whole, never negative, bounded well past any real sale. */
+const Minor = z.number().int().min(0).max(100_000_000_000);
+
+/** Optional text: trimmed, and an empty box is the same as leaving it out. */
+const OptionalText = (max: number) => str().trim().max(max).optional();
+
+/**
+ * THE MANUAL ORDER BODY. Three things are required — what was sold, when, and
+ * how it was paid — and everything else is optional, most of it under
+ * `advanced`, which is the form's own "Advanced" dropdown. `.strict()` like
+ * every body here: a mistyped field is refused, not quietly dropped.
+ */
+const ManualOrderBody = z
+  .object({
+    /** The day it was sold, as the owner's calendar says it: `YYYY-MM-DD`. */
+    soldAt: str().regex(/^\d{4}-\d{2}-\d{2}$/),
+    lines: z
+      .array(
+        z
+          .object({
+            variantId: str().min(1).max(128),
+            qty: z.number().int().min(1).max(100_000),
+            /** Omitted: the variant's current price. */
+            unitAmount: Minor.optional(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(100),
+    paymentMethod: z.enum(PAYMENT_METHODS),
+    paymentReference: OptionalText(200),
+    takeFromStock: z.boolean().optional(),
+    advanced: z
+      .object({
+        customer: z
+          .object({
+            name: OptionalText(200),
+            email: str()
+              .trim()
+              .max(320)
+              .refine((s) => s === '' || /^[^\s@]+@[^\s@]+$/.test(s), 'an email address')
+              .optional(),
+            phone: OptionalText(50),
+          })
+          .strict()
+          .optional(),
+        salesChannel: z.enum(SALES_CHANNELS).optional(),
+        address: z
+          .object({
+            line1: OptionalText(200),
+            city: OptionalText(120),
+            region: OptionalText(120),
+            countryCode: str().regex(/^[A-Za-z]{2}$/).optional(),
+          })
+          .strict()
+          .optional(),
+        shippingAmount: Minor.optional(),
+        discountAmount: Minor.optional(),
+        taxAmount: Minor.optional(),
+        note: OptionalText(2000),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+const EditManualOrderBody = ManualOrderBody.extend({ baseRevision: z.number().int().positive() }).strict();
+
+const VoidManualOrderBody = z
+  .object({ baseRevision: z.number().int().positive(), reason: OptionalText(500) })
+  .strict();
+
+function emptyToNull(value: string | undefined): string | null {
+  return value === undefined || value === '' ? null : value;
+}
+
+const WAT_MS = 3_600_000;
+
+/**
+ * THE DAY SOLD, as a moment. Noon West Africa Time on that day — the analytics
+ * bucket days in WAT, so noon can never slip into the day either side — except
+ * today, which is now, so a sale recorded as it happens keeps its real time.
+ * A day that has not happened yet is refused.
+ */
+export function soldAtFromDate(day: string, now: number = Date.now()): number {
+  const [y, m, d] = day.split('-').map(Number);
+  const noonWat = Date.UTC(y, m - 1, d, 12) - WAT_MS;
+  const parsed = new Date(noonWat + WAT_MS);
+  if (
+    Number.isNaN(noonWat) ||
+    parsed.getUTCFullYear() !== y ||
+    parsed.getUTCMonth() !== m - 1 ||
+    parsed.getUTCDate() !== d ||
+    y < 2000
+  ) {
+    throw new BadRequestError('soldAt');
+  }
+  const today = new Date(now + WAT_MS).toISOString().slice(0, 10);
+  if (day === today) return now;
+  if (day > today) throw new BadRequestError('soldAt');
+  return noonWat;
+}
+
+function manualInput(body: z.infer<typeof ManualOrderBody>): ManualOrderInput {
+  const a = body.advanced ?? {};
+  const address = a.address
+    ? {
+        line1: emptyToNull(a.address.line1),
+        city: emptyToNull(a.address.city),
+        region: emptyToNull(a.address.region),
+        countryCode: a.address.countryCode ? a.address.countryCode.toUpperCase() : null,
+      }
+    : null;
+  return {
+    soldAt: soldAtFromDate(body.soldAt),
+    lines: body.lines,
+    paymentMethod: body.paymentMethod,
+    paymentReference: emptyToNull(body.paymentReference),
+    takeFromStock: body.takeFromStock ?? true,
+    customer: {
+      name: emptyToNull(a.customer?.name),
+      email: emptyToNull(a.customer?.email),
+      phone: emptyToNull(a.customer?.phone),
+    },
+    salesChannel: a.salesChannel ?? null,
+    address: address && Object.values(address).some((v) => v !== null) ? address : null,
+    shippingAmount: a.shippingAmount ?? 0,
+    discountAmount: a.discountAmount ?? 0,
+    taxAmount: a.taxAmount ?? 0,
+    note: emptyToNull(a.note),
   };
 }
 

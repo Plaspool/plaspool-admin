@@ -2,9 +2,10 @@ import { useMemo, useState } from 'react';
 import { Inbox, ShoppingBag } from 'lucide-react';
 import { shopApi, type OrderStatus, type ShopOrderRow } from '../../data/api-shop';
 import { useAsync } from '../lib/useAsync';
-import { money, orderTone, shortAddress, shortDate, humanise } from '../lib/format';
+import { money, orderTone, shortAddress, shortDate } from '../lib/format';
+import { orderStatusLabel } from './manual-order-copy';
 import { AnalyticsBar, AnalyticsMenuItem, PageHeader, useAnalyticsBar, type Metric } from '../ui/Page';
-import { Badge, Button, EmptyState, Banner } from '../ui/primitives';
+import { Badge, Button, ButtonLink, EmptyState, Banner } from '../ui/primitives';
 import { ReceiptArt } from '../ui/illustrations';
 import { DataTable, IdCell, TablePager, type Column } from '../ui/DataTable';
 
@@ -79,7 +80,18 @@ export default function Orders() {
       render: ({ order }) => (
         <IdCell
           title={<span className="mono">{order.orderNumber}</span>}
-          meta={order.email}
+          meta={
+            /* A sale recorded by hand is marked, so it is never mistaken for
+               one the checkout took — and it may have no email at all. */
+            order.source === 'manual' ? (
+              <>
+                <Badge dot={false}>Manual</Badge>
+                {order.email ? ` ${order.email}` : ''}
+              </>
+            ) : (
+              order.email
+            )
+          }
           href={`/orders/${order.id}`}
         />
       ),
@@ -90,7 +102,7 @@ export default function Orders() {
       header: 'Status',
       label: 'Status',
       tight: true,
-      render: ({ order }) => <Badge tone={orderTone(order.status)}>{humanise(order.status)}</Badge>,
+      render: ({ order }) => <Badge tone={orderTone(order.status)}>{orderStatusLabel(order)}</Badge>,
     },
     {
       key: 'items',
@@ -129,6 +141,11 @@ export default function Orders() {
         menu={(close) => (
           <AnalyticsMenuItem shown={shown} onToggle={toggle} close={close} />
         )}
+        actions={
+          <ButtonLink to="/orders/new" tone="primary" size="lg">
+            New order
+          </ButtonLink>
+        }
       />
 
       {shown ? <AnalyticsBar range="This page" metrics={metrics} /> : null}

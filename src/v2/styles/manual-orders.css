@@ -1,0 +1,224 @@
+/* ═══ MANUAL ORDERS ═══════════════════════════════════════════════════════
+   The record-a-sale form (`OrderManual.tsx`), its product picker
+   (`VariantPicker.tsx`) and the edit history on order detail. Reuses the tag
+   field's box and pop for the picker rather than declaring a third combobox
+   skin — only the two-line option and the icon are new here. */
+
+/* ── the picker ─────────────────────────────────────────────────────────── */
+.vpick__box {
+  flex-wrap: nowrap;
+  gap: var(--s2);
+  padding-inline: var(--s3);
+}
+
+.vpick__icon {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--ink-sub);
+}
+
+.vpick__pop {
+  max-height: 20rem;
+}
+
+.vpick__pop .tagin__opt {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.vpick__name {
+  font-weight: var(--w-medium);
+}
+
+.vpick__meta {
+  font-size: var(--t-sm);
+  color: var(--ink-sub);
+  font-variant-numeric: tabular-nums;
+}
+
+.vpick__more {
+  padding: var(--s2);
+  font-size: var(--t-sm);
+  color: var(--ink-muted);
+}
+
+/* ── the lines ──────────────────────────────────────────────────────────── */
+.mo__lines {
+  display: flex;
+  flex-direction: column;
+}
+
+.mo__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding-block: var(--s3);
+  border-top: 1px solid var(--border-sub);
+}
+
+.mo__line:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.mo__line-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 12rem;
+  flex: 1;
+  align-self: center;
+  font-size: var(--t-md);
+}
+
+.mo__line-name .muted {
+  font-size: var(--t-sm);
+}
+
+.mo__line-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s3);
+}
+
+.mo__stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+}
+
+.mo__price {
+  width: 9rem;
+}
+
+.mo__line-total {
+  min-width: 7rem;
+  padding-bottom: var(--s2);
+  text-align: right;
+  font-weight: var(--w-semi);
+  font-size: var(--t-md);
+}
+
+/* ── field groups ───────────────────────────────────────────────────────── */
+.mo__pair,
+.mo__trio {
+  display: grid;
+  gap: var(--s3);
+  align-items: start;
+}
+
+.mo__pair {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mo__trio {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 40rem) {
+  .mo__pair,
+  .mo__trio {
+    grid-template-columns: 1fr;
+  }
+
+  .mo__line-controls {
+    width: 100%;
+  }
+
+  .mo__price {
+    flex: 1;
+    width: auto;
+  }
+}
+
+.mo__fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.mo__fieldset > legend {
+  padding: 0;
+  margin-bottom: var(--s2);
+}
+
+/* ── the Advanced disclosure ────────────────────────────────────────────── */
+.mo__disclosure {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  width: 100%;
+  padding: var(--s4);
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: inherit;
+}
+
+.mo__disclosure:hover {
+  background: var(--surface-hover);
+}
+
+.mo__disclosure > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mo__disclosure-sub {
+  font-size: var(--t-sm);
+  color: var(--ink-sub);
+}
+
+.mo__chev {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--ink-sub);
+  transition: transform 120ms ease;
+}
+
+.mo__chev.is-open {
+  transform: rotate(180deg);
+}
+
+/* ── edit history on order detail ──────────────────────────────────────── */
+.mo__history {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+.mo__history > li + li {
+  padding-top: var(--s3);
+  border-top: 1px solid var(--border-sub);
+}
+
+.mo__history-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s2);
+  font-size: var(--t-md);
+}
+
+.mo__history-when {
+  font-size: var(--t-sm);
+  color: var(--ink-sub);
+}
+
+.mo__history .summary {
+  margin-top: var(--s1);
+}

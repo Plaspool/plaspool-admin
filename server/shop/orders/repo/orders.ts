@@ -63,7 +63,17 @@ export type OrderTimelineType =
   | 'placed' | 'payment_authorized' | 'payment_failed' | 'paid'
   | 'fulfillment_created' | 'shipped' | 'delivered' | 'fulfillment_cancelled'
   | 'cancelled' | 'refunded' | 'refund_failed'
-  | 'courier_booked' | 'courier_update' | 'courier_cancelled';
+  | 'courier_booked' | 'courier_update' | 'courier_cancelled'
+  /** A manual order was edited (migration 1110). */
+  | 'edited';
+
+/**
+ * Where an order came from (migration 1110): the online checkout, or recorded
+ * by hand in the admin for a sale made elsewhere. Harmless on a customer's
+ * view; the manual order's payment details are NOT on `Order` for exactly
+ * that reason — see `ManualDetails`.
+ */
+export type OrderSource = 'online' | 'manual';
 
 export interface Order {
   id: string;
@@ -102,6 +112,7 @@ export interface Order {
   checkoutId: string;
   /** Payments' intent id, for `PaymentPort` display only. Null until a payment event. */
   paymentIntentId: string | null;
+  source: OrderSource;
 }
 
 export interface OrderLine {
@@ -192,6 +203,7 @@ const ORDER_COLUMNS = [
   'revision',
   'checkout_id',
   'payment_intent_id',
+  'source',
 ];
 
 const orderColumns = (alias: string) =>
@@ -221,6 +233,7 @@ function rowToOrder(row: Record<string, unknown>): Order {
     revision: Number(row.revision),
     checkoutId: String(row.checkout_id),
     paymentIntentId: row.payment_intent_id == null ? null : String(row.payment_intent_id),
+    source: row.source === 'manual' ? 'manual' : 'online',
   };
 }
 
@@ -302,13 +315,20 @@ export interface OrderRead {
  * order that arrived in pieces.
  * ═══════════════════════════════════════════════════════════════════════════
  */
+/*
+ * A MANUAL ORDER HAS NO PARCELS (migration 1110): it records a sale already
+ * handed over, so it is delivered when it was sold. Without this every manual
+ * order would sit in the board's Sent-out lane for ever, the exact failure the
+ * paragraph above describes.
+ */
 const DELIVERED_AT = sql`
+  CASE WHEN o.source = 'manual' THEN o.fulfilled_at ELSE
   (SELECT MAX(f.delivered_at)
      FROM shop_fulfillments f
     WHERE f.order_id = o.id AND f.status <> 'cancelled'
    HAVING count(*) > 0
       AND count(*) FILTER (WHERE f.status = 'delivered') = count(*)
-  ) AS delivered_at`;
+  ) END AS delivered_at`;
 
 const LINE_AGG = sql`
   COALESCE((

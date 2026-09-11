@@ -27,6 +27,7 @@ import { sql } from 'drizzle-orm';
 import type { AddOnBasis } from '../../shared/commerce/add-ons';
 import {
   bigint,
+  boolean,
   check,
   index,
   integer,
@@ -160,6 +161,18 @@ export const shopOrders = pgTable(
      * than a state.
      */
     paymentIntentId: text('payment_intent_id'),
+    /**
+     * MANUAL ORDERS (migration 1110): `'online'` for a checkout, `'manual'` for
+     * a sale the owner recorded. The rest are the manual sale's own details —
+     * how it was paid, the reference, where it came from, the owner's note
+     * (never shown to a customer) and whether it took stock.
+     */
+    source: text('source').$type<'online' | 'manual'>().notNull().default('online'),
+    paymentMethod: text('payment_method'),
+    paymentReference: text('payment_reference'),
+    salesChannel: text('sales_channel'),
+    staffNote: text('staff_note'),
+    stockTaken: boolean('stock_taken').notNull().default(false),
   },
   (t) => [
     uniqueIndex('shop_orders_order_number_uq').on(t.orderNumber),
@@ -172,7 +185,8 @@ export const shopOrders = pgTable(
     check('shop_orders_currency_ck', sql`${t.currency} ~ '^[A-Z]{3}$'`),
     check('shop_orders_revision_ck', sql`${t.revision} > 0`),
     check('shop_orders_refunded_ck', sql`${t.refundedTotal} >= 0`),
-    check('shop_orders_email_ck', sql`length(${t.email}) > 0`),
+    check('shop_orders_email_ck', sql`length(${t.email}) > 0 OR ${t.source} = 'manual'`),
+    check('shop_orders_source_ck', sql`${t.source} IN ('online', 'manual')`),
     index('shop_orders_customer_idx').on(t.customerId, t.placedAt.desc(), t.id),
     index('shop_orders_status_idx').on(t.status, t.placedAt.desc(), t.id),
   ],
