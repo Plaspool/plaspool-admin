@@ -4,6 +4,7 @@ import { toEpochMs, uniqueViolation } from '../../db/client';
 import { ProviderError, isIndeterminate } from './provider/scrub';
 import { refundId as mintRefundId, eventId as mintEventId } from './ids';
 import { getIntent } from './intents';
+import { convertMinor, parseMultiplier } from '../../../shared/commerce/fx';
 import type { Db } from '../../db/client';
 import type { PaymentProvider } from './provider/types';
 
@@ -50,10 +51,18 @@ export interface RefundRow {
   createdAt: number;
   updatedAt: number;
   createdBy: string;
+  /**
+   * What the gateway is asked to pay back, in the CHARGED currency (1140).
+   * `amount`/`currency` stay the naira figure the owner asked to refund. NULL
+   * for a refund of a pre-1140 intent, which is refunded in naira as before.
+   */
+  chargeCurrency: string | null;
+  chargeAmountMinor: number | null;
 }
 
 const REFUND_COLUMNS = sql`id, intent_id, amount, currency, reason, provider_refund_id,
-  idempotency_key, status, created_at, updated_at, created_by`;
+  idempotency_key, status, created_at, updated_at, created_by, charge_currency,
+  charge_amount_minor`;
 
 export function mapRefundRow(row: Record<string, unknown>): RefundRow {
   return {
@@ -68,6 +77,8 @@ export function mapRefundRow(row: Record<string, unknown>): RefundRow {
     createdAt: toEpochMs(row.created_at),
     updatedAt: toEpochMs(row.updated_at),
     createdBy: String(row.created_by),
+    chargeCurrency: row.charge_currency == null ? null : String(row.charge_currency),
+    chargeAmountMinor: row.charge_amount_minor == null ? null : Number(row.charge_amount_minor),
   };
 }
 
@@ -134,6 +145,30 @@ export async function createRefund(
   const id = mintRefundId(now);
 
   /*
+   * THE CHARGED SHARE OF THIS REFUND (1140). A converted payment is refunded
+   * in the currency it was charged in, never naira and never at today's rate:
+   * the naira amount converts at the multiplier STORED on the intent's
+   * breakdown, by the same formula that charged it. The statement below caps
+   * it at what is left of the charge, and a refund that finishes the naira
+   * balance takes exactly what is left — so a full refund always pays back
+   * the whole charge, whatever each partial rounded to.
+   */
+  const before = await getIntent(db, input.intentId);
+  const converted =
+    before?.chargeBreakdown && before.chargeCurrency && before.chargeCurrency !== before.currency
+      ? convertMinor(input.amount, parseMultiplier(before.chargeBreakdown.multiplier), before.chargeCurrency)
+      : null;
+  if (
+    converted !== null &&
+    converted <= 0 &&
+    before !== null &&
+    before.refundedTotal + input.amount !== before.amount
+  ) {
+    // A few kobo convert to nothing in the charged currency: nothing to send.
+    throw new BadRequestError('amount');
+  }
+
+  /*
    * THE ROW IS CLAIMED BEFORE THE PROVIDER IS CALLED, and on this provider that
    * ordering is the entire protection against a double refund. Paystack's
    * `POST /refund` has NO idempotency key: calling it twice creates two refunds
@@ -144,23 +179,53 @@ export async function createRefund(
    */
   let inserted;
   try {
+    /*
+     * `locked` TAKES THE ROW LOCK FIRST, so `share` — the charged amount this
+     * refund moves — is computed from the row as it stands AFTER any
+     * concurrent refund committed, not from a snapshot. The naira guard in
+     * `claim` is unchanged; the charged counter rides the same UPDATE, so the
+     * two can never disagree about what has been paid back.
+     */
     inserted = await db.execute(sql`
-      WITH claim AS (
+      WITH locked AS (
+        SELECT id, amount, currency, refunded_total, charge_currency, charge_amount_minor,
+               charge_refunded_minor
+          FROM shop_payment_intents WHERE id = ${input.intentId}
+         FOR UPDATE
+      ),
+      share AS (
+        SELECT l.id,
+               CASE
+                 WHEN l.charge_currency IS NULL THEN NULL::integer
+                 WHEN l.charge_currency = l.currency THEN ${input.amount}::integer
+                 WHEN l.refunded_total + ${input.amount} = l.amount
+                   THEN l.charge_amount_minor - l.charge_refunded_minor
+                 ELSE LEAST(${converted ?? 0}::integer, l.charge_amount_minor - l.charge_refunded_minor)
+               END AS charge_amount
+          FROM locked l
+      ),
+      claim AS (
         UPDATE shop_payment_intents
            SET refunded_total = shop_payment_intents.refunded_total + ${input.amount},
+               charge_refunded_minor = shop_payment_intents.charge_refunded_minor
+                                       + COALESCE(s.charge_amount, 0),
                updated_at = ${now},
                revision = shop_payment_intents.revision + 1
-         WHERE shop_payment_intents.id = ${input.intentId}
+          FROM share s
+         WHERE shop_payment_intents.id = s.id
            AND shop_payment_intents.status IN ('captured', 'partially_refunded')
            AND shop_payment_intents.refunded_total + ${input.amount}
                <= shop_payment_intents.amount
-        RETURNING id, currency
+        RETURNING shop_payment_intents.id, shop_payment_intents.currency,
+                  shop_payment_intents.charge_currency, s.charge_amount
       )
       INSERT INTO shop_refunds
         (id, intent_id, amount, currency, reason, idempotency_key, status,
-         created_at, updated_at, created_by)
+         created_at, updated_at, created_by, charge_currency, charge_amount_minor)
       SELECT ${id}, c.id, ${input.amount}, c.currency, ${input.reason ?? null},
-             ${input.idempotencyKey}, 'pending', ${now}, ${now}, ${input.createdBy}
+             ${input.idempotencyKey}, 'pending', ${now}, ${now}, ${input.createdBy},
+             CASE WHEN c.charge_amount IS NULL THEN NULL ELSE c.charge_currency END,
+             c.charge_amount
         FROM claim c
       RETURNING ${REFUND_COLUMNS}`);
   } catch (err) {
@@ -206,8 +271,9 @@ export async function createRefund(
     const providerRefund = await provider.refund(
       {
         providerIntentId: intent.providerIntentId,
-        amount: refund.amount,
-        currency: refund.currency,
+        // In the currency it was CHARGED in (1140); naira for a pre-1140 refund.
+        amount: refund.chargeAmountMinor ?? refund.amount,
+        currency: refund.chargeCurrency ?? refund.currency,
         merchantNote: input.reason,
       },
       input.idempotencyKey,
@@ -259,10 +325,12 @@ async function failRefundLocally(db: Db, id: string, now: number): Promise<void>
     WITH failed AS (
       UPDATE shop_refunds SET status = 'failed', updated_at = ${now}
        WHERE id = ${id} AND status = 'pending'
-      RETURNING intent_id, amount
+      RETURNING intent_id, amount, charge_amount_minor
     )
     UPDATE shop_payment_intents i
-       SET refunded_total = i.refunded_total - f.amount, updated_at = ${now}
+       SET refunded_total = i.refunded_total - f.amount,
+           charge_refunded_minor = i.charge_refunded_minor - COALESCE(f.charge_amount_minor, 0),
+           updated_at = ${now}
       FROM failed f
      WHERE i.id = f.intent_id`);
 }
@@ -366,13 +434,18 @@ export async function applyRefundEvent(
          AND r.status = 'pending'
          AND EXISTS (SELECT 1 FROM claimed)
          AND EXISTS (SELECT 1 FROM cur)
-      RETURNING r.id, r.intent_id, r.amount
+      RETURNING r.id, r.intent_id, r.amount, r.charge_currency, r.charge_amount_minor
     ),
     intent AS (
       UPDATE shop_payment_intents i
          SET refunded_total = CASE WHEN ${target}::text = 'failed'
                                    THEN i.refunded_total - (SELECT amount FROM settled)
                                    ELSE i.refunded_total END,
+             -- The charged twin gives its reservation back with it (1140).
+             charge_refunded_minor = CASE WHEN ${target}::text = 'failed'
+                                   THEN i.charge_refunded_minor
+                                        - COALESCE((SELECT charge_amount_minor FROM settled), 0)
+                                   ELSE i.charge_refunded_minor END,
              -- Derived from the total, and deliberately NOT rank-guarded.
              -- See the note above this function.
              status = CASE
@@ -401,7 +474,11 @@ export async function applyRefundEvent(
                'refundedAmount', s.amount,
                'refundedTotal', i.refunded_total,
                'remainingBalance', i.amount - i.refunded_total
-             ),
+             )
+             -- What actually went back, in the charged currency (1140).
+             || CASE WHEN s.charge_currency IS NULL THEN '{}'::jsonb
+                     ELSE jsonb_build_object('chargeRefund', jsonb_build_object(
+                       'currency', s.charge_currency, 'amount', s.charge_amount_minor)) END,
              ${now}, 0
         FROM intent i JOIN settled s ON s.intent_id = i.id
        WHERE ${target}::text = 'succeeded'

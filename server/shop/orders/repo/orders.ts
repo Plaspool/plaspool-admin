@@ -11,7 +11,11 @@ import { encodeCursor, pageLimit, requireCursor } from '../../../repo/cursor';
 import { ID, newId } from '../ids';
 import { formatOrderNumber } from '../order-number';
 import type { CheckoutCompletedInput } from '../inbound';
-import type { OrderCancelReason, OrderLineRef } from '../../../../shared/commerce/events';
+import type {
+  OrderCancelReason,
+  OrderLineRef,
+  PaymentCharge,
+} from '../../../../shared/commerce/events';
 import type { AddOnBasis } from '../../../../shared/commerce/add-ons';
 import type { Post } from '../../../../shared/types';
 import { mintGuestToken } from '../tokens';
@@ -102,7 +106,19 @@ export interface Order {
   checkoutId: string;
   /** Payments' intent id, for `PaymentPort` display only. Null until a payment event. */
   paymentIntentId: string | null;
+  /**
+   * WHAT THE CUSTOMER WAS ACTUALLY CHARGED (migration 1140), beside the naira
+   * totals above — which stay the order's authoritative figures. Copied from
+   * `payment.captured` in the same statement as the paid transition. `null`
+   * for an order not yet paid, and for every order whose capture predates
+   * 1140. For a naira payment it is present with `currency` equal to the
+   * order's and `breakdown` null.
+   */
+  charge: OrderCharge | null;
 }
+
+/** `Order.charge`. `amount` is in minor units OF `currency`, per its exponent. */
+export type OrderCharge = PaymentCharge;
 
 export interface OrderLine {
   id: string;
@@ -192,6 +208,9 @@ const ORDER_COLUMNS = [
   'revision',
   'checkout_id',
   'payment_intent_id',
+  'charge_currency',
+  'charge_amount_minor',
+  'charge',
 ];
 
 const orderColumns = (alias: string) =>
@@ -221,6 +240,43 @@ function rowToOrder(row: Record<string, unknown>): Order {
     revision: Number(row.revision),
     checkoutId: String(row.checkout_id),
     paymentIntentId: row.payment_intent_id == null ? null : String(row.payment_intent_id),
+    charge: rowToCharge(row),
+  };
+}
+
+/**
+ * The charge columns as one object, or `null`.
+ *
+ * DEFENSIVE ON THE JSONB, because it is copied rather than recomputed: a key
+ * missing from it (or a driver handing jsonb back as text) degrades to `null`
+ * for that field instead of making the order unreadable. The currency and
+ * amount columns are the pair a CHECK keeps both-null or both-set, so they
+ * alone decide whether there is a charge.
+ */
+function rowToCharge(row: Record<string, unknown>): OrderCharge | null {
+  if (row.charge_currency == null || row.charge_amount_minor == null) return null;
+  let extra: Record<string, unknown> = {};
+  const raw = row.charge;
+  if (raw != null) {
+    try {
+      const value: unknown = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+        extra = value as Record<string, unknown>;
+      }
+    } catch {
+      extra = {};
+    }
+  }
+  const breakdown = extra.breakdown;
+  return {
+    amount: Number(row.charge_amount_minor),
+    currency: String(row.charge_currency),
+    ratesRevision: typeof extra.ratesRevision === 'number' ? extra.ratesRevision : null,
+    country: typeof extra.country === 'string' ? extra.country : null,
+    breakdown:
+      breakdown !== null && typeof breakdown === 'object' && !Array.isArray(breakdown)
+        ? (breakdown as Record<string, unknown>)
+        : null,
   };
 }
 
@@ -1149,16 +1205,40 @@ function withRefundedAmount(amount: number | undefined): SQL {
 
 // ------------------------------------------------------------ the transitions
 
+/**
+ * What was charged (migration 1140), written IN THE PAID TRANSITION'S OWN SET
+ * LIST — the same statement, so an order can never be paid without it or carry
+ * it without being paid. Absent appends nothing: a pre-1140 capture writes
+ * exactly the statement it always did.
+ *
+ * IDEMPOTENT BECAUSE THE TRANSITION IS. `pay` is guarded on `status =
+ * 'pending'`, so a redelivered capture is refused before it can write a second
+ * charge — there is no path that overwrites one.
+ *
+ * The naira totals are not touched. They stay the order's authoritative
+ * figures; this only records what the gateway was asked for.
+ */
+function withCharge(charge: PaymentCharge | null): SQL {
+  if (charge === null) return sql``;
+  return sql`, charge_currency = ${charge.currency}, charge_amount_minor = ${charge.amount},
+    charge = ${jsonb({
+      ratesRevision: charge.ratesRevision,
+      country: charge.country,
+      breakdown: charge.breakdown,
+    })}`;
+}
+
 const MARK_PAID: Transition<{
   link: AccessLink | null;
   intentId: string | null;
   templates: TemplateSet;
+  charge: PaymentCharge | null;
 }> = {
   name: 'pay',
   holds: (o) => o.status === 'pending',
   guard: sql`status = 'pending'`,
   set: (_read, arg, now) =>
-    sql`status = 'paid', paid_at = ${now}${rememberIntent(arg.intentId)}`,
+    sql`status = 'paid', paid_at = ${now}${rememberIntent(arg.intentId)}${withCharge(arg.charge)}`,
   effects: (read, arg, now) => ({
     timeline: { type: 'paid', message: 'Payment received', actorId: null },
     /*
@@ -1188,7 +1268,13 @@ const MARK_PAID: Transition<{
       /* `renderConfirmation` addresses it from the ORDER's email snapshot, not from
        * anything a request supplied — the address a confirmation goes to is the one
        * the customer bought with. */
-      ...renderConfirmation(mailView(read), arg.link, arg.templates),
+      /* The charge comes from the EVENT, not `read`: `read` is the order as it
+       * was before this statement, and the columns are written by it. */
+      ...renderConfirmation(
+        { ...mailView(read), charge: arg.charge },
+        arg.link,
+        arg.templates,
+      ),
     },
   }),
 };
@@ -1370,8 +1456,10 @@ export const markOrderPaid = (
   claim: EventClaim | null,
   intentId: string | null = null,
   templates: TemplateSet = BUILT_IN,
+  /** What was charged, from `payment.captured` (1140). `null` for a pre-1140 capture. */
+  charge: PaymentCharge | null = null,
 ): Promise<Order> =>
-  transition(db, orderId, MARK_PAID, { link, intentId, templates }, now, claim);
+  transition(db, orderId, MARK_PAID, { link, intentId, templates, charge }, now, claim);
 
 export const cancelOrder = (
   db: Db,

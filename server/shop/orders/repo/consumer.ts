@@ -487,6 +487,9 @@ async function dispatch(
         { eventId: row.id },
         parsed.value.intentId,
         deps.templates ?? BUILT_IN,
+        /* What the gateway was asked for (1140), written onto the order in the
+         * same statement as the paid transition. Absent on a pre-1140 intent. */
+        parsed.value.charge ?? null,
       );
 
       /*

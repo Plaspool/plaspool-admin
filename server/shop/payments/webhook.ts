@@ -1,7 +1,8 @@
 import { sql } from 'drizzle-orm';
 import { toEpochMs, toEpochMsOrNull } from '../../db/client';
 import { paymentEventId as mintPaymentEventId } from './ids';
-import { applyIntentStatus, getIntent, getIntentByProviderRef } from './intents';
+import { applyIntentStatus, chargedOf, getIntent, getIntentByProviderRef } from './intents';
+import type { PaymentIntentRow } from './intents';
 import { applyRefundEvent } from './refunds';
 import type { Db } from '../../db/client';
 import type { PaymentsCheckoutPort } from './checkout';
@@ -52,11 +53,50 @@ export interface StoredEvent {
   processedAt: number | null;
   lastError: string | null;
   anomaly: string | null;
+  /**
+   * What the gateway VERIFIED was paid — the adapter's `amount`/`currency`,
+   * minor units, converted by the currency's own exponent (1140). Null for an
+   * event stored before 1140 or one whose adapter reported none.
+   */
+  reportedAmount: number | null;
+  reportedCurrency: string | null;
 }
 
 const EVENT_COLUMNS = sql`id, provider_event_id, intent_id, type,
   intent_status, refund_status, provider_refund_id, payload,
-  received_at, processed_at, last_error, anomaly`;
+  received_at, processed_at, last_error, anomaly, reported_amount, reported_currency`;
+
+/**
+ * DOES THIS PAYMENT COUNT? Only if the gateway's VERIFIED currency is the one
+ * charged and its verified amount is at least what was charged (1140). Pure,
+ * so the webhook and `/confirm` apply the one rule.
+ *
+ * Answers `null` when it counts, else the anomaly to record — and the capture
+ * is NOT applied: an underpaid cedi payment is money to reconcile by hand,
+ * never an order to ship.
+ *
+ * A NAIRA CHARGE WITH NOTHING REPORTED STILL COUNTS, exactly as every capture
+ * did before this check existed — a pre-1140 event row, or an adapter that
+ * reported no amount. A converted charge with nothing reported does not: the
+ * whole point of converting is that the number must be checked.
+ */
+export function chargeVerdict(
+  intent: PaymentIntentRow,
+  reportedAmount: number | null,
+  reportedCurrency: string | null,
+): string | null {
+  const expected = chargedOf(intent);
+  if (reportedAmount === null || !reportedCurrency) {
+    return expected.currency === intent.currency ? null : 'charge_unverified';
+  }
+  if (reportedCurrency.toUpperCase() !== expected.currency.toUpperCase()) {
+    return `charge_currency_mismatch:${reportedCurrency.toUpperCase()}`;
+  }
+  if (reportedAmount < expected.amount) {
+    return `charge_underpaid:${reportedAmount}<${expected.amount}`;
+  }
+  return null;
+}
 
 function mapEventRow(row: Record<string, unknown>): StoredEvent {
   return {
@@ -72,6 +112,8 @@ function mapEventRow(row: Record<string, unknown>): StoredEvent {
     processedAt: toEpochMsOrNull(row.processed_at),
     lastError: row.last_error == null ? null : String(row.last_error),
     anomaly: row.anomaly == null ? null : String(row.anomaly),
+    reportedAmount: row.reported_amount == null ? null : Number(row.reported_amount),
+    reportedCurrency: row.reported_currency == null ? null : String(row.reported_currency),
   };
 }
 
@@ -163,11 +205,14 @@ export async function storeEvent(
   const inserted = await db.execute(sql`
     INSERT INTO shop_payment_events
       (id, provider_event_id, intent_id, type, provider,
-       intent_status, refund_status, provider_refund_id, payload, received_at)
+       intent_status, refund_status, provider_refund_id, payload, received_at,
+       reported_amount, reported_currency)
     VALUES (${mintPaymentEventId(now)}, ${event.providerEventId}, ${intent?.id ?? null},
             ${event.type}, ${providerName},
             ${event.intentStatus}, ${event.refundStatus}, ${event.providerRefundId},
-            ${JSON.stringify(event.payload)}::jsonb, ${now})
+            ${JSON.stringify(event.payload)}::jsonb, ${now},
+            ${Number.isSafeInteger(event.amount) ? event.amount : null}::bigint,
+            ${event.currency || null}::text)
     ON CONFLICT (provider_event_id) DO NOTHING
     RETURNING id`);
 
@@ -416,6 +461,21 @@ export async function processEvent(
 
   if (intentStatus !== null) {
     const next = intentStatus;
+
+    /*
+     * MONEY THAT MOVED IS CHECKED AGAINST WHAT WAS CHARGED (1140) before
+     * anything is completed or recorded. A short or wrong-currency payment is
+     * acknowledged with its anomaly and changes nothing else.
+     */
+    if ((next === 'captured' || next === 'authorized') && row.intentId) {
+      const intent = await getIntent(db, row.intentId);
+      const verdict = intent ? chargeVerdict(intent, row.reportedAmount, row.reportedCurrency) : null;
+      if (verdict) {
+        // eslint-disable-next-line no-console -- a payment that does not count is an operator's to reconcile
+        console.error('[payments] refused a capture', JSON.stringify({ intentId: row.intentId, verdict }));
+        return ignore(db, rowId, verdict, now);
+      }
+    }
 
     /*
      * COMPLETE THE CHECKOUT FIRST, CAPTURE SECOND (admin#27) — AND ONLY FOR AN

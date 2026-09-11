@@ -9,6 +9,7 @@ import type { PaymentsCheckoutPort } from './checkout';
 import type { ProviderName } from './schema';
 import type { PaymentProvider } from './provider/types';
 import type { PaymentStatus } from '../../../shared/commerce/ports';
+import type { ChargeBreakdown } from '../../../shared/commerce/fx';
 import type { CommerceEventType } from '../../../shared/commerce/events';
 
 /**
@@ -69,6 +70,35 @@ export interface PaymentIntentRow {
   updatedAt: number;
   lastError: string | null;
   revision: number;
+  /**
+   * WHAT THE GATEWAY WAS ASKED FOR (migration 1140). `amount`/`currency` above
+   * stay the naira grand total — the order's authoritative figure — and these
+   * say what was actually charged: the same naira for a naira payment, or the
+   * converted sum of `chargeBreakdown`'s components for any other. NULL on
+   * every intent created before 1140; read through `chargedOf`.
+   */
+  chargeCurrency: string | null;
+  chargeAmountMinor: number | null;
+  /** Refunded so far, in the CHARGED currency. `refundedTotal` is its naira twin. */
+  chargeRefundedMinor: number;
+  /** The published revision the charge was converted at. */
+  ratesRevision: number | null;
+  /** The country the storefront said the shopper is in. */
+  country: string | null;
+  /** The component breakdown, multipliers included. NULL for a naira charge. */
+  chargeBreakdown: ChargeBreakdown | null;
+}
+
+/** What was charged: the charge columns, or — before 1140 — the naira total. */
+export function chargedOf(intent: PaymentIntentRow): { amount: number; currency: string } {
+  return intent.chargeCurrency !== null && intent.chargeAmountMinor !== null
+    ? { amount: intent.chargeAmountMinor, currency: intent.chargeCurrency }
+    : { amount: intent.amount, currency: intent.currency };
+}
+
+function jsonOrNull<T>(value: unknown): T | null {
+  if (value == null) return null;
+  return (typeof value === 'string' ? JSON.parse(value) : value) as T;
 }
 
 export function mapIntentRow(row: Record<string, unknown>): PaymentIntentRow {
@@ -88,18 +118,31 @@ export function mapIntentRow(row: Record<string, unknown>): PaymentIntentRow {
     updatedAt: toEpochMs(row.updated_at),
     lastError: row.last_error == null ? null : String(row.last_error),
     revision: Number(row.revision),
+    chargeCurrency: row.charge_currency == null ? null : String(row.charge_currency),
+    chargeAmountMinor: row.charge_amount_minor == null ? null : Number(row.charge_amount_minor),
+    chargeRefundedMinor: Number(row.charge_refunded_minor ?? 0),
+    ratesRevision: row.rates_revision == null ? null : Number(row.rates_revision),
+    country: row.country == null ? null : String(row.country),
+    chargeBreakdown: jsonOrNull<ChargeBreakdown>(row.charge_breakdown),
   };
 }
 
 const INTENT_COLUMNS = sql`id, checkout_id, provider_intent_id, amount, currency, status,
   provider, provider_charge_id, idempotency_key, authorization_url, refunded_total,
-  created_at, updated_at, last_error, revision`;
+  created_at, updated_at, last_error, revision, charge_currency, charge_amount_minor,
+  charge_refunded_minor, rates_revision, country, charge_breakdown`;
 
 /**
  * What an idempotency key is a key FOR.
  *
- * `checkoutId`, `amount` and `currency` — the money-relevant facts, and nothing
- * else. The email is deliberately excluded: it decides where a receipt goes,
+ * `checkoutId` and the CHARGED `amount` and `currency` — the money-relevant
+ * facts, and nothing else. Charged, not naira (1140): the same checkout
+ * charged in cedis and then in naira is two different requests, and a key
+ * reused across them must be refused, not answered with the other link. For a
+ * naira charge the two are the same figure, so every pre-1140 key still
+ * fingerprints exactly as it did.
+ *
+ * The email is deliberately excluded: it decides where a receipt goes,
  * not what is charged, and including it would make a retry that normalised the
  * address differently (a trimmed space, a lower-cased domain) fail as key
  * reuse — turning a recoverable timeout into a permanent 400 on a charge that
@@ -169,6 +212,21 @@ export interface CreateIntentInput {
    */
   idempotencyKey: string;
   callbackUrl?: string;
+  /**
+   * WHAT TO CHARGE, when it is not the naira total (1140). Built by the route
+   * from `chargeBreakdown` over the SAME frozen totals; absent means charge
+   * the naira grand total exactly as before. Never from the request body —
+   * the route derives it, and nothing a client sends is an amount.
+   */
+  charge?: ChargeSpec;
+}
+
+export interface ChargeSpec {
+  currency: string;
+  amount: number;
+  ratesRevision: number | null;
+  country: string | null;
+  breakdown: ChargeBreakdown | null;
 }
 
 export interface CreateIntentResult {
@@ -286,8 +344,25 @@ export async function createIntent(
     );
   });
 
+  /*
+   * 1c. WHAT THE GATEWAY WILL BE ASKED FOR. The naira total unless the route
+   *     derived a conversion — and a conversion must have come from THESE
+   *     totals: a breakdown built over a different grand total is refused
+   *     rather than charged.
+   */
+  const charge: ChargeSpec = input.charge ?? {
+    currency,
+    amount,
+    ratesRevision: null,
+    country: null,
+    breakdown: null,
+  };
+  if (charge.breakdown && charge.breakdown.ngnTotal !== amount) {
+    throw new Error('charge breakdown was built over a different total');
+  }
+
   const id = mintIntentId(now);
-  const fp = fingerprint(input.checkoutId, amount, currency);
+  const fp = fingerprint(input.checkoutId, charge.amount, charge.currency);
 
   // 2. CLAIM THE KEY. The insert is the claim; a loser gets zero rows back.
   //
@@ -300,10 +375,14 @@ export async function createIntent(
   const inserted = await db.execute(sql`
     INSERT INTO shop_payment_intents
       (id, checkout_id, amount, currency, status, provider, idempotency_key,
-       request_fingerprint, refunded_total, created_at, updated_at, revision)
+       request_fingerprint, refunded_total, created_at, updated_at, revision,
+       charge_currency, charge_amount_minor, rates_revision, country, charge_breakdown)
     VALUES (${id}, ${input.checkoutId}, ${amount}, ${currency},
             'requires_payment', ${providerName}, ${input.idempotencyKey}, ${fp}, 0,
-            ${now}, ${now}, 1)
+            ${now}, ${now}, 1,
+            ${charge.currency}, ${charge.amount}, ${charge.ratesRevision}::int,
+            ${charge.country}::text,
+            ${charge.breakdown === null ? null : JSON.stringify(charge.breakdown)}::jsonb)
     ON CONFLICT (idempotency_key) DO NOTHING
     RETURNING ${INTENT_COLUMNS}`);
 
@@ -405,10 +484,13 @@ async function attachProvider(
   const reference = providerReferenceFor(intent.id);
   let providerIntent;
   try {
+    /* THE CHARGED FIGURE, never the naira total for a converted payment —
+       `chargedOf` falls back to the naira total only for a pre-1140 row. */
+    const charged = chargedOf(intent);
     providerIntent = await provider.createIntent({
       reference,
-      amount: intent.amount,
-      currency: intent.currency,
+      amount: charged.amount,
+      currency: charged.currency,
       email: input.email,
       callbackUrl: input.callbackUrl,
       metadata: { intentId: intent.id, checkoutId: intent.checkoutId },
@@ -655,7 +737,8 @@ export async function applyIntentStatus(
        WHERE id = ${args.intentId}
          AND EXISTS (SELECT 1 FROM claimed)
          AND shop_payment_status_rank(status) < shop_payment_status_rank(${args.next})
-      RETURNING id, checkout_id, amount, currency
+      RETURNING id, checkout_id, amount, currency, charge_currency, charge_amount_minor,
+                rates_revision, country, charge_breakdown
     ),
     emitted AS (
       INSERT INTO commerce_events (id, type, subject_id, payload, occurred_at, attempts)
@@ -666,7 +749,19 @@ export async function applyIntentStatus(
                'amount', m.amount,
                'currency', m.currency,
                'occurredAt', ${now}::bigint
-             ) || CASE WHEN ${eventType}::text = 'payment.failed'
+             )
+             -- WHAT WAS CHARGED rides with the naira figure (1140), so Orders
+             -- can show it without reading Payments' tables. Absent for a
+             -- pre-1140 intent; every consumer parses this payload with
+             -- passthrough, so the new key parks nothing.
+             || CASE WHEN m.charge_currency IS NULL THEN '{}'::jsonb
+                     ELSE jsonb_build_object('charge', jsonb_build_object(
+                       'currency', m.charge_currency,
+                       'amount', m.charge_amount_minor,
+                       'ratesRevision', m.rates_revision,
+                       'country', m.country,
+                       'breakdown', m.charge_breakdown)) END
+             || CASE WHEN ${eventType}::text = 'payment.failed'
                        THEN jsonb_build_object('reason', COALESCE(${args.failureReason}, 'unknown'))
                        ELSE '{}'::jsonb END,
              ${now}, 0

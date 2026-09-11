@@ -23,7 +23,6 @@ import type { ShopEnv } from '../shop-env';
 import type { Context } from 'hono';
 import type { Db } from '../../../db/client';
 import type { AddOnOffer } from '../../../../shared/commerce/add-ons';
-import { catalogIn, contextFor, pricingContext } from '../../currency/pricing';
 
 /**
  * The cart surface (brief §6).
@@ -56,35 +55,14 @@ export function cartRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
    * strand the first basket — the shopper would watch their items vanish with no
    * explanation, which is the worst version of every failure in this brief.
    */
-  /*
-   * THE CURRENCY IS CHOSEN HERE AND NOWHERE ELSE (multi-currency spec). A cart
-   * is one currency for its whole life; switching means a new cart:
-   *   - no `currency`, or the cart's own     → adopt, as before
-   *   - another currency, existing cart EMPTY → silently replaced
-   *   - another currency, cart has lines      → 409 `currency_locked`, unless
-   *     `replace: true` — the shopper said yes to losing the basket
-   * An unavailable currency is a 400 before anything is written.
-   */
   routes.post('/cart', async (c) => {
     const db = shopDb(c);
-    const body = await readJsonOrEmpty(c, CreateCartBody);
-    const wanted = body.currency
-      ? (await pricingContext(db, body.currency)).currency
-      : null;
     const existing = await currentCart(c, db);
-    if (existing && (wanted === null || wanted === existing.currency)) {
-      return c.json(await view(c, db, deps, existing));
-    }
-    if (existing && !body.replace && (await listLines(db, existing.id)).length > 0) {
-      return c.json(
-        { error: 'currency_locked', detail: 'currency_locked', currency: existing.currency },
-        409,
-      );
-    }
+    if (existing) return c.json(await view(c, db, deps, existing));
 
     await shopLimit(c, `shop-cart-new:${shopClientIp(c)}`, CART_CREATE_LIMIT, CART_CREATE_WINDOW_MS);
     const cart = await createCart(db, {
-      currency: wanted ?? deps.storeCurrency,
+      currency: deps.storeCurrency,
       customerId: currentCustomer(c)?.id ?? null,
     });
     setCartCookie(c, cart.id, cart.expiresAt);
@@ -401,11 +379,8 @@ async function view(
   }
 
   const lines = await listLines(db, current.id);
-  /* Priced in the cart's own currency — the one conversion, see
-     `currency/pricing.ts`. Identity for a naira cart. */
-  const catalog = catalogIn(deps.catalog, await contextFor(db, current.currency, deps.storeCurrency));
   const quoted = await Promise.all(
-    lines.map(async (line) => ({ line, quote: await catalog.quote(db, line.variantId) })),
+    lines.map(async (line) => ({ line, quote: await deps.catalog.quote(db, line.variantId) })),
   );
 
   const lineInputs = quoted.map(({ line, quote }) => ({
@@ -535,10 +510,3 @@ const SetQtyBody = z
   .strict();
 
 const BaseOnlyBody = z.object({ baseRevision: Base }).strict();
-
-const CreateCartBody = z
-  .object({
-    currency: str().regex(/^[A-Za-z]{3}$/).optional(),
-    replace: z.boolean().optional(),
-  })
-  .strict();

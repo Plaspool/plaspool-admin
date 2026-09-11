@@ -304,24 +304,11 @@ export const shopVariants = pgTable(
      * compile error, not a silent leak. NULL means "never told what it costs".
      */
     costMinor: integer('cost_minor'),
-    /**
-     * The dollar price for this variant (migration 0860). MINOR UNITS — CENTS,
-     * integer. `4999` is $49.99.
-     *
-     * NULL MEANS DERIVE IT, not "unavailable" and not "free". The dollar price
-     * a shopper normally sees is the naira price converted at
-     * `shop_currency_settings.ngnPerUsdMinor` and rounded up; this column is
-     * the per-variant OVERRIDE, so setting it departs from the rate and
-     * clearing it rejoins. That pairing is the owner's instruction: a derived
-     * default everywhere, overridable anywhere.
-     *
-     * ON THE VARIANT RATHER THAN IN `shop_prices`, which is the reverse of what
-     * 0400 argues for a price that charges. The migration header has the whole
-     * argument; the short version is that `shop_prices_current_uq` is unique on
-     * `variant_id` alone and eleven reads join on it, so a second current row
-     * would double catalogue rows rather than fail loudly.
+    /*
+     * `price_usd_minor` (0860) is gone (1140): prices are naira only, and a
+     * variant's other-currency figure is a MULTIPLIER in
+     * `shop_variant_multipliers`, never a stored amount.
      */
-    priceUsdMinor: integer('price_usd_minor'),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
     updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
   },
@@ -340,10 +327,6 @@ export const shopVariants = pgTable(
       sql`${t.compareAtMinor} IS NULL OR ${t.compareAtMinor} >= 0`,
     ),
     check('shop_variants_cost_ck', sql`${t.costMinor} IS NULL OR ${t.costMinor} >= 0`),
-    check(
-      'shop_variants_price_usd_minor_ck',
-      sql`${t.priceUsdMinor} IS NULL OR ${t.priceUsdMinor} >= 0`,
-    ),
     index('shop_variants_product_idx').on(t.productId, t.position),
     /** Partial: the reference walk and the public check both scan it, and a
      *  variant with no image answers neither question. */

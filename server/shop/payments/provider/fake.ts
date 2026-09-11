@@ -94,10 +94,20 @@ export class FakeProvider implements PaymentProvider {
     return this.calls.filter((c) => c.op === op).length;
   }
 
-  /** Move a charge, as a customer completing (or failing) a payment would. */
-  settle(reference: string, status: ProviderIntentStatus): void {
+  /**
+   * Move a charge, as a customer completing (or failing) a payment would.
+   *
+   * `paid` overrides what the gateway will then VERIFY was paid — an
+   * underpayment, or the wrong currency — so the charge check (1140) can be
+   * driven through `fetchIntent` exactly as a real verification reaches it.
+   */
+  settle(
+    reference: string,
+    status: ProviderIntentStatus,
+    paid?: { amount?: number; currency?: string },
+  ): void {
     const intent = this.#intents.get(reference);
-    if (intent) this.#intents.set(reference, { ...intent, status });
+    if (intent) this.#intents.set(reference, { ...intent, status, ...paid });
   }
 
   #gate(op: string): void {

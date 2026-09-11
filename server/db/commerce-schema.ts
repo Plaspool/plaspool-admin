@@ -160,6 +160,15 @@ export const shopOrders = pgTable(
      * than a state.
      */
     paymentIntentId: text('payment_intent_id'),
+    /**
+     * WHAT WAS CHARGED (migration 1140), copied from `payment.captured` in the
+     * same statement as the paid transition. The naira totals above stay
+     * authoritative. The pair is both-null or both-set (a CHECK); `charge`
+     * holds `{ ratesRevision, country, breakdown }` as evidence.
+     */
+    chargeCurrency: text('charge_currency'),
+    chargeAmountMinor: integer('charge_amount_minor'),
+    charge: jsonb('charge'),
   },
   (t) => [
     uniqueIndex('shop_orders_order_number_uq').on(t.orderNumber),
@@ -173,6 +182,8 @@ export const shopOrders = pgTable(
     check('shop_orders_revision_ck', sql`${t.revision} > 0`),
     check('shop_orders_refunded_ck', sql`${t.refundedTotal} >= 0`),
     check('shop_orders_email_ck', sql`length(${t.email}) > 0`),
+    check('shop_orders_charge_ccy_ck', sql`${t.chargeCurrency} IS NULL OR ${t.chargeCurrency} ~ '^[A-Z]{3}$'`),
+    check('shop_orders_charge_pair_ck', sql`(${t.chargeCurrency} IS NULL) = (${t.chargeAmountMinor} IS NULL)`),
     index('shop_orders_customer_idx').on(t.customerId, t.placedAt.desc(), t.id),
     index('shop_orders_status_idx').on(t.status, t.placedAt.desc(), t.id),
   ],
