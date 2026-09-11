@@ -30,6 +30,33 @@ import type { PaymentProvider } from './provider/types';
 /** Deterministic. Never "whichever key came first". */
 export const PROVIDER_FALLBACK_ORDER: readonly ProviderName[] = ['paystack', 'flutterwave'];
 
+/**
+ * THE INTERSECTION RULE, PURE: every currency SOME gateway can charge — switched
+ * on for it in `shop_payment_settings` AND inside its adapter's ceiling
+ * (`capabilities.currencies`, read credential-free through
+ * `providerCeilings()`). No provider is constructed and no key is consulted,
+ * so the public currency config can ask this on every request.
+ *
+ * It answers "could a payment in this currency be routed at all", which is
+ * what decides whether a currency is OFFERED. `chooseProvider` below still
+ * makes the per-payment decision, and still degrades past a gateway whose
+ * factory throws.
+ */
+export function gatewayCurrencies(
+  switchedOn: Readonly<Record<ProviderName, readonly string[]>>,
+  ceilings: Readonly<Record<ProviderName, readonly string[]>>,
+): Set<string> {
+  const out = new Set<string>();
+  for (const name of PROVIDER_FALLBACK_ORDER) {
+    const ceiling = new Set(ceilings[name].map((c) => c.toUpperCase()));
+    for (const code of switchedOn[name]) {
+      const upper = code.toUpperCase();
+      if (ceiling.has(upper)) out.add(upper);
+    }
+  }
+  return out;
+}
+
 export interface ProviderFactories {
   paystack: () => PaymentProvider;
   flutterwave: () => PaymentProvider;

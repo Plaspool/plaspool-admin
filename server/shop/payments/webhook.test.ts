@@ -469,6 +469,7 @@ describe('the public projection', () => {
     expect(Object.keys(body).sort()).toEqual([
       'amount',
       'authorizationUrl',
+      'charged', // what the gateway will ask for (1140) — public by design
       'checkoutId',
       'currency',
       'id',

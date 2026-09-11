@@ -44,6 +44,7 @@ import { StatusPicker, type StatusOption } from '../ui/StatusPicker';
 import { TagInput } from '../ui/TagInput';
 import { Timeline, type TimelineEvent } from '../ui/Timeline';
 import { useToast } from '../ui/Toast';
+import { VariantMultipliers } from './VariantMultipliers';
 
 /**
  * PRODUCT DETAIL — `/products/:id`, and `/products/new` for creation.
@@ -1797,6 +1798,10 @@ function VariantModal({
             </div>
           </div>
         </div>
+
+        {/* A variant's own rate in another currency needs the variant's id,
+            so it is offered once the variant exists — never while adding. */}
+        {creating ? null : <VariantMultipliers variantId={variant.id} />}
 
         {productImages.length > 0 ? (
           <div className="stack stack--tight">

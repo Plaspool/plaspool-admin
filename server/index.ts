@@ -33,6 +33,7 @@ import { createDeliveryConfigRoutes } from './shop/settings/public';
 import { createPaymentRoutes, createWebhookRoutes } from './shop/payments/routes';
 import { createLogisticsWebhookRoutes } from './shop/logistics/webhooks';
 import { syncCourierStatuses } from './shop/logistics/sync';
+import { refreshFeedRates } from './shop/currency/feed';
 import { resolveLogisticsDeps } from './shop/logistics/deps';
 import { checkoutPort } from './shop/cart/port';
 import { drainCommerceEvents } from './shop/orders/repo/consumer';
@@ -338,6 +339,13 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
      * existed then.
      */
     syncCouriers: (db, now) => syncCourierStatuses(db, resolveLogisticsDeps(), now),
+    /*
+     * THE DAILY EXCHANGE RATES, refreshed by the same sweep (1160) — the
+     * external ten-minute cron is the schedule, so no third Vercel cron is
+     * needed (Hobby allows two, both taken). Due-gated inside: a feed is asked
+     * only when a switched-on currency's daily rate is twelve hours old.
+     */
+    refreshRates: (db, now) => refreshFeedRates(db, { now }),
   });
 
   /*

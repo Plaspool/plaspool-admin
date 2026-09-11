@@ -484,6 +484,27 @@
                         "when":  1786600005750,
                         "tag":  "1110_manual_orders",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  69,
+                        "version":  "7",
+                        "when":  1786600005760,
+                        "tag":  "1120_multi_currency",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  70,
+                        "version":  "7",
+                        "when":  1786600005780,
+                        "tag":  "1140_fx_multipliers",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  71,
+                        "version":  "7",
+                        "when":  1786600005800,
+                        "tag":  "1160_fx_feed_margin",
+                        "breakpoints":  true
                     }
                 ]
 }

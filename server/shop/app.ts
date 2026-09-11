@@ -27,6 +27,7 @@ import { cartShopRoutes } from './cart/routes';
 import { resolveShopCustomer } from './cart/identity/customers';
 import { SHOP_CURRENCY } from './currency';
 import { shopAdminRoutes } from './admin/routes';
+import { currencyAdminRoutes } from './currency/routes';
 import { shippingZoneRoutes } from './cart/checkout/shipping-zones-routes';
 import { deliverySettingsRoutes } from './settings/routes';
 import { logisticsRoutes } from './logistics/routes';
@@ -432,6 +433,11 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
      not `settings`: whether a packer's own phone buzzes is not an owner-only
      decision. See `server/middleware/permissions.ts`. */
   shop.route('/', pushRoutes);
+  /* The published currency multipliers' admin half (migration 1140): the
+     currency screen under the `payments` prefix and a variant's own multiplier
+     under `products`, each in the permission domain of what it changes. Its
+     public half is `/public/shop/currency-config` in `settings/public.ts`. */
+  shop.route('/', currencyAdminRoutes());
 
   /*
    * THE DASHBOARD'S READ SURFACE — `/admin/stats`, `/admin/customers`,

@@ -110,8 +110,35 @@ interface PaymentEventBase extends AmountFields {
  */
 export type PaymentAuthorizedPayload = PaymentEventBase;
 
-/** The money has been taken. This is the one Orders acts on. */
-export type PaymentCapturedPayload = PaymentEventBase;
+/**
+ * WHAT THE GATEWAY WAS ASKED FOR (migration 1140). `amount`/`currency` on the
+ * event stay the naira grand total — the order's authoritative figure — and
+ * this says what was actually charged. For a naira payment `currency` is NGN,
+ * `amount` equals the naira total and `breakdown` is null.
+ *
+ * `breakdown` IS EVIDENCE, NOT A CONTRACT: it is `ChargeBreakdown`
+ * (`shared/commerce/fx.ts`) when Payments wrote it, but Orders only stores and
+ * shows it, so it is typed as an opaque object here rather than re-validated
+ * component by component.
+ */
+export interface PaymentCharge {
+  currency: string;
+  /** Minor units OF `currency` — per its own exponent, never assumed /100. */
+  amount: number;
+  ratesRevision: number | null;
+  country: string | null;
+  breakdown: Record<string, unknown> | null;
+}
+
+/**
+ * The money has been taken. This is the one Orders acts on.
+ *
+ * `charge` is OPTIONAL: every intent created before migration 1140 emits no
+ * such key, and those events are still in the outbox.
+ */
+export interface PaymentCapturedPayload extends PaymentEventBase {
+  charge?: PaymentCharge;
+}
 
 export interface PaymentFailedPayload extends PaymentEventBase {
   /**
