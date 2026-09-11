@@ -477,6 +477,13 @@
                         "when":  1786600005740,
                         "tag":  "1100_payment_providers",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  68,
+                        "version":  "7",
+                        "when":  1786600005760,
+                        "tag":  "1120_multi_currency",
+                        "breakpoints":  true
                     }
                 ]
 }

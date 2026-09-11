@@ -22,6 +22,8 @@ import {
 import { listProducts } from './query';
 import { listTiers, replaceTiers, resolveTiers, resolveTiersFor } from './bulk-tiers';
 import { toStorefrontProduct, toStorefrontVariant } from './mapping';
+import { contextFor, variantIn } from '../currency/pricing';
+import { SHOP_CURRENCY } from '../currency';
 import {
   createVariant,
   deleteVariant,
@@ -195,12 +197,18 @@ const ListQueryParams = z
     /** `pageLimit` decides the range and answers 400 itself; this only makes a
      *  non-numeric `?limit=abc` a 400 here rather than a NaN there. */
     limit: z.coerce.number().int().optional(),
+    /** Price the variants in this currency (multi-currency spec). */
+    currency: str().regex(/^[A-Za-z]{3}$/).optional(),
   })
   /*
    * STRICT, LIKE THE BODIES. A mistyped filter that is silently ignored is worse
    * than a refusal: `?categoryy=mugs` would quietly return the whole catalogue
    * and look like a bug in the storefront.
    */
+  .strict();
+
+const DetailQueryParams = z
+  .object({ currency: str().regex(/^[A-Za-z]{3}$/).optional() })
   .strict();
 
 const AdminListQueryParams = ListQueryParams.extend({
@@ -368,7 +376,10 @@ const AdjustBody = z
  */
 routes.get('/products', async (c) => {
   const db = currentDb(c);
-  const q = readQuery(c, ListQueryParams);
+  const { currency, ...q } = readQuery(c, ListQueryParams);
+  /* `?currency=GHS` prices every variant in cedis; an unavailable one is a
+     400 (`CurrencyUnavailableError`) before the catalogue is read. */
+  const ctx = await contextFor(db, currency ?? SHOP_CURRENCY, SHOP_CURRENCY);
   const page = await listProducts(db, q);
   const ids = page.items.map((p) => p.id);
   /* Both fan-outs in ONE statement each, not one per card: a fifty-product
@@ -385,7 +396,7 @@ routes.get('/products', async (c) => {
       /* `?? []` and not the map's absence: a JSON response cannot have a
          `Map#get` miss, and a product with no variants is a real state that
          reads as an empty list on the wire. */
-      variants: (variants.get(p.id) ?? []).map(toStorefrontVariant),
+      variants: (variants.get(p.id) ?? []).map((v) => toStorefrontVariant(variantIn(v, ctx))),
     })),
   });
 });
@@ -400,6 +411,8 @@ routes.get('/products', async (c) => {
 routes.get('/products/:slug', async (c) => {
   const db = currentDb(c);
   const slug = pathParam(c, 'slug');
+  const { currency } = readQuery(c, DetailQueryParams);
+  const ctx = await contextFor(db, currency ?? SHOP_CURRENCY, SHOP_CURRENCY);
   const product = await getActiveProductBySlug(db, slug);
   if (!product) throw new NotFoundError(slug);
   const [variants, bulkTiers] = await Promise.all([
@@ -409,7 +422,7 @@ routes.get('/products/:slug', async (c) => {
   return c.json({
     product: {
       ...toStorefrontProduct(product, { bulkTiers }),
-      variants: variants.map(toStorefrontVariant),
+      variants: variants.map((v) => toStorefrontVariant(variantIn(v, ctx))),
     },
   });
 });

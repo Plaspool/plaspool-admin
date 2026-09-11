@@ -89,6 +89,13 @@ export interface CheckoutConfig {
   rules?: DeliveryRules;
   storeCurrency: string;
   /**
+   * A store-currency amount read from the database mid-checkout — today only
+   * a district's flat rate — in the CART's currency. Set by `configIn` for a
+   * non-naira cart; absent means the cart is in the store currency and the
+   * amount is used as it is.
+   */
+  fromStore?: (storeMinor: number) => number;
+  /**
    * SpoolPoints, if this deployment wired them (admin#2). See
    * `ShopCartDeps.redemption` for why it is a factory rather than a port, and
    * `freezeCheckout` for what it does with it. Absent is the ordinary case and
@@ -548,7 +555,9 @@ async function districtRuling(
    * available. Null check FIRST, cast second, exactly as `delivery-areas-repo`
    * does. */
   const raw = row.rate_minor;
-  return { refused: false, rateMinor: raw == null ? null : Number(raw) };
+  if (raw == null) return { refused: false, rateMinor: null };
+  const rate = Number(raw);
+  return { refused: false, rateMinor: config.fromStore ? config.fromStore(rate) : rate };
 }
 
 /**
@@ -1070,7 +1079,11 @@ async function priceCart(
      number move after the shopper had agreed to it, which is the exact drift
      `putAddresses` stores the zone to avoid. */
   const storedOptionId = cart.shippingOptionId;
-  const courierMinor = storedOptionId ? amountFromCourierOptionId(storedOptionId) : null;
+  /* A courier id carries a NAIRA amount. A non-naira cart (`fromStore` set) is
+     never offered one, so a courier id here reads as no option rather than a
+     naira number wearing the cart's currency label. */
+  const courierMinor =
+    storedOptionId && !config.fromStore ? amountFromCourierOptionId(storedOptionId) : null;
   let chosen: ShippingQuote | null = null;
   if (storedOptionId && courierMinor != null) {
     chosen = {

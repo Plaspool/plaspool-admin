@@ -5,6 +5,7 @@ import { exportCountries } from '../logistics/exports';
 import { activeCourier } from '../logistics/repo';
 import { deliveryConfigFor } from './config';
 import { DEFAULT_DELIVERY_SETTINGS, getDeliverySettings } from './repo';
+import { offeredCurrencies } from '../currency/pricing';
 import type { AppEnv } from '../../app-env';
 
 /**
@@ -114,6 +115,23 @@ export function createDeliveryConfigRoutes(): Hono<AppEnv> {
     c.header('cache-control', CACHE);
     c.header(CORS_HEADER, CORS_VALUE);
     return c.json({ config: deliveryConfigFor(settings, courier, reach) });
+  });
+
+  /**
+   * WHICH CURRENCIES A SHOPPER MAY PAY IN — switched on AND carrying a fresh
+   * rate (multi-currency spec). Same mount, same cookieless cache, same
+   * simple-request rule as the delivery config above. NEVER 500s: a missing
+   * table or row answers naira only, which is the shop as it was.
+   */
+  routes.get('/public/shop/currency-config', async (c) => {
+    const s = await offeredCurrencies(currentDb(c)).catch(() => null);
+    c.header('cache-control', CACHE);
+    c.header(CORS_HEADER, CORS_VALUE);
+    return c.json({
+      config: s
+        ? { currencies: s.offered, default: s.storeCurrency, revision: s.revision }
+        : { currencies: ['NGN'], default: 'NGN', revision: 0 },
+    });
   });
 
   /**

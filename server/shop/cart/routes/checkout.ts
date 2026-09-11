@@ -25,6 +25,7 @@ import { runCartMaintenance } from '../events/consumer';
 import { assertCronRequest } from '../cron-auth';
 import { cartCookie } from '../identity/cookies';
 import { CHECKOUT_START_LIMIT, CHECKOUT_START_WINDOW_MS } from '../limits';
+import { catalogIn, configIn, contextFor } from '../../currency/pricing';
 import type { CheckoutConfig, PricingRefusal } from '../checkout/repo';
 import type { ShopCartDeps } from './deps';
 import { shopDb, shopLimit } from '../shop-env';
@@ -92,6 +93,26 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     };
   }
 
+  /**
+   * The config, the catalogue and the courier, all in the CART's currency.
+   * For a naira cart this is exactly `loadConfig` + `deps.catalog`. For any
+   * other, prices and delivery rates are converted once here and the courier
+   * is left out (`courier: undefined`) — its quote is naira, see `configIn`.
+   * An unavailable currency throws `CurrencyUnavailableError`, a 400.
+   */
+  async function forCart(db: Db, currency: string) {
+    const [base, ctx] = await Promise.all([
+      loadConfig(db),
+      contextFor(db, currency, deps.storeCurrency),
+    ]);
+    const foreign = ctx.currency !== ctx.storeCurrency;
+    return {
+      config: configIn(base, ctx),
+      catalog: catalogIn(deps.catalog, ctx),
+      courier: foreign ? undefined : deps.catalog,
+    };
+  }
+
   /** Reserve stock. Freezes nothing. */
   routes.post('/checkout/start', async (c) => {
     const db = shopDb(c);
@@ -150,7 +171,7 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     const db = shopDb(c);
     const body = await readJson(c, AddressesBody);
     const cart = await requireCart(c, db);
-    const config = await loadConfig(db);
+    const { config, courier } = await forCart(db, cart.currency);
     const { zone } = await putAddresses(db, config, {
       cartId: cart.id,
       shipping: body.shipping,
@@ -160,15 +181,15 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     /* `refusal` RIDES BESIDE THE OPTIONS AND NEVER REPLACES A 4xx. The address
        itself was accepted; it is the DELIVERY that cannot be arranged, and a
        storefront needs to keep the address on screen while it says so. */
-    const offer = await shippingOffer(db, config, cart.id, deps.catalog);
+    const offer = await shippingOffer(db, config, cart.id, courier);
     return c.json({ zone, options: offer.options, refusal: offer.refusal });
   });
 
   routes.get('/checkout/shipping-options', async (c) => {
     const db = shopDb(c);
     const cart = await requireCart(c, db);
-    const config = await loadConfig(db);
-    const offer = await shippingOffer(db, config, cart.id, deps.catalog);
+    const { config, courier } = await forCart(db, cart.currency);
+    const offer = await shippingOffer(db, config, cart.id, courier);
     return c.json({ options: offer.options, refusal: offer.refusal });
   });
 
@@ -176,12 +197,12 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     const db = shopDb(c);
     const body = await readJson(c, ShippingBody);
     const cart = await requireCart(c, db);
-    const config = await loadConfig(db);
+    const { config, courier } = await forCart(db, cart.currency);
     const option = await setShipping(
       db,
       config,
       { cartId: cart.id, optionId: body.optionId, baseRevision: body.baseRevision },
-      deps.catalog,
+      courier,
     );
     return c.json({ shipping: option });
   });
@@ -260,9 +281,9 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     const db = shopDb(c);
     const body = await readJsonOrEmpty(c, FreezeBody);
     const cart = await requireCart(c, db);
-    const config = await loadConfig(db);
+    const { config, catalog } = await forCart(db, cart.currency);
 
-    const result = await freezeCheckout(db, deps.catalog, config, {
+    const result = await freezeCheckout(db, catalog, config, {
       cartId: cart.id,
       baseRevision: body.baseRevision,
       redeemPoints: body.redeemPoints,
@@ -299,9 +320,9 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     const db = shopDb(c);
     const body = await readJsonOrEmpty(c, PreviewBody);
     const cart = await requireCart(c, db);
-    const config = await loadConfig(db);
+    const { config, catalog } = await forCart(db, cart.currency);
 
-    const result = await previewCheckout(db, deps.catalog, config, {
+    const result = await previewCheckout(db, catalog, config, {
       cartId: cart.id,
       redeemPoints: body.redeemPoints,
     });
@@ -378,8 +399,8 @@ export function checkoutRoutes(deps: ShopCartDeps): Hono<ShopEnv> {
     const addOnId = pathParam(c, 'addOnId');
     const body = await readJson(c, AddOnChoiceBody);
     const cart = await requireCart(c, db);
-    const config = await loadConfig(db);
-    const result = await setAddOnChoice(db, deps.catalog, config, {
+    const { config, catalog } = await forCart(db, cart.currency);
+    const result = await setAddOnChoice(db, catalog, config, {
       cartId: cart.id,
       addOnId,
       choice: body.choice,

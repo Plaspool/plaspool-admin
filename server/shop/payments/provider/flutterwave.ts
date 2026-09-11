@@ -62,6 +62,7 @@
  *   `cancel()` stay `unsupported`: a Flutterwave charge succeeds or fails
  *   outright, with no held authorization to take later.
  */
+import { exponentOf, minorToMajor } from '../../../../shared/commerce/currencies';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { ProviderError } from './scrub';
 import type {
@@ -248,7 +249,7 @@ function str(value: unknown): string | null {
  * did not coincidentally land on a whole hundred naira failed here, before a
  * single network call was made.
  */
-function toMajorUnits(minor: number): number {
+function toMajorUnits(minor: number, currency: string): number {
   if (!Number.isSafeInteger(minor) || minor <= 0) {
     throw new ProviderError({
       code: 'invalid_request',
@@ -256,7 +257,9 @@ function toMajorUnits(minor: number): number {
       operation: 'createIntent',
     });
   }
-  return minor / 100;
+  /* Exponent-aware: UGX/XOF/XAF/RWF have no minor unit, so a flat /100
+     would bill them a hundredth of the price. */
+  return minorToMajor(minor, currency);
 }
 
 /**
@@ -281,10 +284,10 @@ function toMajorUnits(minor: number): number {
  * don't know" for "zero". That guard is correct and stays; only the demand
  * that the multiplied result be bit-exact is gone.
  */
-function toMinorUnits(value: unknown): number | null {
+function toMinorUnits(value: unknown, currency: string): number | null {
   const n = typeof value === 'string' ? Number(value) : value;
   if (typeof n !== 'number' || !Number.isFinite(n)) return null;
-  const minor = Math.round(n * 100);
+  const minor = Math.round(n * 10 ** exponentOf(currency));
   /*
    * THE UPPER BOUND THIS FUNCTION LOST WHEN BIT-EXACTNESS WAS REMOVED,
    * RESTORED — but on the OUTPUT, not the input, which is the distinction
@@ -585,7 +588,7 @@ export class FlutterwaveProvider implements PaymentProvider {
      * the retryable set, so nothing keeps re-asking a response that will
      * never parse differently).
      */
-    const amount = toMinorUnits(data.amount);
+    const amount = toMinorUnits(data.amount, str(data.currency) ?? 'NGN');
     if (amount === null) {
       throw new ProviderError({
         code: 'malformed_response',
@@ -622,7 +625,7 @@ export class FlutterwaveProvider implements PaymentProvider {
      */
     const data = await this.#request('createIntent', 'POST', '/payments', {
       tx_ref: req.reference,
-      amount: toMajorUnits(req.amount),
+      amount: toMajorUnits(req.amount, req.currency),
       currency: req.currency,
       customer: { email: req.email },
       ...(req.callbackUrl ? { redirect_url: req.callbackUrl } : {}),
@@ -728,7 +731,7 @@ export class FlutterwaveProvider implements PaymentProvider {
       'POST',
       `/transactions/${encodeURIComponent(chargeId)}/refund`,
       {
-        amount: toMajorUnits(req.amount),
+        amount: toMajorUnits(req.amount, req.currency),
         ...(req.merchantNote ? { comments: req.merchantNote } : {}),
       },
     );
@@ -747,7 +750,7 @@ export class FlutterwaveProvider implements PaymentProvider {
     return {
       providerRefundId,
       status: mapRefundStatus(str(data.status) ?? ''),
-      amount: toMinorUnits(data.amount_refunded) ?? req.amount,
+      amount: toMinorUnits(data.amount_refunded, req.currency) ?? req.amount,
       currency: str(data.currency) ?? req.currency,
     };
   }
