@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Inbox, ShoppingBag } from 'lucide-react';
-import { shopApi, type OrderStatus, type ShopOrderRow } from '../../data/api-shop';
+import { shopApi, type OrderSource, type OrderStatus, type ShopOrderRow } from '../../data/api-shop';
 import { useAsync } from '../lib/useAsync';
 import { money, orderTone, shortAddress, shortDate } from '../lib/format';
 import { orderStatusLabel } from './manual-order-copy';
@@ -18,6 +18,13 @@ import { DataTable, IdCell, TablePager, type Column } from '../ui/DataTable';
  * puts everything that is not the list behind More actions.
  */
 
+/** The second dimension, beside the status tabs: where the order came from. */
+const SOURCES: { value: OrderSource | 'all'; label: string }[] = [
+  { value: 'all', label: 'All orders' },
+  { value: 'online', label: 'From the shop' },
+  { value: 'manual', label: 'Recorded by hand' },
+];
+
 const TABS: { value: OrderStatus | 'all'; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'pending', label: 'Unpaid' },
@@ -31,6 +38,7 @@ export default function Orders() {
   const [shown, toggle] = useAnalyticsBar('orders');
   const [tab, setTab] = useState<OrderStatus | 'all'>('all');
   const [search, setSearch] = useState('');
+  const [source, setSource] = useState<OrderSource | 'all'>('all');
   /* A stack of cursors rather than a page number, because the endpoint is
      cursor-paged and has no total. The stack is what makes Back work: the
      server gives you the NEXT cursor and never the previous one. */
@@ -42,16 +50,19 @@ export default function Orders() {
       shopApi.listOrders(
         {
           ...(tab === 'all' ? {} : { status: tab }),
+          ...(source === 'all' ? {} : { source }),
           ...(search.trim() ? { search: search.trim() } : {}),
           ...(cursor ? { cursor } : {}),
           limit: 25,
         },
         signal,
       ),
-    [tab, search, cursor],
+    [tab, search, source, cursor],
   );
 
   const rows = data?.items ?? [];
+  /** Anything narrowing the list — what the empty state offers to clear. */
+  const filtered = Boolean(search) || tab !== 'all' || source !== 'all';
 
   const metrics = useMemo<Metric[]>(() => {
     const paid = rows.filter((r) => r.order.paidAt !== null);
@@ -169,24 +180,31 @@ export default function Orders() {
           placeholder: 'Search by order number or email',
           onChange: (next) => resetPaging(() => setSearch(next)),
         }}
+        filter={{
+          label: 'Where the order came from',
+          value: source,
+          options: SOURCES,
+          onChange: (next) => resetPaging(() => setSource(next as OrderSource | 'all')),
+        }}
         empty={
           (
             <EmptyState
-              icon={search || tab !== 'all' ? <Inbox /> : undefined}
-              art={search || tab !== 'all' ? undefined : <ReceiptArt />}
-              title={search || tab !== 'all' ? 'No orders match' : 'Your orders will show here'}
+              icon={filtered ? <Inbox /> : undefined}
+              art={filtered ? undefined : <ReceiptArt />}
+              title={filtered ? 'No orders match' : 'Your orders will show here'}
               body={
-                search || tab !== 'all'
+                filtered
                   ? 'Try a different filter or clear the search.'
                   : 'This is where you send out orders, take payments and follow their progress.'
               }
               actions={
-                search || tab !== 'all' ? (
+                filtered ? (
                   <Button
                     onClick={() =>
                       resetPaging(() => {
                         setSearch('');
                         setTab('all');
+                        setSource('all');
                       })
                     }
                   >

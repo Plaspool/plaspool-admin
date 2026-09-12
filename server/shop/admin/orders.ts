@@ -71,6 +71,8 @@ export interface OrderSearchQuery {
   /** Trimmed by the caller. An empty string must not reach here — see the route. */
   search: string;
   status?: OrderStatus;
+  /** Same filter the unsearched list takes, so the two cannot disagree. */
+  source?: 'online' | 'manual';
   cursor?: string;
   limit?: number;
 }
@@ -117,6 +119,7 @@ export async function searchOrders(db: Db, q: OrderSearchQuery): Promise<OrderPa
 
   const where: SQL[] = [searchScope(term)];
   if (q.status !== undefined) where.push(sql`o.status = ${q.status}`);
+  if (q.source !== undefined) where.push(sql`o.source = ${q.source}`);
 
   if (q.cursor !== undefined) {
     const cursor = requireCursor(q.cursor, SORT_KEY);

@@ -56,6 +56,23 @@ export interface AnalyticsDay extends AnalyticsMoney {
    *  no paid order are ABSENT; a client drawing a calendar fills the gaps. */
   day: string;
   orders: number;
+  /** The hand-recorded PART of this day. The money above stays the whole, so
+   *  the online half is `charged - manual.charged` and never a third bucket. */
+  manual: { charged: number; orders: number };
+}
+
+/** One source over the window. A source that sold nothing is absent. */
+export interface AnalyticsSourceRow extends AnalyticsMoney {
+  source: 'online' | 'manual';
+  orders: number;
+  items: number;
+}
+
+/** Manual sales cut by channel or by payment method; `key` null = not recorded. */
+export interface AnalyticsBreakdownRow {
+  key: string | null;
+  orders: number;
+  charged: number;
 }
 
 export interface AnalyticsStatusRow {
@@ -86,6 +103,10 @@ export interface ShopAnalytics {
   };
   revenueByDay: AnalyticsDay[];
   ordersByStatus: AnalyticsStatusRow[];
+  /** The storefront against sales recorded by hand. Adds up to `totals`. */
+  bySource: AnalyticsSourceRow[];
+  manualByChannel: AnalyticsBreakdownRow[];
+  manualByMethod: AnalyticsBreakdownRow[];
   /** Every seller in the window, best first, capped at 200 server-side. */
   topProducts: AnalyticsProductRow[];
 }

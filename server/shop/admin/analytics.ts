@@ -74,6 +74,33 @@ export interface AnalyticsDay extends AnalyticsMoney {
    * draws the gap, exactly as the old inline chart did. */
   day: string;
   orders: number;
+  /**
+   * The part of this day that was RECORDED BY HAND (migration 1110). The
+   * fields above stay the day's WHOLE, so a chart that ignores this one is
+   * still correct, and the online half is always `charged - manual.charged`
+   * — there is no third bucket for a reader to forget.
+   */
+  manual: { charged: number; orders: number };
+}
+
+/** Online against manual over the window. A source that sold nothing is absent. */
+export interface AnalyticsSourceRow extends AnalyticsMoney {
+  source: 'online' | 'manual';
+  orders: number;
+  items: number;
+}
+
+/**
+ * Manual sales cut by one of the two things the owner types when recording one:
+ * where it came from (`sales_channel`) and how it was paid (`payment_method`).
+ * `key` is NULL for "not recorded", which is an ordinary answer rather than a
+ * gap — both fields are optional on the form, and only `payment_method` is
+ * required by the database.
+ */
+export interface AnalyticsBreakdownRow {
+  key: string | null;
+  orders: number;
+  charged: number;
 }
 
 export interface AnalyticsStatusRow {
@@ -100,6 +127,16 @@ export interface ShopAnalytics {
   };
   revenueByDay: AnalyticsDay[];
   ordersByStatus: AnalyticsStatusRow[];
+  /**
+   * WHERE THE SALES CAME FROM: the storefront, or the owner's own record of a
+   * sale made elsewhere. Same window and same `paid_at` predicate as `totals`,
+   * so the rows add up to the headline exactly — a split that did not would be
+   * worse than no split at all.
+   */
+  bySource: AnalyticsSourceRow[];
+  /** Manual sales only, by where they came from and by how they were paid. */
+  manualByChannel: AnalyticsBreakdownRow[];
+  manualByMethod: AnalyticsBreakdownRow[];
   /** Every seller in the window, best first, capped far above any real
    * catalog — the table subpage wants the whole list, not a top-10. */
   topProducts: AnalyticsProductRow[];
@@ -160,11 +197,15 @@ export async function shopAnalytics(
 ): Promise<ShopAnalytics> {
   const since = a.now - a.days * DAY_MS;
 
-  const [byDay, byStatus, totals, products] = await Promise.all([
+  const [byDay, byStatus, totals, products, bySource, byChannel, byMethod] = await Promise.all([
     db.execute(sql`
       SELECT ${WAT_DAY} AS day,
              ${MONEY_COLUMNS},
-             count(*)::int AS orders
+             count(*)::int AS orders,
+             /* The hand-recorded part of the same day, so the chart can stack
+              * the two without a second round trip or a second window. */
+             COALESCE(sum(o.grand_total) FILTER (WHERE o.source = 'manual'), 0)::bigint AS manual_charged,
+             count(*) FILTER (WHERE o.source = 'manual')::int AS manual_orders
         FROM shop_orders o
        WHERE o.paid_at IS NOT NULL AND o.paid_at >= ${since}
        GROUP BY 1 ORDER BY 1 ASC`),
@@ -195,6 +236,32 @@ export async function shopAnalytics(
        GROUP BY l.variant_id, l.sku
        ORDER BY gross DESC, units DESC, l.sku ASC
        LIMIT ${TOP_PRODUCTS_CAP}`),
+    db.execute(sql`
+      SELECT o.source,
+             ${MONEY_COLUMNS},
+             count(*)::int AS orders,
+             /* Units, counted the way the window total counts them: over the
+              * lines of the paid orders in scope, joined back to this source. */
+             COALESCE((SELECT sum(l.qty)::int
+                         FROM shop_order_lines l
+                         JOIN shop_orders p ON p.id = l.order_id
+                        WHERE p.source = o.source
+                          AND p.paid_at IS NOT NULL AND p.paid_at >= ${since}), 0) AS items
+        FROM shop_orders o
+       WHERE o.paid_at IS NOT NULL AND o.paid_at >= ${since}
+       GROUP BY o.source ORDER BY o.source ASC`),
+    db.execute(sql`
+      SELECT o.sales_channel AS key, count(*)::int AS orders,
+             COALESCE(sum(o.grand_total), 0)::bigint AS charged
+        FROM shop_orders o
+       WHERE o.source = 'manual' AND o.paid_at IS NOT NULL AND o.paid_at >= ${since}
+       GROUP BY 1 ORDER BY charged DESC, 1 ASC`),
+    db.execute(sql`
+      SELECT o.payment_method AS key, count(*)::int AS orders,
+             COALESCE(sum(o.grand_total), 0)::bigint AS charged
+        FROM shop_orders o
+       WHERE o.source = 'manual' AND o.paid_at IS NOT NULL AND o.paid_at >= ${since}
+       GROUP BY 1 ORDER BY charged DESC, 1 ASC`),
   ]);
 
   const totalRow = totals.rows[0] ?? {};
@@ -214,11 +281,23 @@ export async function shopAnalytics(
       day: String(row.day),
       ...readMoney(row),
       orders: Number(row.orders),
+      manual: {
+        charged: Number(row.manual_charged ?? 0),
+        orders: Number(row.manual_orders ?? 0),
+      },
     })),
     ordersByStatus: byStatus.rows.map((row) => ({
       status: String(row.status),
       count: Number(row.count),
     })),
+    bySource: bySource.rows.map((row) => ({
+      source: row.source === 'manual' ? ('manual' as const) : ('online' as const),
+      ...readMoney(row),
+      orders: Number(row.orders),
+      items: Number(row.items ?? 0),
+    })),
+    manualByChannel: byChannel.rows.map(readBreakdown),
+    manualByMethod: byMethod.rows.map(readBreakdown),
     topProducts: products.rows.map((row) => ({
       variantId: String(row.variant_id),
       sku: String(row.sku),
@@ -226,5 +305,14 @@ export async function shopAnalytics(
       units: Number(row.units),
       gross: Number(row.gross),
     })),
+  };
+}
+
+/** One `(key, orders, charged)` row; a NULL key means the owner left it blank. */
+function readBreakdown(row: Record<string, unknown>): AnalyticsBreakdownRow {
+  return {
+    key: row.key == null ? null : String(row.key),
+    orders: Number(row.orders ?? 0),
+    charged: Number(row.charged ?? 0),
   };
 }
