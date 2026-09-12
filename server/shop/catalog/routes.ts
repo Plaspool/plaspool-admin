@@ -222,6 +222,9 @@ const CreateVariantBody = z
     optionValues: z.record(str().max(100), str().max(200)).optional(),
     position: z.number().int().min(0).optional(),
     weightGrams: z.number().int().min(0).max(10_000_000).nullable().optional(),
+    /** What DELIVERY is priced on (migration 1180). Absent or `null` means
+     *  "use `weightGrams`". Same bounds — it is the same unit and column type. */
+    shippingWeightGrams: z.number().int().min(0).max(10_000_000).nullable().optional(),
     onHand: z.number().int().min(0).max(100_000_000).optional(),
     backorderable: z.boolean().optional(),
     /** The photograph of this colour (migration 0009). */
@@ -251,6 +254,8 @@ const UpdateVariantBody = z
     optionValues: z.record(str().max(100), str().max(200)),
     position: z.number().int().min(0),
     weightGrams: z.number().int().min(0).max(10_000_000).nullable(),
+    /** `null` CLEARS the override, so delivery rejoins `weightGrams`. */
+    shippingWeightGrams: z.number().int().min(0).max(10_000_000).nullable(),
     status: z.enum(['active', 'discontinued']),
     /** `null` clears the colour photograph; a string sets it. */
     imageId: str().min(1).max(200).nullable(),

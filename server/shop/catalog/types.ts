@@ -159,8 +159,17 @@ export interface StorefrontProduct extends Product {
  * `toStorefrontVariant` removes it and this type says so, making a future
  * widening a compile error instead of a silent leak. `compareAtMinor` stays,
  * on purpose: the sale strikethrough is the reason it exists.
+ *
+ * `shippingWeightGrams` IS THE SECOND STRIP (migration 1180), and it is here
+ * because of the gap the paragraph above describes rather than in spite of it:
+ * adding a column to `Variant` joins this wire silently, and the field arrived
+ * on one. `weightGrams` is what the shop SHOWS and stays — it is the spool
+ * size on the product page. The shipping weight is an internal packing figure
+ * the storefront has no use for, because delivery is priced server-side and a
+ * shopper is quoted an amount rather than a weight.
  */
-export interface StorefrontVariant extends Omit<VariantWithPrice, 'costMinor'> {
+export interface StorefrontVariant
+  extends Omit<VariantWithPrice, 'costMinor' | 'shippingWeightGrams'> {
   /** `null` when nobody has photographed this colour yet. */
   imageUrl: string | null;
 }
@@ -171,7 +180,15 @@ export interface Variant {
   sku: string;
   optionValues: Record<string, string>;
   position: number;
+  /** Grams. What the shop SHOWS — the spool size on the storefront. */
   weightGrams: number | null;
+  /**
+   * Grams. What DELIVERY is priced on (migration 1180). NULL means "use
+   * `weightGrams`", so an untouched variant prices exactly as it always did.
+   * UNRESOLVED on this shape: the admin has to be able to show the difference
+   * between "same as the displayed weight" and a deliberate override.
+   */
+  shippingWeightGrams: number | null;
   status: VariantStatus;
   /**
    * The photograph of THIS option (migration 0009).
@@ -282,6 +299,9 @@ export interface VariantPatch {
   optionValues?: Record<string, string>;
   position?: number;
   weightGrams?: number | null;
+  /** `null` clears the override, so delivery rejoins `weightGrams`. Grams,
+   *  non-negative int. Migration 1180. */
+  shippingWeightGrams?: number | null;
   status?: VariantStatus;
   /** `null` clears it. Validated as a committed image, like a product's cover. */
   imageId?: string | null;

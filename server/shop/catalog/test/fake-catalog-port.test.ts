@@ -161,3 +161,36 @@ describe('release and commitReservation', () => {
     expect(port.stockOf(VARIANT.variantId)).toEqual({ onHand: 10, reserved: 4 });
   });
 });
+
+/**
+ * The fake's copy of the real port's COALESCE (migration 1180).
+ *
+ * The real one resolves in SQL and `port.test.ts` pins it against Postgres.
+ * This pins the fake to the SAME rule, because three subsystems build against
+ * the fake before they ever meet the real one: a fake that returned the raw
+ * override would let a cart or checkout suite pass on a `null` the production
+ * read can never produce.
+ */
+describe('quote — the shipping weight', () => {
+  it('resolves to the displayed weight when the fixture names no override', async () => {
+    /* THE DEFAULT EVERY PRE-1180 FIXTURE DESCRIBES, which is the exact shape
+       the catalogue is in today — so this is the case worth pinning. */
+    const port = fakeCatalogPort([VARIANT]);
+    const quote = await port.quote(db, VARIANT.variantId);
+    expect(quote?.weightGrams).toBe(180);
+    expect(quote?.shippingWeightGrams).toBe(180);
+  });
+
+  it('keeps the two apart when the fixture sets an override', async () => {
+    const port = fakeCatalogPort([{ ...VARIANT, shippingWeightGrams: 260 }]);
+    const quote = await port.quote(db, VARIANT.variantId);
+    expect(quote?.weightGrams).toBe(180);
+    expect(quote?.shippingWeightGrams).toBe(260);
+  });
+
+  it('is null on both for a variant nobody has weighed at all', async () => {
+    const port = fakeCatalogPort([{ ...VARIANT, weightGrams: null }]);
+    const quote = await port.quote(db, VARIANT.variantId);
+    expect(quote?.shippingWeightGrams).toBeNull();
+  });
+});

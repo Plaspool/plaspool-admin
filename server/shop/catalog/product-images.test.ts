@@ -379,6 +379,7 @@ describe('toStorefrontVariant', () => {
     optionValues: { Colour: 'Black' },
     position: 0,
     weightGrams: null,
+    shippingWeightGrams: null,
     status: 'active',
     imageId: null,
     colorHex: '#000000',

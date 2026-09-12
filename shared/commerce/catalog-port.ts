@@ -130,8 +130,19 @@ export interface VariantQuote {
    * at all. `shared/commerce/money.ts`'s `Money` is assignable to it.
    */
   price: { amount: number; currency: string };
-  /** Shipping needs it; NULL is honest for a variant nobody has weighed. */
+  /**
+   * What the shop SHOWS — the spool size. NULL is honest for a variant nobody
+   * has weighed. Frozen onto the order line as part of the product snapshot.
+   */
   weightGrams: number | null;
+  /**
+   * What DELIVERY is priced on (migration 1180), ALREADY RESOLVED: the
+   * variant's shipping-weight override when it has one, else `weightGrams`.
+   * NULL only when neither exists, and a courier caller must substitute rather
+   * than send zero — a parcel booked as weightless is one the courier reprices
+   * on the doorstep.
+   */
+  shippingWeightGrams: number | null;
   /**
    * `on_hand - reserved`, DERIVED (brief §5). A number to SHOW a shopper, never
    * a number to decide a sale on: between this read and a `reserve`, any
