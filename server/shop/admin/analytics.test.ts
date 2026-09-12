@@ -20,6 +20,7 @@ import { CHECKOUT, T0, checkoutCompleted, insertEvents, paymentCaptured } from '
 import { sweepCommerceEvents, type ConsumerDeps } from '../orders/repo/consumer';
 import { readOrderByCheckout } from '../orders/repo/orders';
 import type { ShopAnalytics } from './analytics';
+import { seedSellable } from '../catalog/test/catalog-harness';
 import type { AuthUser } from '../../../shared/types';
 
 let ctx: TestCtx;
@@ -200,5 +201,103 @@ describe('GET /api/shop/admin/analytics', () => {
     expect((await c.get('/api/shop/admin/analytics?day=7')).status).toBe(400);
     const writer = await login(ctx.users.writer);
     expect((await writer.get('/api/shop/admin/analytics')).status).toBe(403);
+  });
+});
+
+describe('where the sales came from', () => {
+  /**
+   * A manual sale counts in every figure (that is the point of it being an
+   * ordinary row), so the split has to ADD UP to the headline — these tests
+   * assert the arithmetic, not just the presence of the new fields.
+   */
+  const REAL = Date.now();
+  const day = (n: number) =>
+    new Date(REAL + 3_600_000 - n * DAY).toISOString().slice(0, 10);
+
+  async function manualSale(
+    c: OrdersClient,
+    body: Record<string, unknown> = {},
+  ): Promise<{ id: string; revision: number; grand: number }> {
+    const product = await seedSellable(ctx.db, ctx.users.owner, {
+      title: 'Recorded by hand',
+      amount: 250_000,
+      onHand: 10,
+    });
+    const res = await c.post('/api/shop/admin/orders/manual', {
+      soldAt: day(1),
+      lines: [{ variantId: product.variant.id, qty: 2 }],
+      paymentMethod: 'bank_transfer',
+      advanced: { salesChannel: 'whatsapp' },
+      ...body,
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const detail = await json<{ order: { id: string; revision: number; grandTotal: number } }>(res);
+    return { id: detail.order.id, revision: detail.order.revision, grand: detail.order.grandTotal };
+  }
+
+  it('splits the window by source, and the two halves add up to the totals', async () => {
+    const online = await pipelineOrder(REAL);
+    const c = await login(ctx.users.owner);
+    const manual = await manualSale(c);
+
+    const body = await json<ShopAnalytics>(await c.get('/api/shop/admin/analytics?days=7'));
+    expect(body.totals.orders).toBe(2);
+    expect(body.totals.charged).toBe(online.grand + manual.grand);
+
+    const rows = Object.fromEntries(body.bySource.map((r) => [r.source, r]));
+    expect(rows.manual.orders).toBe(1);
+    expect(rows.manual.charged).toBe(manual.grand);
+    expect(rows.online.orders).toBe(1);
+    expect(rows.online.charged).toBe(online.grand);
+    expect(rows.manual.charged + rows.online.charged).toBe(body.totals.charged);
+    expect(rows.manual.orders + rows.online.orders).toBe(body.totals.orders);
+    expect(rows.manual.items).toBe(2);
+  });
+
+  it('cuts the manual half by where it came from and how it was paid', async () => {
+    const c = await login(ctx.users.owner);
+    const first = await manualSale(c);
+    const second = await manualSale(c, {
+      paymentMethod: 'cash',
+      advanced: {},
+    });
+
+    const body = await json<ShopAnalytics>(await c.get('/api/shop/admin/analytics?days=7'));
+    expect(body.manualByChannel).toEqual([
+      { key: 'whatsapp', orders: 1, charged: first.grand },
+      // Left blank on the form: an ordinary answer, reported as null.
+      { key: null, orders: 1, charged: second.grand },
+    ]);
+    expect(body.manualByMethod.map((r) => r.key).sort()).toEqual(['bank_transfer', 'cash']);
+    expect(body.manualByMethod.reduce((n, r) => n + r.charged, 0)).toBe(first.grand + second.grand);
+  });
+
+  it('carries the manual part of each day, leaving the day total whole', async () => {
+    const online = await pipelineOrder(REAL);
+    const c = await login(ctx.users.owner);
+    const manual = await manualSale(c);
+
+    const body = await json<ShopAnalytics>(await c.get('/api/shop/admin/analytics?days=7'));
+    const manualDay = body.revenueByDay.find((d) => d.day === day(1))!;
+    expect(manualDay.manual).toEqual({ charged: manual.grand, orders: 1 });
+    expect(manualDay.charged).toBe(manual.grand);
+
+    const onlineDay = body.revenueByDay.find((d) => d.day === day(0))!;
+    expect(onlineDay.manual).toEqual({ charged: 0, orders: 0 });
+    expect(onlineDay.charged).toBe(online.grand);
+  });
+
+  it('drops a voided sale out of the split, as it does out of the totals', async () => {
+    const c = await login(ctx.users.owner);
+    const manual = await manualSale(c);
+    const voided = await c.post(`/api/shop/admin/orders/${manual.id}/void`, {
+      baseRevision: manual.revision,
+    });
+    expect(voided.status).toBe(200);
+
+    const body = await json<ShopAnalytics>(await c.get('/api/shop/admin/analytics?days=7'));
+    expect(body.bySource).toEqual([]);
+    expect(body.manualByChannel).toEqual([]);
+    expect(body.totals.orders).toBe(0);
   });
 });

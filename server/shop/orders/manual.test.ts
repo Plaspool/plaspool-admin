@@ -166,6 +166,28 @@ describe('recording a manual order', () => {
     expect(count.rows[0].n).toBe(0);
   });
 
+  it('filters the list by where the order came from', async () => {
+    const c = await as(ctx.users.owner);
+    const manual = await record(c);
+    // An online order to be excluded by the same filter.
+    await ctx.db.execute(sql`
+      INSERT INTO shop_orders (id, order_number, email, currency, subtotal, shipping_total,
+                               tax_total, grand_total, status, shipping_address, billing_address,
+                               placed_at, revision, source_event_id, checkout_id, source)
+      VALUES ('ord_online_filter', '2026-000999-Z', 'shopper@example.test', 'NGN', 1000, 0,
+              0, 1000, 'paid', '{}'::jsonb, '{}'::jsonb, ${Date.now()}, 1,
+              'evt_filter', 'chk_filter', 'online')`);
+
+    const ids = async (query: string) =>
+      (await json<{ items: Array<{ order: { id: string } }> }>(await c.get(`${BASE}${query}`))).items.map(
+        (i) => i.order.id,
+      );
+    expect((await ids('')).sort()).toEqual([manual.order.id, 'ord_online_filter'].sort());
+    expect(await ids('?source=manual')).toEqual([manual.order.id]);
+    expect(await ids('?source=online')).toEqual(['ord_online_filter']);
+    expect((await c.get(`${BASE}?source=elsewhere`)).status).toBe(400);
+  });
+
   it('shows on the list and as delivered on the day it was sold', async () => {
     const c = await as(ctx.users.owner);
     const d = await record(c);

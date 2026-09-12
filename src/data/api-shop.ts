@@ -2414,7 +2414,14 @@ export const shopApi = {
    * refused before a query runs — which is why the box says "exact".
    */
   async listOrders(
-    query: { status?: OrderStatus; search?: string; cursor?: string; limit?: number } = {},
+    query: {
+      status?: OrderStatus;
+      search?: string;
+      /** Where it came from: the checkout, or recorded by hand. */
+      source?: OrderSource;
+      cursor?: string;
+      limit?: number;
+    } = {},
     signal?: AbortSignal,
   ): Promise<Page<ShopOrderRow>> {
     return shopFetch<Page<ShopOrderRow>>(`${BASE}/orders`, { query: { ...query }, signal });

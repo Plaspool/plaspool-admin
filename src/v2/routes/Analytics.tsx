@@ -4,6 +4,7 @@ import {
   analyticsApi,
   ANALYTICS_CURRENCY,
   ANALYTICS_DEFAULT_DAYS,
+  type AnalyticsBreakdownRow,
   type AnalyticsDay,
   type AnalyticsDays,
   type ShopAnalytics,
@@ -18,6 +19,7 @@ import { Card } from '../ui/Card';
 import { Defs, type DefRow } from '../ui/Defs';
 import { Segmented } from '../ui/Field';
 import { EChart } from '../ui/EChart';
+import { paymentMethodLabel, salesChannelLabel } from './manual-order-copy';
 
 /**
  * ANALYTICS — `/analytics`. The diagrams, and only the diagrams: the table of
@@ -84,10 +86,13 @@ function fillCalendar(a: ShopAnalytics): AnalyticsDay[] {
   const out: AnalyticsDay[] = [];
   for (let i = a.days; i >= 0; i--) {
     const day = watDay(a.generatedAt - i * DAY_MS);
-    out.push(byDay.get(day) ?? { day, ...NO_MONEY, orders: 0 });
+    out.push(byDay.get(day) ?? { day, ...NO_MONEY, orders: 0, manual: NO_MANUAL });
   }
   return out;
 }
+
+/** A day with nothing recorded by hand — the ordinary case. */
+const NO_MANUAL = { charged: 0, orders: 0 } as const;
 
 /** A quiet day: every kind of money at zero. */
 const NO_MONEY = {
@@ -99,6 +104,44 @@ const NO_MONEY = {
   refunded: 0,
   net: 0,
 } as const;
+
+/** "3 orders" / "1 order" — the count beside a source row. */
+function orderWord(n: number): string {
+  return `${n} ${n === 1 ? 'order' : 'orders'}`;
+}
+
+/**
+ * One cut of the manual half — by channel, or by payment method. A row the
+ * owner left blank prints as "Not recorded", which is an answer rather than a
+ * gap: both fields are optional on the form.
+ */
+function Breakdown({
+  title,
+  rows,
+  label,
+}: {
+  title: string;
+  rows: AnalyticsBreakdownRow[];
+  label: (value: string | null) => string;
+}) {
+  if (rows.length === 0) return null;
+  return (
+    <div style={{ marginTop: 'var(--s4)' }}>
+      <h4 style={{ font: 'var(--t-sm-strong)', margin: '0 0 var(--s2)' }}>{title}</h4>
+      <Defs
+        rows={rows.map((row) => ({
+          label: (
+            <>
+              {row.key === null ? 'Not recorded' : label(row.key)}{' '}
+              <span className="muted">· {orderWord(row.orders)}</span>
+            </>
+          ),
+          value: money(row.charged, ANALYTICS_CURRENCY),
+        }))}
+      />
+    </div>
+  );
+}
 
 /** A money figure that is taken OFF — a discount, a refund — printed with a
  *  leading minus the way the order screen prints one, and never as a bare
@@ -165,11 +208,16 @@ function cssColour(token: string, fallback: string): string {
 /** The stacked series' colours, in the order they stack: product sales in
  *  the accent, delivery in the mid neutral, VAT in the light neutral with a
  *  hairline so a thin 7.5% slice still shows against the card. */
-function seriesColours(): { sales: string; delivery: string; tax: string } {
+function seriesColours(): { sales: string; delivery: string; tax: string; manual: string } {
   return {
     sales: cssColour('--accent', '#2e2a6b'),
     delivery: cssColour('--ink-disabled', '#b5b5b5'),
     tax: cssColour('--border', '#e3e3e3'),
+    /* The hand-recorded line rides OVER the stack rather than in it, so it
+       needs a colour that reads against every bar underneath: the same amber
+       the pending badge wears, which is in neither the accent nor the neutral
+       ramp the bars are drawn from. */
+    manual: '#b26b00',
   };
 }
 
@@ -248,7 +296,7 @@ export default function Analytics() {
             name?: string;
             data?: { day?: AnalyticsDay };
           };
-          const d = first?.data?.day ?? { day: '', ...NO_MONEY, orders: 0 };
+          const d = first?.data?.day ?? { day: '', ...NO_MONEY, orders: 0, manual: NO_MANUAL };
           const fmt = (minor: number) => money(minor, ANALYTICS_CURRENCY);
           const rows = [
             tooltipRow('Product sales', fmt(d.sales), true),
@@ -258,6 +306,9 @@ export default function Analytics() {
             tooltipRow('Charged', fmt(d.charged), true),
             d.refunded !== 0 ? tooltipRow('Refunded', deduction(d.refunded)) : '',
             d.refunded !== 0 ? tooltipRow('Collected', fmt(d.net), true) : '',
+            d.manual.charged !== 0
+              ? tooltipRow('of which recorded by hand', fmt(d.manual.charged))
+              : '',
           ].join('');
           return `<div style="font-weight:600;margin-bottom:4px">${esc(dayLabel(String(first?.name ?? '')))} · ${d.orders} ${
             d.orders === 1 ? 'order' : 'orders'
@@ -310,10 +361,61 @@ export default function Analytics() {
           itemStyle: { color: colours.tax, borderColor: colours.delivery, borderWidth: 1 },
           data: calendar.map((d) => ({ value: d.tax / 100, day: d })),
         },
+        /* Recorded by hand, as a LINE OVER the bars rather than a fourth
+           stacked segment: the stack is already the whole of what was
+           charged, split by what the money was for, so adding a source to it
+           would draw the same naira twice. A line answers the other question
+           — how much of each day came from outside the checkout — and the
+           legend drops it when nobody is asking. Hidden entirely in a window
+           with no manual sale, so a shop that never records one sees the
+           chart it had before. */
+        ...(calendar.some((d) => d.manual.charged !== 0)
+          ? [
+              {
+                name: 'Recorded by hand',
+                type: 'line',
+                smooth: false,
+                symbolSize: 6,
+                lineStyle: { width: 2, color: colours.manual },
+                itemStyle: { color: colours.manual },
+                data: calendar.map((d) => ({ value: d.manual.charged / 100, day: d })),
+              },
+            ]
+          : []),
       ],
     }),
-    [calendar, colours.sales, colours.delivery, colours.tax, days],
+    [calendar, colours.sales, colours.delivery, colours.tax, colours.manual, days],
   );
+
+  /* ── where the sales came from ────────────────────────────────────────
+     Two rows that ADD UP to the headline, then the manual half cut by the two
+     things the owner types when recording a sale. Absent entirely until a
+     manual sale exists in the window: until then "100% online" is a fact
+     nobody needs a card to learn. */
+  const bySource = data?.bySource ?? [];
+  const manualRow = bySource.find((r) => r.source === 'manual') ?? null;
+  const onlineRow = bySource.find((r) => r.source === 'online') ?? null;
+  const sourceRows: DefRow[] = manualRow
+    ? [
+        {
+          label: <>Online <span className="muted">· {orderWord(onlineRow?.orders ?? 0)}</span></>,
+          value: money(onlineRow?.charged ?? 0, ANALYTICS_CURRENCY),
+        },
+        {
+          label: <>Recorded by hand <span className="muted">· {orderWord(manualRow.orders)}</span></>,
+          value: money(manualRow.charged, ANALYTICS_CURRENCY),
+        },
+        {
+          label: <>Charged to customers</>,
+          value: money((onlineRow?.charged ?? 0) + manualRow.charged, ANALYTICS_CURRENCY),
+          total: true,
+        },
+      ]
+    : [];
+  const manualShare =
+    manualRow && (onlineRow?.charged ?? 0) + manualRow.charged > 0
+      ? Math.round((manualRow.charged * 100) / ((onlineRow?.charged ?? 0) + manualRow.charged))
+      : 0;
 
   /* ── the status donut ─────────────────────────────────────────────────── */
   const statusRows = data?.ordersByStatus ?? [];
@@ -566,6 +668,18 @@ export default function Analytics() {
                 </p>
               ) : null}
             </Card>
+
+            {manualRow ? (
+              <Card title="Where sales came from">
+                <Defs rows={sourceRows} />
+                <p className="muted" style={{ fontSize: 'var(--t-xs)', marginTop: 'var(--s3)' }}>
+                  {manualShare}% of the money in this window was recorded by hand. A sale counts
+                  on the day it was SOLD, not the day it was typed in.
+                </p>
+                <Breakdown title="How those sales came in" rows={data?.manualByChannel ?? []} label={salesChannelLabel} />
+                <Breakdown title="How they were paid" rows={data?.manualByMethod ?? []} label={paymentMethodLabel} />
+              </Card>
+            ) : null}
 
             <Card
               title="Best sellers"

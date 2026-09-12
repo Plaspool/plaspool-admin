@@ -174,6 +174,8 @@ const AdminPageQuery = PageQuery.extend({
    * from the same `zodDetail` path as the rest.
    */
   search: str().max(MAX_SEARCH_LENGTH).optional(),
+  /** Where the sale came from: the checkout, or recorded by hand (migration 1110). */
+  source: z.enum(['online', 'manual']).optional(),
 }).strict();
 
 const LookupQuery = z

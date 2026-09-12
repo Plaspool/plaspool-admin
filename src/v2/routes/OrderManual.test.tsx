@@ -422,4 +422,31 @@ describe('the order list', () => {
     const link = screen.getByRole('link', { name: 'New order' });
     expect(link.getAttribute('href')).toBe('/orders/new');
   });
+
+  it('asks the server for one source when the filter is set', async () => {
+    when(LIST, { items: [{ order: baseOrder, lines: [] }], nextCursor: null });
+    render(
+      <ToastHost>
+        <MemoryRouter initialEntries={['/orders']}>
+          <Routes>
+            <Route path="/orders" element={<Orders />} />
+          </Routes>
+        </MemoryRouter>
+      </ToastHost>,
+    );
+    await screen.findByText('PP-2001-3');
+    // No filter, no parameter: the wire carries only what differs from "all".
+    expect(calls.some((c) => c.path.startsWith(`${LIST}?`) && c.path.includes('source='))).toBe(false);
+
+    const picker = screen.getByLabelText('Where the order came from');
+    fireEvent.change(picker, { target: { value: 'manual' } });
+    await vi.waitFor(() =>
+      expect(calls.some((c) => c.path.includes('source=manual'))).toBe(true),
+    );
+
+    fireEvent.change(picker, { target: { value: 'online' } });
+    await vi.waitFor(() =>
+      expect(calls.some((c) => c.path.includes('source=online'))).toBe(true),
+    );
+  });
 });
