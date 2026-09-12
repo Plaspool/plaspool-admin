@@ -23,7 +23,7 @@ import { AddOnRules, nextUid, type EditableRule } from './AddOnRules';
  * Laid out like the reference admin's collection page (the owner's
  * screenshots, 2026-09-06): the picture tile beside a heading-style name and
  * a plain description, the rule builder underneath in the wide column, and
- * the one switch that matters — offered at checkout or not — in the sidebar.
+ * the one switch that matters — offered to shoppers or not — in the sidebar.
  * Archiving is a "More actions" item behind a confirmation, not a third
  * position on a status control.
  *
@@ -376,19 +376,20 @@ export default function AddOnDetail({ create = false }: { create?: boolean }) {
           <Card title="Status">
             {archived ? (
               <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
-                Archived — not offered at checkout. Put it back from <strong>More actions</strong> to
+                Archived — not offered anywhere. Put it back from <strong>More actions</strong> to
                 switch it on again.
               </p>
             ) : (
               <>
                 <Toggle
-                  label="Offered at checkout"
+                  label="Offered to shoppers"
                   checked={draft.status === 'active'}
                   onChange={(on) => set('status', on ? 'active' : 'draft')}
                 />
                 <p className="muted" style={{ fontSize: 'var(--t-sm)', lineHeight: 1.5, marginTop: 'var(--s2)' }}>
-                  Switched on, shoppers see it at checkout. Switched off, it stays a draft. Takes effect
-                  when you save.
+                  Switched on, shoppers see it at checkout — and on the product page, if the
+                  shop asks for it there. Switched off, it stays a draft. Takes effect when you
+                  save.
                 </p>
               </>
             )}
@@ -410,7 +411,7 @@ export default function AddOnDetail({ create = false }: { create?: boolean }) {
           }
         >
           <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
-            It stops being offered at checkout. Orders that already carry it keep it, and you can put
+            It stops being offered anywhere. Orders that already carry it keep it, and you can put
             it back from More actions later.
           </p>
         </Modal>
