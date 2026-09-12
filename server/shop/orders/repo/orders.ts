@@ -476,6 +476,8 @@ export interface OrderPage {
 
 interface ListQuery {
   status?: OrderStatus;
+  /** `'manual'` for sales recorded by hand, `'online'` for checkout orders. */
+  source?: OrderSource;
   cursor?: string;
   limit?: number;
 }
@@ -484,6 +486,7 @@ async function listOrders(db: Db, scope: SQL, q: ListQuery): Promise<OrderPage> 
   const size = pageLimit(q.limit);
   const where: SQL[] = [scope];
   if (q.status !== undefined) where.push(sql`o.status = ${q.status}`);
+  if (q.source !== undefined) where.push(sql`o.source = ${q.source}`);
 
   if (q.cursor !== undefined) {
     const cursor = requireCursor(q.cursor, SORT_KEY);

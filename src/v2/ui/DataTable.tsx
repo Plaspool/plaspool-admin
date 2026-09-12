@@ -72,6 +72,19 @@ export interface SearchConfig {
   onChange: (next: string) => void;
 }
 
+/**
+ * ONE named filter beside the search box — a second dimension the tabs cannot
+ * carry, because the tabs already spend themselves on status. Deliberately a
+ * plain labelled select rather than a second tab strip: two rows of tabs read
+ * as one broken row, and the label is what says WHICH dimension this is.
+ */
+export interface FilterConfig {
+  label: string;
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (next: string) => void;
+}
+
 export interface SortConfig {
   value: string;
   options: { value: string; label: string }[];
@@ -114,6 +127,7 @@ export function DataTable<T, V extends string = string>({
   caption,
   tabs,
   search,
+  filter,
   sort,
   bulk,
   initialSelected,
@@ -134,6 +148,7 @@ export function DataTable<T, V extends string = string>({
   caption: string;
   tabs?: TabsConfig<V>;
   search?: SearchConfig;
+  filter?: FilterConfig;
   sort?: SortConfig;
   bulk?: BulkConfig;
   /** Pre-ticked keys — exists for the design-gallery specimen. */
@@ -266,7 +281,7 @@ export function DataTable<T, V extends string = string>({
         </div>
       ) : null}
 
-      {hasHead && (search || hasViewMenu) ? (
+      {hasHead && (search || filter || hasViewMenu) ? (
         <div className="tfilter">
           {search ? (
             <div className="tfilter__search">
@@ -283,6 +298,21 @@ export function DataTable<T, V extends string = string>({
           ) : (
             <span className="spacer" />
           )}
+          {filter ? (
+            <select
+              className="select"
+              value={filter.value}
+              aria-label={filter.label}
+              onChange={(e) => filter.onChange(e.target.value)}
+              style={{ flex: 'none', maxWidth: '12rem' }}
+            >
+              {filter.options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
           {hasViewMenu ? (
             <ViewControl
               sort={sort}

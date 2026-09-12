@@ -159,6 +159,7 @@ const BODY: ShopAnalytics = {
       refunded: 300_000,
       net: 9_045_600,
       orders: 3,
+      manual: { charged: 4_000_000, orders: 1 },
     },
     {
       day: watDay(NOW),
@@ -170,12 +171,42 @@ const BODY: ShopAnalytics = {
       refunded: 0,
       net: 3_000_000,
       orders: 1,
+      manual: { charged: 0, orders: 0 },
     },
   ],
   ordersByStatus: [
     { status: 'paid', count: 3 },
     { status: 'pending', count: 1 },
   ],
+  /* Online and manual add up to `totals.charged`, as the server guarantees. */
+  bySource: [
+    {
+      source: 'manual',
+      sales: 3_800_000,
+      discounts: 0,
+      delivery: 200_000,
+      tax: 0,
+      charged: 4_000_000,
+      refunded: 0,
+      net: 4_000_000,
+      orders: 1,
+      items: 2,
+    },
+    {
+      source: 'online',
+      sales: 6_200_000,
+      discounts: -200_000,
+      delivery: 1_300_000,
+      tax: 1_045_600,
+      charged: 8_345_600,
+      refunded: 300_000,
+      net: 8_045_600,
+      orders: 3,
+      items: 7,
+    },
+  ],
+  manualByChannel: [{ key: 'whatsapp', orders: 1, charged: 4_000_000 }],
+  manualByMethod: [{ key: 'bank_transfer', orders: 1, charged: 4_000_000 }],
   topProducts: [
     { variantId: 'var_1', sku: 'SP-1', title: 'A spool', units: 6, gross: 9_000_000 },
     { variantId: 'var_2', sku: 'SP-2', title: 'Another spool', units: 3, gross: 3_345_600 },
@@ -349,5 +380,79 @@ describe('the analytics screen', () => {
     expect(await screen.findByText('You don’t have access to this')).toBeTruthy();
     expect(queries()).toHaveLength(0);
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+});
+
+describe('where sales came from', () => {
+  /** The card, found by its heading — the only one carrying source rows. */
+  function sourceCard(): HTMLElement {
+    const card = screen.getByText('Where sales came from').closest('.card');
+    if (!card) throw new Error('no source card');
+    return card as HTMLElement;
+  }
+
+  it('splits the window into online and hand-recorded, and names the share', async () => {
+    withAnalytics();
+    render(
+      <ToastHost>
+        <MemoryRouter initialEntries={['/analytics']}>
+          <Analytics />
+        </MemoryRouter>
+      </ToastHost>,
+    );
+
+    const card = await waitFor(() => sourceCard());
+    const text = norm(card.textContent ?? '');
+    expect(text).toContain(norm(money(8_345_600, 'NGN')));
+    expect(text).toContain(norm(money(4_000_000, 'NGN')));
+    expect(text).toContain('3 orders');
+    expect(text).toContain('1 order');
+    // 4,000,000 of 12,345,600 charged — the share the sentence claims.
+    expect(text).toContain('32% of the money');
+    // The two halves are printed with their sum, so the card reconciles itself.
+    expect(text).toContain(norm(money(12_345_600, 'NGN')));
+  });
+
+  it('cuts the manual half by channel and by how it was paid, in the owner\'s words', async () => {
+    withAnalytics();
+    render(
+      <ToastHost>
+        <MemoryRouter initialEntries={['/analytics']}>
+          <Analytics />
+        </MemoryRouter>
+      </ToastHost>,
+    );
+
+    const card = await waitFor(() => sourceCard());
+    expect(within(card).getByText('How those sales came in')).toBeTruthy();
+    expect(within(card).getByText('How they were paid')).toBeTruthy();
+    const text = norm(card.textContent ?? '');
+    // The enum values never reach the screen: the labels the form uses do.
+    expect(text).toContain('WhatsApp');
+    expect(text).toContain('Bank transfer');
+    expect(text).not.toContain('bank_transfer');
+  });
+
+  it('is absent entirely when nothing was recorded by hand', async () => {
+    when(ANALYTICS, (url) => ({
+      body: {
+        ...BODY,
+        days: Number(url.searchParams.get('days') ?? '30'),
+        bySource: [BODY.bySource[1]],
+        manualByChannel: [],
+        manualByMethod: [],
+      },
+    }));
+    render(
+      <ToastHost>
+        <MemoryRouter initialEntries={['/analytics']}>
+          <Analytics />
+        </MemoryRouter>
+      </ToastHost>,
+    );
+
+    // The screen has loaded — the receipt card is there — and the source card is not.
+    await screen.findByText('Where the money went');
+    expect(screen.queryByText('Where sales came from')).toBeNull();
   });
 });
