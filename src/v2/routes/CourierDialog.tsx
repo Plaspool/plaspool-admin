@@ -306,7 +306,15 @@ export function CourierDialog({
     setBusy(true);
     setError(null);
     try {
-      for (const w of writes) await shopApi.updateVariant(w.variantId, { weightGrams: w.grams });
+      /* THE SHIPPING WEIGHT, NOT THE DISPLAYED ONE (migration 1180). A variant
+         reaches this step only when BOTH are unset, so either write would make
+         the parcel quotable — but writing `weightGrams` would also start
+         showing a spool size on the storefront that nobody chose to publish,
+         as a side effect of booking a courier. This one is exactly scoped:
+         delivery can price it, and the shop looks the same. */
+      for (const w of writes) {
+        await shopApi.updateVariant(w.variantId, { shippingWeightGrams: w.grams });
+      }
       setBusy(false);
       await quote();
     } catch (cause) {

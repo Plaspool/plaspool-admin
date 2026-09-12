@@ -484,6 +484,13 @@
                         "when":  1786600005750,
                         "tag":  "1110_manual_orders",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  69,
+                        "version":  "7",
+                        "when":  1786600005760,
+                        "tag":  "1180_variant_shipping_weight",
+                        "breakpoints":  true
                     }
                 ]
 }

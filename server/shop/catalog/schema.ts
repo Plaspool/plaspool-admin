@@ -258,8 +258,29 @@ export const shopVariants = pgTable(
     /** `{ "Size": "M", "Colour": "Navy" }`. */
     optionValues: jsonb('option_values').$type<Record<string, string>>().notNull(),
     position: integer('position').notNull(),
-    /** Shipping needs it; nullable is honest for a variant nobody has weighed. */
+    /**
+     * What the shop SHOWS — the spool size on the storefront. Nullable is
+     * honest for a variant nobody has weighed.
+     *
+     * Until migration 1180 this was also the only number a courier was told,
+     * so displaying an honest spool size and quoting an honest parcel were the
+     * same edit. `shippingWeightGrams` below is now the one delivery is priced
+     * on; this one stayed put so the storefront contract did not move.
+     */
     weightGrams: integer('weight_grams'),
+    /**
+     * What DELIVERY is priced on (migration 1180). Grams, integer.
+     *
+     * NULL MEANS DERIVE IT — fall back to `weightGrams` — not "weightless".
+     * The COALESCE lives in the two reads that feed a courier (`port.ts`'s
+     * quote and `logistics-port.ts`'s `weightsFor`), so nothing downstream of
+     * the catalog seam has to choose between two numbers.
+     *
+     * EXCLUDES THE OUTER BOX: `shop_delivery_settings.packaging_weight_kg` is
+     * already added on top of the basket, so counting packaging here too pays
+     * for it twice.
+     */
+    shippingWeightGrams: integer('shipping_weight_grams'),
     status: text('status').$type<VariantStatus>().notNull(),
     /**
      * ONE image, for the option this variant actually is (migration 0009).
@@ -333,6 +354,10 @@ export const shopVariants = pgTable(
     check('shop_variants_status_ck', sql`${t.status} IN (${sqlLiterals(VARIANT_STATUSES)})`),
     check('shop_variants_position_ck', sql`${t.position} >= 0`),
     check('shop_variants_weight_ck', sql`${t.weightGrams} IS NULL OR ${t.weightGrams} >= 0`),
+    check(
+      'shop_variants_shipping_weight_ck',
+      sql`${t.shippingWeightGrams} IS NULL OR ${t.shippingWeightGrams} >= 0`,
+    ),
     // Sign backstops, as `weight_ck`: against a backfill or hand-run UPDATE,
     // not display policy — zero is storable and simply never renders as a sale.
     check(

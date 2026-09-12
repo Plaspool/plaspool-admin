@@ -792,6 +792,58 @@ describe('compare-at, cost and SEO (owner queue 2026-08-25; migrations 0400/0420
     expect('costMinor' in listed!.variants[0]).toBe(false);
   });
 
+  /**
+   * THE SHIPPING WEIGHT IS ADMIN-ONLY (migration 1180), for the reason the
+   * 0420 comment gives about cost: a column added to `Variant` joins the
+   * storefront wire silently, so the strip has to be ASSERTED rather than
+   * intended. The DISPLAYED weight stays — it is the spool size on the product
+   * page, and removing it would break what the storefront draws today.
+   */
+  it('keeps the shipping weight off the storefront while the displayed weight stays', async () => {
+    const created = await createProduct('Packed Heavier');
+    const variantRes = await http.post(`/api/shop/admin/products/${created.id}/variants`, {
+      sku: 'PACKED-1',
+      weightGrams: 1250,
+      shippingWeightGrams: 1400,
+    });
+    expect(variantRes.status).toBe(201);
+    const { variant } = await json<{ variant: { id: string } }>(variantRes);
+    /* A variant with no current price is not sellable, so it would not appear
+       on the storefront at all and the assertions below would pass vacuously. */
+    expect(
+      (await http.put(`/api/shop/admin/variants/${variant.id}/price`, {
+        amount: 500_000,
+        currency: 'NGN',
+      })).status,
+    ).toBe(200);
+    expect((await http.post(`/api/shop/admin/products/${created.id}/publish`)).status).toBe(200);
+
+    // The admin read keeps it: the edit modal is what it exists for.
+    const adminDetail = await json<{
+      product: { variants: { weightGrams: number; shippingWeightGrams: number }[] };
+    }>(await http.get(`/api/shop/admin/products/${created.id}`));
+    expect(adminDetail.product.variants[0]).toMatchObject({
+      weightGrams: 1250,
+      shippingWeightGrams: 1400,
+    });
+
+    const page = await json<{ product: { variants: Record<string, unknown>[] } }>(
+      await http.get(`/api/shop/products/${created.slug}`),
+    );
+    expect(page.product.variants[0]).toMatchObject({ weightGrams: 1250 });
+    /* Absent as a KEY, not null — a client cannot even see that it exists. */
+    expect('shippingWeightGrams' in page.product.variants[0]!).toBe(false);
+
+    // And the storefront LIST, which serialises through the same mapper.
+    const list = await json<{ items: { id: string; variants: Record<string, unknown>[] }[] }>(
+      await http.get('/api/shop/products'),
+    );
+    const listed = list.items.find((p) => p.id === created.id);
+    expect(listed).toBeDefined();
+    expect(listed!.variants[0]).toMatchObject({ weightGrams: 1250 });
+    expect('shippingWeightGrams' in listed!.variants[0]!).toBe(false);
+  });
+
   it('sets and clears both variant fields through PATCH, refusing junk', async () => {
     const created = await createProduct('Margins');
     const { variant } = await json<{ variant: { id: string } }>(
@@ -863,6 +915,69 @@ describe('compare-at, cost and SEO (owner queue 2026-08-25; migrations 0400/0420
 
     // The genuinely empty patch is still refused.
     expect((await http.patch(`/api/shop/admin/variants/${variant.id}`, {})).status).toBe(400);
+  });
+
+  /**
+   * THE TWO WEIGHTS ON THE WIRE (migration 1180), through the real app.
+   *
+   * The admin has to be able to tell "delivery uses the weight I display" from
+   * "delivery uses this other number", so the field is served UNRESOLVED — the
+   * COALESCE belongs to the courier reads, not to the edit screen. A route
+   * that answered the resolved weight would make the modal pre-fill an
+   * override onto every variant that has never had one.
+   */
+  it('sets, serves and clears the shipping weight without touching the displayed one', async () => {
+    const created = await createProduct('Two Weights');
+    const variantRes = await http.post(`/api/shop/admin/products/${created.id}/variants`, {
+      sku: 'TWO-W-1',
+      weightGrams: 1250,
+      shippingWeightGrams: 1400,
+    });
+    expect(variantRes.status).toBe(201);
+    /* One read of the body — `json` consumes it, and a second call is a
+       "Body has already been read" TypeError, not a failed assertion. */
+    const { variant } = await json<{
+      variant: { id: string; weightGrams: number | null; shippingWeightGrams: number | null };
+    }>(variantRes);
+    expect(variant).toMatchObject({ weightGrams: 1250, shippingWeightGrams: 1400 });
+
+    /* Absent on create means "no override", NOT "copy the displayed weight". */
+    const plainRes = await http.post(`/api/shop/admin/products/${created.id}/variants`, {
+      sku: 'TWO-W-2',
+      weightGrams: 1250,
+    });
+    expect(await json(plainRes)).toMatchObject({
+      variant: { weightGrams: 1250, shippingWeightGrams: null },
+    });
+
+    /* Changing the shipping weight leaves the shop's own number alone — the
+       whole reason the column exists. */
+    const patched = await http.patch(`/api/shop/admin/variants/${variant.id}`, {
+      shippingWeightGrams: 1600,
+    });
+    expect(patched.status).toBe(200);
+    expect(await json(patched)).toMatchObject({
+      variant: { weightGrams: 1250, shippingWeightGrams: 1600 },
+    });
+
+    /* `null` CLEARS it, so delivery rejoins the displayed weight. */
+    const cleared = await http.patch(`/api/shop/admin/variants/${variant.id}`, {
+      shippingWeightGrams: null,
+    });
+    expect(await json(cleared)).toMatchObject({
+      variant: { weightGrams: 1250, shippingWeightGrams: null },
+    });
+
+    /* Grams, not kilograms, and not a decimal: the column is int4 and a `1.5`
+       reaching it would be rounded by the driver rather than refused. */
+    expect(
+      (await http.patch(`/api/shop/admin/variants/${variant.id}`, { shippingWeightGrams: 1.5 }))
+        .status,
+    ).toBe(400);
+    expect(
+      (await http.patch(`/api/shop/admin/variants/${variant.id}`, { shippingWeightGrams: -1 }))
+        .status,
+    ).toBe(400);
   });
 
   it('saves, serves and clears SEO copy, normalising the empty string to NULL', async () => {

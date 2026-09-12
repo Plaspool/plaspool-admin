@@ -35,7 +35,8 @@ const HEADER =
   'Variant SKU,Variant Options,Variant Price,Variant Compare At Price,Variant Cost,' +
   'Variant Stock,Variant Backorderable,' +
   'Product Image,Product Gallery,Variant Image,Variant Color Hex,' +
-  'Variant Weight Grams,Variant Position,Variant Status';
+  'Variant Weight Grams,Variant Position,Variant Status,' +
+  'Variant Shipping Weight Grams';
 
 const EXPORT_PATH = '/api/shop/admin/products/export';
 const IMPORT_PATH = '/api/shop/admin/products/import';
@@ -812,8 +813,13 @@ describe('lossless round trip', () => {
   it('round trips a variant made discontinued in the file', async () => {
     const csv = await exportCsv();
     const rows = csv.split(/\r?\n/).filter((line) => line !== '');
-    // The trailing Variant Status cell of the one data row.
-    rows[1] = rows[1]!.replace(/active$/, 'discontinued');
+    /* The Variant Status cell of the one data row — SECOND-TO-LAST since 1180
+       appended a shipping-weight column, which is why the anchor carries the
+       trailing cell with it. It cannot be a bare `/active/`: the PRODUCT's own
+       Status cell holds the same word near the front of the line. */
+    const before = rows[1]!;
+    rows[1] = before.replace(/,active,(\d*)$/, ',discontinued,$1');
+    expect(rows[1]).not.toBe(before); // the anchor still finds the cell
     const res = await http.post(IMPORT_PATH, { csv: rows.join('\n'), mode: 'apply' });
     expect(res.status).toBe(200);
     expect(await json(res)).toMatchObject({ updated: 1, invalid: [] });
@@ -848,6 +854,77 @@ describe('lossless round trip', () => {
     const cover = await ctx.db.execute(sql`
       SELECT cover_image_id FROM shop_products WHERE id = ${productId}`);
     expect(cover.rows[0].cover_image_id).toBe(COVER);
+  });
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * THE SHIPPING WEIGHT SURVIVES ITS OWN ROUND TRIP (migration 1180).
+   *
+   * §2's rule, applied to the column this change adds: feed the export back in
+   * and diff the STORED value, rather than reading the writer and the reader
+   * and believing they agree. That is the exact test the old CSV code never
+   * had, and its absence is what flattened two live descriptions.
+   *
+   * The trap specific to THIS column is the NULL. It means "price delivery on
+   * the displayed weight", so an export that wrote the RESOLVED number would
+   * come back as a real override — and one untouched export/import cycle would
+   * pin every variant in the shop to whatever it happened to display that day,
+   * reporting a clean success while doing it.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  it('round trips a shipping weight, and a NULL stays null rather than becoming an override', async () => {
+    const read = async (): Promise<Record<string, unknown>> => {
+      const res = await ctx.db.execute(sql`
+        SELECT weight_grams, shipping_weight_grams FROM shop_variants WHERE id = ${variantId}`);
+      return res.rows[0] as Record<string, unknown>;
+    };
+
+    /* The state every variant is in today: a displayed weight, no override. */
+    const before = await read();
+    expect(before.shipping_weight_grams).toBeNull();
+
+    const csv = await exportCsv();
+    /* The cell is EMPTY on the wire — not the resolved 1200. */
+    expect(csv.split(/\r?\n/)[1]).toMatch(/,$/);
+
+    expect((await http.post(IMPORT_PATH, { csv, mode: 'apply' })).status).toBe(200);
+    expect(await read()).toEqual(before);
+
+    /* Now with an override set, through the same cycle. */
+    await ctx.db.execute(sql`
+      UPDATE shop_variants SET shipping_weight_grams = 1400 WHERE id = ${variantId}`);
+    const withOverride = await exportCsv();
+    expect(withOverride).toContain('1400');
+    expect((await http.post(IMPORT_PATH, { csv: withOverride, mode: 'apply' })).status).toBe(200);
+    expect(await read()).toEqual({ weight_grams: 1200, shipping_weight_grams: 1400 });
+
+    /* And an emptied cell CLEARS it, so delivery rejoins the displayed weight
+       — the same "export writes '' for a stored NULL" symmetry every other
+       clearable column in this file has. */
+    const emptied = withOverride.replace(/,1400$/m, ',');
+    expect(emptied).not.toBe(withOverride);
+    expect((await http.post(IMPORT_PATH, { csv: emptied, mode: 'apply' })).status).toBe(200);
+    expect(await read()).toEqual(before);
+  });
+
+  it('leaves the shipping weight alone when the file predates the column', async () => {
+    /* The append-only contract, for the newest column: a file exported last
+       week is one cell short here, and short must mean "leave alone". Setting
+       it would strip an override the shop is pricing parcels on. */
+    await ctx.db.execute(sql`
+      UPDATE shop_variants SET shipping_weight_grams = 1400 WHERE id = ${variantId}`);
+    const shortHeader = HEADER.split(',').slice(0, 23).join(',');
+    expect(shortHeader).not.toContain('Shipping');
+    const csv = [shortHeader, 'silk-spool,Silk Spool,,,,,,,,SILK-YELLOW-1KG,,,,,,,,,,,,,'].join('\n');
+
+    expect((await http.post(IMPORT_PATH, { csv, mode: 'apply' })).status).toBe(200);
+    const after = await ctx.db.execute(sql`
+      SELECT shipping_weight_grams FROM shop_variants WHERE id = ${variantId}`);
+    expect(Number(after.rows[0].shipping_weight_grams)).toBe(1400);
+
+    // Leave the fixture as it was found.
+    await ctx.db.execute(sql`
+      UPDATE shop_variants SET shipping_weight_grams = NULL WHERE id = ${variantId}`);
   });
 
   it('names a bad swatch, weight, position or variant status on its own row', async () => {

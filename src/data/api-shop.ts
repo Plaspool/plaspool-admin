@@ -455,7 +455,15 @@ export interface ShopVariantBase {
   sku: string;
   optionValues: Record<string, string>;
   position: number;
+  /** Grams. What the shop SHOWS — the spool size on the storefront. */
   weightGrams: number | null;
+  /**
+   * Grams. What DELIVERY is priced on (migration 1180). `null` means "use
+   * `weightGrams`", and the edit modal shows that as an empty box rather than
+   * pre-filling the displayed weight — a pre-fill would save an override the
+   * moment anybody touched anything else on the variant.
+   */
+  shippingWeightGrams: number | null;
   status: VariantStatus;
   createdAt: number;
   updatedAt: number;
@@ -1922,6 +1930,8 @@ export const shopApi = {
       optionValues?: Record<string, string>;
       position?: number;
       weightGrams?: number | null;
+      /** Absent or `null` means "price delivery on `weightGrams`". */
+      shippingWeightGrams?: number | null;
       onHand?: number;
       backorderable?: boolean;
       imageId?: string | null;
@@ -1947,6 +1957,8 @@ export const shopApi = {
       optionValues?: Record<string, string>;
       position?: number;
       weightGrams?: number | null;
+      /** `null` CLEARS the override, so delivery rejoins `weightGrams`. */
+      shippingWeightGrams?: number | null;
       status?: VariantStatus;
       /** `null` clears the colour photograph; a committed image id sets it. */
       imageId?: string | null;

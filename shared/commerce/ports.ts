@@ -549,8 +549,13 @@ export interface VariantQuote {
   optionValues: Record<string, string>;
   /** Minor units plus an ISO-4217 code — contract §10's `Money`, structurally. */
   price: { amount: number; currency: string };
-  /** Shipping needs it; NULL is honest for a variant nobody has weighed. */
+  /** What the shop SHOWS. NULL is honest for a variant nobody has weighed. */
   weightGrams: number | null;
+  /**
+   * What DELIVERY is priced on (migration 1180), ALREADY RESOLVED: the
+   * variant's shipping-weight override when it has one, else `weightGrams`.
+   */
+  shippingWeightGrams: number | null;
   /**
    * `on_hand - reserved`, DERIVED (brief §5). A number to SHOW a shopper, never
    * a number to decide a sale on: between this read and a `reserve`, any

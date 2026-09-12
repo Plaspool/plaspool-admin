@@ -173,6 +173,10 @@ export const CSV_COLUMNS = [
   'Variant Weight Grams',
   'Variant Position',
   'Variant Status',
+  /* Migration 1180. ON THE END for the reason above — a file exported before
+     this column existed is one cell short here, which reads as "leave alone"
+     and leaves the override exactly as the shop already had it. */
+  'Variant Shipping Weight Grams',
 ] as const;
 
 /** Download links die after this. Enforced at read time — nothing sweeps. */
@@ -333,6 +337,11 @@ function variantExtraCells(variant: VariantWithPrice): string[] {
     variant.weightGrams == null ? '' : String(variant.weightGrams),
     String(variant.position),
     variant.status,
+    /* The RAW override, not the resolved weight (migration 1180). Exporting
+       the resolved one would turn "no override" into an override on the next
+       import, and every variant would end up pinned to whatever it displayed
+       the day the file was written. */
+    variant.shippingWeightGrams == null ? '' : String(variant.shippingWeightGrams),
   ];
 }
 
@@ -340,8 +349,8 @@ function variantExtraCells(variant: VariantWithPrice): string[] {
  *  through `Variant Backorderable`. */
 const NO_VARIANT_CELLS = ['', '', '', '', '', '', ''];
 
-/** The five appended variant cells, empty for a variantless product. */
-const NO_VARIANT_EXTRA_CELLS = ['', '', '', '', ''];
+/** The six appended variant cells, empty for a variantless product. */
+const NO_VARIANT_EXTRA_CELLS = ['', '', '', '', '', ''];
 
 /**
  * The whole catalogue as CSV, built by walking the existing list query with
@@ -477,6 +486,10 @@ interface CsvVariantInput {
   colorHex: string;
   /** null = empty cell, which CLEARS the weight (export writes '' for NULL). */
   weightGrams: number | null;
+  /** null = empty cell, which CLEARS the override so delivery rejoins the
+   *  displayed weight (migration 1180). The export writes '' for a stored
+   *  NULL, which is what keeps the round trip stable. */
+  shippingWeightGrams: number | null;
   /** null = no cell; a variant's order is otherwise left where it is. */
   position: number | null;
   /** '' = no cell. `discontinued` retires a variant without deleting it. */
@@ -663,7 +676,11 @@ function parseImportRows(csv: string): {
 
     /** A non-negative integer cell, or a complaint naming it. */
     const readCount = (
-      name: 'Variant Stock' | 'Variant Weight Grams' | 'Variant Position',
+      name:
+        | 'Variant Stock'
+        | 'Variant Weight Grams'
+        | 'Variant Shipping Weight Grams'
+        | 'Variant Position',
       max: number,
     ): number | null => {
       const value = cell(raw, name);
@@ -676,6 +693,7 @@ function parseImportRows(csv: string): {
       return parsed;
     };
     const weightGrams = readCount('Variant Weight Grams', 10_000_000);
+    const shippingWeightGrams = readCount('Variant Shipping Weight Grams', 10_000_000);
     const position = readCount('Variant Position', 100_000);
 
     const variantStatusRaw = cell(raw, 'Variant Status').toLowerCase();
@@ -735,6 +753,7 @@ function parseImportRows(csv: string): {
               imageId: cell(raw, 'Variant Image'),
               colorHex,
               weightGrams,
+              shippingWeightGrams,
               position,
               status: variantStatusRaw as CsvVariantInput['status'],
             },
@@ -877,6 +896,7 @@ async function applyVariantCreate(
       imageId: input.imageId || null,
       colorHex: input.colorHex || null,
       weightGrams: input.weightGrams,
+      shippingWeightGrams: input.shippingWeightGrams,
       // Omitted rather than passed as null: `createVariant` appends to the end
       // of the product when it is absent, and a file that carries no position
       // column must not pile every new variant onto index 0.
@@ -1064,6 +1084,9 @@ async function applyUpdate(
       if (present.has('Variant Image')) variantPatch.imageId = input.imageId || null;
       if (present.has('Variant Color Hex')) variantPatch.colorHex = input.colorHex || null;
       if (present.has('Variant Weight Grams')) variantPatch.weightGrams = input.weightGrams;
+      if (present.has('Variant Shipping Weight Grams')) {
+        variantPatch.shippingWeightGrams = input.shippingWeightGrams;
+      }
       if (input.position !== null) variantPatch.position = input.position;
       if (input.status !== '') variantPatch.status = input.status;
       if (input.backorderable !== null) variantPatch.backorderable = input.backorderable;

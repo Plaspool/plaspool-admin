@@ -53,7 +53,8 @@ import type {
 } from '../../../../shared/commerce/catalog-port';
 
 /** One variant's worth of world, as the fake holds it. */
-export interface FakeVariant extends Omit<VariantQuote, 'available' | 'bulkTiers'> {
+export interface FakeVariant
+  extends Omit<VariantQuote, 'available' | 'bulkTiers' | 'shippingWeightGrams'> {
   onHand: number;
   reserved: number;
   /** False makes `quote` return null and `reserve` answer `not_sellable`. */
@@ -67,6 +68,15 @@ export interface FakeVariant extends Omit<VariantQuote, 'available' | 'bulkTiers
    * nothing. `quote` substitutes `[]`, which is exactly what those fixtures mean.
    */
   bulkTiers?: BulkTier[];
+  /**
+   * OPTIONAL FOR THE SAME REASON, and pulled out of the `Omit` with it.
+   *
+   * On `VariantQuote` this is already RESOLVED — the real `quote` COALESCEs the
+   * override onto the displayed weight — so the fake resolves it the same way
+   * below. Every fixture written before migration 1180 describes a variant with
+   * no override, which is what `?? weightGrams` means.
+   */
+  shippingWeightGrams?: number | null;
 }
 
 interface Hold {
@@ -128,6 +138,9 @@ export function fakeCatalogPort(seedWith: readonly FakeVariant[] = []): FakeCata
         available: availableOf(v),
         // `?? []` — the port promises an array, and an absent ladder is none.
         bulkTiers: v.bulkTiers ?? [],
+        /* The real port's COALESCE, spelled in TS: no override means the
+           displayed weight, never null. */
+        shippingWeightGrams: v.shippingWeightGrams ?? v.weightGrams ?? null,
       });
     },
 

@@ -1541,6 +1541,11 @@ function VariantModal({
   const [weight, setWeight] = useState(
     variant?.weightGrams != null ? String(variant.weightGrams) : '',
   );
+  /* EMPTY WHEN THERE IS NO OVERRIDE, not the displayed weight copied in — see
+     the field's own comment for why a prefill would be a trap. */
+  const [shipWeight, setShipWeight] = useState(
+    variant?.shippingWeightGrams != null ? String(variant.shippingWeightGrams) : '',
+  );
   const [colorHex, setColorHex] = useState(variant?.colorHex ?? '');
   const [imageId, setImageId] = useState<string | null>(variant?.imageId ?? null);
   /* The variant's own currency where it has a price; the store's for a new one.
@@ -1607,6 +1612,14 @@ function VariantModal({
       setError('Weight is grams — a non-negative number, or empty.');
       return;
     }
+    const shippingWeightGrams = shipWeight.trim() === '' ? null : Number(shipWeight);
+    if (
+      shippingWeightGrams !== null &&
+      (!Number.isFinite(shippingWeightGrams) || shippingWeightGrams < 0)
+    ) {
+      setError('Shipping weight is grams — a non-negative number, or empty.');
+      return;
+    }
     const color = colorHex.trim() === '' ? null : colorHex.trim().toLowerCase();
     if (color !== null && !/^#[0-9a-f]{6}$/.test(color)) {
       setError('Colour is a six-digit hex code like #8b5a2b, or empty.');
@@ -1636,6 +1649,7 @@ function VariantModal({
           ...(sku.trim() ? { sku: sku.trim() } : {}),
           optionValues: buildOptionValues(),
           weightGrams,
+          shippingWeightGrams,
           colorHex: color,
           imageId,
           backorderable,
@@ -1649,6 +1663,7 @@ function VariantModal({
           ...(sku.trim() && sku.trim() !== variant.sku ? { sku: sku.trim() } : {}),
           optionValues: buildOptionValues(),
           weightGrams,
+          shippingWeightGrams,
           colorHex: color,
           imageId,
           compareAtMinor: compareAtMinor === null ? null : compareAtMinor.minor,
@@ -1739,10 +1754,30 @@ function VariantModal({
               suffix="g"
               inputMode="numeric"
               value={weight}
-              hint="Optional."
+              hint="Shown in your shop. Optional."
               onChange={(e) => setWeight(e.target.value)}
             />
           </div>
+          <div style={{ flex: 1 }}>
+            <AffixField
+              label="Shipping weight"
+              suffix="g"
+              inputMode="numeric"
+              value={shipWeight}
+              hint="Used to price delivery. Blank means the weight beside it."
+              /* A SUGGESTION, NEVER A PREFILL. Blank is the ordinary state and
+                 it means "use the weight shown" — writing that number in would
+                 pin every variant to whatever it displayed the day somebody
+                 opened this modal to change something else. Tab types it out
+                 for the one case where the two really do differ by a little. */
+              suggestion={weight.trim() === '' ? undefined : weight.trim()}
+              onSuggest={setShipWeight}
+              onChange={(e) => setShipWeight(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
           <div style={{ flex: 1 }}>
             <TextField
               label="Colour code"
@@ -1754,6 +1789,9 @@ function VariantModal({
               onChange={(e) => setColorHex(e.target.value)}
             />
           </div>
+          {/* Keeps the hex field at the half width it has always had. `.row`
+              does not wrap, so this costs nothing on a phone either. */}
+          <div style={{ flex: 1 }} aria-hidden="true" />
         </div>
 
         <div className="stack stack--tight">

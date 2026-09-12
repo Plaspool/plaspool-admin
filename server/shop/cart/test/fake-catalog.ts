@@ -47,6 +47,10 @@ export interface FakeVariant {
   optionValues?: Record<string, string>;
   price: { amount: number; currency: string };
   weightGrams?: number | null;
+  /** The shipping-weight OVERRIDE (migration 1180). Absent means "no override",
+   *  and this fake resolves it exactly as the real port's COALESCE does — so a
+   *  fixture that sets neither behaves like the variants production holds. */
+  shippingWeightGrams?: number | null;
   backorderable?: boolean;
   onHand: number;
   reserved?: number;
@@ -74,8 +78,11 @@ export interface CartFakeCatalog extends CatalogPort {
   reset(): void;
 }
 
-function filled(v: FakeVariant): Required<Omit<FakeVariant, 'weightGrams'>> & {
+function filled(
+  v: FakeVariant,
+): Required<Omit<FakeVariant, 'weightGrams' | 'shippingWeightGrams'>> & {
   weightGrams: number | null;
+  shippingWeightGrams: number | null;
 } {
   return {
     variantId: v.variantId,
@@ -85,6 +92,10 @@ function filled(v: FakeVariant): Required<Omit<FakeVariant, 'weightGrams'>> & {
     optionValues: v.optionValues ?? {},
     price: v.price,
     weightGrams: v.weightGrams ?? null,
+    /* THE REAL PORT'S COALESCE, SPELLED IN TS. `quote` returns this resolved,
+       so a fake that returned the raw override would let a cart test pass on a
+       null the production read can never produce. */
+    shippingWeightGrams: v.shippingWeightGrams ?? v.weightGrams ?? null,
     backorderable: v.backorderable ?? false,
     onHand: v.onHand,
     reserved: v.reserved ?? 0,
@@ -130,6 +141,7 @@ export function fakeCatalog(seedWith: readonly FakeVariant[] = []): CartFakeCata
         optionValues: v.optionValues,
         price: v.price,
         weightGrams: v.weightGrams,
+        shippingWeightGrams: v.shippingWeightGrams,
         available: availableOf(v),
         backorderable: v.backorderable,
         /* Seedable, so a cart test can drive the bulk ladder through the fake
@@ -292,6 +304,7 @@ export function sqlFakeCatalog(db: Db): SqlFakeCatalog {
         optionValues: {},
         price: { amount: Number(row.price_minor), currency: String(row.currency) },
         weightGrams: null,
+        shippingWeightGrams: null,
         available: Number(row.on_hand) - Number(row.reserved),
         backorderable: Boolean(row.backorderable),
         /* The SQL-backed fake models inventory, not pricing policy. Bulk-ladder

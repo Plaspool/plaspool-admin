@@ -346,6 +346,10 @@ async function openRowMenu(
 const FRESH_PATCH_BASE = {
   optionValues: { Colour: 'Blue' },
   weightGrams: 1000,
+  /* NULL, not 1000 (migration 1180). The modal leaves the shipping box empty
+     when there is no override, so an untouched save says "keep pricing
+     delivery on the weight I display" rather than minting one. */
+  shippingWeightGrams: null,
   colorHex: '#2244aa',
   imageId: null,
   compareAtMinor: null,
@@ -563,6 +567,89 @@ describe('the product editor', () => {
     expect(screen.queryByText(/^Original price:/)).toBeNull();
 
     /* Both refusals happened HERE: nothing reached the wire. */
+    expect(writes()).toEqual([]);
+  });
+
+  /**
+   * THE TWO WEIGHTS IN THE MODAL (migration 1180).
+   *
+   * The screen has to keep "delivery uses the weight I display" distinguishable
+   * from "delivery uses this other number", because the first is the state
+   * every variant is in and saving it as an override would pin the whole
+   * catalogue to today's spool sizes.
+   */
+  it('keeps the shipping weight empty until somebody sets one, and sends it', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    when(variantPath(freshVariant.id), { variant: { id: freshVariant.id, sku: freshVariant.sku } });
+    mountAt(spool.id);
+    await screen.findByDisplayValue('Recycled Spool');
+
+    const menu = await openRowMenu(user, freshVariant.sku);
+    await user.click(within(menu).getByRole('menuitem', { name: 'Edit variant…' }));
+    await screen.findByRole('dialog', { name: 'Edit SPL-BLU-1KG' });
+
+    /* The variant weighs 1000 g and has no override, so the box is EMPTY —
+       not pre-filled with 1000, which is the trap this asserts against. */
+    expect(screen.getByLabelText('Weight')).toHaveProperty('value', '1000');
+    expect(screen.getByLabelText('Shipping weight')).toHaveProperty('value', '');
+
+    await retype(user, 'Shipping weight', '1150');
+    await user.click(screen.getByRole('button', { name: 'Save variant' }));
+
+    await waitFor(() =>
+      expect(sent(variantPath(freshVariant.id), 'PATCH')).toEqual({
+        ...FRESH_PATCH_BASE,
+        shippingWeightGrams: 1150,
+      }),
+    );
+  });
+
+  it('shows an existing override, and an emptied box clears it', async () => {
+    const user = userEvent.setup();
+    /* A variant the owner has already given a parcel weight. */
+    withProduct({
+      ...spool,
+      variants: [{ ...freshVariant, shippingWeightGrams: 1400 }],
+    });
+    when(variantPath(freshVariant.id), { variant: { id: freshVariant.id, sku: freshVariant.sku } });
+    mountAt(spool.id);
+    await screen.findByDisplayValue('Recycled Spool');
+
+    const menu = await openRowMenu(user, freshVariant.sku);
+    await user.click(within(menu).getByRole('menuitem', { name: 'Edit variant…' }));
+    await screen.findByRole('dialog', { name: 'Edit SPL-BLU-1KG' });
+    expect(screen.getByLabelText('Shipping weight')).toHaveProperty('value', '1400');
+
+    /* Emptied means "go back to the displayed weight", which is `null` on the
+       wire — not an omitted key, which would leave the override in place. */
+    await retype(user, 'Shipping weight', '');
+    await user.click(screen.getByRole('button', { name: 'Save variant' }));
+
+    await waitFor(() =>
+      expect(sent(variantPath(freshVariant.id), 'PATCH')).toEqual({
+        ...FRESH_PATCH_BASE,
+        shippingWeightGrams: null,
+      }),
+    );
+  });
+
+  it('refuses a shipping weight that is not grams, before anything reaches the wire', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    mountAt(spool.id);
+    await screen.findByDisplayValue('Recycled Spool');
+
+    const menu = await openRowMenu(user, freshVariant.sku);
+    await user.click(within(menu).getByRole('menuitem', { name: 'Edit variant…' }));
+    await screen.findByRole('dialog', { name: 'Edit SPL-BLU-1KG' });
+    await retype(user, 'Shipping weight', '-5');
+    await user.click(screen.getByRole('button', { name: 'Save variant' }));
+
+    expect(await screen.findByRole('alert')).toHaveProperty(
+      'textContent',
+      'Shipping weight is grams — a non-negative number, or empty.',
+    );
     expect(writes()).toEqual([]);
   });
 
