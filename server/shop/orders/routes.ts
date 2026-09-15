@@ -70,6 +70,7 @@ import {
   sweepEmailIntents,
 } from './repo/emails';
 import { MAX_SEARCH_LENGTH, readOrderByNumber, searchOrders } from '../admin/orders';
+import { readRestock, restockCancelledOrder } from './repo/restock';
 
 /**
  * The HTTP surface (brief §6).
@@ -251,7 +252,33 @@ const CancelRefundChoice = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('none') }).strict(),
 ]);
 
-const CancelBody = z.object({ refund: CancelRefundChoice.optional() }).strict();
+const CancelBody = z
+  .object({
+    refund: CancelRefundChoice.optional(),
+    /**
+     * What goes back in stock, line by line (migration 1200). Only for a PAID
+     * order: an unpaid order's units were only set aside, and come back when
+     * the hold expires. Absent means "put nothing back", which is what a cancel
+     * did before this existed.
+     */
+    restock: z
+      .object({
+        lines: z
+          .array(
+            z
+              .object({
+                orderLineId: str().min(1).max(300),
+                qty: z.number().int().min(0).max(1_000_000),
+              })
+              .strict(),
+          )
+          .max(1000),
+        keptOutReason: str().max(1000).nullable().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
 
 /**
  * Percentage of a FROZEN total, in minor units. `100` is returned as the exact
@@ -879,6 +906,27 @@ function registerAdminRoutes(
       throw new BadRequestError('refund');
     }
 
+    /*
+     * THE RESTOCK LIST IS CHECKED BEFORE ANYTHING HAPPENS (migration 1200), so a
+     * malformed list is a 400 on an order that is still exactly as it was,
+     * rather than a cancel that went through with a restock that could not.
+     * Whether units have SHIPPED is not decided here: that is the restock
+     * statement's own guard, against the rows as they are when it runs.
+     */
+    if (body.restock) {
+      if (read.order.status !== 'paid') throw new BadRequestError('restock');
+      const owned = new Map(read.lines.map((l) => [l.id, l]));
+      const seen = new Set<string>();
+      for (const choice of body.restock.lines) {
+        const orderLine = owned.get(choice.orderLineId);
+        if (!orderLine || seen.has(choice.orderLineId)) {
+          throw new BadRequestError('restock.orderLineId');
+        }
+        if (choice.qty > orderLine.qty) throw new BadRequestError('restock.qty');
+        seen.add(choice.orderLineId);
+      }
+    }
+
     let refundedAmount: number | undefined;
 
     /*
@@ -979,6 +1027,28 @@ function registerAdminRoutes(
      * first — and most cancelled orders never spent a point.
      */
     await refundPoints(db, deps().redemption, read.order.id, read.order.orderNumber, 'admin');
+
+    /*
+     * PUT BACK WHAT STAFF CHOSE (migration 1200). After the cancel and never
+     * throwing, for the reason `refundPoints` gives above: the cancel has
+     * happened and is what the caller is owed. A failure is REPORTED, so the
+     * screen can tell staff to adjust the stock count by hand, never swallowed.
+     */
+    if (body.restock) {
+      try {
+        const restock = await restockCancelledOrder(db, {
+          orderId: read.order.id,
+          lines: body.restock.lines,
+          keptOutReason: body.restock.keptOutReason ?? null,
+          actorId: currentUser(c).id,
+          now: deps().now(),
+        });
+        return c.json({ order, restock });
+      } catch (cause) {
+        console.error('restock after cancel failed', read.order.id, cause);
+        return c.json({ order, restock: { failed: true } });
+      }
+    }
 
     return c.json({ order });
   });
@@ -1175,6 +1245,12 @@ async function orderDetail(db: Db, read: OrderRead, deps: ResolvedDeps) {
      * field of `Order`. `null` for an online order.
      */
     manual: read.order.source === 'manual' ? await readManualDetails(db, read.order.id) : null,
+    /*
+     * WHAT A CANCELLED ORDER PUT BACK, and why the rest stayed out (migration
+     * 1200). ADMIN ONLY, for the same reason `manual` is: the customer's view
+     * spreads `Order` and `OrderLine`, so neither carries these fields.
+     */
+    restock: await readRestock(db, read.order.id),
     fulfillments: await listFulfillments(db, read.order.id),
     timeline: await withActorNames(db, await listTimeline(db, read.order.id)),
     /*

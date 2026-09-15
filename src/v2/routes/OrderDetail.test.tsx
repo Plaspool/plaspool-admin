@@ -361,8 +361,13 @@ describe('the order detail screen', () => {
     await user.click(within(dialog).getByRole('radio', { name: /Refund in full/ }));
     await user.click(within(dialog).getByRole('button', { name: 'Cancel order' }));
 
+    /* Migration 1200: a paid cancel also says what goes back in stock. Nothing
+       has shipped, so by default every unit does — both of line_1's two. */
     await waitFor(() =>
-      expect(sent(CANCEL, 'POST')).toEqual({ refund: { kind: 'percent', percent: 100 } }),
+      expect(sent(CANCEL, 'POST')).toEqual({
+        refund: { kind: 'percent', percent: 100 },
+        restock: { lines: [{ orderLineId: 'line_1', qty: 2 }], keptOutReason: null },
+      }),
     );
     expect(await screen.findByText('PP-1042-7 cancelled')).toBeTruthy();
   });
@@ -672,5 +677,124 @@ describe('the courier zone on the address', () => {
     await loaded();
 
     expect(screen.queryByText(/courier zone/)).toBeNull();
+  });
+});
+
+// ============================================================================
+
+/**
+ * PUTTING STOCK BACK ON CANCEL (migration 1200). Before this the dialog said
+ * "Cancelling puts the stock back" and nothing did. The owner chose a number per
+ * line over an automatic restock: only the person holding the parcel knows
+ * whether a spool can be sold again.
+ */
+describe('putting stock back when cancelling', () => {
+  const openCancel = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Cancel order…' }));
+    return screen.findByRole('dialog', { name: 'Cancel PP-1042-7?' });
+  };
+
+  it('offers every unit that has not shipped, and says so plainly', async () => {
+    const user = userEvent.setup();
+    withOrder();
+    mount();
+    await loaded();
+    const dialog = await openCancel(user);
+
+    expect(within(dialog).queryByText(/puts the stock back/)).toBeNull();
+    const box = within(dialog).getByLabelText('Put back how many of Recycled Spool');
+    expect(box).toHaveProperty('value', '2');
+    expect(box).toHaveProperty('max', '2');
+    expect(within(dialog).queryByLabelText(/Why the rest stays out/)).toBeNull();
+  });
+
+  it('caps a line at the units that never shipped', async () => {
+    const user = userEvent.setup();
+    withOrder([parcel('shipped')]);
+    mount();
+    await loaded();
+    const dialog = await openCancel(user);
+
+    const box = within(dialog).getByLabelText('Put back how many of Recycled Spool');
+    expect(box).toHaveProperty('value', '1');
+    expect(box).toHaveProperty('max', '1');
+    expect(within(dialog).getByText('1 already sent out')).toBeTruthy();
+  });
+
+  it('sends a lowered number with the reason for what stays out', async () => {
+    const user = userEvent.setup();
+    withOrder();
+    when(CANCEL, { order: { ...order, status: 'cancelled', cancelledAt: NOW }, restock: { returned: 1, refused: [] } });
+    mount();
+    await loaded();
+    const dialog = await openCancel(user);
+
+    const box = within(dialog).getByLabelText('Put back how many of Recycled Spool');
+    await user.clear(box);
+    await user.type(box, '1');
+    await user.type(within(dialog).getByLabelText(/Why the rest stays out/), 'Seal broken');
+    await user.click(within(dialog).getByRole('radio', { name: /Refund in full/ }));
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel order' }));
+
+    await waitFor(() =>
+      expect(sent(CANCEL, 'POST')).toEqual({
+        refund: { kind: 'percent', percent: 100 },
+        restock: { lines: [{ orderLineId: 'line_1', qty: 1 }], keptOutReason: 'Seal broken' },
+      }),
+    );
+  });
+
+  it('refuses a number above what can go back, before anything reaches the server', async () => {
+    const user = userEvent.setup();
+    withOrder();
+    mount();
+    await loaded();
+    const dialog = await openCancel(user);
+
+    const box = within(dialog).getByLabelText('Put back how many of Recycled Spool');
+    await user.clear(box);
+    await user.type(box, '5');
+    await user.click(within(dialog).getByRole('radio', { name: /Refund in full/ }));
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel order' }));
+
+    expect(await within(dialog).findByText('Recycled Spool: a whole number from 0 to 2.')).toBeTruthy();
+    expect(sentNothing(CANCEL)).toBe(true);
+  });
+
+  it('tells staff when the cancel went through but the stock could not be put back', async () => {
+    const user = userEvent.setup();
+    withOrder();
+    when(CANCEL, { order: { ...order, status: 'cancelled', cancelledAt: NOW }, restock: { failed: true } });
+    mount();
+    await loaded();
+    const dialog = await openCancel(user);
+    await user.click(within(dialog).getByRole('radio', { name: /Refund in full/ }));
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel order' }));
+
+    expect(
+      await screen.findByText('PP-1042-7 cancelled, but the stock wasn’t put back. Adjust the stock count by hand.'),
+    ).toBeTruthy();
+  });
+
+  it('shows no list for an unpaid order, and sends no restock', async () => {
+    const user = userEvent.setup();
+    when(ORDER, {
+      order: { ...order, status: 'pending', paidAt: null },
+      lines: [line],
+      fulfillments: [],
+      timeline: [],
+      emails: [],
+      payment: null,
+    });
+    when(CANCEL, { order: { ...order, status: 'cancelled', cancelledAt: NOW } });
+    mount();
+    await loaded();
+    const dialog = await openCancel(user);
+
+    expect(within(dialog).queryByLabelText('Put back how many of Recycled Spool')).toBeNull();
+    expect(within(dialog).getByText(/Items set aside for it go back in stock within about 30 minutes/)).toBeTruthy();
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel order' }));
+    await waitFor(() => expect(sent(CANCEL, 'POST')).toEqual({}));
   });
 });

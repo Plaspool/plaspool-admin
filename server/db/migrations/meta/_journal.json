@@ -491,6 +491,13 @@
                         "when":  1786600005760,
                         "tag":  "1180_variant_shipping_weight",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  70,
+                        "version":  "7",
+                        "when":  1786600005770,
+                        "tag":  "1200_cancel_restock",
+                        "breakpoints":  true
                     }
                 ]
 }
