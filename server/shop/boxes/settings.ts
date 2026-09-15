@@ -209,20 +209,26 @@ export async function saveMysteryBox(
     throw new BadRequestError('box_incomplete');
   }
 
-  /* A variant ticked on BOTH lists is on the main list. Counting it twice is how
-     "boxes can be bought" read 22 from 11 items. */
-  const mainIds = new Set(input.main);
-  const backupIds = [...new Set(input.backup)].filter((id) => !mainIds.has(id));
+  const mainIds = [...new Set(input.main)];
+  let backupIds = [...new Set(input.backup)];
 
   /* Only ordinary, ACTIVE products can go inside — never a draft, and never the box. */
-  const listed = [...new Set([...input.main, ...backupIds])];
+  const listed = [...new Set([...mainIds, ...backupIds])];
   if (listed.length > 0) {
-    const ok = await db.execute(sql`
-      SELECT count(*)::int AS n FROM shop_variants v JOIN shop_products p ON p.id = v.product_id
-       WHERE v.id = ANY(${sql.param(listed)}::text[])
-         AND p.status = 'active' AND p.deleted_at IS NULL
-         AND p.id IS DISTINCT FROM ${before.productId}::text`);
-    if (Number(ok.rows[0]?.n) !== listed.length) throw new BadRequestError('items');
+    const rows = (
+      await db.execute(sql`
+        SELECT v.id, v.product_id FROM shop_variants v JOIN shop_products p ON p.id = v.product_id
+         WHERE v.id = ANY(${sql.param(listed)}::text[])
+           AND p.status = 'active' AND p.deleted_at IS NULL
+           AND p.id IS DISTINCT FROM ${before.productId}::text`)
+    ).rows;
+    if (rows.length !== listed.length) throw new BadRequestError('items');
+    /* THE BACKUP IS A DIFFERENT PRODUCT (owner's decision): a product with any
+       variant on the main list can't also be on the backup list. The screen
+       never sends one; a list saved before the rule loses it here. */
+    const productOf = new Map(rows.map((r) => [String(r.id), String(r.product_id)]));
+    const mainProducts = new Set(mainIds.map((id) => productOf.get(id)));
+    backupIds = backupIds.filter((id) => !mainProducts.has(productOf.get(id)));
   }
 
   /*

@@ -264,7 +264,23 @@ export default function SettingsMysteryBox() {
   const box = view.box;
   const count = Number(draft.itemCount);
   const countOk = Number.isInteger(count) && count >= 1;
-  const mainTicked = new Set(draft.ticked.main);
+  /* A PRODUCT SITS ON ONE LIST (owner's decision 2026-09-15): the backup is a
+     different product, never more of the same one. The server holds the same
+     rule, and ignores a backup product that is also on the main list. */
+  const mainProducts = new Set(draft.groups.main);
+  const productOfVariant = (variantId: string): string | undefined =>
+    view.items.find((i) => i.variantId === variantId)?.productId ??
+    Object.values(details).find((d) => d.variants.some((v) => v.id === variantId))?.id;
+  const countsAsBackup = (variantId: string) => !mainProducts.has(productOfVariant(variantId) ?? '');
+  const titleOf = (productId: string): string =>
+    details[productId]?.title ??
+    productById.get(productId)?.title ??
+    view.items.find((i) => i.productId === productId)?.productTitle ??
+    'Product';
+  const shortTitle = (productId: string) => titleOf(productId).split(' - ')[0].trim();
+  /* Backup products that are ALSO on the main list: saved before the rule, or
+     left behind by a move. They don't count, and the card says so. */
+  const overlapping = draft.groups.backup.filter((id) => mainProducts.has(id));
 
   /* Items on a list that are in stock right now — the number "can be bought"
      divides. The server's figure also subtracts boxes already sold and waiting,
@@ -278,9 +294,8 @@ export default function SettingsMysteryBox() {
     }
     return 0;
   };
-  /* A variant ticked on both lists belongs to the main list, and counts once. */
-  const unitsOn = (list: List) =>
-    draft.ticked[list].filter((id) => list === 'main' || !mainTicked.has(id)).reduce((n, id) => n + stockOf(id), 0);
+  const tickedOn = (list: List) => draft.ticked[list].filter((id) => list === 'main' || countsAsBackup(id));
+  const unitsOn = (list: List) => tickedOn(list).reduce((n, id) => n + stockOf(id), 0);
   const mainUnits = unitsOn('main');
   const backupUnits = draft.shortfall === 'backup' ? unitsOn('backup') : 0;
   const estimate =
@@ -312,30 +327,54 @@ export default function SettingsMysteryBox() {
     setDetails(all);
     setDraft((d) => {
       if (!d) return d;
-      const onMain = new Set(d.ticked.main);
-      const variantIds = ids.flatMap((id) =>
-        (all[id]?.variants ?? [])
-          .filter((v) => v.status === 'active' && (list === 'main' || !onMain.has(v.id)))
-          .map((v) => v.id),
+      const other: List = list === 'main' ? 'backup' : 'main';
+      const fresh = ids.filter((id) => !d.groups[list].includes(id) && !d.groups[other].includes(id));
+      const variantIds = fresh.flatMap((id) =>
+        (all[id]?.variants ?? []).filter((v) => v.status === 'active').map((v) => v.id),
       );
       return {
         ...d,
-        groups: { ...d.groups, [list]: [...d.groups[list], ...ids.filter((id) => !d.groups[list].includes(id))] },
+        groups: { ...d.groups, [list]: [...d.groups[list], ...fresh] },
         ticked: { ...d.ticked, [list]: [...new Set([...d.ticked[list], ...variantIds])] },
       };
     });
     setProblem(null);
   }
 
-  function removeProduct(list: List, productId: string) {
-    const ids = new Set([
+  const variantIdsOf = (productId: string) =>
+    new Set([
       ...(details[productId]?.variants.map((v) => v.id) ?? []),
       ...view!.items.filter((i) => i.productId === productId).map((i) => i.variantId),
     ]);
+
+  function removeProducts(list: List, productIds: string[]) {
+    const gone = new Set(productIds.flatMap((id) => [...variantIdsOf(id)]));
     edit({
-      groups: { ...draft!.groups, [list]: draft!.groups[list].filter((id) => id !== productId) },
-      ticked: { ...draft!.ticked, [list]: draft!.ticked[list].filter((id) => !ids.has(id)) },
+      groups: { ...draft!.groups, [list]: draft!.groups[list].filter((id) => !productIds.includes(id)) },
+      ticked: { ...draft!.ticked, [list]: draft!.ticked[list].filter((id) => !gone.has(id)) },
     });
+  }
+  const removeProduct = (list: List, productId: string) => removeProducts(list, [productId]);
+
+  /* Moves a product to the other list with the variants it had ticked; whatever
+     the other list held for that product is replaced. */
+  function moveProduct(from: List, productId: string) {
+    const to: List = from === 'main' ? 'backup' : 'main';
+    const ids = variantIdsOf(productId);
+    const moving = draft!.ticked[from].filter((id) => ids.has(id));
+    edit({
+      groups: {
+        ...draft!.groups,
+        [from]: draft!.groups[from].filter((id) => id !== productId),
+        [to]: draft!.groups[to].includes(productId) ? draft!.groups[to] : [...draft!.groups[to], productId],
+      },
+      ticked: {
+        ...draft!.ticked,
+        [from]: draft!.ticked[from].filter((id) => !ids.has(id)),
+        [to]: [...draft!.ticked[to].filter((id) => !ids.has(id)), ...moving],
+      },
+    });
+    toast.show(to === 'backup' ? `${shortTitle(productId)} moved to the backup list` : `${shortTitle(productId)} moved to the main list`);
   }
 
   async function save() {
@@ -379,7 +418,7 @@ export default function SettingsMysteryBox() {
         priceMinor,
         itemCount: countOk ? count : null,
         main: draft.ticked.main,
-        backup: draft.ticked.backup.filter((id) => !mainTicked.has(id)),
+        backup: tickedOn('backup'),
       });
       setView(next);
       setDraft(draftOf(next));
@@ -399,15 +438,28 @@ export default function SettingsMysteryBox() {
 
   const renderGroups = (list: List) => {
     const ticked = new Set(draft.ticked[list]);
+    /* Products on sale that aren't on either list yet. */
+    const spare = products.filter(
+      (p) => p.id !== box?.productId && !draft.groups.main.includes(p.id) && !draft.groups.backup.includes(p.id),
+    );
     if (draft.groups[list].length === 0) {
+      const nothingLeft = list === 'backup' && spare.length === 0;
       return (
         <div className="mbx-empty">
           <Package aria-hidden="true" />
-          <p>{list === 'main' ? 'No products yet. Add the products that can go in the box.' : 'No backup products yet.'}</p>
-          <Button tone="primary" onClick={() => setPicking(list)}>
-            <Plus aria-hidden="true" />
-            Add products
-          </Button>
+          <p>
+            {list === 'main'
+              ? 'No products yet. Add the products that can go in the box.'
+              : nothingLeft
+                ? 'Every product on sale is on the main list. Choose “Move to backup” on one above to keep it for when the main list runs out.'
+                : 'No backup products yet. Add products that aren’t on the main list.'}
+          </p>
+          {nothingLeft ? null : (
+            <Button tone="primary" onClick={() => setPicking(list)}>
+              <Plus aria-hidden="true" />
+              Add products
+            </Button>
+          )}
         </div>
       );
     }
@@ -416,11 +468,12 @@ export default function SettingsMysteryBox() {
         {draft.groups[list].map((productId) => {
           const detail = details[productId];
           const listed = productById.get(productId);
-          const title = detail?.title ?? listed?.title ?? view.items.find((i) => i.productId === productId)?.productTitle ?? 'Product';
+          const title = titleOf(productId);
           const cover = detail?.coverImageId ?? listed?.coverImageId ?? null;
           const variants = (detail?.variants ?? []).filter((v) => v.status === 'active');
-          /* On the backup list, a variant already on the main list can't be ticked twice. */
-          const open = variants.filter((v) => list === 'main' || !mainTicked.has(v.id));
+          /* A backup product that is also on the main list isn't used; its tiles show why. */
+          const overlap = list === 'backup' && mainProducts.has(productId);
+          const open = overlap ? [] : variants;
           const on = open.filter((v) => ticked.has(v.id)).length;
           return (
             <section key={productId} className="mbx-group" aria-label={title}>
@@ -431,16 +484,28 @@ export default function SettingsMysteryBox() {
                 <span className="mbx-group__title">
                   <strong>{title}</strong>
                   <span className="muted">
-                    {!detail
-                      ? 'Loading variants…'
-                      : open.length === 0 && variants.length > 0
-                        ? 'All its variants are already on the main list'
+                    {overlap
+                      ? 'Also on the main list, so it isn’t used as backup'
+                      : !detail
+                        ? 'Loading variants…'
                         : `${on} of ${open.length} ${open.length === 1 ? 'variant' : 'variants'} in the ${list === 'main' ? 'box' : 'backup'}`}
                   </span>
                 </span>
                 {detail && open.length > 0 ? (
                   <Button tone="plain" onClick={() => setTicked(list, open.map((v) => v.id), on !== open.length)}>
                     {on === open.length ? 'Clear' : 'Select all'}
+                  </Button>
+                ) : null}
+                {list === 'main' && draft.shortfall === 'backup' ? (
+                  <Button tone="plain" onClick={() => moveProduct('main', productId)}>
+                    <ArrowDown aria-hidden="true" />
+                    Move to backup
+                  </Button>
+                ) : null}
+                {list === 'backup' && !overlap ? (
+                  <Button tone="plain" onClick={() => moveProduct('backup', productId)}>
+                    <ArrowUp aria-hidden="true" />
+                    Move to main list
                   </Button>
                 ) : null}
                 <Button tone="plain" iconOnly aria-label={`Remove ${title}`} onClick={() => removeProduct(list, productId)}>
@@ -450,7 +515,7 @@ export default function SettingsMysteryBox() {
               <ul className="mbx-variants">
                 {variants.map((v) => {
                   const stock = Math.max(0, v.available ?? 0);
-                  const taken = list === 'backup' && mainTicked.has(v.id);
+                  const taken = overlap;
                   const isOn = !taken && ticked.has(v.id);
                   return (
                     <li key={v.id}>
@@ -480,10 +545,10 @@ export default function SettingsMysteryBox() {
         })}
         <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 'var(--s2)' }}>
           <span className="field__hint">
-            {draft.ticked[list].filter((id) => list === 'main' || !mainTicked.has(id)).length}{' '}
-            {draft.ticked[list].length === 1 ? 'variant' : 'variants'} · {unitsOn(list)} {unitsOn(list) === 1 ? 'item' : 'items'} in stock
+            {tickedOn(list).length} {tickedOn(list).length === 1 ? 'variant' : 'variants'} · {unitsOn(list)}{' '}
+            {unitsOn(list) === 1 ? 'item' : 'items'} in stock
           </span>
-          <Button onClick={() => setPicking(list)}>
+          <Button disabled={spare.length === 0} onClick={() => setPicking(list)}>
             <Plus aria-hidden="true" />
             Add products
           </Button>
@@ -630,7 +695,25 @@ export default function SettingsMysteryBox() {
 
           {draft.shortfall === 'backup' ? (
             <Card title="Backup items">
-              <p className="field__hint">Used only when the list above runs out. Variants already on the main list can’t be added twice.</p>
+              <p className="field__hint">
+                Used only when the list above runs out. Each product goes on one list only, so the backup is always
+                something different.
+              </p>
+              {overlapping.length > 0 ? (
+                <Banner
+                  tone="warn"
+                  title={overlapping.length === 1 ? 'A product is on both lists' : `${overlapping.length} products are on both lists`}
+                  action={
+                    <Button onClick={() => removeProducts('backup', overlapping)}>
+                      {overlapping.length === 1 ? 'Remove it from backup' : 'Remove them from backup'}
+                    </Button>
+                  }
+                >
+                  {listSentence(overlapping.map(shortTitle))} {overlapping.length === 1 ? 'is' : 'are'} on the main list
+                  too, so {overlapping.length === 1 ? 'it isn’t' : 'they aren’t'} used as backup. Move a product here from
+                  the main list instead.
+                </Banner>
+              ) : null}
               {renderGroups('backup')}
             </Card>
           ) : null}
@@ -733,7 +816,21 @@ export default function SettingsMysteryBox() {
       {picking ? (
         <ProductPicker
           products={products.filter((p) => p.id !== box?.productId)}
-          already={new Set(draft.groups[picking])}
+          unavailable={
+            new Map<string, Unavailable>([
+              ...draft.groups[picking].map((id): [string, Unavailable] => [
+                id,
+                { here: true, hint: picking === 'main' ? 'Already in the box' : 'Already a backup' },
+              ]),
+              ...draft.groups[picking === 'main' ? 'backup' : 'main'].map((id): [string, Unavailable] => [
+                id,
+                {
+                  here: false,
+                  hint: picking === 'main' ? 'On the backup list. Move it from there.' : 'On the main list. Move it from there.',
+                },
+              ]),
+            ])
+          }
           title={picking === 'main' ? 'Add products to the box' : 'Add backup products'}
           onClose={() => setPicking(null)}
           onAdd={(ids) => {
@@ -1113,15 +1210,27 @@ function HowItWorksCard({ page, onChange }: { page: BoxPage; onChange: (patch: (
 }
 
 /** A searchable list of products on sale, pick several, add them in one go. */
+/** "A", "A and B", "A, B and C". */
+function listSentence(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+/** Why a product can't be picked: already on this list (`here`), or on the other one. */
+interface Unavailable {
+  here: boolean;
+  hint: string;
+}
+
 function ProductPicker({
   products,
-  already,
+  unavailable,
   title,
   onClose,
   onAdd,
 }: {
   products: ShopProduct[];
-  already: Set<string>;
+  unavailable: Map<string, Unavailable>;
   title: string;
   onClose: () => void;
   onAdd: (ids: string[]) => void;
@@ -1159,7 +1268,8 @@ function ProductPicker({
         ) : (
           <ul className="mbx-picker">
             {shown.map((p) => {
-              const on = already.has(p.id);
+              const blocked = unavailable.get(p.id);
+              const on = blocked !== undefined;
               return (
                 <li key={p.id}>
                   <div className={`mbx-picker__row${on ? ' is-disabled' : ''}`}>
@@ -1172,8 +1282,8 @@ function ProductPicker({
                           {p.title || 'Untitled product'}
                         </span>
                       }
-                      hint={on ? 'Already in the box' : undefined}
-                      checked={on || chosen.has(p.id)}
+                      hint={blocked?.hint}
+                      checked={blocked?.here === true || chosen.has(p.id)}
                       onChange={(next) => {
                         if (on) return;
                         setChosen((c) => {
