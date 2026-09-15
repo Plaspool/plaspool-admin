@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useLocation, useParams } from 'react-router-dom';
 import { Ban, Check, CreditCard, PackageCheck, Pencil, Receipt, Truck, Undo2 } from 'lucide-react';
 import {
@@ -10,6 +10,8 @@ import {
   type ManualOrderStock,
   type ShopCourierProvider,
   type ShopEmailIntent,
+  type ShopBoxFill,
+  type ShopBoxLine,
   type ShopFulfillment,
   type ShopOrderDetail,
   type ShopOrderLine,
@@ -24,7 +26,8 @@ import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, ButtonLink } from '../ui/primitives';
 import { Card } from '../ui/Card';
 import { Defs, type DefRow } from '../ui/Defs';
-import { AffixField, Radio, TextField } from '../ui/Field';
+import { AffixField, Checkbox, Radio, TextField } from '../ui/Field';
+import { BoxFillModal } from './BoxFillModal';
 import { MenuItem, MenuSeparator } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
 import { Timeline, type TimelineEvent } from '../ui/Timeline';
@@ -129,15 +132,44 @@ function firstParcel(
   return null;
 }
 
+/**
+ * MYSTERY BOXES (migration 1220). Whether a filled box is still free to go in a
+ * parcel: in none yet, or only in one that was cancelled. The server's parcel
+ * guard uses the same rule; this copy only shapes the screen.
+ */
+function boxIsFree(fill: ShopBoxFill, fulfillments: ShopFulfillment[]): boolean {
+  if (fill.fulfillmentId === null) return true;
+  return fulfillments.find((f) => f.id === fill.fulfillmentId)?.status === 'cancelled';
+}
+
+/**
+ * How many units of a line can go in a parcel NOW. An ordinary line: whatever
+ * has not been sent. A box line: only its filled boxes not already in a live
+ * parcel, because an empty box cannot be sent.
+ */
+function sendableUnits(
+  line: ShopOrderLine,
+  fulfillments: ShopFulfillment[],
+  boxLines: ShopBoxLine[],
+  boxFills: ShopBoxFill[],
+): number {
+  const remaining = line.qty - line.fulfilledQty;
+  if (!boxLines.some((b) => b.orderLineId === line.id)) return remaining;
+  const free = boxFills.filter((f) => f.orderLineId === line.id && boxIsFree(f, fulfillments)).length;
+  return Math.max(0, Math.min(remaining, free));
+}
+
 function deriveNextStep(
   order: ShopOrderDetail['order'],
   lines: ShopOrderLine[],
   fulfillments: ShopFulfillment[],
+  boxLines: ShopBoxLine[] = [],
+  boxFills: ShopBoxFill[] = [],
 ): NextStep {
   if (order.status === 'pending') return { kind: 'awaiting' };
   if (order.status === 'cancelled' || order.status === 'refunded') return { kind: 'settled' };
 
-  const remainder = lines.reduce((n, l) => n + (l.qty - l.fulfilledQty), 0);
+  const remainder = lines.reduce((n, l) => n + sendableUnits(l, fulfillments, boxLines, boxFills), 0);
   if ((order.status === 'paid' || order.status === 'partially_refunded') && remainder > 0) {
     return { kind: 'fulfil' };
   }
@@ -217,6 +249,8 @@ export default function OrderDetail() {
     (location.state as { stockFailed?: ManualOrderStock['failed'] } | null)?.stockFailed ?? [];
 
   const [modal, setModal] = useState<'none' | 'fulfil' | 'cancel' | 'refund' | 'void'>('none');
+  /* Migration 1220. The mystery box being filled, if any. */
+  const [filling, setFilling] = useState<{ lineId: string; boxNo: number } | null>(null);
   /** Booking a courier for ONE parcel, so it carries which parcel — the same
    *  shape and the same reason as the ship dialog below. */
   const [courierDialog, setCourierDialog] = useState<{
@@ -248,6 +282,21 @@ export default function OrderDetail() {
   const { order, lines, fulfillments, timeline, emails, payment } = data;
   const currency = order.currency;
   const itemCount = lines.reduce((n, l) => n + l.qty, 0);
+  /* Migration 1220. Which lines are mystery boxes, and what is in the filled ones.
+     Both absent on a response from before boxes existed. */
+  const boxLines = data.boxLines ?? [];
+  const boxFills = data.boxFills ?? [];
+  const boxPaid = order.status === 'paid' || order.status === 'partially_refunded';
+  const emptyBoxes = boxPaid
+    ? boxLines.flatMap((b) => {
+        const line = lines.find((l) => l.id === b.orderLineId);
+        if (!line) return [];
+        return Array.from({ length: line.qty }, (_, i) => i + 1)
+          .filter((n) => !boxFills.some((f) => f.orderLineId === line.id && f.boxNo === n))
+          .map((boxNo) => ({ line, boxNo }));
+      })
+    : [];
+  const onlyOneBoxLine = boxLines.length === 1;
   const unfulfilled = lines.some((l) => l.fulfilledQty < l.qty);
 
   /* A SALE RECORDED BY HAND. It arrives already sent out and paid, has no
@@ -309,7 +358,7 @@ export default function OrderDetail() {
     }
   }
 
-  const nextStep = deriveNextStep(order, lines, fulfillments);
+  const nextStep = deriveNextStep(order, lines, fulfillments, boxLines, boxFills);
 
   /** The FIRST item of More actions, always present: it names the next
    *  lifecycle move and runs it — or says honestly that there is none. */
@@ -480,6 +529,29 @@ export default function OrderDetail() {
         </Banner>
       ) : null}
 
+      {emptyBoxes.length > 0 ? (
+        <Banner
+          tone="warn"
+          title={
+            onlyOneBoxLine
+              ? `Box ${emptyBoxes[0].boxNo} needs filling before it can go in a parcel`
+              : `${emptyBoxes[0].line.title}, box ${emptyBoxes[0].boxNo}, needs filling before it can go in a parcel`
+          }
+          action={
+            <Button
+              tone="primary"
+              onClick={() => setFilling({ lineId: emptyBoxes[0].line.id, boxNo: emptyBoxes[0].boxNo })}
+            >
+              {`Fill box ${emptyBoxes[0].boxNo}`}
+            </Button>
+          }
+        >
+          {emptyBoxes.length === 1
+            ? 'Everything else on this order can be sent out now. The box’s items leave stock when you save its contents.'
+            : `${emptyBoxes.length} boxes are empty. Everything else on this order can be sent out now.`}
+        </Banner>
+      ) : null}
+
       <div className="form2">
         <div className="form2__main">
           {/* ── the lines — THE table ─────────────────────────────────── */}
@@ -509,7 +581,8 @@ export default function OrderDetail() {
                 </thead>
                 <tbody>
                   {lines.map((line) => (
-                    <tr key={line.id}>
+                    <Fragment key={line.id}>
+                    <tr>
                       <td className="cell--primary">
                         <span className="idcell">
                           <span className="idcell__text">
@@ -542,6 +615,42 @@ export default function OrderDetail() {
                         <strong className="num">{money(line.lineTotal, currency)}</strong>
                       </td>
                     </tr>
+                    {boxLines.some((b) => b.orderLineId === line.id)
+                      ? Array.from({ length: line.qty }, (_, i) => i + 1).map((boxNo) => {
+                          const fill = boxFills.find((f) => f.orderLineId === line.id && f.boxNo === boxNo);
+                          const label = onlyOneBoxLine ? `box ${boxNo}` : `box ${boxNo} of ${line.title}`;
+                          return (
+                            <tr key={`${line.id}-box-${boxNo}`} className="tr--box">
+                              <td colSpan={isManual ? 3 : 4}>
+                                <span className="idcell">
+                                  <span className="idcell__text">
+                                    <span className="idcell__title">Box {boxNo}</span>
+                                    <span className="idcell__meta">
+                                      {fill
+                                        ? fill.items.map((it) => it.title).join(', ')
+                                        : 'Not filled yet'}
+                                    </span>
+                                  </span>
+                                </span>
+                              </td>
+                              <td className="cell--num">
+                                {!boxPaid ? null : !fill ? (
+                                  <Button aria-label={`Fill ${label}`} onClick={() => setFilling({ lineId: line.id, boxNo })}>
+                                    Fill box
+                                  </Button>
+                                ) : boxIsFree(fill, fulfillments) ? (
+                                  <Button tone="plain" aria-label={`Change ${label}`} onClick={() => setFilling({ lineId: line.id, boxNo })}>
+                                    Change
+                                  </Button>
+                                ) : (
+                                  <Badge tone="ok">In a parcel</Badge>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      : null}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
@@ -735,11 +844,42 @@ export default function OrderDetail() {
         <VoidModal order={data} onClose={() => setModal('none')} onDone={done} />
       ) : null}
       {modal === 'fulfil' ? (
-        <FulfilModal orderId={order.id} lines={lines} courier={courier} onClose={() => setModal('none')} onDone={done} />
+        <FulfilModal
+          orderId={order.id}
+          lines={lines}
+          courier={courier}
+          sendable={(l) => sendableUnits(l, fulfillments, boxLines, boxFills)}
+          onClose={() => setModal('none')}
+          onDone={done}
+        />
       ) : null}
       {modal === 'cancel' ? (
         <CancelModal order={data} onClose={() => setModal('none')} onDone={done} />
       ) : null}
+      {filling
+        ? (() => {
+            const line = lines.find((l) => l.id === filling.lineId);
+            const spec = boxLines.find((b) => b.orderLineId === filling.lineId);
+            if (!line || !spec) return null;
+            return (
+              <BoxFillModal
+                orderId={order.id}
+                line={line}
+                boxNo={filling.boxNo}
+                poolTag={spec.poolTag}
+                itemCount={spec.itemCount ?? 1}
+                existing={
+                  boxFills.find((f) => f.orderLineId === filling.lineId && f.boxNo === filling.boxNo) ?? null
+                }
+                onClose={() => setFilling(null)}
+                onDone={() => {
+                  setFilling(null);
+                  reload();
+                }}
+              />
+            );
+          })()
+        : null}
       {modal === 'refund' && intentId ? (
         <RefundModal
           intentId={intentId}
@@ -1401,6 +1541,7 @@ function FulfilModal({
   orderId,
   lines,
   courier,
+  sendable,
   onClose,
   onDone,
 }: {
@@ -1408,14 +1549,16 @@ function FulfilModal({
   lines: ShopOrderLine[];
   /** Which courier the shop has switched on — `manual` is the screen as it was. */
   courier: ShopCourierProvider;
+  /** Units of a line that can go in a parcel now. An empty mystery box cannot (migration 1220). */
+  sendable: (line: ShopOrderLine) => number;
   onClose: () => void;
   onDone: () => void;
 }) {
   const toast = useToast();
   const courierOn = courier.provider !== 'manual';
-  const open = useMemo(() => lines.filter((l) => l.fulfilledQty < l.qty), [lines]);
+  const open = useMemo(() => lines.filter((l) => sendable(l) > 0), [lines, sendable]);
   const [qty, setQty] = useState<Record<string, string>>(() =>
-    Object.fromEntries(open.map((l) => [l.id, String(l.qty - l.fulfilledQty)])),
+    Object.fromEntries(open.map((l) => [l.id, String(sendable(l))])),
   );
   const [carrier, setCarrier] = useState('');
   const [tracking, setTracking] = useState('');
@@ -1426,7 +1569,7 @@ function FulfilModal({
     const picked: { orderLineId: string; qty: number }[] = [];
     for (const line of open) {
       const n = Number(qty[line.id] ?? '0');
-      const remaining = line.qty - line.fulfilledQty;
+      const remaining = sendable(line);
       if (!Number.isInteger(n) || n < 0 || n > remaining) {
         setError(`${line.title}: a whole number between 0 and ${remaining}.`);
         return;
@@ -1479,7 +1622,7 @@ function FulfilModal({
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 'var(--t-md)', fontWeight: 'var(--w-medium)' }}>{line.title}</div>
               <div className="muted" style={{ fontSize: 'var(--t-sm)' }}>
-                {line.qty - line.fulfilledQty} of {line.qty} remaining
+                {sendable(line)} of {line.qty} remaining
               </div>
             </div>
             <input
@@ -1487,7 +1630,7 @@ function FulfilModal({
               style={{ width: '5rem', textAlign: 'right' }}
               type="number"
               min={0}
-              max={line.qty - line.fulfilledQty}
+              max={sendable(line)}
               step={1}
               aria-label={`Quantity of ${line.title}`}
               value={qty[line.id] ?? '0'}
@@ -1584,6 +1727,27 @@ function CancelModal({
   );
   const [keptOut, setKeptOut] = useState('');
   const [stockError, setStockError] = useState<string | null>(null);
+
+  /*
+   * MIGRATION 1220: WHAT WAS PACKED INSIDE A FILLED MYSTERY BOX. Only items not
+   * already returned whose box has not shipped. Every one starts ticked, because
+   * most cancelled boxes were never opened.
+   */
+  const returnableBoxItems = useMemo(
+    () =>
+      paid
+        ? (detail.boxFills ?? [])
+            .filter((f) => boxIsFree(f, detail.fulfillments) ||
+              detail.fulfillments.find((p) => p.id === f.fulfillmentId)?.status === 'pending')
+            .flatMap((f) =>
+              f.items.filter((it) => it.returnedToStockAt === null).map((it) => ({ fill: f, item: it })),
+            )
+        : [],
+    [paid, detail.boxFills, detail.fulfillments],
+  );
+  const [boxTicked, setBoxTicked] = useState<Set<string>>(
+    () => new Set(returnableBoxItems.map((r) => r.item.id)),
+  );
   const lowered = stockLines.some((s) => putBack[s.line.id] !== String(s.max));
 
   async function commit() {
@@ -1614,7 +1778,12 @@ function CancelModal({
         }
         lines.push({ orderLineId: s.line.id, qty: n });
       }
-      restock = { lines, keptOutReason: lowered ? keptOut.trim() || null : null };
+      const boxKeptOut = boxTicked.size < returnableBoxItems.length;
+      restock = {
+        lines,
+        keptOutReason: lowered || boxKeptOut ? keptOut.trim() || null : null,
+        ...(returnableBoxItems.length > 0 ? { boxItemIds: [...boxTicked] } : {}),
+      };
     }
 
     setBusy(true);
@@ -1693,12 +1862,32 @@ function CancelModal({
                 </span>
               </div>
             ))}
+            {returnableBoxItems.length > 0 ? (
+              <div className="stack stack--tight">
+                <span className="field__label">What was packed in the boxes</span>
+                {returnableBoxItems.map(({ fill, item }) => (
+                  <Checkbox
+                    key={item.id}
+                    label={`${item.title} · Box ${fill.boxNo}`}
+                    checked={boxTicked.has(item.id)}
+                    onChange={(on) =>
+                      setBoxTicked((t) => {
+                        const next = new Set(t);
+                        if (on) next.add(item.id);
+                        else next.delete(item.id);
+                        return next;
+                      })
+                    }
+                  />
+                ))}
+              </div>
+            ) : null}
             {stockError ? (
               <span className="field__error" role="alert">
                 {stockError}
               </span>
             ) : null}
-            {lowered ? (
+            {lowered || boxTicked.size < returnableBoxItems.length ? (
               <TextField
                 label="Why the rest stays out (optional)"
                 placeholder="For example: seal broken in transit"
