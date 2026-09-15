@@ -173,6 +173,12 @@ export const shopOrders = pgTable(
     salesChannel: text('sales_channel'),
     staffNote: text('staff_note'),
     stockTaken: boolean('stock_taken').notNull().default(false),
+    /**
+     * Why some of a cancelled order's goods were NOT put back in stock
+     * (migration 1200). Optional, blank is NULL. STAFF ONLY, and therefore not
+     * on `Order`: the customer's order view spreads that type.
+     */
+    keptOutReason: text('kept_out_reason'),
   },
   (t) => [
     uniqueIndex('shop_orders_order_number_uq').on(t.orderNumber),
@@ -242,6 +248,12 @@ export const shopOrderLines = pgTable(
      * value taken under a row lock.
      */
     fulfilledQty: integer('fulfilled_qty').notNull().default(0),
+    /**
+     * How many of this line were put back in stock when the order was cancelled
+     * (migration 1200). The restock statement's guard: it only succeeds while
+     * this stays within the units that never shipped, so nothing goes back twice.
+     */
+    returnedQty: integer('returned_qty').notNull().default(0),
   },
   (t) => [
     uniqueIndex('shop_order_lines_order_line_uq').on(t.orderId, t.lineNo),
@@ -251,6 +263,7 @@ export const shopOrderLines = pgTable(
       'shop_order_lines_fulfilled_ck',
       sql`${t.fulfilledQty} >= 0 AND ${t.fulfilledQty} <= ${t.qty}`,
     ),
+    check('shop_order_lines_returned_ck', sql`${t.returnedQty} >= 0 AND ${t.returnedQty} <= ${t.qty}`),
     index('shop_order_lines_order_idx').on(t.orderId, t.lineNo),
   ],
 );
