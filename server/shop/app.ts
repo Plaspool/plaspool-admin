@@ -22,6 +22,7 @@ import { checkoutPaymentsPort } from './payments/port';
 import { orders } from './orders/routes';
 import { CourierConflictError } from './orders/repo/courier';
 import { BoxRefusedError } from './boxes/errors';
+import { mysteryBoxRoutes } from './boxes/routes';
 import { drainCommerceEvents } from './orders/repo/consumer';
 import { adoptGuestOrders } from './orders/repo/orders';
 import { cartShopRoutes } from './cart/routes';
@@ -431,6 +432,8 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
    * an email — so there is nothing to mount above `sessionMiddleware`.
    */
   shop.route('/', notificationSettingsRoutes);
+  /* Migration 1240. Settings → Mystery box. */
+  shop.route('/', mysteryBoxRoutes);
   /* Web Push device registration (migration 1040). A SEPARATE router from the
      settings beside it because its permissions prefix is different — `orders`,
      not `settings`: whether a packer's own phone buzzes is not an owner-only

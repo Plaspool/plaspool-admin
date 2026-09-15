@@ -191,9 +191,9 @@ export interface Variant {
    * between "same as the displayed weight" and a deliberate override.
    */
   shippingWeightGrams: number | null;
-  /** Migration 1220. The tag this box draws from; `null` on an ordinary variant. */
+  /** Migration 1220's tag pool. No longer read since migration 1240; always null for new boxes. */
   boxPoolTag: string | null;
-  /** Migration 1220. Items in one box; `null` exactly when `boxPoolTag` is. */
+  /** Items in one box of this size. Set in Settings → Mystery box (migration 1240). */
   boxItemCount: number | null;
   status: VariantStatus;
   /**
@@ -296,8 +296,6 @@ export interface ProductPatch {
   overview?: string | null;
   /** Absent leaves it alone; the column's own default is `true`. */
   bulkDiscountEnabled?: boolean;
-  /** Migration 1220. `null` switches the box off. Phase 1 accepts only `'pack'`. */
-  boxMode?: 'pack' | null;
 }
 
 /** The patchable half of a variant. `productId` is absent: a variant does not
@@ -310,9 +308,6 @@ export interface VariantPatch {
   /** `null` clears the override, so delivery rejoins `weightGrams`. Grams,
    *  non-negative int. Migration 1180. */
   shippingWeightGrams?: number | null;
-  /** Migration 1220. The pool a box variant draws from. `null` clears it, which
-   *  is refused on a box product. */
-  boxPool?: { tag: string; itemCount: number } | null;
   status?: VariantStatus;
   /** `null` clears it. Validated as a committed image, like a product's cover. */
   imageId?: string | null;

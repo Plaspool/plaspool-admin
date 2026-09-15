@@ -71,7 +71,8 @@ import {
 } from './repo/emails';
 import { MAX_SEARCH_LENGTH, readOrderByNumber, searchOrders } from '../admin/orders';
 import { readRestock, restockCancelledOrder } from './repo/restock';
-import { boxLinesFor, listBoxFills, revealedBoxes, saveBoxFill } from '../boxes/fills';
+import { boxLinesFor, boxShortAt, listBoxFills, revealedBoxes, saveBoxFill } from '../boxes/fills';
+import { processMysteryBoxes } from '../boxes/auto';
 import { returnBoxItemsToStock } from '../boxes/restock';
 
 /**
@@ -1185,6 +1186,20 @@ async function runSweep(c: Context<AppEnv>, d: ResolvedDeps) {
     { origin: storefrontOrigin(), redemption: d.redemption, templates },
     { now, limit: SWEEP_BATCH, passes: RUN_SWEEP_COMMERCE_PASS_CEILING },
   );
+  /*
+   * MYSTERY BOXES THE SHOP FILLS BY ITSELF (migration 1240): built boxes handed
+   * to paid orders, items picked for "the shop picks", and the can't-be-filled
+   * choice, including an automatic cancel and refund. AFTER the commerce drain,
+   * so an order paid in this sweep is handled in this sweep, and BEFORE the mail
+   * run, so a cancellation email it queues goes out now. It never throws.
+   */
+  const mysteryBoxes = await processMysteryBoxes(db, {
+    refund: d.refund,
+    redemption: d.redemption,
+    templates,
+    origin: storefrontOrigin(),
+    now,
+  });
   const emails = await sweepEmailIntents(db, d.mailer, now);
   /*
    * ASK THE COURIERS WHERE THE PARCELS ARE — the backstop behind their webhooks
@@ -1221,7 +1236,7 @@ async function runSweep(c: Context<AppEnv>, d: ResolvedDeps) {
    * `ensureSystemTemplates` never throws and never overwrites an edited row.
    */
   const seeded = await ensureSystemTemplates(db, now);
-  return { payments, events, emails, couriers, seeded, passes: events.passes };
+  return { payments, events, mysteryBoxes, emails, couriers, seeded, passes: events.passes };
 }
 
 /**
@@ -1305,6 +1320,8 @@ async function orderDetail(db: Db, read: OrderRead, deps: ResolvedDeps) {
        filled ones. ADMIN ONLY: the customer sees contents only after delivery. */
     boxLines: await boxLinesFor(db, read.order.id),
     boxFills: await listBoxFills(db, read.order.id),
+    /* Migration 1240. When the shop could not fill this order's box by itself. */
+    boxShortAt: await boxShortAt(db, read.order.id),
     fulfillments: await listFulfillments(db, read.order.id),
     timeline: await withActorNames(db, await listTimeline(db, read.order.id)),
     /*

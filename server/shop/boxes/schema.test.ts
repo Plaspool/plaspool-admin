@@ -32,12 +32,14 @@ describe('migration 1220 — mystery boxes', () => {
 
   it('creates the fills and fill items tables with bigint times', async () => {
     expect(await columns('shop_box_fills')).toEqual([
-      'box_no:integer:NO',
+      'box_no:integer:YES',
+      'box_variant_id:text:YES',
+      'built_state:text:YES',
       'filled_at:bigint:NO',
       'filled_by:uuid:YES',
       'fulfillment_id:text:YES',
       'id:text:NO',
-      'order_line_id:text:NO',
+      'order_line_id:text:YES',
       'source:text:NO',
     ]);
     expect(await columns('shop_box_fill_items')).toEqual([
@@ -58,7 +60,7 @@ describe('migration 1220 — mystery boxes', () => {
       await ctx.db.execute(sql`
         SELECT conname FROM pg_constraint
          WHERE conname IN ('shop_products_box_mode_ck', 'shop_variants_box_item_count_ck',
-                           'shop_variants_box_pair_ck', 'shop_box_fills_source_ck',
+                           'shop_box_fills_source_ck',
                            'shop_box_fills_box_no_ck', 'shop_box_fills_line_box_uq')
          ORDER BY conname`)
     ).rows.map((r) => r.conname);
@@ -68,7 +70,6 @@ describe('migration 1220 — mystery boxes', () => {
       'shop_box_fills_source_ck',
       'shop_products_box_mode_ck',
       'shop_variants_box_item_count_ck',
-      'shop_variants_box_pair_ck',
     ]);
   });
 

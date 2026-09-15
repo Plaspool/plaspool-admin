@@ -505,6 +505,13 @@
                         "when":  1786600005780,
                         "tag":  "1220_mystery_boxes",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  72,
+                        "version":  "7",
+                        "when":  1786600005790,
+                        "tag":  "1240_mystery_box_settings",
+                        "breakpoints":  true
                     }
                 ]
 }
