@@ -44,6 +44,7 @@ import { StatusPicker, type StatusOption } from '../ui/StatusPicker';
 import { TagInput } from '../ui/TagInput';
 import { Timeline, type TimelineEvent } from '../ui/Timeline';
 import { useToast } from '../ui/Toast';
+import { StockCell } from './StockCell';
 
 /**
  * PRODUCT DETAIL — `/products/:id`, and `/products/new` for creation.
@@ -1271,7 +1272,14 @@ function VariantsCard({
                     <PriceCell key={`p${v.price?.amount ?? 'none'}`} variant={v} onWrite={onWrite} />
                   </td>
                   <td className="cell--num" data-label="Available" data-mobile="keep">
-                    <StockCell key={`s${v.available ?? 'none'}`} variant={v} onWrite={onWrite} />
+                    <StockCell
+                      key={`s${v.available ?? 'none'}`}
+                      variantId={v.id}
+                      sku={v.sku}
+                      available={v.available}
+                      backorderable={v.backorderable}
+                      onWrite={onWrite}
+                    />
                   </td>
                   <td className="cell--tight" data-label="Status" data-mobile="keep">
                     <Badge tone={v.status === 'active' ? 'ok' : 'neutral'}>
@@ -1424,105 +1432,6 @@ function PriceCell({ variant, onWrite }: { variant: ShopVariant; onWrite: () => 
             </Button>
             <Button tone="primary" busy={busy} onClick={() => void commit(close)}>
               Save
-            </Button>
-          </PopEditFoot>
-        </>
-      )}
-    </PopEdit>
-  );
-}
-
-function StockCell({ variant, onWrite }: { variant: ShopVariant; onWrite: () => void }) {
-  const toast = useToast();
-  const [delta, setDelta] = useState('');
-  const [reason, setReason] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const parsedDelta = Number(delta);
-  const deltaOk = delta.trim() !== '' && Number.isInteger(parsedDelta) && parsedDelta !== 0;
-
-  async function commit(close: () => void) {
-    if (!deltaOk) {
-      setError('Enter a whole number, above or below zero — but not zero.');
-      return;
-    }
-    setBusy(true);
-    try {
-      /* NO REASON GUARD. It is optional since 2026-09-03 (owner's instruction),
-       * the same as on the Stock screen's panel in `Inventory.tsx`. PR #103
-       * removed that one's guard and missed this one, which went on refusing a
-       * blank reason until 2026-09-15. The placeholder still asks, and
-       * `adjustInventory` omits the key rather than sending an empty string. */
-      const res = await shopApi.adjustInventory(variant.id, parsedDelta, reason.trim());
-      toast.show(`${variant.sku} — ${res.available} available`);
-      close();
-      setDelta('');
-      setReason('');
-      onWrite();
-    } catch (cause) {
-      setError(messageFor(cause));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const available = variant.available;
-
-  return (
-    <PopEdit
-      ariaLabel={`Adjust stock of ${variant.sku}`}
-      value={
-        available === null ? (
-          <span className="muted">No stock row</span>
-        ) : (
-          <span className="num" style={available < 0 ? { color: 'var(--critical)' } : undefined}>
-            {available}
-          </span>
-        )
-      }
-    >
-      {(close) => (
-        <>
-          <TextField
-            label="Adjust by"
-            type="number"
-            step={1}
-            placeholder="+5 or -2"
-            value={delta}
-            autoFocus
-            hint={
-              available !== null && deltaOk
-                ? `Available ${available} → ${available + parsedDelta}`
-                : variant.backorderable
-                  ? 'Can be back-ordered, so stock is allowed to go below zero.'
-                  : undefined
-            }
-            onChange={(e) => {
-              setDelta(e.target.value);
-              setError(null);
-            }}
-          />
-          <TextField
-            label="Reason (optional)"
-            value={reason}
-            placeholder="Stock count, damage, correction…"
-            hint="Kept on record. Worth a few words if you have them."
-            error={error}
-            onChange={(e) => {
-              setReason(e.target.value);
-              setError(null);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void commit(close);
-            }}
-          />
-          <PopEditFoot>
-            <Button tone="plain" onClick={close}>
-              Cancel
-            </Button>
-            <Button tone="primary" busy={busy} onClick={() => void commit(close)}>
-              Adjust
             </Button>
           </PopEditFoot>
         </>
