@@ -13,6 +13,7 @@ import {
   type ShopFulfillment,
   type ShopOrderDetail,
   type ShopOrderLine,
+  type ShopRestockChoice,
   type ShopTimelineEntry,
 } from '../../data/api-shop';
 import { ApiError } from '../../data/errors';
@@ -1525,6 +1526,26 @@ function FulfilModal({
 
 /* ══════════════════════════════════════════════════ CANCEL AND REFUND ════ */
 
+/**
+ * How many units of each line could still go back on the shelf: the line's
+ * quantity minus what is in a parcel that has SHIPPED or been DELIVERED. A parcel
+ * that was packed but not shipped is still in the building, so it counts.
+ *
+ * The same rule the server's restock statement guards on (migration 1200). This
+ * copy only shapes the dialog; the server's is the one that decides.
+ */
+function returnableUnits(
+  line: ShopOrderLine,
+  fulfillments: ShopFulfillment[],
+): { max: number; sent: number } {
+  const sent = fulfillments
+    .filter((f) => f.status === 'shipped' || f.status === 'delivered')
+    .flatMap((f) => f.lines)
+    .filter((fl) => fl.orderLineId === line.id)
+    .reduce((n, fl) => n + fl.qty, 0);
+  return { max: Math.max(0, line.qty - sent), sent };
+}
+
 function CancelModal({
   order: detail,
   onClose,
@@ -1545,6 +1566,26 @@ function CancelModal({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  /*
+   * WHAT GOES BACK IN STOCK (migration 1200; owner's decision 2026-09-15). A
+   * number per line rather than a tick, because a line of three can have one
+   * damaged spool. Starts at everything that can go back: most cancelled goods
+   * were never opened, and lowering a number is the deliberate act.
+   */
+  const stockLines = useMemo(
+    () =>
+      paid
+        ? detail.lines.map((line) => ({ line, ...returnableUnits(line, detail.fulfillments) }))
+        : [],
+    [paid, detail.lines, detail.fulfillments],
+  );
+  const [putBack, setPutBack] = useState<Record<string, string>>(() =>
+    Object.fromEntries(stockLines.map((s) => [s.line.id, String(s.max)])),
+  );
+  const [keptOut, setKeptOut] = useState('');
+  const [stockError, setStockError] = useState<string | null>(null);
+  const lowered = stockLines.some((s) => putBack[s.line.id] !== String(s.max));
+
   async function commit() {
     let refund: CancelRefundChoice | undefined;
     if (paid) {
@@ -1560,10 +1601,37 @@ function CancelModal({
         refund = { kind: 'amount', amount: parsed.minor };
       }
     }
+
+    let restock: ShopRestockChoice | undefined;
+    if (paid) {
+      const lines: ShopRestockChoice['lines'] = [];
+      for (const s of stockLines) {
+        const raw = (putBack[s.line.id] ?? '').trim();
+        const n = Number(raw);
+        if (raw === '' || !Number.isInteger(n) || n < 0 || n > s.max) {
+          setStockError(`${s.line.title}: a whole number from 0 to ${s.max}.`);
+          return;
+        }
+        lines.push({ orderLineId: s.line.id, qty: n });
+      }
+      restock = { lines, keptOutReason: lowered ? keptOut.trim() || null : null };
+    }
+
     setBusy(true);
     try {
-      await shopApi.cancelOrder(order.id, refund);
-      toast.show(`${order.orderNumber} cancelled`);
+      const res = await shopApi.cancelAndRestock(order.id, refund, restock);
+      const result = res.restock;
+      if (result && 'failed' in result) {
+        toast.show(
+          `${order.orderNumber} cancelled, but the stock wasn’t put back. Adjust the stock count by hand.`,
+        );
+      } else if (result && result.refused.length > 0) {
+        toast.show(
+          `${order.orderNumber} cancelled. Some items had already been sent out and weren’t put back.`,
+        );
+      } else {
+        toast.show(`${order.orderNumber} cancelled`);
+      }
       onDone();
     } catch (cause) {
       setError(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
@@ -1586,11 +1654,63 @@ function CancelModal({
     >
       <div className="stack">
         <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
-          Cancelling puts the stock back and stops this order ever shipping.
-          {paid ? ' The customer has paid, so choose what happens to the money:' : ''}
+          {paid
+            ? 'Cancelling stops this order ever shipping. The customer has paid, so choose what goes back in stock and what happens to the money.'
+            : 'Cancelling stops this order ever shipping. Items set aside for it go back in stock within about 30 minutes.'}
         </p>
+        {stockLines.length > 0 ? (
+          <fieldset className="stack stack--tight" style={{ border: 0, margin: 0, padding: 0 }}>
+            <legend className="field__label" style={{ marginBottom: 'var(--s2)' }}>
+              Put back in stock
+            </legend>
+            {stockLines.map((s) => (
+              <div key={s.line.id} className="row" style={{ gap: 'var(--s3)', alignItems: 'center' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 'var(--t-md)', fontWeight: 'var(--w-medium)' }}>
+                    {s.line.title}
+                  </div>
+                  <div className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+                    {s.sent > 0 ? `${s.sent} already sent out` : `${s.line.qty} ordered`}
+                  </div>
+                </div>
+                <input
+                  className="input"
+                  style={{ width: '4.5rem', textAlign: 'right' }}
+                  type="number"
+                  min={0}
+                  max={s.max}
+                  step={1}
+                  aria-label={`Put back how many of ${s.line.title}`}
+                  value={putBack[s.line.id] ?? ''}
+                  disabled={s.max === 0}
+                  onChange={(e) => {
+                    setPutBack((p) => ({ ...p, [s.line.id]: e.target.value }));
+                    setStockError(null);
+                  }}
+                />
+                <span className="muted" style={{ fontSize: 'var(--t-sm)', minWidth: '2.5rem' }}>
+                  of {s.max}
+                </span>
+              </div>
+            ))}
+            {stockError ? (
+              <span className="field__error" role="alert">
+                {stockError}
+              </span>
+            ) : null}
+            {lowered ? (
+              <TextField
+                label="Why the rest stays out (optional)"
+                placeholder="For example: seal broken in transit"
+                value={keptOut}
+                onChange={(e) => setKeptOut(e.target.value)}
+              />
+            ) : null}
+          </fieldset>
+        ) : null}
         {paid ? (
           <div className="stack stack--tight">
+            <span className="field__label">Refund</span>
             <Radio
               name="cancel-refund"
               label={`Refund in full — ${money(max, currency)}`}

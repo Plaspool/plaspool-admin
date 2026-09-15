@@ -993,6 +993,16 @@ export interface ShopOrderAddOn {
   currency: string;
 }
 
+/** What goes back in stock when a paid order is cancelled (migration 1200). */
+export interface ShopRestockChoice {
+  lines: { orderLineId: string; qty: number }[];
+  /** Why the rest stays out. Optional; `null` or blank stores nothing. */
+  keptOutReason: string | null;
+}
+
+/** The server's answer: units put back and lines refused, or that it failed after the cancel. */
+export type ShopRestockResult = { returned: number; refused: string[] } | { failed: true };
+
 export interface ShopOrderDetail {
   order: ShopOrder;
   lines: ShopOrderLine[];
@@ -1009,6 +1019,11 @@ export interface ShopOrderDetail {
    * the same way: there is nothing to show.
    */
   manual?: ShopManualOrderInfo | null;
+  /** What a cancelled order put back (migration 1200). Staff only; absent on older responses. */
+  restock?: {
+    lines: { orderLineId: string; returnedQty: number }[];
+    keptOutReason: string | null;
+  };
 }
 
 // ------------------------------------------------------------ manual orders
@@ -2641,13 +2656,26 @@ export const shopApi = {
    * captured, so there is nothing to choose an amount of.
    */
   async cancelOrder(id: string, refund?: CancelRefundChoice): Promise<ShopOrder> {
-    const res = await shopFetch<{ order: ShopOrder }>(`${BASE}/orders/${seg(id)}/cancel`, {
-      method: 'POST',
-      body: refund === undefined ? {} : { refund },
-      id,
-      subject: 'Order',
-    });
-    return res.order;
+    return (await shopApi.cancelAndRestock(id, refund)).order;
+  },
+
+  /**
+   * `cancelOrder`, plus what goes back in stock (migration 1200). `restock` is
+   * for a PAID order only — the server 400s it on an unpaid one, whose units
+   * were only set aside. The answer's `restock` is absent when none was sent.
+   */
+  async cancelAndRestock(
+    id: string,
+    refund?: CancelRefundChoice,
+    restock?: ShopRestockChoice,
+  ): Promise<{ order: ShopOrder; restock?: ShopRestockResult }> {
+    const body: Record<string, unknown> = {};
+    if (refund !== undefined) body.refund = refund;
+    if (restock !== undefined) body.restock = restock;
+    return shopFetch<{ order: ShopOrder; restock?: ShopRestockResult }>(
+      `${BASE}/orders/${seg(id)}/cancel`,
+      { method: 'POST', body, id, subject: 'Order' },
+    );
   },
 
   /**
