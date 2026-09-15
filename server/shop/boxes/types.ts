@@ -17,18 +17,45 @@ export interface MysteryBoxItem {
 }
 
 /**
+ * One size of the mystery box: a variant of the box's product (owner's decision
+ * 2026-09-15, "5kg and 10kg"). Its label is the variant's Size option; the rest
+ * are the variant's own columns.
+ */
+export interface MysteryBoxSize {
+  variantId: string;
+  /** "5kg"; null when the only size has no name. */
+  size: string | null;
+  itemCount: number | null;
+  /** Minor units; null until a price is set. */
+  priceMinor: number | null;
+  /** What the shop shows, in grams. */
+  weightGrams: number | null;
+  /** What delivery is priced on, in grams; null means `weightGrams`. */
+  shippingWeightGrams: number | null;
+  /** The photograph of this size. */
+  imageId: string | null;
+  /** How many more boxes of this size can be bought right now. */
+  canBuy: number;
+  /** Boxes of this size packed ahead and on the shelf. */
+  ready: number;
+  /** Paid boxes not yet filled or sent, plus boxes held in a checkout right now. */
+  owed: number;
+  /** Paid for in the last 24 hours, for the "selling fast" cue. */
+  soldLast24Hours: number;
+  /** Ever bought. Such a size is retired, never deleted, when it is removed. */
+  everOrdered: boolean;
+}
+
+/**
  * The mystery box itself: a product the box owns (migration 1240), hidden from
- * the Products list and edited only on Settings → Mystery box. One price, one
- * number of items per box.
+ * the Products list and edited only on Settings → Mystery box. Its variants are
+ * its sizes.
  */
 export interface MysteryBoxProduct {
   productId: string;
-  variantId: string;
   slug: string | null;
   status: string;
   name: string;
-  /** Migration 1260: the size shown on the shop ("Large"), stored as the variant's Size option. */
-  size: string | null;
   description: unknown;
   /** The owner's overview, or null when the shop derives it from the description. */
   overview: string | null;
@@ -36,16 +63,9 @@ export interface MysteryBoxProduct {
   overviewFallback: string;
   coverImageId: string | null;
   imageIds: string[];
-  /** Minor units; null until a price is set. */
-  priceMinor: number | null;
   currency: string;
-  itemCount: number | null;
-  /** How many more boxes can be bought right now. */
-  canBuy: number;
-  /** Boxes built ahead and on the shelf. */
-  ready: number;
-  /** Boxes paid for in the last 24 hours, for the "selling fast" cue. */
-  soldLast24Hours: number;
+  /** The sizes on sale, in the owner's order. Retired sizes are left out. */
+  sizes: MysteryBoxSize[];
 }
 
 export interface MysteryBoxSettings {

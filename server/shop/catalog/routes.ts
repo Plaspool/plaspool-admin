@@ -397,7 +397,9 @@ routes.get('/products', async (c) => {
       /* `?? []` and not the map's absence: a JSON response cannot have a
          `Map#get` miss, and a product with no variants is a real state that
          reads as an empty list on the wire. */
-      const own = variants.get(p.id) ?? [];
+      const all = variants.get(p.id) ?? [];
+      /* A removed box size is retired, not deleted; the shop never offers it. */
+      const own = p.boxMode !== null ? all.filter((v) => v.status === 'active') : all;
       return {
         ...withBoxFallback(toStorefrontProduct(p, { bulkTiers: tiers.get(p.id) ?? [] }), box?.fallback ?? null),
         mysteryBox: p.boxMode !== null && box ? boxShopContent(own, box.page) : null,
@@ -430,7 +432,8 @@ routes.get('/products/:slug', async (c) => {
     product: {
       ...withBoxFallback(toStorefrontProduct(product, { bulkTiers }), box?.fallback ?? null),
       mysteryBox: box ? boxShopContent(variants, box.page) : null,
-      variants: variants.map(toStorefrontVariant),
+      /* A removed box size is retired, not deleted; the shop never offers it. */
+      variants: (box ? variants.filter((v) => v.status === 'active') : variants).map(toStorefrontVariant),
     },
   });
 });

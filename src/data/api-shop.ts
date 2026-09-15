@@ -1070,14 +1070,34 @@ export interface ShopBuiltBox {
 }
 
 /** The mystery box's own product, edited only on Settings → Mystery box. */
+/** One size of the mystery box ("5kg"): a variant of the box's product. */
+export interface ShopMysteryBoxSize {
+  variantId: string;
+  /** Null when the only size has no name. */
+  size: string | null;
+  itemCount: number | null;
+  priceMinor: number | null;
+  /** Grams, shown on the shop. */
+  weightGrams: number | null;
+  /** Grams, what delivery is priced on; null means `weightGrams`. */
+  shippingWeightGrams: number | null;
+  imageId: string | null;
+  /** How many more boxes of this size can be bought right now. */
+  canBuy: number;
+  /** Packed ahead and on the shelf. */
+  ready: number;
+  /** Paid and waiting to be packed, plus held in a checkout. Locks the item count. */
+  owed: number;
+  soldLast24Hours: number;
+  /** Bought before: removing it retires it instead of deleting it. */
+  everOrdered: boolean;
+}
+
 export interface ShopMysteryBoxProduct {
   productId: string;
-  variantId: string;
   slug: string | null;
   status: string;
   name: string;
-  /** Migration 1260: "Large", or null for no size. */
-  size: string | null;
   description: unknown;
   /** The owner's overview; null means the shop derives it from the description. */
   overview: string | null;
@@ -1085,15 +1105,9 @@ export interface ShopMysteryBoxProduct {
   overviewFallback: string;
   coverImageId: string | null;
   imageIds: string[];
-  priceMinor: number | null;
   currency: string;
-  itemCount: number | null;
-  /** How many more boxes can be bought right now. */
-  canBuy: number;
-  /** Boxes built ahead and on the shelf. */
-  ready: number;
-  /** Boxes paid for in the last 24 hours. */
-  soldLast24Hours: number;
+  /** In the owner's order. */
+  sizes: ShopMysteryBoxSize[];
 }
 
 /** Settings → Mystery box, as the server holds it. */
@@ -1123,15 +1137,23 @@ export interface ShopMysteryBoxSave {
   mode: ShopBoxMode;
   shortfall: ShopBoxShortfall;
   name: string;
-  size: string;
   description: unknown | null;
   /** Blank lets the shop derive the overview from the description. */
   overview: string;
   page: BoxPage;
   coverImageId: string | null;
   imageIds: string[];
-  priceMinor: number | null;
-  itemCount: number | null;
+  /** In the order they show on the shop. */
+  sizes: {
+    /** Null for a new size. */
+    variantId: string | null;
+    size: string;
+    itemCount: number | null;
+    priceMinor: number | null;
+    weightGrams: number | null;
+    shippingWeightGrams: number | null;
+    imageId: string | null;
+  }[];
   main: string[];
   backup: string[];
 }
