@@ -261,3 +261,110 @@ function Tile({
     </div>
   );
 }
+
+/**
+ * ONE PHOTO FOR ONE VARIANT: none, one of the product's own pictures, or a new
+ * upload (owner's ask 2026-09-15, "allow images to be uploaded for variants").
+ *
+ * An upload goes through `storeImageFile` like every other image in the admin,
+ * and only lands in the value once the server has committed the object, which
+ * is exactly what the variant's own check on save (`checkVariantImage`) needs.
+ * The uploaded photo then sits among the choices, selected, so picking back and
+ * forth never loses it before the form is saved.
+ */
+export function PhotoPicker({
+  value,
+  onChange,
+  choices = [],
+  alt = '',
+  disabled = false,
+}: {
+  value: string | null;
+  onChange: (next: string | null) => void;
+  /** Image ids already on the product, offered to pick from. */
+  choices?: string[];
+  alt?: string;
+  disabled?: boolean;
+}) {
+  const toast = useToast();
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [over, setOver] = useState(false);
+  const [uploaded, setUploaded] = useState<string[]>([]);
+
+  async function upload(file: File | undefined) {
+    if (!file || disabled) return;
+    setUploading(true);
+    try {
+      const stored = await storeImageFile(file);
+      setUploaded((ids) => (ids.includes(stored.id) ? ids : [...ids, stored.id]));
+      onChange(stored.id);
+    } catch (err) {
+      toast.show(err instanceof ImageError ? err.message : 'That image could not be added.', 'critical');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  const tiles = [...new Set([...choices, ...uploaded, ...(value ? [value] : [])])];
+
+  return (
+    <div
+      className="photopick"
+      onDragOver={(e) => {
+        e.preventDefault();
+        setOver(true);
+      }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setOver(false);
+        void upload([...e.dataTransfer.files].find((f) => f.type.startsWith('image/')));
+      }}
+    >
+      <input
+        ref={fileInput}
+        type="file"
+        accept={ACCEPT}
+        hidden
+        onChange={(e) => {
+          void upload(e.target.files?.[0]);
+          e.target.value = '';
+        }}
+      />
+      <button
+        type="button"
+        className={value === null ? 'photopick__tile is-on' : 'photopick__tile'}
+        aria-pressed={value === null}
+        aria-label="No photo"
+        disabled={disabled}
+        onClick={() => onChange(null)}
+      >
+        <span className="photopick__none">None</span>
+      </button>
+      {tiles.map((id) => (
+        <button
+          key={id}
+          type="button"
+          className={value === id ? 'photopick__tile is-on' : 'photopick__tile'}
+          aria-pressed={value === id}
+          aria-label={choices.includes(id) ? 'Use this product image' : 'Use the uploaded photo'}
+          disabled={disabled}
+          onClick={() => onChange(id)}
+        >
+          <StoredImg id={id} alt={alt} />
+        </button>
+      ))}
+      <button
+        type="button"
+        className={over ? 'photopick__tile photopick__add is-over' : 'photopick__tile photopick__add'}
+        aria-label="Upload a photo"
+        title="Upload a photo"
+        disabled={disabled || uploading}
+        onClick={() => fileInput.current?.click()}
+      >
+        {uploading ? <Spinner /> : <ImagePlus aria-hidden="true" />}
+      </button>
+    </div>
+  );
+}
