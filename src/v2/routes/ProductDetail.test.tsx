@@ -692,14 +692,12 @@ describe('the product editor', () => {
 // ------------------------------------------ the stock cell in the variant table
 
 /*
- * THE REASON IS OPTIONAL SINCE 2026-09-03 (owner’s instruction) — ON BOTH
- * STOCK PANELS. There are two: the Stock screen's (`Inventory.tsx`) and this
- * one in the product page's variant table, a near-copy. PR #103 took the guard
- * out of the first and never saw the second, which went on refusing a blank
- * reason until the owner met it on 2026-09-15 and reasonably read it as the
- * change having been undone. Nothing here tested this cell, so nothing
- * noticed. These are `Inventory.test.tsx`'s three tests pointed at the twin:
- * a fix that lands on one panel and not the other goes red in one suite.
+ * THE REASON IS OPTIONAL SINCE 2026-09-03 (owner’s instruction). This cell
+ * was once a near-copy of the Stock screen's; PR #103 changed only that copy,
+ * so this one kept refusing a blank reason until the owner met it on
+ * 2026-09-15. Both screens now render the one `StockCell.tsx`. These tests
+ * stay beside `Inventory.test.tsx`'s three because each suite pins its OWN
+ * screen's wiring to that cell — which variant id, which toast, which re-read.
  *
  * THE BODY IS THE ASSERTION, not the toast. The route keeps `.min(1)` inside
  * its `.optional()`, so `{ delta: 3, reason: '' }` would look identical on
