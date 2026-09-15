@@ -247,7 +247,7 @@ describe('recording a sale by hand', () => {
     await addBlack(user);
     // The picker offered the price and the stock beside the name.
     const quantity = await screen.findByLabelText('Quantity of PLA Basic — Black');
-    expect(screen.getByLabelText('Price of PLA Basic — Black')).toHaveProperty('value', '28000');
+    expect(screen.getByLabelText('Price of PLA Basic — Black')).toHaveProperty('value', '28,000');
 
     await user.clear(quantity);
     await user.type(quantity, '2');

@@ -13,7 +13,7 @@ import { money } from '../lib/format';
 import { PageHeader } from '../ui/Page';
 import { Banner, Button, EmptyState } from '../ui/primitives';
 import { DataTable, IdCell, type Column } from '../ui/DataTable';
-import { AffixField, Toggle } from '../ui/Field';
+import { MoneyField, Toggle } from '../ui/Field';
 import { Modal } from '../ui/Modal';
 import { PopEdit, PopEditFoot } from '../ui/PopEdit';
 import { SearchSelect } from '../ui/SearchSelect';
@@ -132,10 +132,9 @@ function BulkRateModal({
         state rate ({zoneLabel}). Clearing never means free delivery.
       </p>
       <div style={{ marginTop: 'var(--s4)' }}>
-        <AffixField
+        <MoneyField
           label={`Delivery price across ${region}`}
-          prefix="₦"
-          inputMode="decimal"
+          currency={STORE_CURRENCY}
           placeholder="0.00"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -553,10 +552,9 @@ function RateCell({
     >
       {(close) => (
         <>
-          <AffixField
+          <MoneyField
             label={`Rate for ${row.area.name}`}
-            prefix={STORE_CURRENCY}
-            inputMode="decimal"
+            currency={STORE_CURRENCY}
             value={draft}
             error={error}
             autoFocus

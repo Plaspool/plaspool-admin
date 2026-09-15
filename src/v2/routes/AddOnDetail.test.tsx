@@ -237,7 +237,7 @@ describe('AddOnDetail', () => {
 
     const survivor = screen.getByTestId('rule-0');
     const charge = within(survivor).getByLabelText('Charge') as HTMLInputElement;
-    expect(charge.value).toBe('2000.00');
+    expect(charge.value).toBe('2,000.00');
     // The placeholder falls back to the add-on's own price (₦1,500, untouched
     // in this test) and reads it through `formatMinor` — locale-dependent, so
     // matched on digits with the grouping comma optional, same as

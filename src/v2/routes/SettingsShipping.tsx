@@ -14,7 +14,7 @@ import { money } from '../lib/format';
 import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, EmptyState } from '../ui/primitives';
 import { DataTable, IdCell, type Column } from '../ui/DataTable';
-import { AffixField, Checkbox, SelectField, TextField } from '../ui/Field';
+import { AffixField, Checkbox, MoneyField, SelectField, TextField } from '../ui/Field';
 import { Float } from '../ui/Float';
 import { Menu, MenuItem, MenuSeparator } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
@@ -795,10 +795,9 @@ function OptionRow({ option, onChanged }: { option: ShopShippingOption; onChange
           <TextField label="Name" value={label} onChange={(e) => setLabel(e.target.value)} />
         </div>
         <div style={{ flex: 0.8 }}>
-          <AffixField
+          <MoneyField
             label="Price"
-            prefix={STORE_CURRENCY}
-            inputMode="decimal"
+            currency={STORE_CURRENCY}
             value={amount}
             onChange={(e) => {
               setAmount(e.target.value);
@@ -886,10 +885,9 @@ function NewOptionRow({ zone, onChanged }: { zone: ShopShippingZone; onChanged: 
           <TextField label="Name" value={label} placeholder="Standard delivery" autoFocus onChange={(e) => setLabel(e.target.value)} />
         </div>
         <div style={{ flex: 0.8 }}>
-          <AffixField
+          <MoneyField
             label="Price"
-            prefix={STORE_CURRENCY}
-            inputMode="decimal"
+            currency={STORE_CURRENCY}
             value={amount}
             placeholder="0.00"
             onChange={(e) => {

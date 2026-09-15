@@ -18,7 +18,7 @@ import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, Loading } from '../ui/primitives';
 import { Card } from '../ui/Card';
 import { Defs } from '../ui/Defs';
-import { AffixField, Checkbox, SelectField, TextArea, TextField } from '../ui/Field';
+import { Checkbox, MoneyField, SelectField, TextArea, TextField } from '../ui/Field';
 import { useToast } from '../ui/Toast';
 import { byName, countryName, HOME_COUNTRY, SHIPPABLE_COUNTRIES } from './countries';
 import {
@@ -636,28 +636,25 @@ function ManualOrderForm({
                 </SelectField>
 
                 <div className="mo__trio">
-                  <AffixField
+                  <MoneyField
                     label="Delivery fee"
-                    prefix="₦"
-                    inputMode="decimal"
+                    currency={currency}
                     placeholder="0"
                     value={draft.shipping}
                     error={err('shipping')}
                     onChange={(e) => set('shipping', e.target.value)}
                   />
-                  <AffixField
+                  <MoneyField
                     label="Discount"
-                    prefix="₦"
-                    inputMode="decimal"
+                    currency={currency}
                     placeholder="0"
                     value={draft.discount}
                     error={err('discount')}
                     onChange={(e) => set('discount', e.target.value)}
                   />
-                  <AffixField
+                  <MoneyField
                     label="Tax"
-                    prefix="₦"
-                    inputMode="decimal"
+                    currency={currency}
                     placeholder="0"
                     value={draft.tax}
                     error={err('tax')}
@@ -823,11 +820,10 @@ function LineRow({
           {qtyError ? <span className="field__error">{qtyError}</span> : null}
         </div>
         <div className="mo__price">
-          <AffixField
+          <MoneyField
             label="Price"
             aria-label={`Price of ${label}`}
-            prefix="₦"
-            inputMode="decimal"
+            currency={currency}
             placeholder={line.currentPrice === null ? 'Current price' : undefined}
             value={line.price}
             error={priceError}

@@ -26,7 +26,7 @@ import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, ButtonLink } from '../ui/primitives';
 import { Card } from '../ui/Card';
 import { Defs, type DefRow } from '../ui/Defs';
-import { AffixField, Checkbox, Radio, TextField } from '../ui/Field';
+import { Checkbox, MoneyField, Radio, TextField } from '../ui/Field';
 import { BoxFillModal } from './BoxFillModal';
 import { MenuItem, MenuSeparator } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
@@ -1927,10 +1927,9 @@ function CancelModal({
               onChange={() => setChoice('custom')}
             />
             {choice === 'custom' ? (
-              <AffixField
+              <MoneyField
                 label="Amount"
-                prefix={currency}
-                inputMode="decimal"
+                currency={currency}
                 value={amount}
                 error={error}
                 hint={`Up to ${money(max, currency)}.`}
@@ -2023,10 +2022,9 @@ function RefundModal({
           The money goes back through Paystack. The order itself stays as it is — a refund does not cancel
           it.
         </p>
-        <AffixField
+        <MoneyField
           label="Amount"
-          prefix={currency}
-          inputMode="decimal"
+          currency={currency}
           value={amount}
           error={error}
           autoFocus

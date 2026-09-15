@@ -14,7 +14,7 @@ import {
 import { money } from '../lib/format';
 import { PageHeader } from '../ui/Page';
 import { Banner, Button } from '../ui/primitives';
-import { AffixField, Checkbox, Segmented, SelectField, TextArea, TextField } from '../ui/Field';
+import { AffixField, Checkbox, MoneyField, Segmented, SelectField, TextArea, TextField } from '../ui/Field';
 import { useToast } from '../ui/Toast';
 
 /**
@@ -257,10 +257,9 @@ export default function DiscountNew() {
               ) : (
                 <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
                   <div style={{ flex: 1 }}>
-                    <AffixField
+                    <MoneyField
                       label="Amount off"
-                      prefix={currency}
-                      inputMode="decimal"
+                      currency={currency}
                       placeholder="0.00"
                       value={amount}
                       error={show(amountError, amount.length > 0)}

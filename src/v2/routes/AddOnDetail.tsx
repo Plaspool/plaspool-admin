@@ -9,7 +9,7 @@ import { useAsync } from '../lib/useAsync';
 import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button } from '../ui/primitives';
 import { Card } from '../ui/Card';
-import { AffixField, Toggle } from '../ui/Field';
+import { MoneyField, Toggle } from '../ui/Field';
 import { StoredImg } from '../ui/Img';
 import { MenuItem } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
@@ -92,10 +92,15 @@ const withUids = (d: Draft): Draft => ({
  * SAME row (`fromRow` mints a fresh uid every time) would never compare
  * equal, and Discard's freshly-reminted uids would look like a change that
  * never happened.
+ *
+ * The price box's grouping commas go too: `MoneyField` writes `1,500.00` into
+ * the draft while the saved copy holds `1500.00`, and the same amount must
+ * not light the save bar. `body()` sends the parsed minor units, never this.
  */
 function plain(d: Draft) {
   return {
     ...d,
+    priceText: d.priceText.replace(/,/g, ''),
     rules: d.rules.map(({ uid, when, ...r }) => ({ ...r, when: when.map(({ uid: _c, ...c }) => c) })),
   };
 }
@@ -359,10 +364,9 @@ export default function AddOnDetail({ create = false }: { create?: boolean }) {
               </div>
             </div>
             <div className="addon-price">
-              <AffixField
+              <MoneyField
                 label="Price"
-                prefix="₦"
-                inputMode="decimal"
+                currency={currency}
                 value={draft.priceText}
                 onChange={(e) => set('priceText', e.currentTarget.value)}
                 error={dirty ? priceError : null}
