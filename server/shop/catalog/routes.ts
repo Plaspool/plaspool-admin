@@ -228,6 +228,12 @@ const CreateVariantBody = z
     /** What DELIVERY is priced on (migration 1180). Absent or `null` means
      *  "use `weightGrams`". Same bounds — it is the same unit and column type. */
     shippingWeightGrams: z.number().int().min(0).max(10_000_000).nullable().optional(),
+    /** Migration 1220. The pool tag and how many items one box holds. */
+    boxPool: z
+      .object({ tag: str().min(1).max(100), itemCount: z.number().int().min(1).max(1000) })
+      .strict()
+      .nullable()
+      .optional(),
     onHand: z.number().int().min(0).max(100_000_000).optional(),
     backorderable: z.boolean().optional(),
     /** The photograph of this colour (migration 0009). */
@@ -259,6 +265,11 @@ const UpdateVariantBody = z
     weightGrams: z.number().int().min(0).max(10_000_000).nullable(),
     /** `null` CLEARS the override, so delivery rejoins `weightGrams`. */
     shippingWeightGrams: z.number().int().min(0).max(10_000_000).nullable(),
+    /** Migration 1220. The pool tag and how many items one box holds. */
+    boxPool: z
+      .object({ tag: str().min(1).max(100), itemCount: z.number().int().min(1).max(1000) })
+      .strict()
+      .nullable(),
     status: z.enum(['active', 'discontinued']),
     /** `null` clears the colour photograph; a string sets it. */
     imageId: str().min(1).max(200).nullable(),

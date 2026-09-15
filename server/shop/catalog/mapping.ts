@@ -120,6 +120,9 @@ export const VARIANT_COLUMNS: string[] = [
   'position',
   'weight_grams',
   'shipping_weight_grams',
+  /* Migration 1220. */
+  'box_pool_tag',
+  'box_item_count',
   'status',
   'image_id',
   'color_hex',
@@ -313,6 +316,9 @@ export function rowToVariant(row: Record<string, unknown>): Variant {
      */
     shippingWeightGrams:
       row.shipping_weight_grams == null ? null : Number(row.shipping_weight_grams),
+    /** Migration 1220. Both null on an ordinary variant. */
+    boxPoolTag: row.box_pool_tag == null ? null : String(row.box_pool_tag),
+    boxItemCount: row.box_item_count == null ? null : Number(row.box_item_count),
     status: row.status as VariantStatus,
     /** Migration 0009. NULL until somebody uploads a photograph of this colour. */
     imageId: row.image_id == null ? null : String(row.image_id),

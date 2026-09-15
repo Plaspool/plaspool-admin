@@ -191,6 +191,10 @@ export interface Variant {
    * between "same as the displayed weight" and a deliberate override.
    */
   shippingWeightGrams: number | null;
+  /** Migration 1220. The tag this box draws from; `null` on an ordinary variant. */
+  boxPoolTag: string | null;
+  /** Migration 1220. Items in one box; `null` exactly when `boxPoolTag` is. */
+  boxItemCount: number | null;
   status: VariantStatus;
   /**
    * The photograph of THIS option (migration 0009).
@@ -306,6 +310,9 @@ export interface VariantPatch {
   /** `null` clears the override, so delivery rejoins `weightGrams`. Grams,
    *  non-negative int. Migration 1180. */
   shippingWeightGrams?: number | null;
+  /** Migration 1220. The pool a box variant draws from. `null` clears it, which
+   *  is refused on a box product. */
+  boxPool?: { tag: string; itemCount: number } | null;
   status?: VariantStatus;
   /** `null` clears it. Validated as a committed image, like a product's cover. */
   imageId?: string | null;

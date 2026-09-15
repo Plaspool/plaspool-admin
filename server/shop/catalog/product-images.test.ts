@@ -381,6 +381,8 @@ describe('toStorefrontVariant', () => {
     position: 0,
     weightGrams: null,
     shippingWeightGrams: null,
+    boxPoolTag: null,
+    boxItemCount: null,
     status: 'active',
     imageId: null,
     colorHex: '#000000',
