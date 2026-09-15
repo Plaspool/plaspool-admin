@@ -46,9 +46,20 @@ const onList = (list: SQL) => sql`
   AND pp.box_mode IS NULL
   AND EXISTS (SELECT 1 FROM shop_mystery_box_items mi
                WHERE mi.variant_id = pv.id AND mi.list = ${list})
-  /* A variant ticked on both lists belongs to the main list, and is counted once. */
-  AND (${list} = 'main' OR NOT EXISTS (SELECT 1 FROM shop_mystery_box_items mm
-                                        WHERE mm.variant_id = pv.id AND mm.list = 'main'))`;
+  AND (${list} = 'main' OR ${productNotOnMain(sql`pv`)})`;
+
+/**
+ * THE BACKUP IS A DIFFERENT PRODUCT, NEVER MORE OF THE SAME ONE (owner's decision
+ * 2026-09-15). A backup variant counts only while no variant of its product is
+ * on the main list. The same product on both lists had made "boxes can be
+ * bought" count its stock twice, and a backup of the same filament backs up
+ * nothing. Settings refuses the overlap on save; this keeps a list saved before
+ * that rule honest, in the capacity and in the shop's own picking (auto.ts).
+ */
+export const productNotOnMain = (variant: SQL) => sql`NOT EXISTS (
+  SELECT 1 FROM shop_mystery_box_items mm
+    JOIN shop_variants mv ON mv.id = mm.variant_id
+   WHERE mm.list = 'main' AND mv.product_id = ${variant}.product_id)`;
 
 /**
  * Free units on a list: on the shelf, minus what the pool already owes.

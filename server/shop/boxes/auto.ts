@@ -7,6 +7,7 @@ import { cancelOrder, readOrder } from '../orders/repo/orders';
 import { refundPoints } from '../orders/repo/consumer';
 import { restockCancelledOrder } from '../orders/repo/restock';
 import { mintGuestToken } from '../orders/tokens';
+import { productNotOnMain } from './capacity';
 import { BoxRefusedError } from './errors';
 import { assignBuiltBox, listBoxFills, saveBoxFill } from './fills';
 import { returnBoxItemsToStock } from './restock';
@@ -61,6 +62,7 @@ async function freeOnList(db: Db, list: 'main' | 'backup'): Promise<{ variantId:
      WHERE mi.list = ${list}
        AND v.status = 'active' AND p.status = 'active' AND p.deleted_at IS NULL
        AND p.box_mode IS NULL
+       AND (${list} = 'main' OR ${productNotOnMain(sql`v`)})
        AND i.on_hand - i.reserved > 0`);
   return res.rows.map((r) => ({ variantId: String(r.id), free: Number(r.free) }));
 }
