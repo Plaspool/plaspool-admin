@@ -9,7 +9,7 @@ import type {
   ReservationResult,
 } from '../../../shared/commerce/catalog-port';
 import { emitEvent, jsonbObject } from './events';
-import { boxCapacitySql } from '../boxes/capacity';
+import { boxAvailable, boxCapacitySql } from '../boxes/capacity';
 import { rowToInventoryHold, rowToInventoryLevel } from './mapping';
 import type { InventoryHold, InventoryLevel } from './types';
 
@@ -234,7 +234,7 @@ async function refusal(db: Db, req: ReservationRequest): Promise<ReservationResu
     return {
       ok: false,
       reason: 'insufficient',
-      available: Math.min(level.available, Number(cap.rows[0].c)),
+      available: boxAvailable(level.available, level.backorderable, Number(cap.rows[0].c)) ?? 0,
     };
   }
   return { ok: false, reason: 'insufficient', available: level.available };

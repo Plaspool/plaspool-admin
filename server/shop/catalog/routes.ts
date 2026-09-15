@@ -5,7 +5,7 @@ import { requireAuth } from '../../middleware/session';
 import { currentDb, currentUser } from '../../app-env';
 import type { AppEnv } from '../../app-env';
 import { NotFoundError } from '../../repo/errors';
-import { boxCapacitySql } from '../boxes/capacity';
+import { boxAvailable, boxCapacitySql } from '../boxes/capacity';
 import { boxFallback, withBoxFallback } from '../boxes/fallback';
 import { sql } from 'drizzle-orm';
 import { money } from '../../../shared/commerce/money';
@@ -452,7 +452,7 @@ routes.get('/variants/:id/availability', async (c) => {
     // Null when the variant has no inventory row at all. A shop that renders
     // "0 left" for something nobody has stocked is telling the customer
     // something different from "we do not track this".
-    available: canFill === null || available === null ? available : Math.min(available, canFill),
+    available: boxAvailable(available, level?.backorderable ?? false, canFill),
     backorderable: level?.backorderable ?? false,
     canFill,
   });
