@@ -45,7 +45,10 @@ const onList = (list: SQL) => sql`
   pv.status = 'active' AND pp.status = 'active' AND pp.deleted_at IS NULL
   AND pp.box_mode IS NULL
   AND EXISTS (SELECT 1 FROM shop_mystery_box_items mi
-               WHERE mi.variant_id = pv.id AND mi.list = ${list})`;
+               WHERE mi.variant_id = pv.id AND mi.list = ${list})
+  /* A variant ticked on both lists belongs to the main list, and is counted once. */
+  AND (${list} = 'main' OR NOT EXISTS (SELECT 1 FROM shop_mystery_box_items mm
+                                        WHERE mm.variant_id = pv.id AND mm.list = 'main'))`;
 
 /**
  * Free units on a list: on the shelf, minus what the pool already owes.

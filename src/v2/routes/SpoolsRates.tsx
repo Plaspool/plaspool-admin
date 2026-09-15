@@ -16,7 +16,7 @@ import { Badge, Banner, Button, ButtonLink, EmptyState } from '../ui/primitives'
 import { Card } from '../ui/Card';
 import { DataTable, IdCell, type Column } from '../ui/DataTable';
 import { Defs } from '../ui/Defs';
-import { AffixField, SelectField } from '../ui/Field';
+import { MoneyField, SelectField } from '../ui/Field';
 import { Modal } from '../ui/Modal';
 import { PopEdit, PopEditFoot } from '../ui/PopEdit';
 import { SearchSelect } from '../ui/SearchSelect';
@@ -638,11 +638,10 @@ function BulkStandardModal({
       </p>
       <div style={{ display: 'grid', gap: 'var(--s3)', marginTop: 'var(--s4)' }}>
         {STANDARD_LINES.map((line) => (
-          <AffixField
+          <MoneyField
             key={line.key}
             label={line.label}
-            prefix="₦"
-            inputMode="decimal"
+            currency={CURRENCY}
             placeholder="0.00"
             value={draft[line.key]}
             onChange={(e) => setDraft((d) => ({ ...d, [line.key]: e.target.value }))}
@@ -745,11 +744,10 @@ function PickupCostCell({
             know” — that is different from zero.
           </p>
           {STANDARD_LINES.map((line) => (
-            <AffixField
+            <MoneyField
               key={line.key}
               label={line.label}
-              prefix={CURRENCY}
-              inputMode="decimal"
+              currency={CURRENCY}
               value={draft[line.key]}
               onChange={(e) => {
                 setDraft((d) => ({ ...d, [line.key]: e.target.value }));

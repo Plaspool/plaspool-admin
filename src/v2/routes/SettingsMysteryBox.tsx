@@ -1,5 +1,21 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Gift, Lock, Minus, Package, Plus, Search, Settings as SettingsIcon, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  ArrowDown,
+  ArrowUp,
+  Clock,
+  Flame,
+  Gift,
+  Lock,
+  Minus,
+  Package,
+  PackageX,
+  Plus,
+  RotateCcw,
+  Search,
+  Settings as SettingsIcon,
+  TrendingUp,
+  X,
+} from 'lucide-react';
 import {
   moneyRefusalMessage,
   parseMajor,
@@ -14,11 +30,19 @@ import {
 import { ApiError } from '../../data/errors';
 import { getSession } from '../../data/session';
 import { hasDomain } from '../../../shared/roles';
-import { dateTime } from '../lib/format';
+import {
+  BOX_PAGE_DEFAULTS,
+  BOX_PAGE_LIMITS,
+  resolveBoxCues,
+  type BoxCue,
+  type BoxCueKind,
+  type BoxPage,
+} from '../../../shared/commerce/mystery-box';
+import { dateTime, money } from '../lib/format';
 import { PageHeader } from '../ui/Page';
 import { Card } from '../ui/Card';
-import { Badge, Banner, Button, EmptyState, Loading } from '../ui/primitives';
-import { AffixField, Checkbox, Radio, TextField, Toggle } from '../ui/Field';
+import { Badge, Banner, Button, EmptyState, Loading, type BadgeTone } from '../ui/primitives';
+import { Checkbox, MoneyField, Radio, Segmented, TextArea, TextField, Toggle } from '../ui/Field';
 import { InfoTip } from '../ui/InfoTip';
 import { MediaManager, StoredImg, type MediaValue } from '../ui/Img';
 import { Modal } from '../ui/Modal';
@@ -28,28 +52,36 @@ import { useToast } from '../ui/Toast';
 import { BoxFillModal } from './BoxFillModal';
 
 /**
- * SETTINGS → MYSTERY BOX (migrations 1240; owner's decisions 2026-09-15).
+ * SETTINGS → MYSTERY BOX (migrations 1240 and 1260; owner's decisions 2026-09-15).
  *
- * ONE mystery box, and it is its own thing: a name, a description, pictures, a
- * price and how many items go in each box, all set here. Until pictures and a
- * description are added, the shop shows the pool's product photos and a line
- * naming them. What can go inside is chosen product by product, variant by
- * variant; only products on sale can be added, never drafts.
+ * ONE mystery box, and it is its own thing: a name, a size, a description, an
+ * overview, pictures, a price and how many items go in each box, all set here.
+ * Until pictures and a description are added, the shop shows the pool's product
+ * photos and a line naming them. What can go inside is chosen product by
+ * product, variant by variant; only products on sale can be added, never drafts.
+ *
+ * THE SHOP PAGE IS EDITED HERE TOO (1260): the "How it works" steps, and the cues
+ * that tell shoppers to buy while the box is still here. The preview runs the
+ * same `resolveBoxCues` the server runs for the shop, so it can't disagree.
  */
 
 type List = 'main' | 'backup';
 const STORE_CURRENCY = 'NGN';
+const HOUR = 60 * 60 * 1000;
 
 interface Draft {
   enabled: boolean;
   mode: ShopBoxMode;
   shortfall: ShopBoxShortfall;
   name: string;
+  size: string;
   /** null = the editor hasn't produced a document, so the stored one is left alone. */
   description: unknown | null;
+  overview: string;
   media: MediaValue;
   price: string;
   itemCount: string;
+  page: BoxPage;
   ticked: Record<List, string[]>;
   /** Products shown on each list, in order — kept while editing even with nothing ticked. */
   groups: Record<List, string[]>;
@@ -69,10 +101,13 @@ function draftOf(view: ShopMysteryBox): Draft {
     mode: view.settings.mode,
     shortfall: view.settings.shortfall,
     name: box?.name ?? 'Mystery box',
+    size: box?.size ?? '',
     description: null,
+    overview: box?.overview ?? '',
     media: { coverImageId: box?.coverImageId ?? null, imageIds: box?.imageIds ?? [] },
     price: box?.priceMinor != null ? plainMajor(box.priceMinor, box.currency) : '',
     itemCount: box?.itemCount != null ? String(box.itemCount) : '3',
+    page: view.settings.page ?? BOX_PAGE_DEFAULTS,
     ticked,
     groups,
   };
@@ -83,6 +118,8 @@ const sameDraft = (a: Draft, b: Draft): boolean => {
     JSON.stringify({
       ...d,
       groups: undefined,
+      /* The price box shows "200,000.00"; what matters is the amount. */
+      price: d.price.replace(/[\s,]/g, ''),
       ticked: { main: [...d.ticked.main].sort(), backup: [...d.ticked.backup].sort() },
     });
   return norm(a) === norm(b);
@@ -219,14 +256,19 @@ export default function SettingsMysteryBox() {
     setProblem(null);
     setDraft((d) => (d ? { ...d, ...patch } : d));
   };
+  const editPage = (patch: (page: BoxPage) => BoxPage) => {
+    setProblem(null);
+    setDraft((d) => (d ? { ...d, page: patch(d.page) } : d));
+  };
   const dirty = !sameDraft(draft, draftOf(view)) || draft.description !== null;
   const box = view.box;
   const count = Number(draft.itemCount);
   const countOk = Number.isInteger(count) && count >= 1;
+  const mainTicked = new Set(draft.ticked.main);
 
-  /* Items on the main list that are in stock right now — the number "can be
-     bought" divides. The server's figure also subtracts boxes already sold and
-     waiting, so it is the one shown once saved. */
+  /* Items on a list that are in stock right now — the number "can be bought"
+     divides. The server's figure also subtracts boxes already sold and waiting,
+     so it is the one shown once saved. */
   const stockOf = (variantId: string): number => {
     const item = view.items.find((i) => i.variantId === variantId);
     if (item) return item.available;
@@ -236,15 +278,16 @@ export default function SettingsMysteryBox() {
     }
     return 0;
   };
-  const unitsOn = (list: List) => draft.ticked[list].reduce((n, id) => n + stockOf(id), 0);
+  /* A variant ticked on both lists belongs to the main list, and counts once. */
+  const unitsOn = (list: List) =>
+    draft.ticked[list].filter((id) => list === 'main' || !mainTicked.has(id)).reduce((n, id) => n + stockOf(id), 0);
+  const mainUnits = unitsOn('main');
+  const backupUnits = draft.shortfall === 'backup' ? unitsOn('backup') : 0;
   const estimate =
-    draft.mode === 'built'
-      ? (box?.ready ?? 0)
-      : countOk
-        ? Math.floor((unitsOn('main') + (draft.shortfall === 'backup' ? unitsOn('backup') : 0)) / count)
-        : 0;
+    draft.mode === 'built' ? (box?.ready ?? 0) : countOk ? Math.floor((mainUnits + backupUnits) / count) : 0;
   const canBuy = dirty || !box ? estimate : box.canBuy;
   const noOwnPictures = draft.media.coverImageId === null && draft.media.imageIds.length === 0;
+  const parsedPrice = draft.price.trim() === '' ? null : parseMajor(draft.price, STORE_CURRENCY);
 
   function setTicked(list: List, ids: string[], on: boolean) {
     const current = new Set(draft!.ticked[list]);
@@ -267,16 +310,20 @@ export default function SettingsMysteryBox() {
     }
     const all = { ...details, ...loaded };
     setDetails(all);
-    const variantIds = ids.flatMap((id) => (all[id]?.variants ?? []).filter((v) => v.status === 'active').map((v) => v.id));
-    setDraft((d) =>
-      d
-        ? {
-            ...d,
-            groups: { ...d.groups, [list]: [...d.groups[list], ...ids.filter((id) => !d.groups[list].includes(id))] },
-            ticked: { ...d.ticked, [list]: [...new Set([...d.ticked[list], ...variantIds])] },
-          }
-        : d,
-    );
+    setDraft((d) => {
+      if (!d) return d;
+      const onMain = new Set(d.ticked.main);
+      const variantIds = ids.flatMap((id) =>
+        (all[id]?.variants ?? [])
+          .filter((v) => v.status === 'active' && (list === 'main' || !onMain.has(v.id)))
+          .map((v) => v.id),
+      );
+      return {
+        ...d,
+        groups: { ...d.groups, [list]: [...d.groups[list], ...ids.filter((id) => !d.groups[list].includes(id))] },
+        ticked: { ...d.ticked, [list]: [...new Set([...d.ticked[list], ...variantIds])] },
+      };
+    });
     setProblem(null);
   }
 
@@ -294,13 +341,12 @@ export default function SettingsMysteryBox() {
   async function save() {
     if (!view || !draft) return;
     let priceMinor: number | null = null;
-    if (draft.price.trim() !== '') {
-      const parsed = parseMajor(draft.price, STORE_CURRENCY);
-      if (!parsed.ok) {
-        setProblem(`Price: ${moneyRefusalMessage(parsed.reason, STORE_CURRENCY)}`);
+    if (parsedPrice !== null) {
+      if (!parsedPrice.ok) {
+        setProblem(`Price: ${moneyRefusalMessage(parsedPrice.reason, STORE_CURRENCY)}`);
         return;
       }
-      priceMinor = parsed.minor;
+      priceMinor = parsedPrice.minor;
     }
     if (draft.itemCount.trim() !== '' && !countOk) {
       setProblem('Items per box is a whole number, 1 or more.');
@@ -318,13 +364,22 @@ export default function SettingsMysteryBox() {
         mode: draft.mode,
         shortfall: draft.shortfall,
         name: draft.name,
+        size: draft.size.trim(),
         description: draft.description,
+        overview: draft.overview.trim(),
+        page: {
+          howItWorks: {
+            title: draft.page.howItWorks.title.trim(),
+            steps: draft.page.howItWorks.steps.map((s) => s.trim()).filter(Boolean),
+          },
+          cues: draft.page.cues,
+        },
         coverImageId: draft.media.coverImageId,
         imageIds: draft.media.imageIds,
         priceMinor,
         itemCount: countOk ? count : null,
         main: draft.ticked.main,
-        backup: draft.shortfall === 'backup' ? draft.ticked.backup : draft.ticked.backup,
+        backup: draft.ticked.backup.filter((id) => !mainTicked.has(id)),
       });
       setView(next);
       setDraft(draftOf(next));
@@ -364,7 +419,9 @@ export default function SettingsMysteryBox() {
           const title = detail?.title ?? listed?.title ?? view.items.find((i) => i.productId === productId)?.productTitle ?? 'Product';
           const cover = detail?.coverImageId ?? listed?.coverImageId ?? null;
           const variants = (detail?.variants ?? []).filter((v) => v.status === 'active');
-          const on = variants.filter((v) => ticked.has(v.id)).length;
+          /* On the backup list, a variant already on the main list can't be ticked twice. */
+          const open = variants.filter((v) => list === 'main' || !mainTicked.has(v.id));
+          const on = open.filter((v) => ticked.has(v.id)).length;
           return (
             <section key={productId} className="mbx-group" aria-label={title}>
               <header className="mbx-group__head">
@@ -374,12 +431,16 @@ export default function SettingsMysteryBox() {
                 <span className="mbx-group__title">
                   <strong>{title}</strong>
                   <span className="muted">
-                    {detail ? `${on} of ${variants.length} variants in the box` : 'Loading variants…'}
+                    {!detail
+                      ? 'Loading variants…'
+                      : open.length === 0 && variants.length > 0
+                        ? 'All its variants are already on the main list'
+                        : `${on} of ${open.length} ${open.length === 1 ? 'variant' : 'variants'} in the ${list === 'main' ? 'box' : 'backup'}`}
                   </span>
                 </span>
-                {detail ? (
-                  <Button tone="plain" onClick={() => setTicked(list, variants.map((v) => v.id), on !== variants.length)}>
-                    {on === variants.length ? 'Clear' : 'Select all'}
+                {detail && open.length > 0 ? (
+                  <Button tone="plain" onClick={() => setTicked(list, open.map((v) => v.id), on !== open.length)}>
+                    {on === open.length ? 'Clear' : 'Select all'}
                   </Button>
                 ) : null}
                 <Button tone="plain" iconOnly aria-label={`Remove ${title}`} onClick={() => removeProduct(list, productId)}>
@@ -389,19 +450,26 @@ export default function SettingsMysteryBox() {
               <ul className="mbx-variants">
                 {variants.map((v) => {
                   const stock = Math.max(0, v.available ?? 0);
+                  const taken = list === 'backup' && mainTicked.has(v.id);
+                  const isOn = !taken && ticked.has(v.id);
                   return (
                     <li key={v.id}>
-                      <label className={`mbx-variant${ticked.has(v.id) ? ' is-on' : ''}`}>
+                      <label className={`mbx-variant${isOn ? ' is-on' : ''}${taken ? ' is-taken' : ''}`}>
                         <input
                           type="checkbox"
-                          checked={ticked.has(v.id)}
+                          checked={isOn}
+                          disabled={taken}
                           onChange={(e) => setTicked(list, [v.id], e.target.checked)}
                         />
                         {v.colorHex ? <span className="slot__swatch mbx-variant__swatch" style={{ background: v.colorHex }} aria-hidden="true" /> : null}
                         <span className="mbx-variant__name">{variantLabel(v.optionValues, v.sku)}</span>
-                        <Badge tone={stock === 0 ? 'critical' : stock <= 2 ? 'warn' : 'neutral'}>
-                          {stock === 0 ? 'Out of stock' : `${stock} in stock`}
-                        </Badge>
+                        {taken ? (
+                          <Badge tone="neutral">On the main list</Badge>
+                        ) : (
+                          <Badge tone={stock === 0 ? 'critical' : stock <= 2 ? 'warn' : 'neutral'}>
+                            {stock === 0 ? 'Out of stock' : `${stock} in stock`}
+                          </Badge>
+                        )}
                       </label>
                     </li>
                   );
@@ -412,8 +480,8 @@ export default function SettingsMysteryBox() {
         })}
         <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 'var(--s2)' }}>
           <span className="field__hint">
-            {draft.ticked[list].length} {draft.ticked[list].length === 1 ? 'variant' : 'variants'} ·{' '}
-            {unitsOn(list)} {unitsOn(list) === 1 ? 'item' : 'items'} in stock
+            {draft.ticked[list].filter((id) => list === 'main' || !mainTicked.has(id)).length}{' '}
+            {draft.ticked[list].length === 1 ? 'variant' : 'variants'} · {unitsOn(list)} {unitsOn(list) === 1 ? 'item' : 'items'} in stock
           </span>
           <Button onClick={() => setPicking(list)}>
             <Plus aria-hidden="true" />
@@ -442,7 +510,17 @@ export default function SettingsMysteryBox() {
       <div className="form2">
         <div className="form2__main">
           <Card title="Details">
-            <TextField label="Name" value={draft.name} onChange={(e) => edit({ name: e.target.value })} />
+            <div className="mbx-name">
+              <TextField label="Name" value={draft.name} maxLength={200} onChange={(e) => edit({ name: e.target.value })} />
+              <TextField
+                label="Size"
+                value={draft.size}
+                maxLength={40}
+                placeholder="e.g. Large"
+                hint="Shown on the shop and on orders. Leave blank for no size."
+                onChange={(e) => edit({ size: e.target.value })}
+              />
+            </div>
             <div className="field">
               <span className="field__label">Description</span>
               <RichText
@@ -455,6 +533,15 @@ export default function SettingsMysteryBox() {
                 <span className="field__hint">Left empty, the shop shows: “{view.fallback.line}”</span>
               ) : null}
             </div>
+            <TextArea
+              label="Overview"
+              rows={3}
+              value={draft.overview}
+              maxLength={500}
+              placeholder={box?.overviewFallback || view.fallback.line || 'A short summary of the box.'}
+              hint={`A short summary near the top of the box’s page. Left empty, the shop uses the start of the description.${draft.overview.length > 0 ? ` ${draft.overview.length}/500` : ''}`}
+              onChange={(e) => edit({ overview: e.target.value })}
+            />
             <div className="field">
               <span className="field__label">Pictures</span>
               <MediaManager value={draft.media} onChange={(media) => edit({ media })} alt={draft.name || 'Mystery box'} />
@@ -475,12 +562,12 @@ export default function SettingsMysteryBox() {
 
           <Card title="Price and contents">
             <div className="mbx-pricing">
-              <AffixField
+              <MoneyField
                 label="Price"
-                prefix="₦"
-                inputMode="decimal"
+                currency={STORE_CURRENCY}
                 value={draft.price}
-                placeholder="0"
+                placeholder="0.00"
+                error={parsedPrice !== null && !parsedPrice.ok ? moneyRefusalMessage(parsedPrice.reason, STORE_CURRENCY) : null}
                 onChange={(e) => edit({ price: e.target.value })}
               />
               <div className="field">
@@ -522,13 +609,13 @@ export default function SettingsMysteryBox() {
                   <InfoTip label="How this is worked out">
                     {draft.mode === 'built'
                       ? 'You pack boxes ahead, so this is how many packed boxes are ready and not already sold.'
-                      : `The items in stock on your list, divided by ${countOk ? count : 'the items per box'}, less boxes already sold and waiting to be filled.${draft.shortfall === 'backup' ? ' Backup items count too.' : ''} When it reaches 0 the box shows as sold out.`}
+                      : `The items in stock on your list${draft.shortfall === 'backup' ? ' and the backup list' : ''}, divided by ${countOk ? count : 'the items per box'}, less boxes already sold and waiting to be filled. When it reaches 0 the box shows as sold out.`}
                   </InfoTip>
                 </span>
                 <span className="muted">
                   {draft.mode === 'built'
                     ? `${box?.ready ?? 0} packed and ready`
-                    : `${unitsOn('main')} items in stock ÷ ${countOk ? count : '—'} per box${dirty ? ' · save to update' : ''}`}
+                    : `${mainUnits} in stock on the list${draft.shortfall === 'backup' ? ` + ${backupUnits} backup` : ''} ÷ ${countOk ? count : '—'} per box${dirty ? ' · save to update' : ''}`}
                 </span>
               </span>
             </div>
@@ -543,10 +630,23 @@ export default function SettingsMysteryBox() {
 
           {draft.shortfall === 'backup' ? (
             <Card title="Backup items">
-              <p className="field__hint">Used only when the list above runs out.</p>
+              <p className="field__hint">Used only when the list above runs out. Variants already on the main list can’t be added twice.</p>
               {renderGroups('backup')}
             </Card>
           ) : null}
+
+          <CuesCard
+            page={draft.page}
+            onChange={editPage}
+            name={draft.name}
+            size={draft.size}
+            priceMinor={parsedPrice?.ok ? parsedPrice.minor : null}
+            canBuy={canBuy}
+            soldLast24Hours={box?.soldLast24Hours ?? 0}
+            onSaleSince={view.settings.enabled ? view.settings.onSaleSince : null}
+          />
+
+          <HowItWorksCard page={draft.page} onChange={editPage} />
 
           {draft.mode === 'built' && box ? (
             <Card title="Boxes packed ahead">
@@ -591,7 +691,9 @@ export default function SettingsMysteryBox() {
             <Toggle label="On sale" checked={draft.enabled} onChange={(on) => edit({ enabled: on })} />
             <p className="field__hint">
               {draft.enabled
-                ? 'Customers can buy the box once you save.'
+                ? view.settings.enabled && view.settings.onSaleSince
+                  ? `On sale since ${dateTime(view.settings.onSaleSince)}.`
+                  : 'Customers can buy the box once you save.'
                 : 'Hidden from the shop. Orders already placed can still be packed and sent.'}
             </p>
           </Card>
@@ -654,6 +756,359 @@ export default function SettingsMysteryBox() {
         />
       ) : null}
     </div>
+  );
+}
+
+/* ── Cues ───────────────────────────────────────────────────────────────── */
+
+type Scenario = 'now' | 'few' | 'sold_out';
+
+const CUE_TONE: Record<BoxCueKind, BadgeTone> = {
+  just_dropped: 'info',
+  low_stock: 'warn',
+  selling_fast: 'ok',
+  sold_out: 'critical',
+};
+
+/**
+ * The cues, each with its switch, its threshold and its words, beside a preview
+ * of the box as a shopper sees it. "Right now" uses the real numbers; the other
+ * two stage a moment so every line can be read before it is live.
+ */
+function CuesCard({
+  page,
+  onChange,
+  name,
+  size,
+  priceMinor,
+  canBuy,
+  soldLast24Hours,
+  onSaleSince,
+}: {
+  page: BoxPage;
+  onChange: (patch: (page: BoxPage) => BoxPage) => void;
+  name: string;
+  size: string;
+  priceMinor: number | null;
+  canBuy: number;
+  soldLast24Hours: number;
+  onSaleSince: number | null;
+}) {
+  const [scenario, setScenario] = useState<Scenario>('now');
+  const now = Date.now();
+  const { cues } = page;
+  const cue = <K extends keyof BoxPage['cues']>(key: K, patch: Partial<BoxPage['cues'][K]>) =>
+    onChange((p) => ({ ...p, cues: { ...p.cues, [key]: { ...p.cues[key], ...patch } } }));
+
+  const facts =
+    scenario === 'now'
+      ? { available: canBuy, soldLast24Hours, onSaleSince: onSaleSince ?? now - 5 * 60 * 1000, now }
+      : scenario === 'few'
+        ? {
+            available: Math.max(1, Math.min(3, cues.lowStock.threshold)),
+            soldLast24Hours: Math.max(soldLast24Hours, cues.sellingFast.minimum),
+            onSaleSince: now - 3 * HOUR,
+            now,
+          }
+        : { available: 0, soldLast24Hours: Math.max(soldLast24Hours, cues.sellingFast.minimum), onSaleSince: now - 3 * HOUR, now };
+  const shown = resolveBoxCues(page, facts);
+  const changed = JSON.stringify(cues) !== JSON.stringify(BOX_PAGE_DEFAULTS.cues);
+
+  return (
+    <Card
+      title="Buy-now cues"
+      action={
+        changed ? (
+          <Button tone="plain" onClick={() => onChange((p) => ({ ...p, cues: BOX_PAGE_DEFAULTS.cues }))}>
+            <RotateCcw aria-hidden="true" />
+            Reset
+          </Button>
+        ) : undefined
+      }
+    >
+      <p className="field__hint">
+        Short lines on the box’s page that tell shoppers to get it while it’s here. Each one shows only when it’s true.
+      </p>
+
+      <div className="mbx-preview" aria-live="polite">
+        <div className="mbx-preview__bar">
+          <Segmented<Scenario>
+            label="Preview"
+            value={scenario}
+            options={[
+              { value: 'now', label: 'Right now' },
+              { value: 'few', label: 'Almost gone' },
+              { value: 'sold_out', label: 'Sold out' },
+            ]}
+            onChange={setScenario}
+          />
+        </div>
+        <div className="mbx-preview__shop">
+          <span className="mbx-preview__tag">
+            <Gift aria-hidden="true" />
+            Mystery box
+          </span>
+          <strong className="mbx-preview__name">
+            {name.trim() || 'Mystery box'}
+            {size.trim() ? <span className="muted"> · {size.trim()}</span> : null}
+          </strong>
+          <span className="mbx-preview__price num">{priceMinor === null ? '₦—' : money(priceMinor, STORE_CURRENCY)}</span>
+          {shown.length === 0 ? (
+            <span className="muted mbx-preview__none">No cue shows at this moment.</span>
+          ) : (
+            <ul className="mbx-preview__cues">
+              {shown.map((c: BoxCue) => (
+                <li key={c.kind}>
+                  <Badge tone={CUE_TONE[c.kind]}>{c.text}</Badge>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        {scenario === 'now' && onSaleSince === null ? (
+          <span className="field__hint">The box is off, so this shows it as if it went on sale a few minutes ago.</span>
+        ) : null}
+      </div>
+
+      <div className="mbx-cues">
+        <CueRow
+          icon={<Flame />}
+          title="Few left"
+          enabled={cues.lowStock.enabled}
+          onToggle={(enabled) => cue('lowStock', { enabled })}
+          rule={
+            <>
+              Show when{' '}
+              <CountInput
+                label="Boxes left"
+                value={cues.lowStock.threshold}
+                max={BOX_PAGE_LIMITS.threshold}
+                onChange={(threshold) => cue('lowStock', { threshold })}
+              />{' '}
+              or fewer boxes are left
+            </>
+          }
+          text={cues.lowStock.text}
+          placeholder={BOX_PAGE_DEFAULTS.cues.lowStock.text}
+          tokens="{count} becomes the number left. A big number, like 1000, shows it all the time."
+          onText={(text) => cue('lowStock', { text })}
+        />
+        <CueRow
+          icon={<Clock />}
+          title="Just dropped"
+          enabled={cues.justDropped.enabled}
+          onToggle={(enabled) => cue('justDropped', { enabled })}
+          rule={
+            <>
+              Show for{' '}
+              <CountInput
+                label="Hours"
+                value={cues.justDropped.hours}
+                max={BOX_PAGE_LIMITS.hours}
+                onChange={(hours) => cue('justDropped', { hours })}
+              />{' '}
+              hours after the box goes on sale
+            </>
+          }
+          text={cues.justDropped.text}
+          placeholder={BOX_PAGE_DEFAULTS.cues.justDropped.text}
+          tokens="{time} becomes how long ago, like “2 hours ago”."
+          onText={(text) => cue('justDropped', { text })}
+        />
+        <CueRow
+          icon={<TrendingUp />}
+          title="Selling fast"
+          enabled={cues.sellingFast.enabled}
+          onToggle={(enabled) => cue('sellingFast', { enabled })}
+          rule={
+            <>
+              Show once{' '}
+              <CountInput
+                label="Boxes sold"
+                value={cues.sellingFast.minimum}
+                max={BOX_PAGE_LIMITS.minimum}
+                onChange={(minimum) => cue('sellingFast', { minimum })}
+              />{' '}
+              or more have sold in the last 24 hours
+            </>
+          }
+          text={cues.sellingFast.text}
+          placeholder={BOX_PAGE_DEFAULTS.cues.sellingFast.text}
+          tokens="{count} becomes how many sold."
+          onText={(text) => cue('sellingFast', { text })}
+        />
+        <CueRow
+          icon={<PackageX />}
+          title="Sold out"
+          enabled={cues.soldOut.enabled}
+          onToggle={(enabled) => cue('soldOut', { enabled })}
+          rule={<>Shown instead of the others when no more boxes can be bought</>}
+          text={cues.soldOut.text}
+          placeholder={BOX_PAGE_DEFAULTS.cues.soldOut.text}
+          onText={(text) => cue('soldOut', { text })}
+        />
+      </div>
+    </Card>
+  );
+}
+
+function CueRow({
+  icon,
+  title,
+  enabled,
+  onToggle,
+  rule,
+  text,
+  placeholder,
+  tokens,
+  onText,
+}: {
+  icon: ReactNode;
+  title: string;
+  enabled: boolean;
+  onToggle: (on: boolean) => void;
+  rule: ReactNode;
+  text: string;
+  placeholder: string;
+  tokens?: string;
+  onText: (text: string) => void;
+}) {
+  return (
+    <section className={`mbx-cue${enabled ? '' : ' is-off'}`} aria-label={title}>
+      <div className="mbx-cue__head">
+        <span className="mbx-cue__icon" aria-hidden="true">
+          {icon}
+        </span>
+        <strong className="mbx-cue__title">{title}</strong>
+        <Toggle label={<span className="sr">{`Show “${title}”`}</span>} checked={enabled} onChange={onToggle} />
+      </div>
+      {enabled ? (
+        <div className="mbx-cue__body">
+          <p className="mbx-cue__rule">{rule}</p>
+          <TextField
+            label="Words"
+            value={text}
+            maxLength={BOX_PAGE_LIMITS.cueText}
+            placeholder={placeholder}
+            hint={tokens}
+            onChange={(e) => onText(e.target.value)}
+          />
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+/** A small whole-number box that only reports numbers it can use. */
+function CountInput({
+  label,
+  value,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  max: number;
+  onChange: (next: number) => void;
+}) {
+  const [text, setText] = useState(String(value));
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!focused) setText(String(value));
+  }, [value, focused]);
+  return (
+    <input
+      className="input mbx-count"
+      inputMode="numeric"
+      aria-label={label}
+      value={text}
+      onFocus={() => setFocused(true)}
+      onBlur={() => {
+        setFocused(false);
+        setText(String(value));
+      }}
+      onChange={(e) => {
+        const next = e.target.value.replace(/[^\d]/g, '');
+        setText(next);
+        const n = Number(next);
+        if (next !== '' && Number.isInteger(n) && n >= 1 && n <= max) onChange(n);
+      }}
+    />
+  );
+}
+
+/* ── How it works ───────────────────────────────────────────────────────── */
+
+function HowItWorksCard({ page, onChange }: { page: BoxPage; onChange: (patch: (page: BoxPage) => BoxPage) => void }) {
+  const how = page.howItWorks;
+  const set = (patch: Partial<BoxPage['howItWorks']>) => onChange((p) => ({ ...p, howItWorks: { ...p.howItWorks, ...patch } }));
+  const steps = how.steps;
+  const move = (from: number, to: number) => {
+    const next = [...steps];
+    const [step] = next.splice(from, 1);
+    next.splice(to, 0, step);
+    set({ steps: next });
+  };
+  const changed = JSON.stringify(how) !== JSON.stringify(BOX_PAGE_DEFAULTS.howItWorks);
+  return (
+    <Card
+      title="How it works"
+      action={
+        changed ? (
+          <Button tone="plain" onClick={() => set({ ...BOX_PAGE_DEFAULTS.howItWorks, steps: [...BOX_PAGE_DEFAULTS.howItWorks.steps] })}>
+            <RotateCcw aria-hidden="true" />
+            Reset
+          </Button>
+        ) : undefined
+      }
+    >
+      <p className="field__hint">A few plain steps on the box’s page. Remove them all to hide the section.</p>
+      <TextField
+        label="Heading"
+        value={how.title}
+        maxLength={BOX_PAGE_LIMITS.title}
+        placeholder={BOX_PAGE_DEFAULTS.howItWorks.title}
+        onChange={(e) => set({ title: e.target.value })}
+      />
+      <ol className="mbx-steps">
+        {steps.map((step, i) => (
+          <li key={i} className="mbx-step">
+            <span className="mbx-step__no num" aria-hidden="true">
+              {i + 1}
+            </span>
+            <input
+              className="input"
+              aria-label={`Step ${i + 1}`}
+              value={step}
+              maxLength={BOX_PAGE_LIMITS.step}
+              onChange={(e) => set({ steps: steps.map((s, j) => (j === i ? e.target.value : s)) })}
+            />
+            <Button tone="plain" iconOnly aria-label={`Move step ${i + 1} up`} disabled={i === 0} onClick={() => move(i, i - 1)}>
+              <ArrowUp aria-hidden="true" />
+            </Button>
+            <Button
+              tone="plain"
+              iconOnly
+              aria-label={`Move step ${i + 1} down`}
+              disabled={i === steps.length - 1}
+              onClick={() => move(i, i + 1)}
+            >
+              <ArrowDown aria-hidden="true" />
+            </Button>
+            <Button tone="plain" iconOnly aria-label={`Remove step ${i + 1}`} onClick={() => set({ steps: steps.filter((_, j) => j !== i) })}>
+              <X aria-hidden="true" />
+            </Button>
+          </li>
+        ))}
+      </ol>
+      {steps.length === 0 ? <p className="muted">No steps, so the section is hidden on the shop.</p> : null}
+      <div>
+        <Button disabled={steps.length >= BOX_PAGE_LIMITS.steps} onClick={() => set({ steps: [...steps, ''] })}>
+          <Plus aria-hidden="true" />
+          Add a step
+        </Button>
+      </div>
+    </Card>
   );
 }
 

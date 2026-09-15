@@ -3,11 +3,15 @@ import {
   useId,
   useRef,
   useState,
+  type ChangeEvent,
+  type ComponentProps,
+  type FocusEvent,
   type ReactNode,
   type InputHTMLAttributes,
   type SelectHTMLAttributes,
 } from 'react';
 import { Check, ChevronsUpDown } from 'lucide-react';
+import { currencyDigits } from '../../data/api-shop';
 import { Float } from './Float';
 
 /**
@@ -162,6 +166,228 @@ export function AffixField({
         </span>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * MONEY THE WAY PEOPLE READ IT, WHILE THEY ARE TYPING IT (the owner's ask,
+ * 2026-09-15): a price box showed `200000.00`, and a run of zeros is a number
+ * nobody reads at a glance — one short is ₦20,000 and looks almost the same.
+ *
+ * THE GROUPING IS LIVE, not applied on blur, because the moment somebody
+ * miscounts a run of zeros is while they are typing it. Every key lands, the
+ * commas move, and the caret stays after the same digit it was after.
+ *
+ * TEXT THAT IS NOT AN AMOUNT IS LEFT EXACTLY AS TYPED. `abc`, `-5` and `1.999`
+ * pass through untouched, so the field's own validation can still say what is
+ * wrong with them — a box that quietly rewrote `-5` into `5` would be deciding
+ * a price on the operator's behalf.
+ *
+ * THE COMMAS NEVER REACH THE WIRE. Callers keep the box's text in state and
+ * keep reading it with `parseMajor`, which already strips grouping separators
+ * (a figure pasted from a spreadsheet carries them too). This is display, and
+ * no amount is ever worked out on a float.
+ */
+const AMOUNT_SHAPE = /^(\d*)(?:\.(\d*))?$/;
+
+/** `1234567` → `1,234,567`. Digits only; the caller has already checked. */
+const groupWhole = (digits: string): string => digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+/**
+ * What a money box shows while it is being typed in: `200000.5` → `200,000.5`,
+ * `.5` → `.5`. Text that is not an amount comes back unchanged. Grouping text
+ * that is already grouped changes nothing, so it is safe on every keystroke
+ * and every render. No leading zero is stripped and no decimal is cut — both
+ * are the validation's business, not the display's.
+ */
+export function groupMajorInput(text: string): string {
+  const bare = text.replace(/,/g, '');
+  const match = AMOUNT_SHAPE.exec(bare);
+  if (!match) return text;
+  return match[2] === undefined ? groupWhole(match[1]!) : `${groupWhole(match[1]!)}.${match[2]}`;
+}
+
+/**
+ * What a money box shows once it is left: `200000` → `200,000.00`, `5.5` →
+ * `5.50`, `.5` → `0.50`. Only an amount the currency can actually hold is
+ * tidied; empty, invalid and too-many-decimals text comes back unchanged, for
+ * the reason above — padding `1.999` would hide the mistake being refused.
+ */
+export function tidyMajorInput(text: string, digits: number): string {
+  const match = AMOUNT_SHAPE.exec(text.trim().replace(/,/g, ''));
+  if (!match) return text;
+  const whole = match[1]!;
+  const fraction = match[2] ?? '';
+  if (whole === '' && fraction === '') return text;
+  if (fraction.length > digits) return text;
+  const kept = groupWhole(whole.replace(/^0+(?=\d)/, '') || '0');
+  return digits === 0 ? kept : `${kept}.${fraction.padEnd(digits, '0')}`;
+}
+
+const SIGN_BY_CURRENCY = new Map<string, string>();
+
+/**
+ * `NGN` → `₦`, `USD` → `$`: the sign `formatMinor` prints, for the front of a
+ * money box. English CLDR's plain `symbol` for the naira IS the letters `NGN`,
+ * so only `narrowSymbol` reaches the sign. An engine too old for that option,
+ * or a code `Intl` refuses, gets the code back — it still names the money.
+ */
+export function currencySign(code: string): string {
+  const upper = code.toUpperCase();
+  const cached = SIGN_BY_CURRENCY.get(upper);
+  if (cached !== undefined) return cached;
+  let sign = upper;
+  try {
+    const part = new Intl.NumberFormat('en', {
+      style: 'currency',
+      currency: upper,
+      currencyDisplay: 'narrowSymbol',
+    })
+      .formatToParts(0)
+      .find((p) => p.type === 'currency');
+    if (part?.value) sign = part.value;
+  } catch {
+    // Kept as the code; see above.
+  }
+  SIGN_BY_CURRENCY.set(upper, sign);
+  return sign;
+}
+
+/** Characters before `end` that are not grouping commas. */
+const keptBefore = (text: string, end: number): number => text.slice(0, end).replace(/,/g, '').length;
+
+/** The offset just past the `kept`-th character of `text` that is not a comma. */
+function offsetAfterKept(text: string, kept: number): number {
+  if (kept <= 0) return 0;
+  let seen = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== ',') seen += 1;
+    if (seen === kept) return i + 1;
+  }
+  return text.length;
+}
+
+/** What each money box showed after its last edit, for `commaNeighbourDeleted`. */
+const lastShown = new WeakMap<HTMLInputElement, string>();
+
+/**
+ * BACKSPACE OR DELETE ON A GROUPING COMMA TAKES THE DIGIT BESIDE IT. Without
+ * this, Backspace at `1,|500` removes the comma, the grouping puts it straight
+ * back, and the key seems to do nothing at all.
+ *
+ * Returns the text with that neighbouring digit gone too, and the caret where
+ * the digit was — or `null` when the keystroke was not one comma the grouping
+ * would rebuild (in text that is not an amount, a deleted comma stays deleted).
+ * "What the box showed" is read from two places because each is only
+ * sometimes fresh: React writes a controlled value back into `defaultValue` on
+ * every commit, and an uncontrolled box has only what this module last wrote.
+ * A stale copy can only miss: no grouped amount with a digit deleted regroups
+ * into another grouped amount with a comma deleted, so a Backspace on a digit
+ * is never mistaken for one on a comma.
+ */
+function commaNeighbourDeleted(
+  input: HTMLInputElement,
+  inputType: string | undefined,
+): { text: string; caret: number } | null {
+  const back = inputType === 'deleteContentBackward';
+  if (!back && inputType !== 'deleteContentForward') return null;
+  const typed = input.value;
+  const caret = input.selectionStart;
+  if (caret === null) return null;
+  const regrouped = groupMajorInput(typed);
+  const commaWent = [lastShown.get(input), input.defaultValue].some(
+    (shown) =>
+      shown === regrouped && shown[caret] === ',' && shown.slice(0, caret) + shown.slice(caret + 1) === typed,
+  );
+  const at = back ? caret - 1 : caret;
+  if (!commaWent || at < 0 || at >= typed.length) return null;
+  return { text: typed.slice(0, at) + typed.slice(at + 1), caret: at };
+}
+
+type MoneyInputHandlers = {
+  onChange: (e: ChangeEvent<HTMLInputElement>) => void;
+  onBlur: (e: FocusEvent<HTMLInputElement>) => void;
+};
+
+/**
+ * The grouping and the tidy-up as a plain `onChange`/`onBlur` pair, for a money
+ * box that is a bare `<input>` rather than a `MoneyField` (the add-on rules'
+ * pill-sized boxes). Spread both onto the input; give an uncontrolled one a
+ * `defaultValue` already passed through `groupMajorInput`.
+ *
+ * The grouped text is written into the input BEFORE the caller's `onChange`
+ * runs, so `e.target.value` is already what the screen shows and a controlled
+ * field's state and its DOM never disagree. On blur the tidied text goes
+ * through the same `onChange`, so state follows it there too.
+ */
+export function moneyInputHandlers(
+  currency: string,
+  { onChange, onBlur }: Partial<MoneyInputHandlers> = {},
+): MoneyInputHandlers {
+  return {
+    onChange: (e) => {
+      const input = e.currentTarget;
+      const fixed = commaNeighbourDeleted(input, (e.nativeEvent as Partial<InputEvent>).inputType);
+      const typed = fixed ? fixed.text : input.value;
+      const caret = fixed ? fixed.caret : input.selectionStart;
+      const grouped = groupMajorInput(typed);
+      if (grouped !== input.value) {
+        // Assigning `value` throws the caret to the end, so it is put back
+        // after the same digit — and only in a box the person is typing in.
+        input.value = grouped;
+        if (caret !== null && input.ownerDocument.activeElement === input) {
+          const at = offsetAfterKept(grouped, keptBefore(typed, caret));
+          input.setSelectionRange(at, at);
+        }
+      }
+      lastShown.set(input, input.value);
+      onChange?.(e);
+    },
+    onBlur: (e) => {
+      const input = e.currentTarget;
+      const tidy = tidyMajorInput(input.value, currencyDigits(currency));
+      if (tidy !== input.value) {
+        input.value = tidy;
+        onChange?.(e as unknown as ChangeEvent<HTMLInputElement>);
+      }
+      lastShown.set(input, input.value);
+      onBlur?.(e);
+    },
+  };
+}
+
+/**
+ * `AffixField` for an amount of money: the currency's sign inside the border
+ * (`₦`, never `NGN`), a decimal keypad on a phone, the thousands grouped as
+ * they are typed, and the decimals filled in when the box is left.
+ *
+ * Nothing about how an amount is stored or sent moves: the caller still keeps
+ * `e.target.value` and still parses it with `parseMajor`. A value seeded with
+ * `plainMajor` shows grouped without the caller doing anything, and so does a
+ * `suggestion` — which is also what `onSuggest` is handed back.
+ */
+export function MoneyField({
+  currency,
+  value,
+  defaultValue,
+  suggestion,
+  onChange,
+  onBlur,
+  ...rest
+}: Omit<ComponentProps<typeof AffixField>, 'prefix' | 'type'> & { currency: string }) {
+  const handlers = moneyInputHandlers(currency, { onChange, onBlur });
+  return (
+    <AffixField
+      inputMode="decimal"
+      autoComplete="off"
+      {...rest}
+      prefix={currencySign(currency)}
+      value={typeof value === 'string' ? groupMajorInput(value) : value}
+      defaultValue={typeof defaultValue === 'string' ? groupMajorInput(defaultValue) : defaultValue}
+      suggestion={suggestion === undefined ? undefined : groupMajorInput(suggestion)}
+      onChange={handlers.onChange}
+      onBlur={handlers.onBlur}
+    />
   );
 }
 

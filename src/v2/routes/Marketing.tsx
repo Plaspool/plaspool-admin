@@ -9,6 +9,7 @@ import {
   type MarketingSettings,
   type Program,
 } from '../../data/api-marketing';
+import { moneyRefusalMessage, parseMajor, plainMajor } from '../../data/api-shop';
 import { ApiError } from '../../data/errors';
 import { getSession } from '../../data/session';
 import { dateTime, humanise, money } from '../lib/format';
@@ -25,7 +26,7 @@ import { Badge, Banner, Button, ButtonLink, EmptyState } from '../ui/primitives'
 import { Card } from '../ui/Card';
 import { DataTable, IdCell, type Column } from '../ui/DataTable';
 import { Defs } from '../ui/Defs';
-import { AffixField, Checkbox, SelectField, TextField } from '../ui/Field';
+import { AffixField, Checkbox, MoneyField, SelectField, TextField } from '../ui/Field';
 import { Menu, MenuItem } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
@@ -456,8 +457,8 @@ function SettingsModal({
 }) {
   const [enabled, setEnabled] = useState(settings.redemptionEnabled);
   const [ratePoints, setRatePoints] = useState(String(settings.redemptionRatePoints));
-  const [rateMajor, setRateMajor] = useState(
-    (settings.redemptionRateMinor / 100).toFixed(2),
+  const [rateMajor, setRateMajor] = useState(() =>
+    plainMajor(settings.redemptionRateMinor, settings.redemptionCurrency),
   );
   const [minPoints, setMinPoints] = useState(String(settings.minRedeemPoints));
   const [capPercent, setCapPercent] = useState(String(settings.maxRedeemBps / 100));
@@ -468,14 +469,25 @@ function SettingsModal({
 
   async function commit() {
     const nRatePoints = Number(ratePoints);
-    const nRateMinor = Math.round(Number(rateMajor) * 100);
+    /* `parseMajor`, never `Number(...) * 100`: the box groups its thousands
+       (`1,500.00`), which `Number` reads as NaN, and a float times 100 is
+       not always the integer it looks like. */
+    const rate = parseMajor(rateMajor, settings.redemptionCurrency);
     const nMin = Number(minPoints);
     const pct = Number(capPercent);
     if (!Number.isInteger(nRatePoints) || nRatePoints < 1) {
       setError('The number of points must be a whole number, 1 or more.');
       return;
     }
-    if (!Number.isFinite(nRateMinor) || nRateMinor < 1) {
+    if (!rate.ok) {
+      setError(
+        rate.reason === 'empty' || rate.reason === 'negative'
+          ? 'The money amount must be more than zero.'
+          : `How much money: ${moneyRefusalMessage(rate.reason, settings.redemptionCurrency)}`,
+      );
+      return;
+    }
+    if (rate.minor < 1) {
       setError('The money amount must be more than zero.');
       return;
     }
@@ -498,7 +510,7 @@ function SettingsModal({
         expectedRevision: settings.revision,
         redemptionEnabled: enabled,
         redemptionRatePoints: nRatePoints,
-        redemptionRateMinor: nRateMinor,
+        redemptionRateMinor: rate.minor,
         minRedeemPoints: nMin,
         maxRedeemBps: Math.round(pct * 100),
         pointsLabelSingular: labelOne.trim(),
@@ -549,10 +561,9 @@ function SettingsModal({
             are worth
           </span>
           <div style={{ flex: 1 }}>
-            <AffixField
+            <MoneyField
               label="How much money"
-              prefix={settings.redemptionCurrency}
-              inputMode="decimal"
+              currency={settings.redemptionCurrency}
               value={rateMajor}
               onChange={(e) => {
                 setRateMajor(e.target.value);

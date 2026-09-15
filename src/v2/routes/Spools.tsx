@@ -16,6 +16,7 @@ import {
   type ReturnsView,
   type ServiceArea,
 } from '../../data/api-marketing';
+import { parseMajor, plainMajor } from '../../data/api-shop';
 import { ApiError } from '../../data/errors';
 import { getSession } from '../../data/session';
 import { useAsync } from '../lib/useAsync';
@@ -24,7 +25,7 @@ import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, EmptyState, type BadgeTone } from '../ui/primitives';
 import { DataTable, IdCell, TablePager, type Column } from '../ui/DataTable';
 import { Defs } from '../ui/Defs';
-import { SelectField, TextArea, TextField } from '../ui/Field';
+import { MoneyField, SelectField, TextArea, TextField } from '../ui/Field';
 import { Modal } from '../ui/Modal';
 import { SearchSelect } from '../ui/SearchSelect';
 import { Timeline, type TimelineEvent } from '../ui/Timeline';
@@ -783,30 +784,28 @@ const COST_LINES = [
 
 type CostKey = (typeof COST_LINES)[number]['key'];
 
-/** Minor units → what goes in the box. Naira, plain, no separators, because
- *  the box is a number input and a comma in one is not a number. */
+/** Minor units → what goes in the box: naira digits, which `MoneyField` shows
+ *  with their thousands grouped. */
 const toBox = (minor: number | null | undefined): string =>
   /* `== null`, NEVER `=== null`. These columns are younger than the API
      contract, so a payload from before 0920 — a cached response, an older
      deployment answering a newer bundle, a fixture — carries `undefined`, and
-     `String(undefined / 100)` is the string "NaN" sitting in a money box. */
-  minor == null ? '' : String(minor / 100);
+     `plainMajor(undefined)` throws from inside a `useState` initialiser. */
+  minor == null ? '' : plainMajor(minor, 'NGN');
 
 /**
  * What is in the box → minor units, or `null` for an empty one.
  *
- * `undefined` IS THE THIRD ANSWER and it means "this is not a number" — the
+ * `undefined` IS THE THIRD ANSWER and it means "this is not an amount" — the
  * form refuses to save rather than sending something the server will 400.
- * Naira are multiplied by 100 and ROUNDED: a pasted `2500.005` is a typo, not
- * a fraction of a kobo, and rounding is what keeps it an integer the column
- * will accept.
+ * `parseMajor` reads it, so the grouping commas the box shows are fine, and a
+ * negative or a fraction of a kobo (a pasted `2500.005`) is refused rather
+ * than rounded, the same rule as every other money box in the admin.
  */
 function fromBox(text: string): number | null | undefined {
-  const trimmed = text.trim();
-  if (trimmed === '') return null;
-  const naira = Number(trimmed);
-  if (!Number.isFinite(naira) || naira < 0) return undefined;
-  return Math.round(naira * 100);
+  if (text.trim() === '') return null;
+  const parsed = parseMajor(text, 'NGN');
+  return parsed.ok ? parsed.minor : undefined;
 }
 
 /**
@@ -958,17 +957,15 @@ function CostsForm({
         {COST_LINES.map((line) => {
           const std = (area ? area[line.std] : null) ?? null;
           return (
-            <TextField
+            <MoneyField
               key={line.key}
               label={line.label}
-              type="number"
-              min={0}
-              step="1"
-              inputMode="decimal"
+              currency="NGN"
               value={boxes[line.key]}
               /* GREY, NOT FILLED IN. The number is a suggestion until somebody
-                 types it, and that difference is what the dashboard counts. */
-              placeholder={std === null ? '₦0' : `₦${(std / 100).toLocaleString()} standard`}
+                 types it, and that difference is what the dashboard counts.
+                 No ₦ in it: the box's own sign already sits in front. */
+              placeholder={std === null ? '0' : `${(std / 100).toLocaleString()} standard`}
               hint={line.hint}
               error={
                 fromBox(boxes[line.key]) === undefined ? 'Enter an amount in naira' : undefined

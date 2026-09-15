@@ -27,7 +27,7 @@ import { Badge, Banner, Button, ButtonLink, EmptyState, SplitEmpty, Stars } from
 import { AnalyticsBar, PageHeader } from '../ui/Page';
 import { DataTable, IdCell, TablePager, type Column } from '../ui/DataTable';
 import { Menu, MenuItem, MenuSeparator } from '../ui/Menu';
-import { AffixField, Checkbox, Radio, Segmented, SelectField, TextArea, TextField } from '../ui/Field';
+import { AffixField, Checkbox, MoneyField, Radio, Segmented, SelectField, TextArea, TextField } from '../ui/Field';
 import { CouponArt, ReceiptArt, SpoolTiles } from '../ui/illustrations';
 import { Defs } from '../ui/Defs';
 import { PopEdit, PopEditFoot } from '../ui/PopEdit';
@@ -192,10 +192,9 @@ function PopEditSpecimen() {
     <PopEdit value={<span className="num">₦{price}</span>} ariaLabel="Edit price" align="left">
       {(close) => (
         <>
-          <AffixField
+          <MoneyField
             label="Price"
-            prefix="₦"
-            inputMode="decimal"
+            currency="NGN"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
           />
@@ -286,6 +285,7 @@ export default function DesignGallery() {
   const [seg, setSeg] = useState<'code' | 'auto'>('code');
   const [check, setCheck] = useState(true);
   const [fillDemo, setFillDemo] = useState('');
+  const [moneyDemo, setMoneyDemo] = useState('200000.00');
   const [tab, setTab] = useState<'all' | 'active'>('all');
   const [q, setQ] = useState('');
   const [expScope, setExpScope] = useState<'page' | 'all' | 'selected'>('page');
@@ -613,12 +613,18 @@ export default function DesignGallery() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(15rem, 1fr))', gap: 'var(--s4)' }}>
             <TextField label="Discount code" placeholder="SUMMER20" hint="Customers type this at checkout." />
             <TextField label="With an error" defaultValue="not-an-email" error="That does not look like an email address." />
-            <AffixField label="Amount off" prefix="₦" placeholder="0.00" inputMode="decimal" />
+            <MoneyField label="Amount off" currency="NGN" placeholder="0.00" />
             <AffixField label="Percentage off" suffix="%" defaultValue="10" inputMode="decimal" />
-            <AffixField
+            <MoneyField
+              label="Price"
+              currency="NGN"
+              value={moneyDemo}
+              hint="A money box groups the thousands as you type, and fills in the kobo when you leave it."
+              onChange={(e) => setMoneyDemo(e.target.value)}
+            />
+            <MoneyField
               label="With a quick-fill"
-              prefix="₦"
-              inputMode="decimal"
+              currency="NGN"
               value={fillDemo}
               hint="Tab — or tap the keycap — types the suggestion out, ready to edit. Empty until then."
               suggestion="27600.00"

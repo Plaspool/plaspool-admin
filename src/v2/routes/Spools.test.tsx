@@ -414,11 +414,12 @@ describe('what a pickup cost us', () => {
     await user.click(await screen.findByRole('button', { name: 'What it cost…' }));
 
     const transport = await screen.findByLabelText('Transport in');
-    /* Cabbage Quarter's standard is ₦2,000. It is SHOWN and NOT FILLED IN. */
+    /* Cabbage Quarter's standard is ₦2,000. It is SHOWN and NOT FILLED IN.
+       (The ₦ is the money box's own sign, in front of the placeholder.) */
     expect(transport).toHaveProperty('value', '');
-    expect(transport.getAttribute('placeholder')).toBe('₦2,000 standard');
+    expect(transport.getAttribute('placeholder')).toBe('2,000 standard');
     /* And a line the district has no standard for offers nothing at all. */
-    expect(screen.getByLabelText('Driver').getAttribute('placeholder')).toBe('₦0');
+    expect(screen.getByLabelText('Driver').getAttribute('placeholder')).toBe('0');
 
     await user.type(transport, '2600');
     await user.click(screen.getByRole('button', { name: 'Save what it cost' }));

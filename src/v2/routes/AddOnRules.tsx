@@ -5,6 +5,7 @@ import { ADD_ON_BASES, ADD_ON_MODES, attributesOfKind, basisFor } from '../../..
 import type { AddOnAttribute, AddOnBasis, AddOnCondition, AddOnMode, AddOnRule, NumberAttribute } from '../../../shared/commerce/add-ons';
 import { formatMinor, parseMajor, plainMajor } from '../../data/api-shop';
 import { Card } from '../ui/Card';
+import { currencySign, groupMajorInput, moneyInputHandlers } from '../ui/Field';
 import { Button } from '../ui/primitives';
 import { SearchSelect } from '../ui/SearchSelect';
 import { ATTRIBUTE_LABELS, BASIS_LABELS, MODE_LABELS, NUMBER_OPS, SET_OPS, kindOf } from './add-on-copy';
@@ -93,30 +94,39 @@ function majorPlaceholder(minor: number, currency: string): string {
 /** A money box with the currency inside its border: `.affix`, as AffixField
  *  draws it, without the field label and margins a pill row has no room for.
  *  Uncontrolled and committed on blur, so a half-typed "2000." never round-trips
- *  through the parser mid-keystroke. */
+ *  through the parser mid-keystroke. Grouped as it is typed and tidied as it is
+ *  left, exactly like `MoneyField` — and the tidy runs BEFORE the commit, so
+ *  the text committed is the text on screen (`parseMajor` strips the commas). */
 function MoneyBox({
   label,
+  currency,
   defaultValue,
   placeholder,
   onCommit,
 }: {
   label: string;
+  currency: string;
   defaultValue: string;
   placeholder?: string;
   onCommit: (text: string) => void;
 }) {
+  const handlers = moneyInputHandlers(currency, {
+    onBlur: (e) => onCommit(e.currentTarget.value.trim()),
+  });
   return (
     <span className="affix">
       <span className="affix__tag" aria-hidden="true">
-        ₦
+        {currencySign(currency)}
       </span>
       <input
         className="input"
         aria-label={label}
         inputMode="decimal"
-        defaultValue={defaultValue}
+        autoComplete="off"
+        defaultValue={groupMajorInput(defaultValue)}
         placeholder={placeholder}
-        onBlur={(e) => onCommit(e.currentTarget.value.trim())}
+        onChange={handlers.onChange}
+        onBlur={handlers.onBlur}
       />
     </span>
   );
@@ -139,6 +149,7 @@ function NumberValue({
     return (
       <MoneyBox
         label={label}
+        currency={currency}
         defaultValue={plainMajor(value, currency)}
         onCommit={(text) => {
           const parsed = parseMajor(text, currency);
@@ -449,6 +460,7 @@ export function AddOnRules({
               {moneyLabel(rule.then)}
               <MoneyBox
                 label={moneyLabel(rule.then)}
+                currency={currency}
                 placeholder={majorPlaceholder(priceMinor, currency)}
                 defaultValue={rule.amountMinor == null ? '' : plainMajor(rule.amountMinor, currency)}
                 onCommit={(text) => {
