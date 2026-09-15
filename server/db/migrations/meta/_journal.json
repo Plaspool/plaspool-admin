@@ -498,6 +498,13 @@
                         "when":  1786600005770,
                         "tag":  "1200_cancel_restock",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  71,
+                        "version":  "7",
+                        "when":  1786600005780,
+                        "tag":  "1220_mystery_boxes",
+                        "breakpoints":  true
                     }
                 ]
 }

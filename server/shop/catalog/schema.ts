@@ -171,6 +171,12 @@ export const shopProducts = pgTable(
      * passes.
      */
     bulkDiscountEnabled: boolean('bulk_discount_enabled').notNull().default(true),
+    /**
+     * Migration 1220. NULL means an ordinary product. `'pack'` is a mystery box
+     * staff fill by hand; `'built'` and `'auto'` are admitted by the CHECK for
+     * phases 2 and 3 and refused by the phase 1 route.
+     */
+    boxMode: text('box_mode').$type<'pack' | 'built' | 'auto'>(),
     authorId: uuid('author_id')
       .notNull()
       .references(() => users.id),
@@ -191,6 +197,10 @@ export const shopProducts = pgTable(
   (t) => [
     check('shop_products_status_ck', sql`${t.status} IN (${sqlLiterals(PRODUCT_STATUSES)})`),
     check('shop_products_revision_ck', sql`${t.revision} > 0`),
+    check(
+      'shop_products_box_mode_ck',
+      sql`${t.boxMode} IS NULL OR ${t.boxMode} IN ('pack', 'built', 'auto')`,
+    ),
     index('shop_products_status_updated_idx').on(t.status, t.updatedAt.desc()),
     index('shop_products_deleted_idx').on(t.deletedAt),
     index('shop_products_category_idx').on(t.category),
@@ -281,6 +291,11 @@ export const shopVariants = pgTable(
      * for it twice.
      */
     shippingWeightGrams: integer('shipping_weight_grams'),
+    /** Migration 1220. The tag whose products fill this box, in the catalogue's
+     *  canonical tag spelling. Both-or-neither with the count. */
+    boxPoolTag: text('box_pool_tag'),
+    /** Migration 1220. How many items one box of this variant holds. */
+    boxItemCount: integer('box_item_count'),
     status: text('status').$type<VariantStatus>().notNull(),
     /**
      * ONE image, for the option this variant actually is (migration 0009).
@@ -358,6 +373,8 @@ export const shopVariants = pgTable(
       'shop_variants_shipping_weight_ck',
       sql`${t.shippingWeightGrams} IS NULL OR ${t.shippingWeightGrams} >= 0`,
     ),
+    check('shop_variants_box_item_count_ck', sql`${t.boxItemCount} IS NULL OR ${t.boxItemCount} > 0`),
+    check('shop_variants_box_pair_ck', sql`(${t.boxPoolTag} IS NULL) = (${t.boxItemCount} IS NULL)`),
     // Sign backstops, as `weight_ck`: against a backfill or hand-run UPDATE,
     // not display policy — zero is storable and simply never renders as a sale.
     check(
