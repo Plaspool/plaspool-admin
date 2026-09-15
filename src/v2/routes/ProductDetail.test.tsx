@@ -689,6 +689,78 @@ describe('the product editor', () => {
   });
 });
 
+// ------------------------------------------ the stock cell in the variant table
+
+/*
+ * THE REASON IS OPTIONAL SINCE 2026-09-03 (owner’s instruction) — ON BOTH
+ * STOCK PANELS. There are two: the Stock screen's (`Inventory.tsx`) and this
+ * one in the product page's variant table, a near-copy. PR #103 took the guard
+ * out of the first and never saw the second, which went on refusing a blank
+ * reason until the owner met it on 2026-09-15 and reasonably read it as the
+ * change having been undone. Nothing here tested this cell, so nothing
+ * noticed. These are `Inventory.test.tsx`'s three tests pointed at the twin:
+ * a fix that lands on one panel and not the other goes red in one suite.
+ *
+ * THE BODY IS THE ASSERTION, not the toast. The route keeps `.min(1)` inside
+ * its `.optional()`, so `{ delta: 3, reason: '' }` would look identical on
+ * screen and be a 400 in production; `toEqual` pins the key ABSENT.
+ */
+describe('the stock cell in the variant table', () => {
+  const ADJUST = `/api/shop/admin/inventory/${freshVariant.id}/adjust`;
+
+  async function openStock(user: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> {
+    await user.click(screen.getByRole('button', { name: `Adjust stock of ${freshVariant.sku}` }));
+    return await screen.findByRole('dialog', { name: `Adjust stock of ${freshVariant.sku}` });
+  }
+
+  it('sends no reason key at all when the box is left empty', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    when(ADJUST, { inventory: { variantId: freshVariant.id, onHand: 8, reserved: 0, available: 8 } });
+    mountAt(spool.id);
+    await screen.findByDisplayValue('Recycled Spool');
+
+    const panel = await openStock(user);
+    await user.type(within(panel).getByLabelText('Adjust by'), '3');
+    await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
+
+    await waitFor(() => expect(sent(ADJUST, 'POST')).toEqual({ delta: 3 }));
+    expect(await screen.findByText(`${freshVariant.sku} — 8 available`)).toBeTruthy();
+  });
+
+  it('still sends a reason when one is given, trimmed', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    when(ADJUST, { inventory: { variantId: freshVariant.id, onHand: 8, reserved: 0, available: 8 } });
+    mountAt(spool.id);
+    await screen.findByDisplayValue('Recycled Spool');
+
+    const panel = await openStock(user);
+    await user.type(within(panel).getByLabelText('Adjust by'), '3');
+    await user.type(within(panel).getByLabelText('Reason (optional)'), '  Stock count ');
+    await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
+
+    await waitFor(() => expect(sent(ADJUST, 'POST')).toEqual({ delta: 3, reason: 'Stock count' }));
+  });
+
+  /* The number still gates it: zero is a change the server cannot make. */
+  it('still refuses a delta of zero, sending nothing', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    mountAt(spool.id);
+    await screen.findByDisplayValue('Recycled Spool');
+
+    const panel = await openStock(user);
+    await user.type(within(panel).getByLabelText('Adjust by'), '0');
+    await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
+
+    expect(
+      await within(panel).findByText('Enter a whole number, above or below zero — but not zero.'),
+    ).toBeTruthy();
+    expect(writes()).not.toContain(ADJUST);
+  });
+});
+
 // -------------------------------------------- the search engine listing card
 
 describe('the search engine listing card', () => {
