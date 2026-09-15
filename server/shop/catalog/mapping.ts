@@ -92,6 +92,8 @@ export const PRODUCT_COLUMNS: string[] = [
   'overview_fallback',
   /** Migration 0600. */
   'bulk_discount_enabled',
+  /* Migration 1220. */
+  'box_mode',
   'author_id',
   'revision',
 ];
@@ -190,6 +192,8 @@ export function rowToProduct(row: Record<string, unknown>): Product {
      * switched off. The explicit comparison refuses to be clever about it.
      */
     bulkDiscountEnabled: row.bulk_discount_enabled === true || row.bulk_discount_enabled === 't',
+    /** Migration 1220. NULL is an ordinary product. */
+    boxMode: row.box_mode == null ? null : (String(row.box_mode) as Product['boxMode']),
     authorId: String(row.author_id),
     revision: Number(row.revision),
   };

@@ -269,7 +269,13 @@ export async function saveProduct(
       patch.overview !== undefined ? (normalizeSeo(patch.overview) ?? null) : current.overview,
     /* Migration 0600. A boolean has no "clear" spelling, so absence is the only
        "leave it alone" and `??` is right here where it is wrong two fields up. */
-    bulkDiscountEnabled: patch.bulkDiscountEnabled ?? current.bulkDiscountEnabled,
+    boxMode: patch.boxMode !== undefined ? patch.boxMode : current.boxMode,
+    /* Migration 0600, and 1220's default: switching a product INTO a box turns
+       its bulk discounts off unless the same save says otherwise, because a box
+       is already priced as a deal. */
+    bulkDiscountEnabled:
+      patch.bulkDiscountEnabled ??
+      (patch.boxMode && current.boxMode === null ? false : current.bulkDiscountEnabled),
   };
 
   const now = Date.now();
@@ -310,6 +316,7 @@ export async function saveProduct(
                seo_description = ${next.seoDescription},
                overview = ${next.overview},
                bulk_discount_enabled = ${next.bulkDiscountEnabled},
+               box_mode = ${next.boxMode},
                revision = revision + 1, updated_at = ${now}
          WHERE id = ${id} AND revision = ${base}
         RETURNING ${sql.raw(PRODUCT_COLUMNS.join(', '))}

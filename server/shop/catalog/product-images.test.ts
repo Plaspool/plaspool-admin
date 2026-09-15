@@ -294,6 +294,7 @@ describe('toStorefrontProduct', () => {
     overview: null,
     overviewFallback: '',
     bulkDiscountEnabled: true,
+    boxMode: null,
     createdAt: 0,
     updatedAt: 0,
     publishedAt: null,

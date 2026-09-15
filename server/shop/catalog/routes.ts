@@ -4,7 +4,8 @@ import { pathParam, readJson, readJsonOrEmpty, readQuery, str } from '../../midd
 import { requireAuth } from '../../middleware/session';
 import { currentDb, currentUser } from '../../app-env';
 import type { AppEnv } from '../../app-env';
-import { NotFoundError } from '../../repo/errors';
+import { BadRequestError, NotFoundError } from '../../repo/errors';
+import { hasOpenBoxes } from '../boxes/capacity';
 import { money } from '../../../shared/commerce/money';
 import type { DocNode } from '../../../shared/types';
 import {
@@ -128,6 +129,8 @@ const ProductPatchBody = z
     overview: str().max(500).nullable(),
     /** Migration 0600. Absent leaves it alone; there is no "clear". */
     bulkDiscountEnabled: z.boolean(),
+    /** Migration 1220. `null` switches the box off. 'built' and 'auto' arrive in later phases. */
+    boxMode: z.enum(['pack']).nullable(),
   })
   .partial()
   .strict();
@@ -665,6 +668,13 @@ routes.post('/admin/products', auth, async (c) => {
  */
 routes.patch('/admin/products/:id', auth, async (c) => {
   const { patch, baseRevision, note } = await readJson(c, PatchBody);
+  /*
+   * MIGRATION 1220: A BOX WITH UNFILLED PAID ORDERS STAYS A BOX. Switching it
+   * off would turn those boxes into ordinary lines that ship empty.
+   */
+  if (patch.boxMode === null && (await hasOpenBoxes(currentDb(c), pathParam(c, 'id')))) {
+    throw new BadRequestError('box_has_open_orders');
+  }
   const product = await saveProduct(currentDb(c), pathParam(c, 'id'), toPatch(patch), {
     actor: currentUser(c),
     baseRevision,

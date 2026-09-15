@@ -77,6 +77,8 @@ export interface Product {
   overviewFallback: string;
   /** Whether the quantity ladder applies here (migration 0600). Default true. */
   bulkDiscountEnabled: boolean;
+  /** Migration 1220. `null` is an ordinary product; `'pack'` a box staff fill by hand. */
+  boxMode: 'pack' | 'built' | 'auto' | null;
   authorId: string;
   /** The CAS token. Every write carries the revision it derived from. */
   revision: number;
@@ -290,6 +292,8 @@ export interface ProductPatch {
   overview?: string | null;
   /** Absent leaves it alone; the column's own default is `true`. */
   bulkDiscountEnabled?: boolean;
+  /** Migration 1220. `null` switches the box off. Phase 1 accepts only `'pack'`. */
+  boxMode?: 'pack' | null;
 }
 
 /** The patchable half of a variant. `productId` is absent: a variant does not
