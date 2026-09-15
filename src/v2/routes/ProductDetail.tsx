@@ -974,8 +974,8 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                 </div>
               ) : audit.length === 0 ? (
                 <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
-                  No stock or price changes recorded yet. Every change appears here with its
-                  reason.
+                  No stock or price changes recorded yet. Every change appears here, with its
+                  reason if one was given.
                 </p>
               ) : (
                 <Timeline events={audit.map(auditEvent)} />
@@ -1448,12 +1448,13 @@ function StockCell({ variant, onWrite }: { variant: ShopVariant; onWrite: () => 
       setError('Enter a whole number, above or below zero — but not zero.');
       return;
     }
-    if (!reason.trim()) {
-      setError('A stock change needs a reason. It is kept on record.');
-      return;
-    }
     setBusy(true);
     try {
+      /* NO REASON GUARD. It is optional since 2026-09-03 (owner's instruction),
+       * the same as on the Stock screen's panel in `Inventory.tsx`. PR #103
+       * removed that one's guard and missed this one, which went on refusing a
+       * blank reason until 2026-09-15. The placeholder still asks, and
+       * `adjustInventory` omits the key rather than sending an empty string. */
       const res = await shopApi.adjustInventory(variant.id, parsedDelta, reason.trim());
       toast.show(`${variant.sku} — ${res.available} available`);
       close();
@@ -1504,9 +1505,10 @@ function StockCell({ variant, onWrite }: { variant: ShopVariant; onWrite: () => 
             }}
           />
           <TextField
-            label="Reason"
+            label="Reason (optional)"
             value={reason}
             placeholder="Stock count, damage, correction…"
+            hint="Kept on record. Worth a few words if you have them."
             error={error}
             onChange={(e) => {
               setReason(e.target.value);
@@ -1933,8 +1935,8 @@ function VariantModal({
             </div>
             <div style={{ flex: 1 }}>
               <span className="field__hint">
-                Stock moves through the Available column’s adjuster, never here — every change
-                carries its reason into the audit trail.
+                Stock moves through the Available column’s adjuster, never here — so every
+                change is kept on record.
               </span>
             </div>
           </div>

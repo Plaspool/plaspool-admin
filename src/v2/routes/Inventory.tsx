@@ -16,8 +16,10 @@ import { useToast } from '../ui/Toast';
  * variant — it is oversold on purpose, shown in the critical ink rather than
  * "fixed" by a floor.
  *
- * Adjustments happen in place, and every one carries its reason — the server
- * refuses a stock change without one, which is the whole audit trail's value.
+ * Adjustments happen in place. The reason is OPTIONAL since 2026-09-03 (owner's
+ * instruction). THERE ARE TWO STOCK PANELS: this one and `StockCell` in
+ * `ProductDetail.tsx`. PR #103 made only this one optional, and the owner met
+ * the other still refusing a blank on 2026-09-15 — change them together.
  */
 
 const TABS = [

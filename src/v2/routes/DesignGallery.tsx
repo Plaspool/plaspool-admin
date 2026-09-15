@@ -771,8 +771,8 @@ export default function DesignGallery() {
           <div className="row" style={{ gap: 'var(--s6)' }}>
             <PopEditSpecimen />
             <span className="muted" style={{ fontSize: 'var(--t-sm)', maxWidth: '20rem' }}>
-              The dashed underline is the affordance. The panel is where the reason lives — the
-              audit trail refuses a stock change without one.
+              The dashed underline is the affordance. The panel is where the reason lives —
+              optional, but an inline input would have nowhere to offer one.
             </span>
           </div>
         </Section>
