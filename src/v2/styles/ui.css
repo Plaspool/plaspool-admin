@@ -2317,6 +2317,9 @@
 
 .mbx-stepper {
   display: inline-grid;
+  /* Its own width, not the field's: the buttons belong next to the number. */
+  justify-self: start;
+  width: max-content;
   grid-template-columns: auto 4.5rem auto;
   gap: var(--s2);
   align-items: center;
@@ -2528,4 +2531,180 @@
   display: inline-flex;
   align-items: center;
   gap: var(--s2);
+}
+
+/* ── Settings → Mystery box: size, cues and "How it works" (migration 1260) ── */
+
+/* Name takes the room; the size is a short word beside it, and stacks on a phone. */
+.mbx-name {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: var(--s3);
+  align-items: start;
+}
+@media (max-width: 34rem) {
+  .mbx-name {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* A variant already on the main list, shown on the backup list for context only. */
+.mbx-variant.is-taken {
+  cursor: default;
+  opacity: 0.6;
+}
+.mbx-variant.is-taken:hover {
+  background: transparent;
+}
+
+/* The preview: a slice of the shop page, drawn in the admin's own neutrals. */
+.mbx-preview {
+  display: grid;
+  gap: var(--s3);
+  padding: var(--s3);
+  border-radius: var(--r-md);
+  background: var(--surface-sub);
+  box-shadow: 0 0 0 1px var(--border-sub) inset;
+}
+.mbx-preview__bar .field {
+  margin: 0;
+}
+.mbx-preview__shop {
+  display: grid;
+  justify-items: start;
+  gap: var(--s2);
+  padding: var(--s4);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--border) inset;
+}
+.mbx-preview__tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  padding: 2px var(--s2);
+  border: 1px solid var(--ink-strong);
+  border-radius: var(--r-sm);
+  font-size: var(--t-xs);
+  font-weight: var(--w-bold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-strong);
+}
+.mbx-preview__tag > svg {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+.mbx-preview__name {
+  font-size: var(--t-lg);
+  color: var(--ink-strong);
+}
+.mbx-preview__name .muted {
+  font-weight: normal;
+}
+.mbx-preview__price {
+  font-size: var(--t-md);
+  font-weight: var(--w-bold);
+}
+.mbx-preview__cues {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+.mbx-preview__none {
+  font-size: var(--t-sm);
+}
+
+/* One cue: a head you can switch, then its rule and its words. */
+.mbx-cues {
+  display: grid;
+  gap: var(--s2);
+}
+.mbx-cue {
+  border-radius: var(--r-md);
+  box-shadow: 0 0 0 1px var(--border) inset;
+}
+.mbx-cue__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3);
+}
+.mbx-cue__icon {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: none;
+  border-radius: var(--r-sm);
+  background: var(--surface-sub);
+  color: var(--ink-sub);
+}
+.mbx-cue__icon > svg {
+  width: 1rem;
+  height: 1rem;
+}
+.mbx-cue.is-off .mbx-cue__icon {
+  color: var(--ink-muted);
+}
+.mbx-cue__title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--t-md);
+}
+.mbx-cue.is-off .mbx-cue__title {
+  color: var(--ink-muted);
+  font-weight: normal;
+}
+.mbx-cue__body {
+  display: grid;
+  gap: var(--s3);
+  padding: 0 var(--s3) var(--s3) calc(var(--s3) * 2 + 1.75rem);
+}
+@media (max-width: 34rem) {
+  .mbx-cue__body {
+    padding-left: var(--s3);
+  }
+}
+.mbx-cue__rule {
+  margin: 0;
+  font-size: var(--t-md);
+  color: var(--ink-sub);
+  line-height: 2.2;
+}
+.mbx-count {
+  display: inline-block;
+  width: 4.5rem;
+  padding-block: 2px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  vertical-align: baseline;
+}
+
+/* "How it works": numbered steps you can reorder. */
+.mbx-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--s2);
+}
+.mbx-step {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+}
+.mbx-step .input {
+  flex: 1;
+  min-width: 0;
+}
+.mbx-step__no {
+  width: 1.5rem;
+  flex: none;
+  text-align: center;
+  color: var(--ink-muted);
+  font-size: var(--t-sm);
 }

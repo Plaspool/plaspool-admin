@@ -32,7 +32,7 @@ import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, ButtonLink, EmptyState } from '../ui/primitives';
 import { Card } from '../ui/Card';
 import { Defs } from '../ui/Defs';
-import { AffixField, Checkbox, SelectField, TextArea, TextField } from '../ui/Field';
+import { AffixField, Checkbox, MoneyField, SelectField, TextArea, TextField } from '../ui/Field';
 import { StoredImg, MediaManager, type MediaValue } from '../ui/Img';
 import { Menu, MenuItem, MenuSeparator } from '../ui/Menu';
 import { TableScroll } from '../ui/TableScroll';
@@ -1397,10 +1397,9 @@ function PriceCell({ variant, onWrite }: { variant: ShopVariant; onWrite: () => 
     >
       {(close) => (
         <>
-          <AffixField
+          <MoneyField
             label="Price"
-            prefix={currency}
-            inputMode="decimal"
+            currency={currency}
             value={draft}
             error={error}
             autoFocus
@@ -1814,10 +1813,9 @@ function VariantModal({
           <span className="field__label">Pricing</span>
           <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
             <div style={{ flex: 1 }}>
-              <AffixField
+              <MoneyField
                 label="Original price"
-                prefix={currency}
-                inputMode="decimal"
+                currency={currency}
                 value={compareAt}
                 hint={compareHint}
                 suggestion={compareSuggest}
@@ -1832,10 +1830,9 @@ function VariantModal({
               />
             </div>
             <div style={{ flex: 1 }}>
-              <AffixField
+              <MoneyField
                 label="Cost per item"
-                prefix={currency}
-                inputMode="decimal"
+                currency={currency}
                 value={cost}
                 hint={marginHint}
                 suggestion={costSuggest}

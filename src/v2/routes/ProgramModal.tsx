@@ -1,9 +1,13 @@
 import { useState } from 'react';
 import { marketingApi, type Program, type ProgramDraft } from '../../data/api-marketing';
+import { parseMajor, plainMajor } from '../../data/api-shop';
 import { Button } from '../ui/primitives';
-import { TextField } from '../ui/Field';
+import { MoneyField, TextField } from '../ui/Field';
 import { Modal } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
+
+/** The two money numbers are naira — a programme carries no currency. */
+const CURRENCY = 'NGN';
 
 /**
  * THE PROGRAMME EDITOR, shared by two screens that each own ONE type.
@@ -57,10 +61,10 @@ export function ProgramModal({
      decided", which is a different claim from zero and the only way a figure
      typed by mistake is undone — so an empty box sends `null`. */
   const [unitCost, setUnitCost] = useState(
-    program?.unitCostMinor != null ? String(program.unitCostMinor / 100) : '',
+    program?.unitCostMinor != null ? plainMajor(program.unitCostMinor, CURRENCY) : '',
   );
   const [marketCost, setMarketCost] = useState(
-    program?.unitMarketCostMinor != null ? String(program.unitMarketCostMinor / 100) : '',
+    program?.unitMarketCostMinor != null ? plainMajor(program.unitMarketCostMinor, CURRENCY) : '',
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -72,14 +76,14 @@ export function ProgramModal({
     }
     const nPerUnit = Number(perUnit);
     const nMin = Number(minUnits);
-    /* `undefined` here means "not a number" and stops the save; `null` means
-       the box was cleared on purpose. */
+    /* `undefined` here means "not an amount" and stops the save; `null` means
+       the box was cleared on purpose. `parseMajor` rather than a float times
+       100: the box groups its thousands (`1,500.00`), which `Number` reads as
+       NaN, and it refuses a negative or a fraction of a kobo outright. */
     const naira = (text: string): number | null | undefined => {
-      const trimmed = text.trim();
-      if (trimmed === '') return null;
-      const value = Number(trimmed);
-      if (!Number.isFinite(value) || value < 0) return undefined;
-      return Math.round(value * 100);
+      if (text.trim() === '') return null;
+      const parsed = parseMajor(text, CURRENCY);
+      return parsed.ok ? parsed.minor : undefined;
     };
     const nUnitCost = naira(unitCost);
     const nMarketCost = naira(marketCost);
@@ -271,12 +275,9 @@ export function ProgramModal({
             */}
             <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
               <div style={{ flex: 1 }}>
-                <TextField
+                <MoneyField
                   label="What one item costs us"
-                  type="number"
-                  min={0}
-                  step={1}
-                  inputMode="decimal"
+                  currency={CURRENCY}
                   value={unitCost}
                   placeholder="100"
                   hint="In naira. What we count each accepted item as costing us in points. Saved onto each pickup as it comes in, so changing it won’t change older pickups."
@@ -284,12 +285,9 @@ export function ProgramModal({
                 />
               </div>
               <div style={{ flex: 1 }}>
-                <TextField
+                <MoneyField
                   label="What a new one costs to buy"
-                  type="number"
-                  min={0}
-                  step={1}
-                  inputMode="decimal"
+                  currency={CURRENCY}
                   value={marketCost}
                   placeholder="850"
                   hint="In naira, today. Only used to show what taking items back saves against buying new."

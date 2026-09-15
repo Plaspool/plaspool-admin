@@ -6,7 +6,8 @@ import { currentDb, currentUser } from '../../app-env';
 import type { AppEnv } from '../../app-env';
 import { NotFoundError } from '../../repo/errors';
 import { boxAvailable, boxCapacitySql } from '../boxes/capacity';
-import { boxFallback, withBoxFallback } from '../boxes/fallback';
+import { withBoxFallback } from '../boxes/fallback';
+import { boxLive, boxShopContent, loadBoxShop } from '../boxes/shop';
 import { sql } from 'drizzle-orm';
 import { money } from '../../../shared/commerce/money';
 import type { DocNode } from '../../../shared/types';
@@ -387,17 +388,22 @@ routes.get('/products', async (c) => {
     resolveTiers(db, ids),
   ]);
   /* Migration 1240: the mystery box borrows its pool's pictures and a line of
-     copy until the owner gives it its own. Read only when a box is on the page. */
-  const fallback = page.items.some((p) => p.boxMode !== null) ? await boxFallback(db) : null;
+     copy until the owner gives it its own; 1260 adds its size and "How it
+     works". Read only when a box is on the page. */
+  const box = page.items.some((p) => p.boxMode !== null) ? await loadBoxShop(db) : null;
   return c.json({
     ...page,
-    items: page.items.map((p) => ({
-      ...withBoxFallback(toStorefrontProduct(p, { bulkTiers: tiers.get(p.id) ?? [] }), fallback),
+    items: page.items.map((p) => {
       /* `?? []` and not the map's absence: a JSON response cannot have a
          `Map#get` miss, and a product with no variants is a real state that
          reads as an empty list on the wire. */
-      variants: (variants.get(p.id) ?? []).map(toStorefrontVariant),
-    })),
+      const own = variants.get(p.id) ?? [];
+      return {
+        ...withBoxFallback(toStorefrontProduct(p, { bulkTiers: tiers.get(p.id) ?? [] }), box?.fallback ?? null),
+        mysteryBox: p.boxMode !== null && box ? boxShopContent(own, box.page) : null,
+        variants: own.map(toStorefrontVariant),
+      };
+    }),
   });
 });
 
@@ -417,11 +423,13 @@ routes.get('/products/:slug', async (c) => {
     listVariantsWithPrices(db, product.id),
     resolveTiersFor(db, product.id),
   ]);
-  /* Migration 1240: pictures and copy borrowed from the pool until the box has its own. */
-  const fallback = product.boxMode !== null ? await boxFallback(db) : null;
+  /* Migration 1240: pictures and copy borrowed from the pool until the box has
+     its own; 1260: its size and "How it works". */
+  const box = product.boxMode !== null ? await loadBoxShop(db) : null;
   return c.json({
     product: {
-      ...withBoxFallback(toStorefrontProduct(product, { bulkTiers }), fallback),
+      ...withBoxFallback(toStorefrontProduct(product, { bulkTiers }), box?.fallback ?? null),
+      mysteryBox: box ? boxShopContent(variants, box.page) : null,
       variants: variants.map(toStorefrontVariant),
     },
   });
@@ -446,15 +454,18 @@ routes.get('/variants/:id/availability', async (c) => {
      variant. A box is only as available as the smaller of its own stock and that. */
   const cap = await db.execute(sql`SELECT ${boxCapacitySql(sql`${id}::text`)} AS c`);
   const canFill = cap.rows[0]?.c == null ? null : Number(cap.rows[0].c);
-  const available = level?.available ?? null;
+  const available = boxAvailable(level?.available ?? null, level?.backorderable ?? false, canFill);
   return c.json({
     variantId: id,
     // Null when the variant has no inventory row at all. A shop that renders
     // "0 left" for something nobody has stocked is telling the customer
     // something different from "we do not track this".
-    available: boxAvailable(available, level?.backorderable ?? false, canFill),
+    available,
     backorderable: level?.backorderable ?? false,
     canFill,
+    /* Migration 1260: the mystery box's cues ("Only 22 left", "Just dropped"),
+       resolved here because this route is never cached. Null on an ordinary variant. */
+    box: canFill === null ? null : await boxLive(db, id, available),
   });
 });
 

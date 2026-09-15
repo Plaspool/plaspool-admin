@@ -26,7 +26,7 @@ export const shopMysteryBoxSettings = pgTable(
   {
     id: text('id').primaryKey(),
     enabled: boolean('enabled').notNull().default(false),
-    /** The product the box is sold as. Its variants are the sizes. */
+    /** The box's own product (one variant), created by the first save. */
     productId: text('product_id'),
     mode: text('mode').$type<'pack' | 'built' | 'auto'>().notNull().default('pack'),
     shortfall: text('shortfall').$type<'hold' | 'backup' | 'cancel_refund'>().notNull().default('hold'),
@@ -34,9 +34,14 @@ export const shopMysteryBoxSettings = pgTable(
     updatedBy: uuid('updated_by'),
     updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
     revision: integer('revision').notNull().default(1),
+    /** Migration 1260. The box page's words and cues; read through readBoxPage. */
+    page: jsonb('page').notNull().default(sql`'{}'::jsonb`),
+    /** Migration 1260. When the box was last switched on; NULL while it is off. */
+    onSaleSince: bigint('on_sale_since', { mode: 'number' }),
   },
   (t) => [
     check('shop_mystery_box_settings_one_ck', sql`${t.id} = 'main'`),
+    check('shop_mystery_box_settings_page_ck', sql`jsonb_typeof(${t.page}) = 'object'`),
     check('shop_mystery_box_settings_mode_ck', sql`${t.mode} IN ('pack', 'built', 'auto')`),
     check(
       'shop_mystery_box_settings_shortfall_ck',
