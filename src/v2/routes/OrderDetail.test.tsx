@@ -231,10 +231,17 @@ function parcel(status: 'pending' | 'shipped' | 'delivered' | 'cancelled') {
 
 function withOrder(
   fulfillments: unknown[] = [],
-  overrides: { addOns?: unknown[]; addOnTotal?: number; shippingAddress?: unknown } = {},
+  overrides: {
+    addOns?: unknown[];
+    addOnTotal?: number;
+    shippingAddress?: unknown;
+    order?: Record<string, unknown>;
+    payment?: unknown;
+  } = {},
 ): void {
+  const start = { ...order, ...overrides.order };
   const base =
-    overrides.addOnTotal === undefined ? order : { ...order, addOnTotal: overrides.addOnTotal };
+    overrides.addOnTotal === undefined ? start : { ...start, addOnTotal: overrides.addOnTotal };
   when(ORDER, {
     order:
       overrides.shippingAddress === undefined
@@ -244,9 +251,18 @@ function withOrder(
     fulfillments,
     timeline: [],
     emails: [],
-    payment,
+    payment: overrides.payment === undefined ? payment : overrides.payment,
     ...(overrides.addOns === undefined ? {} : { addOns: overrides.addOns }),
   });
+}
+
+/** The same paid order, its payment taken through Flutterwave. */
+const flutterwavePayment = { ...payment, provider: 'flutterwave' };
+
+async function openRefund(user: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> {
+  await user.click(screen.getByRole('button', { name: 'More actions' }));
+  await user.click(await screen.findByRole('menuitem', { name: 'Refund payment…' }));
+  return screen.findByRole('dialog', { name: 'Refund payment' });
 }
 
 function mount() {
@@ -370,6 +386,182 @@ describe('the order detail screen', () => {
       }),
     );
     expect(await screen.findByText('PP-1042-7 cancelled')).toBeTruthy();
+  });
+
+  /*
+   * THE GATEWAY IS THE PAYMENT'S OWN, NEVER ASSUMED. The refund window said
+   * "The money goes back through Paystack" on every order, and production's
+   * first Flutterwave refund (2026-09-15) was refused and shown as `internal`.
+   */
+  it('names the gateway that took the payment, and says the refund goes back through it', async () => {
+    const user = userEvent.setup();
+    withOrder([], { payment: flutterwavePayment });
+    mount();
+    await loaded();
+
+    expect(screen.getByText('Flutterwave')).toBeTruthy();
+
+    const dialog = await openRefund(user);
+    expect(within(dialog).getByText(/^The money goes back through Flutterwave\./)).toBeTruthy();
+    expect(within(dialog).queryByText(/Paystack/)).toBeNull();
+  });
+
+  it('says in words that the gateway refused a refund, instead of showing its error code', async () => {
+    const user = userEvent.setup();
+    withOrder([], { payment: flutterwavePayment });
+    when(
+      REFUNDS,
+      { error: 'refund_failed', provider: 'flutterwave', outcome: 'refused', code: 'invalid_request', requestId: 'req_r' },
+      422,
+    );
+    mount();
+    await loaded();
+
+    const dialog = await openRefund(user);
+    await user.type(within(dialog).getByLabelText('Amount'), '150');
+    await user.click(within(dialog).getByRole('button', { name: 'Refund' }));
+
+    expect(
+      await within(dialog).findByText('Flutterwave refused this refund, so no money was sent.'),
+    ).toBeTruthy();
+    expect(within(dialog).queryByText('refund_failed')).toBeNull();
+    expect(screen.queryByText(/^Refunded/)).toBeNull();
+  });
+
+  /*
+   * A REFUND NOBODY COULD CONFIRM IS HELD (owner's rule, 2026-09-15). The window
+   * closes and the order re-reads, because what happens next lives on the order
+   * page — the held refund, with the two buttons that settle it.
+   */
+  const UNCONFIRMED = {
+    error: 'refund_failed',
+    provider: 'flutterwave',
+    outcome: 'unconfirmed',
+    code: 'provider_unavailable',
+    requestId: 'req_u',
+  };
+  const HELD_MESSAGE = 'Flutterwave didn’t confirm this refund, so the money is held. See the note on this order.';
+
+  it('closes the cancel window and points at the order when its refund was not confirmed', async () => {
+    const user = userEvent.setup();
+    withOrder([], { payment: flutterwavePayment });
+    when(CANCEL, UNCONFIRMED, 422);
+    mount();
+    await loaded();
+
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Cancel order…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Cancel PP-1042-7?' });
+    await user.click(within(dialog).getByRole('radio', { name: /Refund in full/ }));
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel order' }));
+
+    expect(await screen.findByText(HELD_MESSAGE)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(reads(ORDER)).toBe(2));
+    expect(screen.queryByText('PP-1042-7 cancelled')).toBeNull();
+  });
+
+  it('closes the refund window and points at the order when the refund was not confirmed', async () => {
+    const user = userEvent.setup();
+    withOrder([], { payment: flutterwavePayment });
+    when(REFUNDS, UNCONFIRMED, 422);
+    mount();
+    await loaded();
+
+    const dialog = await openRefund(user);
+    await user.type(within(dialog).getByLabelText('Amount'), '150');
+    await user.click(within(dialog).getByRole('button', { name: 'Refund' }));
+
+    expect(await screen.findByText(HELD_MESSAGE)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(reads(ORDER)).toBe(2));
+    expect(screen.queryByText(/^Refunded/)).toBeNull();
+  });
+
+  describe('a refund nobody could confirm', () => {
+    const RESOLVE = '/api/shop/admin/payments/refunds/rfd_held/resolve';
+    const held = {
+      ...flutterwavePayment,
+      refundedTotal: 530000,
+      unconfirmedRefunds: [{ id: 'rfd_held', amount: 530000, currency: 'NGN', createdAt: NOW - 3_600_000 }],
+    };
+
+    it('shows it on the order, and does not offer the held money for another refund', async () => {
+      const user = userEvent.setup();
+      withOrder([], { payment: held });
+      mount();
+      await loaded();
+
+      expect(screen.getByText('Refund not confirmed')).toBeTruthy();
+      // The amount either way ICU renders it (see `amount` at the foot of this file).
+      expect(
+        screen.getByText(/^Flutterwave didn’t confirm the (?:₦|NGN[\s ]?)5,300\.00 refund/),
+      ).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'It went through' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'It didn’t go through' })).toBeTruthy();
+
+      await user.click(screen.getByRole('button', { name: 'More actions' }));
+      expect(screen.queryByRole('menuitem', { name: 'Refund payment…' })).toBeNull();
+    });
+
+    it('marks it sent once the owner confirms, and re-reads the order', async () => {
+      const user = userEvent.setup();
+      withOrder([], { payment: held });
+      when(RESOLVE, { refund: { id: 'rfd_held', status: 'succeeded' } });
+      mount();
+      await loaded();
+
+      await user.click(screen.getByRole('button', { name: 'It went through' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Mark the refund as sent?' });
+      expect(sentNothing(RESOLVE)).toBe(true);
+      await user.click(within(dialog).getByRole('button', { name: 'Mark as sent' }));
+
+      await waitFor(() => expect(sent(RESOLVE, 'POST')).toEqual({ outcome: 'sent' }));
+      expect(await screen.findByText('Refund marked as sent')).toBeTruthy();
+      await waitFor(() => expect(reads(ORDER)).toBe(2));
+    });
+
+    it('marks it not sent once the owner confirms', async () => {
+      const user = userEvent.setup();
+      withOrder([], { payment: held });
+      when(RESOLVE, { refund: { id: 'rfd_held', status: 'failed' } });
+      mount();
+      await loaded();
+
+      await user.click(screen.getByRole('button', { name: 'It didn’t go through' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Mark the refund as not sent?' });
+      await user.click(within(dialog).getByRole('button', { name: 'Mark as not sent' }));
+
+      await waitFor(() => expect(sent(RESOLVE, 'POST')).toEqual({ outcome: 'not_sent' }));
+      expect(await screen.findByText('Refund marked as not sent. The money can be refunded again.')).toBeTruthy();
+    });
+
+    it('asks the owner to wait while the refund may still be on its way', async () => {
+      const user = userEvent.setup();
+      withOrder([], { payment: held });
+      when(RESOLVE, { error: 'refund_still_sending', requestId: 'req_s' }, 409);
+      mount();
+      await loaded();
+
+      await user.click(screen.getByRole('button', { name: 'It didn’t go through' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Mark the refund as not sent?' });
+      await user.click(within(dialog).getByRole('button', { name: 'Mark as not sent' }));
+
+      expect(
+        await within(dialog).findByText('This refund was sent less than a minute ago. Wait a minute, then try again.'),
+      ).toBeTruthy();
+    });
+  });
+
+  it('waits on the gateway that is actually taking the payment', async () => {
+    withOrder([], {
+      order: { status: 'pending', paidAt: null },
+      payment: { ...flutterwavePayment, status: 'requires_payment' },
+    });
+    mount();
+    await loaded();
+
+    expect(screen.getByText(/once Flutterwave confirms/)).toBeTruthy();
   });
 
   it('reads an ABSENT order off a delivered parcel as nothing to settle', async () => {
