@@ -1036,52 +1036,6 @@ export interface ShopMysteryBoxItem {
   usable: boolean;
 }
 
-/** One size of the mystery box: a variant of the product it is sold as. */
-export interface ShopMysteryBoxSize {
-  variantId: string;
-  sku: string;
-  optionValues: Record<string, string>;
-  itemCount: number | null;
-  canFill: number;
-  ready: number;
-}
-
-/** A box built ahead and still on the shelf. */
-export interface ShopBuiltBox {
-  id: string;
-  sizeVariantId: string;
-  filledAt: number;
-  items: ShopBoxFillItem[];
-}
-
-/** Settings → Mystery box, as the server holds it. */
-export interface ShopMysteryBox {
-  settings: {
-    enabled: boolean;
-    productId: string | null;
-    productTitle: string | null;
-    productStatus: string | null;
-    mode: ShopBoxMode;
-    shortfall: ShopBoxShortfall;
-    revision: number;
-    updatedAt: number;
-  };
-  sizes: ShopMysteryBoxSize[];
-  items: ShopMysteryBoxItem[];
-  built: ShopBuiltBox[];
-}
-
-export interface ShopMysteryBoxSave {
-  expectedRevision: number;
-  enabled: boolean;
-  productId: string | null;
-  mode: ShopBoxMode;
-  shortfall: ShopBoxShortfall;
-  sizes: { variantId: string; itemCount: number | null }[];
-  main: string[];
-  backup: string[];
-}
-
 export interface ShopBoxFillItem {
   id: string;
   position: number;
@@ -1104,6 +1058,65 @@ export interface ShopBoxFill {
   filledBy: string | null;
   filledAt: number;
   items: ShopBoxFillItem[];
+}
+
+/** A box built ahead and still on the shelf. */
+export interface ShopBuiltBox {
+  id: string;
+  sizeVariantId: string;
+  filledAt: number;
+  items: ShopBoxFillItem[];
+}
+
+/** The mystery box's own product, edited only on Settings → Mystery box. */
+export interface ShopMysteryBoxProduct {
+  productId: string;
+  variantId: string;
+  slug: string | null;
+  status: string;
+  name: string;
+  description: unknown;
+  coverImageId: string | null;
+  imageIds: string[];
+  priceMinor: number | null;
+  currency: string;
+  itemCount: number | null;
+  /** How many more boxes can be bought right now. */
+  canBuy: number;
+  /** Boxes built ahead and on the shelf. */
+  ready: number;
+}
+
+/** Settings → Mystery box, as the server holds it. */
+export interface ShopMysteryBox {
+  settings: {
+    enabled: boolean;
+    mode: ShopBoxMode;
+    shortfall: ShopBoxShortfall;
+    revision: number;
+    updatedAt: number;
+  };
+  /** Null until the screen is first saved. */
+  box: ShopMysteryBoxProduct | null;
+  /** What the shop shows while the box has no pictures or description of its own. */
+  fallback: { imageIds: string[]; line: string; productTitles: string[] };
+  items: ShopMysteryBoxItem[];
+  built: ShopBuiltBox[];
+}
+
+export interface ShopMysteryBoxSave {
+  expectedRevision: number;
+  enabled: boolean;
+  mode: ShopBoxMode;
+  shortfall: ShopBoxShortfall;
+  name: string;
+  description: unknown | null;
+  coverImageId: string | null;
+  imageIds: string[];
+  priceMinor: number | null;
+  itemCount: number | null;
+  main: string[];
+  backup: string[];
 }
 
 /** An order line that is a mystery box, filled or not. */

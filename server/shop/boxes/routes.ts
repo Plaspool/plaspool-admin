@@ -20,19 +20,15 @@ const SaveBody = z
   .object({
     expectedRevision: z.number().int().min(1),
     enabled: z.boolean(),
-    productId: str().min(1).max(300).nullable(),
     mode: z.enum(['pack', 'built', 'auto']),
     shortfall: z.enum(['hold', 'backup', 'cancel_refund']),
-    sizes: z
-      .array(
-        z
-          .object({
-            variantId: str().min(1).max(300),
-            itemCount: z.number().int().min(1).max(1000).nullable(),
-          })
-          .strict(),
-      )
-      .max(200),
+    name: str().max(200),
+    /** A TipTap document; null leaves the stored description alone. */
+    description: z.unknown().nullable(),
+    coverImageId: str().min(1).max(200).nullable(),
+    imageIds: z.array(str().min(1).max(200)).max(50),
+    priceMinor: z.number().int().min(0).max(1_000_000_000).nullable(),
+    itemCount: z.number().int().min(1).max(1000).nullable(),
     main: z.array(str().min(1).max(300)).max(5000),
     backup: z.array(str().min(1).max(300)).max(5000),
   })

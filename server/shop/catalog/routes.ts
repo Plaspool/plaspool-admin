@@ -6,6 +6,7 @@ import { currentDb, currentUser } from '../../app-env';
 import type { AppEnv } from '../../app-env';
 import { NotFoundError } from '../../repo/errors';
 import { boxCapacitySql } from '../boxes/capacity';
+import { boxFallback, withBoxFallback } from '../boxes/fallback';
 import { sql } from 'drizzle-orm';
 import { money } from '../../../shared/commerce/money';
 import type { DocNode } from '../../../shared/types';
@@ -385,10 +386,13 @@ routes.get('/products', async (c) => {
     listVariantsForProducts(db, ids),
     resolveTiers(db, ids),
   ]);
+  /* Migration 1240: the mystery box borrows its pool's pictures and a line of
+     copy until the owner gives it its own. Read only when a box is on the page. */
+  const fallback = page.items.some((p) => p.boxMode !== null) ? await boxFallback(db) : null;
   return c.json({
     ...page,
     items: page.items.map((p) => ({
-      ...toStorefrontProduct(p, { bulkTiers: tiers.get(p.id) ?? [] }),
+      ...withBoxFallback(toStorefrontProduct(p, { bulkTiers: tiers.get(p.id) ?? [] }), fallback),
       /* `?? []` and not the map's absence: a JSON response cannot have a
          `Map#get` miss, and a product with no variants is a real state that
          reads as an empty list on the wire. */
@@ -413,9 +417,11 @@ routes.get('/products/:slug', async (c) => {
     listVariantsWithPrices(db, product.id),
     resolveTiersFor(db, product.id),
   ]);
+  /* Migration 1240: pictures and copy borrowed from the pool until the box has its own. */
+  const fallback = product.boxMode !== null ? await boxFallback(db) : null;
   return c.json({
     product: {
-      ...toStorefrontProduct(product, { bulkTiers }),
+      ...withBoxFallback(toStorefrontProduct(product, { bulkTiers }), fallback),
       variants: variants.map(toStorefrontVariant),
     },
   });
@@ -636,6 +642,8 @@ routes.get('/admin/products', auth, async (c) => {
       ...q,
       includeUnpublished: true,
       withTotal: withTotal === '1' || withTotal === 'true',
+      /* Migration 1240: the mystery box is edited in Settings → Mystery box. */
+      excludeBoxes: true,
     }),
   );
 });

@@ -14,23 +14,32 @@ export interface MysteryBoxItem {
   usable: boolean;
 }
 
-/** One size of the mystery box: a variant of the product it is sold as. */
-export interface MysteryBoxSize {
+/**
+ * The mystery box itself: a product the box owns (migration 1240), hidden from
+ * the Products list and edited only on Settings → Mystery box. One price, one
+ * number of items per box.
+ */
+export interface MysteryBoxProduct {
+  productId: string;
   variantId: string;
-  sku: string;
-  optionValues: Record<string, string>;
+  slug: string | null;
+  status: string;
+  name: string;
+  description: unknown;
+  coverImageId: string | null;
+  imageIds: string[];
+  /** Minor units; null until a price is set. */
+  priceMinor: number | null;
+  currency: string;
   itemCount: number | null;
-  /** How many more of this size can be sold now. */
-  canFill: number;
-  /** Boxes of this size built ahead and on the shelf. */
+  /** How many more boxes can be bought right now. */
+  canBuy: number;
+  /** Boxes built ahead and on the shelf. */
   ready: number;
 }
 
 export interface MysteryBoxSettings {
   enabled: boolean;
-  productId: string | null;
-  productTitle: string | null;
-  productStatus: string | null;
   mode: 'pack' | 'built' | 'auto';
   shortfall: 'hold' | 'backup' | 'cancel_refund';
   revision: number;
@@ -39,7 +48,10 @@ export interface MysteryBoxSettings {
 
 export interface MysteryBoxView {
   settings: MysteryBoxSettings;
-  sizes: MysteryBoxSize[];
+  /** Null until the screen is saved for the first time. */
+  box: MysteryBoxProduct | null;
+  /** What the shop shows while the box has no pictures or description of its own. */
+  fallback: { imageIds: string[]; line: string; productTitles: string[] };
   items: MysteryBoxItem[];
   built: BuiltBox[];
 }
