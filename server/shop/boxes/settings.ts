@@ -1,42 +1,51 @@
 import { sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { BadRequestError, StaleWriteError } from '../../repo/errors';
-import type { AuthUser } from '../../../shared/types';
-import { publishProduct, unpublishProduct } from '../catalog/products';
+import type { AuthUser, DocNode } from '../../../shared/types';
+import { money } from '../../../shared/commerce/money';
+import { SHOP_CURRENCY } from '../currency';
+import {
+  createProduct,
+  getProduct,
+  publishProduct,
+  saveProduct,
+  unpublishProduct,
+} from '../catalog/products';
+import { createVariant, listVariantsWithPrices } from '../catalog/variants';
+import { setPrice } from '../catalog/prices';
 import { boxCapacitySql, hasOpenBoxes } from './capacity';
+import { boxFallback } from './fallback';
 import { listBuiltBoxes } from './fills';
-import type { MysteryBoxItem, MysteryBoxSettings, MysteryBoxView } from './types';
+import type { MysteryBoxItem, MysteryBoxProduct, MysteryBoxSettings, MysteryBoxView } from './types';
 
 /**
- * Settings → Mystery box (migration 1240; owner's decisions 2026-09-15).
+ * Settings → Mystery box (migration 1240; owner's decisions 2026-09-15, revised
+ * the same day).
  *
- * ONE mystery box: a switch, the product it is sold as (its variants are the
- * sizes), how many items each size holds, how contents get decided, what happens
- * when a paid box can't be filled, and the tick lists of which variants can go
- * inside. `shop_products.box_mode` stays the one fact every other part of the
- * shop reads ("is this line a box?"), and this screen is what writes it.
+ * THE BOX OWNS ITS PRODUCT. The owner does not pick an existing product: the
+ * first save creates one, and this screen is the only place it is edited — its
+ * name, description, pictures, one price and one number of items per box. It
+ * is a real product underneath so the cart, checkout and orders need nothing
+ * new, and it is left out of the Products list so nobody edits it twice.
+ *
+ * `shop_products.box_mode` stays the one fact the rest of the shop reads ("is
+ * this line a box?"); the settings row's `product_id` points at the owned product.
  */
 
 const parsed = <T>(v: unknown): T => (typeof v === 'string' ? JSON.parse(v) : v) as T;
 
-async function readSettings(db: Db): Promise<MysteryBoxSettings & { updatedBy: string | null }> {
-  const res = await db.execute(sql`
-    SELECT s.*, p.title AS product_title, p.status AS product_status
-      FROM shop_mystery_box_settings s
-      LEFT JOIN shop_products p ON p.id = s.product_id AND p.deleted_at IS NULL
-     WHERE s.id = 'main'`);
+async function readSettings(db: Db): Promise<MysteryBoxSettings & { updatedBy: string | null; productId: string | null }> {
+  const res = await db.execute(sql`SELECT * FROM shop_mystery_box_settings WHERE id = 'main'`);
   const r = res.rows[0];
   if (!r) throw new Error('shop_mystery_box_settings has no main row: migration 1240 missing');
   return {
     enabled: r.enabled === true || r.enabled === 't',
-    productId: r.product_id == null ? null : String(r.product_id),
-    productTitle: r.product_title == null ? null : String(r.product_title),
-    productStatus: r.product_status == null ? null : String(r.product_status),
     mode: String(r.mode) as MysteryBoxSettings['mode'],
     shortfall: String(r.shortfall) as MysteryBoxSettings['shortfall'],
     revision: Number(r.revision),
     updatedAt: Number(r.updated_at),
     updatedBy: r.updated_by == null ? null : String(r.updated_by),
+    productId: r.product_id == null ? null : String(r.product_id),
   };
 }
 
@@ -45,29 +54,42 @@ export async function mysteryBoxSettings(db: Db) {
   return readSettings(db);
 }
 
+/**
+ * The owned box product, or null. A linked product that is gone, trashed, or has
+ * more than one variant is NOT the box's own — that is the shape an ordinary
+ * product linked by the earlier version of this screen had — so it reads as none.
+ */
+async function readBox(db: Db, productId: string | null): Promise<MysteryBoxProduct | null> {
+  if (!productId) return null;
+  const product = await getProduct(db, productId);
+  if (!product || product.deletedAt !== null) return null;
+  const variants = await listVariantsWithPrices(db, productId);
+  if (variants.length !== 1) return null;
+  const variant = variants[0];
+  const stats = await db.execute(sql`
+    SELECT ${boxCapacitySql(sql`${variant.id}::text`)} AS can_buy,
+           (SELECT count(*) FROM shop_box_fills f
+             WHERE f.built_state = 'ready' AND f.box_variant_id = ${variant.id})::int AS ready`);
+  return {
+    productId,
+    variantId: variant.id,
+    slug: product.slug,
+    status: product.status,
+    name: product.title,
+    description: product.description,
+    coverImageId: product.coverImageId,
+    imageIds: product.imageIds,
+    priceMinor: variant.price?.amount ?? null,
+    currency: variant.price?.currency ?? SHOP_CURRENCY,
+    itemCount: variant.boxItemCount,
+    canBuy: stats.rows[0]?.can_buy == null ? 0 : Number(stats.rows[0].can_buy),
+    ready: Number(stats.rows[0]?.ready ?? 0),
+  };
+}
+
 /** Everything the Settings screen shows. */
 export async function getMysteryBox(db: Db): Promise<MysteryBoxView> {
   const settings = await readSettings(db);
-
-  const sizes = settings.productId
-    ? (
-        await db.execute(sql`
-          SELECT v.id, v.sku, v.option_values, v.box_item_count,
-                 ${boxCapacitySql(sql`v.id`)} AS can_fill,
-                 (SELECT count(*) FROM shop_box_fills f
-                   WHERE f.built_state = 'ready' AND f.box_variant_id = v.id)::int AS ready
-            FROM shop_variants v
-           WHERE v.product_id = ${settings.productId} AND v.status = 'active'
-           ORDER BY v.position, v.sku`)
-      ).rows.map((r) => ({
-        variantId: String(r.id),
-        sku: String(r.sku),
-        optionValues: parsed<Record<string, string>>(r.option_values) ?? {},
-        itemCount: r.box_item_count == null ? null : Number(r.box_item_count),
-        canFill: r.can_fill == null ? 0 : Number(r.can_fill),
-        ready: Number(r.ready ?? 0),
-      }))
-    : [];
 
   const items: MysteryBoxItem[] = (
     await db.execute(sql`
@@ -94,26 +116,38 @@ export async function getMysteryBox(db: Db): Promise<MysteryBoxView> {
     usable: r.usable === true || r.usable === 't',
   }));
 
-  const { updatedBy: _by, ...publicSettings } = settings;
-  return { settings: publicSettings, sizes, items, built: await listBuiltBoxes(db) };
+  const { updatedBy: _by, productId, ...publicSettings } = settings;
+  return {
+    settings: publicSettings,
+    box: await readBox(db, productId),
+    fallback: await boxFallback(db),
+    items,
+    built: await listBuiltBoxes(db),
+  };
 }
 
 export interface SaveMysteryBoxInput {
   expectedRevision: number;
   enabled: boolean;
-  productId: string | null;
   mode: MysteryBoxSettings['mode'];
   shortfall: MysteryBoxSettings['shortfall'];
-  /** Items in each size. Only variants of `productId`. */
-  sizes: { variantId: string; itemCount: number | null }[];
+  name: string;
+  /** A TipTap document, or null to leave the stored one alone. */
+  description: unknown | null;
+  coverImageId: string | null;
+  imageIds: string[];
+  /** Minor units, or null for not set yet. */
+  priceMinor: number | null;
+  itemCount: number | null;
   main: string[];
   backup: string[];
 }
 
 /**
- * Save the whole screen in ONE guarded statement (CLAUDE.md §3), behind the
- * settings row's revision. Publishing or hiding the product happens after, through
- * the catalogue's own lifecycle, because that has its own CAS and history.
+ * Save the whole screen. The settings row's revision is claimed FIRST, in one
+ * guarded statement with the tick lists and the box flags, so two tabs can't
+ * both save; the product's own name, pictures and price then go through the
+ * catalogue's functions, which keep its revision history and price log.
  */
 export async function saveMysteryBox(
   db: Db,
@@ -122,74 +156,84 @@ export async function saveMysteryBox(
   now: number,
 ): Promise<MysteryBoxView> {
   const before = await readSettings(db);
+  /* Refuse a stale save BEFORE anything is created, so a losing tab never leaves
+     an orphan box product behind. The statement below still guards the race. */
+  if (before.revision !== input.expectedRevision) {
+    throw new StaleWriteError(input.expectedRevision, before.revision, null);
+  }
+  const name = input.name.trim();
 
-  if (input.enabled && !input.productId) throw new BadRequestError('productId');
-
-  /* Changing which product is the box would turn the old one's unfilled paid
-     boxes into ordinary lines that ship empty. */
-  if (before.productId && before.productId !== input.productId && (await hasOpenBoxes(db, before.productId))) {
-    throw new BadRequestError('box_has_open_orders');
+  if (input.priceMinor !== null && (!Number.isInteger(input.priceMinor) || input.priceMinor < 0)) {
+    throw new BadRequestError('priceMinor');
+  }
+  if (input.itemCount !== null && (!Number.isInteger(input.itemCount) || input.itemCount < 1)) {
+    throw new BadRequestError('itemCount');
+  }
+  if (input.enabled && (!name || input.priceMinor === null || input.itemCount === null)) {
+    throw new BadRequestError('box_incomplete');
   }
 
-  if (input.productId) {
-    const p = await db.execute(sql`
-      SELECT id FROM shop_products WHERE id = ${input.productId} AND deleted_at IS NULL`);
-    if (p.rows.length === 0) throw new BadRequestError('productId');
-  }
-
-  const sizeIds = input.sizes.map((s) => s.variantId);
-  if (sizeIds.length > 0) {
-    const own = await db.execute(sql`
-      SELECT count(*)::int AS n FROM shop_variants
-       WHERE id = ANY(${sql.param(sizeIds)}::text[]) AND product_id = ${input.productId}::text`);
-    if (Number(own.rows[0]?.n) !== new Set(sizeIds).size) throw new BadRequestError('sizes');
-  }
-  for (const s of input.sizes) {
-    if (s.itemCount !== null && (!Number.isInteger(s.itemCount) || s.itemCount < 1)) {
-      throw new BadRequestError('sizes.itemCount');
-    }
-  }
-
+  /* Only ordinary, ACTIVE products can go inside — never a draft, and never the box. */
   const listed = [...new Set([...input.main, ...input.backup])];
   if (listed.length > 0) {
     const ok = await db.execute(sql`
-      SELECT count(*)::int AS n FROM shop_variants v
+      SELECT count(*)::int AS n FROM shop_variants v JOIN shop_products p ON p.id = v.product_id
        WHERE v.id = ANY(${sql.param(listed)}::text[])
-         AND v.product_id IS DISTINCT FROM ${input.productId}::text`);
+         AND p.status = 'active' AND p.deleted_at IS NULL
+         AND p.id IS DISTINCT FROM ${before.productId}::text`);
     if (Number(ok.rows[0]?.n) !== listed.length) throw new BadRequestError('items');
+  }
+
+  /*
+   * THE BOX'S OWN PRODUCT. Created on the first save; re-created if the linked
+   * one is not the box's own (the earlier version of this screen could link an
+   * ordinary product, and that product is released back to being ordinary below).
+   */
+  let box = await readBox(db, before.productId);
+  if (before.productId && !box && (await hasOpenBoxes(db, before.productId))) {
+    throw new BadRequestError('box_has_open_orders');
+  }
+  if (!box) {
+    const product = await createProduct(db, actor, { title: name || 'Mystery box' });
+    await createVariant(
+      db,
+      product.id,
+      { sku: `MYSTERY-BOX-${product.id.slice(-6).toUpperCase()}`, onHand: 0, backorderable: true },
+      actor,
+    );
+    box = await readBox(db, product.id);
+    if (!box) throw new Error('mystery box product could not be created');
   }
 
   const items = [
     ...[...new Set(input.main)].map((variant_id) => ({ variant_id, list: 'main' })),
     ...[...new Set(input.backup)].map((variant_id) => ({ variant_id, list: 'backup' })),
   ];
-  const sizes = input.sizes.map((s) => ({ variant_id: s.variantId, item_count: s.itemCount }));
 
   const res = await db.execute(sql`
     WITH s AS (
       UPDATE shop_mystery_box_settings
-         SET enabled = ${input.enabled}, product_id = ${input.productId}::text, mode = ${input.mode},
+         SET enabled = ${input.enabled}, product_id = ${box.productId}, mode = ${input.mode},
              shortfall = ${input.shortfall}, updated_by = ${actor.id}::uuid, updated_at = ${now},
              revision = revision + 1
        WHERE id = 'main' AND revision = ${input.expectedRevision}
       RETURNING id
     ), off AS (
       UPDATE shop_products SET box_mode = NULL
-       WHERE box_mode IS NOT NULL AND id IS DISTINCT FROM ${input.productId}::text
-         AND EXISTS (SELECT 1 FROM s)
+       WHERE box_mode IS NOT NULL AND id <> ${box.productId} AND EXISTS (SELECT 1 FROM s)
       RETURNING 1
     ), onp AS (
-      /* A box is already priced as a deal, so bulk discounts go off the first
-         time a product becomes the box. They can be switched back on after. */
-      UPDATE shop_products
-         SET box_mode = ${input.mode},
-             bulk_discount_enabled = CASE WHEN box_mode IS NULL THEN false ELSE bulk_discount_enabled END
-       WHERE id = ${input.productId}::text AND EXISTS (SELECT 1 FROM s)
+      UPDATE shop_products SET box_mode = ${input.mode}, bulk_discount_enabled = false
+       WHERE id = ${box.productId} AND EXISTS (SELECT 1 FROM s)
       RETURNING 1
-    ), sz AS (
-      UPDATE shop_variants v SET box_item_count = x.item_count
-        FROM s, jsonb_to_recordset(${JSON.stringify(sizes)}::jsonb) AS x(variant_id text, item_count int)
-       WHERE v.id = x.variant_id
+    ), cnt AS (
+      UPDATE shop_variants SET box_item_count = ${input.itemCount}::int
+       WHERE id = ${box.variantId} AND EXISTS (SELECT 1 FROM s)
+      RETURNING 1
+    ), inv AS (
+      /* The box's own stock number is not a limit: what can be filled is. */
+      UPDATE shop_inventory SET backorderable = true
+       WHERE variant_id = ${box.variantId} AND EXISTS (SELECT 1 FROM s)
       RETURNING 1
     ), del AS (
       DELETE FROM shop_mystery_box_items mi
@@ -212,21 +256,37 @@ export async function saveMysteryBox(
     throw new StaleWriteError(input.expectedRevision, current.revision, null);
   }
 
+  /* The product's own words and pictures, through the catalogue's save. */
+  const product = await getProduct(db, box.productId);
+  if (product) {
+    await saveProduct(
+      db,
+      box.productId,
+      {
+        title: name || product.title,
+        coverImageId: input.coverImageId,
+        imageIds: input.imageIds,
+        ...(input.description === null ? {} : { description: input.description as DocNode }),
+      },
+      { actor, baseRevision: product.revision, note: 'Mystery box settings' },
+    );
+  }
+  if (input.priceMinor !== null && input.priceMinor !== box.priceMinor) {
+    await setPrice(db, box.variantId, money(input.priceMinor, SHOP_CURRENCY), 'Mystery box settings');
+  }
+
   /*
-   * THE SWITCH SHOWS OR HIDES THE PRODUCT (owner's decision): on publishes it,
-   * off takes it off the shop. Existing orders can still be filled either way,
-   * because box_mode stays set. Best effort: a product that is archived or in a
-   * state the lifecycle refuses is left as it is, and the screen shows its status.
+   * THE SWITCH SHOWS OR HIDES THE BOX (owner's decision): on publishes it, off
+   * takes it off the shop. Existing orders can still be filled either way,
+   * because box_mode stays set. Best effort: a state the lifecycle refuses is
+   * logged and the screen shows the product's real status.
    */
-  if (input.productId) {
-    const status = await db.execute(sql`SELECT status FROM shop_products WHERE id = ${input.productId}`);
-    const current = String(status.rows[0]?.status ?? '');
-    try {
-      if (input.enabled && current === 'draft') await publishProduct(db, input.productId, actor);
-      if (!input.enabled && current === 'active') await unpublishProduct(db, input.productId, actor);
-    } catch (cause) {
-      console.error('mystery box: could not change the product status', input.productId, cause);
-    }
+  const status = (await getProduct(db, box.productId))?.status;
+  try {
+    if (input.enabled && status === 'draft') await publishProduct(db, box.productId, actor);
+    if (!input.enabled && status === 'active') await unpublishProduct(db, box.productId, actor);
+  } catch (cause) {
+    console.error('mystery box: could not change the product status', box.productId, cause);
   }
 
   return getMysteryBox(db);

@@ -49,6 +49,8 @@ export interface ProductListQuery {
    * asks for it exactly once, to say how many products an export would carry.
    */
   withTotal?: boolean;
+  /** Migration 1240. Leave out the mystery box, which is edited in Settings, not Products. */
+  excludeBoxes?: boolean;
 }
 
 interface SortPart {
@@ -238,6 +240,7 @@ function filters(q: ProductListQuery): SQL[] {
   if (q.category) {
     where.push(sql`lower(p.category) = lower(${rejectNul(q.category, 'category')})`);
   }
+  if (q.excludeBoxes) where.push(sql`p.box_mode IS NULL`);
 
   return where;
 }
