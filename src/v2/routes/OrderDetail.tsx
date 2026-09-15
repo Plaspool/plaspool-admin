@@ -45,6 +45,7 @@ import {
   stockReason,
 } from './manual-order-copy';
 import { countryName } from './countries';
+import { describeRefundError, gatewayName } from './payment-copy';
 import { isAdminRole } from '../../../shared/roles';
 
 /**
@@ -320,6 +321,8 @@ export default function OrderDetail() {
   const canCancel =
     !isManual && isOwner && (order.status === 'pending' || order.status === 'paid');
   const intentId = payment?.intentId ?? order.paymentIntentId;
+  /* The gateway THIS payment went through — a refund goes back the same way. */
+  const gateway = gatewayName(payment?.provider);
   const refundable = order.grandTotal - order.refundedTotal;
   const canRefund =
     !isManual &&
@@ -524,8 +527,8 @@ export default function OrderDetail() {
 
       {order.status === 'pending' ? (
         <Banner tone="warn" title="Waiting for payment">
-          The customer reached checkout but the money hasn’t arrived yet. This updates on its own
-          once Paystack confirms. Nothing to do here yet.
+          The customer reached checkout but the money hasn’t arrived yet. This updates on its own once{' '}
+          {gateway ? `${gateway} confirms` : 'the payment is confirmed'}. Nothing to do here yet.
         </Banner>
       ) : null}
 
@@ -813,6 +816,7 @@ export default function OrderDetail() {
             {payment ? (
               <div className="row" style={{ gap: 'var(--s2)', flexWrap: 'wrap' }}>
                 <CreditCard aria-hidden="true" style={{ width: 15, height: 15, color: 'var(--ink-sub)' }} />
+                {gateway ? <span style={{ fontWeight: 'var(--w-medium)' }}>{gateway}</span> : null}
                 <Badge tone={payment.status === 'captured' ? 'ok' : payment.status === 'failed' ? 'critical' : 'info'}>
                   {humanise(payment.status)}
                 </Badge>
@@ -890,6 +894,7 @@ export default function OrderDetail() {
       {modal === 'refund' && intentId ? (
         <RefundModal
           intentId={intentId}
+          gateway={gateway}
           currency={currency}
           maxMinor={refundable}
           onClose={() => setModal('none')}
@@ -1810,7 +1815,7 @@ function CancelModal({
       }
       onDone();
     } catch (cause) {
-      setError(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
+      setError(describeRefundError(cause));
       setBusy(false);
     }
   }
@@ -1960,12 +1965,15 @@ function CancelModal({
 
 function RefundModal({
   intentId,
+  gateway,
   currency,
   maxMinor,
   onClose,
   onDone,
 }: {
   intentId: string;
+  /** The gateway that took the payment, or `null` when the page does not know. */
+  gateway: string | null;
   currency: string;
   maxMinor: number;
   onClose: () => void;
@@ -1998,7 +2006,7 @@ function RefundModal({
       toast.show(`Refunded ${money(refund.amount, refund.currency)}`);
       onDone();
     } catch (cause) {
-      setError(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
+      setError(describeRefundError(cause));
       setBusy(false);
     }
   }
@@ -2019,8 +2027,8 @@ function RefundModal({
     >
       <div className="stack">
         <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.5 }}>
-          The money goes back through Paystack. The order itself stays as it is — a refund does not cancel
-          it.
+          {gateway ? `The money goes back through ${gateway}.` : 'The money goes back the way the customer paid.'}{' '}
+          The order itself stays as it is — a refund does not cancel it.
         </p>
         <MoneyField
           label="Amount"

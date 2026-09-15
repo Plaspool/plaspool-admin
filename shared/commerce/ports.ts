@@ -94,6 +94,13 @@ export function paymentStatusRank(status: PaymentStatus): number {
 export interface PaymentSnapshot {
   intentId: string;
   checkoutId: string;
+  /**
+   * The gateway that took this payment, fixed when it was created
+   * (`shop_payment_intents.provider`, migration 1100). A refund always goes back
+   * through it, whatever the payment settings say today — so the order page
+   * names it rather than assuming one.
+   */
+  provider: 'paystack' | 'flutterwave';
   status: PaymentStatus;
   /** Minor units, frozen at creation, never recomputed (`03-payments.md` §1). */
   amount: number;

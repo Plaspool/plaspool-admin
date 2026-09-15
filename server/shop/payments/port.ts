@@ -31,6 +31,7 @@ export const paymentPort: PaymentPort<Db> = {
     return {
       intentId: intent.id,
       checkoutId: intent.checkoutId,
+      provider: intent.provider,
       status: intent.status,
       amount: intent.amount,
       currency: intent.currency,

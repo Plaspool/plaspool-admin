@@ -945,6 +945,8 @@ export type PaymentStatus =
 export interface ShopPayment {
   intentId: string;
   checkoutId: string;
+  /** The gateway that took this payment. A refund always goes back through it. */
+  provider: PaymentProviderName;
   status: PaymentStatus;
   amount: number;
   currency: string;

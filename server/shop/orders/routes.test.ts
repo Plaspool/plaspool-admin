@@ -664,6 +664,7 @@ describe('the admin surface', () => {
     const snapshot: PaymentSnapshot = {
       intentId: 'pi_0001',
       checkoutId: CHECKOUT,
+      provider: 'paystack',
       status: 'captured',
       amount: 5400,
       currency: 'USD',

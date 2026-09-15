@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { BadRequestError, NotFoundError } from '../../repo/errors';
 import { toEpochMs, uniqueViolation } from '../../db/client';
 import { ProviderError, isIndeterminate } from './provider/scrub';
+import { RefundFailedError, refundFailureOutcome } from './refund-failure';
 import { refundId as mintRefundId, eventId as mintEventId } from './ids';
 import { getIntent } from './intents';
 import type { Db } from '../../db/client';
@@ -177,6 +178,19 @@ export async function createRefund(
      */
     if (uniqueViolation(err) === 'shop_refunds_idempotency_key_unique') {
       const existing = await getRefundByKey(db, input.idempotencyKey);
+      /*
+       * A FAILED ROW IS NOT A RESULT TO REPLAY. Handed back, it was a 200 the
+       * screen toasted as "Refunded" (production, 2026-09-15). A clear refusal
+       * frees its key (`failRefundLocally`), so what is left here is a failure
+       * nobody could confirm, or one the gateway reported later by webhook —
+       * and neither may be answered as a refund, or sent to the gateway again,
+       * before somebody has looked.
+       */
+      if (existing?.status === 'failed') {
+        const paidThrough = await getIntent(db, existing.intentId);
+        if (!paidThrough) throw new NotFoundError(existing.intentId);
+        throw new RefundFailedError({ provider: paidThrough.provider, outcome: 'unconfirmed', code: 'unknown' });
+      }
       if (existing) return { refund: existing, created: false };
     }
     throw err;
@@ -212,6 +226,14 @@ export async function createRefund(
       },
       input.idempotencyKey,
     );
+    /*
+     * A GATEWAY THAT ANSWERS "FAILED" HAS REFUSED. Stored as this row's result
+     * it went back to the caller as a refund, with the amount still reserved
+     * against money that never moved — so it takes the refusal path below.
+     */
+    if (providerRefund.status === 'failed') {
+      throw new ProviderError({ code: 'declined', provider: intent.provider, operation: 'refund' });
+    }
     const updated = await db.execute(sql`
       UPDATE shop_refunds
          SET provider_refund_id = ${providerRefund.providerRefundId},
@@ -241,8 +263,20 @@ export async function createRefund(
      * recoverable.
      */
     if (isIndeterminate(code)) return { refund, created: true };
-    await failRefundLocally(db, refund.id, now);
-    throw err;
+    if (!(err instanceof ProviderError)) {
+      await failRefundLocally(db, refund.id, now);
+      throw err;
+    }
+    /*
+     * NAMED, NOT RETHROWN. A bare `ProviderError` has no row in the error
+     * table, so a gateway's plain "no" reached the owner as `internal`.
+     * `RefundFailedError` is answered 422 with the gateway recorded on THIS
+     * intent — never the adapter handle's name — and what is known about the
+     * money (`refund-failure.ts`).
+     */
+    const outcome = refundFailureOutcome(code);
+    await failRefundLocally(db, refund.id, now, { freeKey: outcome === 'refused' });
+    throw new RefundFailedError({ provider: intent.provider, outcome, code });
   }
 }
 
@@ -253,11 +287,25 @@ export async function createRefund(
  * settled it cannot be undone, and so the release cannot happen twice — a
  * double release would understate `refunded_total` and let the same money be
  * refunded again.
+ *
+ * `freeKey` IS FOR A CLEAR REFUSAL ONLY. The key exists to stop a second refund
+ * while the first may still be moving money; after a refusal nothing is moving,
+ * and a key left taken makes the same click read the refusal back forever — for
+ * the cancel route, whose key is fixed, that meant an order that could never be
+ * cancelled with that refund. So the failed row keeps its key with its own id
+ * appended (still unique, still readable) and the original key is free again.
  */
-async function failRefundLocally(db: Db, id: string, now: number): Promise<void> {
+async function failRefundLocally(
+  db: Db,
+  id: string,
+  now: number,
+  opts: { freeKey?: boolean } = {},
+): Promise<void> {
+  const key = opts.freeKey ? sql`idempotency_key || ':refused:' || id` : sql`idempotency_key`;
   await db.execute(sql`
     WITH failed AS (
-      UPDATE shop_refunds SET status = 'failed', updated_at = ${now}
+      UPDATE shop_refunds
+         SET status = 'failed', updated_at = ${now}, idempotency_key = ${key}
        WHERE id = ${id} AND status = 'pending'
       RETURNING intent_id, amount
     )
