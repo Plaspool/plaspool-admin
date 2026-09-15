@@ -1,19 +1,47 @@
-/** One product a pool can fill a box from, as the admin sees it (migration 1220). */
-export interface PoolItem {
+/** One variant on a mystery box list, as Settings shows it (migration 1240). */
+export interface MysteryBoxItem {
   variantId: string;
+  list: 'main' | 'backup';
+  productId: string;
   productTitle: string;
   sku: string;
   optionValues: Record<string, string>;
   colorHex: string | null;
   imageId: string | null;
+  /** On the shelf now, less what carts are holding. */
   available: number;
+  /** False when the product or variant can't currently be used (draft, discontinued, trashed). */
+  usable: boolean;
 }
 
-export interface PoolPreview {
-  tag: string;
-  /** In-stock pool units, minus what held carts and unfilled paid boxes already owe. */
-  freeUnits: number;
-  items: PoolItem[];
+/** One size of the mystery box: a variant of the product it is sold as. */
+export interface MysteryBoxSize {
+  variantId: string;
+  sku: string;
+  optionValues: Record<string, string>;
+  itemCount: number | null;
+  /** How many more of this size can be sold now. */
+  canFill: number;
+  /** Boxes of this size built ahead and on the shelf. */
+  ready: number;
+}
+
+export interface MysteryBoxSettings {
+  enabled: boolean;
+  productId: string | null;
+  productTitle: string | null;
+  productStatus: string | null;
+  mode: 'pack' | 'built' | 'auto';
+  shortfall: 'hold' | 'backup' | 'cancel_refund';
+  revision: number;
+  updatedAt: number;
+}
+
+export interface MysteryBoxView {
+  settings: MysteryBoxSettings;
+  sizes: MysteryBoxSize[];
+  items: MysteryBoxItem[];
+  built: BuiltBox[];
 }
 
 export interface BoxFillItem {
@@ -38,9 +66,16 @@ export interface BoxFill {
   items: BoxFillItem[];
 }
 
-/** An order line that is a box, whether or not any of its boxes is filled yet. */
+/** A box built ahead and still on the shelf (migration 1240). */
+export interface BuiltBox {
+  id: string;
+  sizeVariantId: string;
+  filledAt: number;
+  items: BoxFillItem[];
+}
+
+/** An order line that is a mystery box, whether or not any of its boxes is filled yet. */
 export interface BoxLine {
   orderLineId: string;
-  poolTag: string | null;
   itemCount: number | null;
 }

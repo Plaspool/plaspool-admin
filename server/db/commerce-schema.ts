@@ -179,6 +179,11 @@ export const shopOrders = pgTable(
      * on `Order`: the customer's order view spreads that type.
      */
     keptOutReason: text('kept_out_reason'),
+    /**
+     * When the shop could not fill this order's mystery box by itself and was
+     * set to keep the order and tell staff (migration 1240). Staff only.
+     */
+    boxShortAt: bigint('box_short_at', { mode: 'number' }),
   },
   (t) => [
     uniqueIndex('shop_orders_order_number_uq').on(t.orderNumber),

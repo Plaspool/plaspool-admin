@@ -61,6 +61,8 @@ const RULES: readonly Rule[] = [
    * while only this admin half is owner-and-developer work. */
   { prefix: '/api/shop/admin/logistics', domain: 'settings' },
   { prefix: '/api/shop/admin/notification-settings', domain: 'settings' },
+  /* Migration 1240. Settings → Mystery box, including building boxes ahead. */
+  { prefix: '/api/shop/admin/mystery-box', domain: 'settings' },
   /*
    * `orders` AND NOT `settings`, unlike the line above it, because these two
    * prefixes answer different questions for different people. The settings say
@@ -80,8 +82,6 @@ const RULES: readonly Rule[] = [
   { prefix: '/api/shop/admin/add-ons', domain: 'products' },
   { prefix: '/api/shop/admin/bulk-tiers', domain: 'products' },
   { prefix: '/api/shop/admin/tags', domain: 'products' },
-  /* Migration 1220. A mystery box's pool is catalogue data, read beside tags. */
-  { prefix: '/api/shop/admin/box-pools', domain: 'products' },
   /*
    * The sweep stays OUT of the table on purpose: its GET authenticates with
    * the cron bearer and carries no session (the gate never fires), and its

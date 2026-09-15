@@ -291,8 +291,8 @@ export const shopVariants = pgTable(
      * for it twice.
      */
     shippingWeightGrams: integer('shipping_weight_grams'),
-    /** Migration 1220. The tag whose products fill this box, in the catalogue's
-     *  canonical tag spelling. Both-or-neither with the count. */
+    /** Migration 1220. The tag pool 1220 used. NO LONGER READ since migration
+     *  1240 moved the pool into Settings → Mystery box; left in place. */
     boxPoolTag: text('box_pool_tag'),
     /** Migration 1220. How many items one box of this variant holds. */
     boxItemCount: integer('box_item_count'),
@@ -374,7 +374,6 @@ export const shopVariants = pgTable(
       sql`${t.shippingWeightGrams} IS NULL OR ${t.shippingWeightGrams} >= 0`,
     ),
     check('shop_variants_box_item_count_ck', sql`${t.boxItemCount} IS NULL OR ${t.boxItemCount} > 0`),
-    check('shop_variants_box_pair_ck', sql`(${t.boxPoolTag} IS NULL) = (${t.boxItemCount} IS NULL)`),
     // Sign backstops, as `weight_ck`: against a backfill or hand-run UPDATE,
     // not display policy — zero is storable and simply never renders as a sale.
     check(

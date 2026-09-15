@@ -541,8 +541,6 @@ export interface ShopProductPatch {
   overview?: string | null;
   /** Absent leaves it alone — a boolean has no "clear" spelling. */
   bulkDiscountEnabled?: boolean;
-  /** Migration 1220. `null` switches the box off. Only `'pack'` is accepted today. */
-  boxMode?: 'pack' | null;
 }
 
 /** One rung of a quantity ladder (migration 0600). 10 000 bps is 100%. */
@@ -1017,25 +1015,71 @@ export type ShopRestockResult =
 
 // ----------------------------------------------------------- mystery boxes
 
-/** How a mystery box's contents get decided (migration 1220). Phase 1 ships `pack`. */
+/** How the mystery box's contents get decided (migrations 1220, 1240). */
 export type ShopBoxMode = 'pack' | 'built' | 'auto';
 
-/** One product a pool can fill a box from. */
-export interface ShopPoolItem {
+/** What happens when a paid box can't be filled (migration 1240). */
+export type ShopBoxShortfall = 'hold' | 'backup' | 'cancel_refund';
+
+/** One variant on a mystery box tick list, as Settings shows it. */
+export interface ShopMysteryBoxItem {
   variantId: string;
+  list: 'main' | 'backup';
+  productId: string;
   productTitle: string;
   sku: string;
   optionValues: Record<string, string>;
   colorHex: string | null;
   imageId: string | null;
   available: number;
+  /** False when the product or variant can't currently be used. */
+  usable: boolean;
 }
 
-/** A pool as the admin sees it: its in-stock items, and units free after what is owed. */
-export interface ShopPoolPreview {
-  tag: string;
-  freeUnits: number;
-  items: ShopPoolItem[];
+/** One size of the mystery box: a variant of the product it is sold as. */
+export interface ShopMysteryBoxSize {
+  variantId: string;
+  sku: string;
+  optionValues: Record<string, string>;
+  itemCount: number | null;
+  canFill: number;
+  ready: number;
+}
+
+/** A box built ahead and still on the shelf. */
+export interface ShopBuiltBox {
+  id: string;
+  sizeVariantId: string;
+  filledAt: number;
+  items: ShopBoxFillItem[];
+}
+
+/** Settings → Mystery box, as the server holds it. */
+export interface ShopMysteryBox {
+  settings: {
+    enabled: boolean;
+    productId: string | null;
+    productTitle: string | null;
+    productStatus: string | null;
+    mode: ShopBoxMode;
+    shortfall: ShopBoxShortfall;
+    revision: number;
+    updatedAt: number;
+  };
+  sizes: ShopMysteryBoxSize[];
+  items: ShopMysteryBoxItem[];
+  built: ShopBuiltBox[];
+}
+
+export interface ShopMysteryBoxSave {
+  expectedRevision: number;
+  enabled: boolean;
+  productId: string | null;
+  mode: ShopBoxMode;
+  shortfall: ShopBoxShortfall;
+  sizes: { variantId: string; itemCount: number | null }[];
+  main: string[];
+  backup: string[];
 }
 
 export interface ShopBoxFillItem {
@@ -1065,7 +1109,6 @@ export interface ShopBoxFill {
 /** An order line that is a mystery box, filled or not. */
 export interface ShopBoxLine {
   orderLineId: string;
-  poolTag: string | null;
   itemCount: number | null;
 }
 
@@ -1101,6 +1144,8 @@ export interface ShopOrderDetail {
   boxLines?: ShopBoxLine[];
   /** Migration 1220. What is packed in the filled boxes. Absent on older responses. */
   boxFills?: ShopBoxFill[];
+  /** Migration 1240. When the shop couldn't fill this order's box by itself. */
+  boxShortAt?: number | null;
 }
 
 // ------------------------------------------------------------ manual orders
@@ -2024,8 +2069,6 @@ export const shopApi = {
       weightGrams?: number | null;
       /** Absent or `null` means "price delivery on `weightGrams`". */
       shippingWeightGrams?: number | null;
-      /** Migration 1220. Required on a mystery box product, refused on any other. */
-      boxPool?: { tag: string; itemCount: number } | null;
       onHand?: number;
       backorderable?: boolean;
       imageId?: string | null;
@@ -2053,8 +2096,6 @@ export const shopApi = {
       weightGrams?: number | null;
       /** `null` CLEARS the override, so delivery rejoins `weightGrams`. */
       shippingWeightGrams?: number | null;
-      /** Migration 1220. The mystery box pool and item count. */
-      boxPool?: { tag: string; itemCount: number } | null;
       status?: VariantStatus;
       /** `null` clears the colour photograph; a committed image id sets it. */
       imageId?: string | null;
@@ -2509,12 +2550,39 @@ export const shopApi = {
    * reused rather than re-invented. Same no-params, `.strict()` rule as
    * categories.
    */
-  /** What a mystery box pool holds now (migration 1220). */
-  async boxPool(tag: string, signal?: AbortSignal): Promise<ShopPoolPreview> {
-    const res = await shopFetch<{ pool: ShopPoolPreview }>(`${BASE}/box-pools/${seg(tag)}`, {
-      signal,
+  /** Settings → Mystery box (migration 1240). */
+  async getMysteryBox(signal?: AbortSignal): Promise<ShopMysteryBox> {
+    const res = await shopFetch<{ mysteryBox: ShopMysteryBox }>(`${BASE}/mystery-box`, { signal });
+    return res.mysteryBox;
+  },
+
+  /** Save the whole Mystery box screen. A 409 means someone else saved it first. */
+  async saveMysteryBox(body: ShopMysteryBoxSave): Promise<ShopMysteryBox> {
+    const res = await shopFetch<{ mysteryBox: ShopMysteryBox }>(`${BASE}/mystery-box`, {
+      method: 'PUT',
+      body,
+      subject: 'Mystery box',
     });
-    return res.pool;
+    return res.mysteryBox;
+  },
+
+  /** Pack a box ahead of any sale, for one size. Its items leave stock now. */
+  async buildMysteryBox(sizeVariantId: string, variantIds: string[]): Promise<ShopMysteryBox> {
+    const res = await shopFetch<{ mysteryBox: ShopMysteryBox }>(`${BASE}/mystery-box/built`, {
+      method: 'POST',
+      body: { sizeVariantId, variantIds },
+      subject: 'Mystery box',
+    });
+    return res.mysteryBox;
+  },
+
+  /** Unpack a built box that hasn't sold; its items go back in stock. */
+  async breakUpMysteryBox(id: string): Promise<ShopMysteryBox> {
+    const res = await shopFetch<{ mysteryBox: ShopMysteryBox }>(
+      `${BASE}/mystery-box/built/${seg(id)}/break-up`,
+      { method: 'POST', body: {}, id, subject: 'Mystery box' },
+    );
+    return res.mysteryBox;
   },
 
   /**

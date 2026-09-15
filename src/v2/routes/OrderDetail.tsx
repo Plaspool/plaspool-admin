@@ -529,6 +529,12 @@ export default function OrderDetail() {
         </Banner>
       ) : null}
 
+      {boxPaid && data.boxShortAt && emptyBoxes.length > 0 ? (
+        <Banner tone="critical" title="The shop couldn’t fill this mystery box by itself">
+          {`There wasn’t enough on the mystery box list on ${dateTime(data.boxShortAt)}. Fill it by hand below, or cancel and refund the order.`}
+        </Banner>
+      ) : null}
+
       {emptyBoxes.length > 0 ? (
         <Banner
           tone="warn"
@@ -863,14 +869,15 @@ export default function OrderDetail() {
             if (!line || !spec) return null;
             return (
               <BoxFillModal
-                orderId={order.id}
-                line={line}
-                boxNo={filling.boxNo}
-                poolTag={spec.poolTag}
+                target={{
+                  kind: 'order',
+                  orderId: order.id,
+                  line,
+                  boxNo: filling.boxNo,
+                  existing:
+                    boxFills.find((f) => f.orderLineId === filling.lineId && f.boxNo === filling.boxNo) ?? null,
+                }}
                 itemCount={spec.itemCount ?? 1}
-                existing={
-                  boxFills.find((f) => f.orderLineId === filling.lineId && f.boxNo === filling.boxNo) ?? null
-                }
                 onClose={() => setFilling(null)}
                 onDone={() => {
                   setFilling(null);
