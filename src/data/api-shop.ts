@@ -16,6 +16,7 @@
  * operator they have four of something they sold this morning. Every read here
  * is a plain fetch into component state.
  */
+import type { BoxPage } from '../../shared/commerce/mystery-box';
 import { apiFetch, type RequestOptions } from './api';
 import type { AnalyticsMoney } from './api-shop-analytics';
 import { UNRENDERABLE } from './when';
@@ -1075,7 +1076,13 @@ export interface ShopMysteryBoxProduct {
   slug: string | null;
   status: string;
   name: string;
+  /** Migration 1260: "Large", or null for no size. */
+  size: string | null;
   description: unknown;
+  /** The owner's overview; null means the shop derives it from the description. */
+  overview: string | null;
+  /** What the shop shows while `overview` is null. */
+  overviewFallback: string;
   coverImageId: string | null;
   imageIds: string[];
   priceMinor: number | null;
@@ -1085,6 +1092,8 @@ export interface ShopMysteryBoxProduct {
   canBuy: number;
   /** Boxes built ahead and on the shelf. */
   ready: number;
+  /** Boxes paid for in the last 24 hours. */
+  soldLast24Hours: number;
 }
 
 /** Settings → Mystery box, as the server holds it. */
@@ -1095,6 +1104,10 @@ export interface ShopMysteryBox {
     shortfall: ShopBoxShortfall;
     revision: number;
     updatedAt: number;
+    /** Migration 1260: "How it works" and the cues. */
+    page: BoxPage;
+    /** When the box was last switched on; null while it is off. */
+    onSaleSince: number | null;
   };
   /** Null until the screen is first saved. */
   box: ShopMysteryBoxProduct | null;
@@ -1110,7 +1123,11 @@ export interface ShopMysteryBoxSave {
   mode: ShopBoxMode;
   shortfall: ShopBoxShortfall;
   name: string;
+  size: string;
   description: unknown | null;
+  /** Blank lets the shop derive the overview from the description. */
+  overview: string;
+  page: BoxPage;
   coverImageId: string | null;
   imageIds: string[];
   priceMinor: number | null;

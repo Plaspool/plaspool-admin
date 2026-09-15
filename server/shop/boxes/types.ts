@@ -1,3 +1,5 @@
+import type { BoxPage } from '../../../shared/commerce/mystery-box';
+
 /** One variant on a mystery box list, as Settings shows it (migration 1240). */
 export interface MysteryBoxItem {
   variantId: string;
@@ -25,7 +27,13 @@ export interface MysteryBoxProduct {
   slug: string | null;
   status: string;
   name: string;
+  /** Migration 1260: the size shown on the shop ("Large"), stored as the variant's Size option. */
+  size: string | null;
   description: unknown;
+  /** The owner's overview, or null when the shop derives it from the description. */
+  overview: string | null;
+  /** What the shop shows when `overview` is null. */
+  overviewFallback: string;
   coverImageId: string | null;
   imageIds: string[];
   /** Minor units; null until a price is set. */
@@ -36,6 +44,8 @@ export interface MysteryBoxProduct {
   canBuy: number;
   /** Boxes built ahead and on the shelf. */
   ready: number;
+  /** Boxes paid for in the last 24 hours, for the "selling fast" cue. */
+  soldLast24Hours: number;
 }
 
 export interface MysteryBoxSettings {
@@ -44,6 +54,10 @@ export interface MysteryBoxSettings {
   shortfall: 'hold' | 'backup' | 'cancel_refund';
   revision: number;
   updatedAt: number;
+  /** Migration 1260: the words and cues the shop shows on the box. */
+  page: BoxPage;
+  /** When the box was last switched on; null while it is off. */
+  onSaleSince: number | null;
 }
 
 export interface MysteryBoxView {

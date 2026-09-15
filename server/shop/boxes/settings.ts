@@ -3,6 +3,7 @@ import type { Db } from '../../db/client';
 import { BadRequestError, StaleWriteError } from '../../repo/errors';
 import type { AuthUser, DocNode } from '../../../shared/types';
 import { money } from '../../../shared/commerce/money';
+import { readBoxPage, type BoxPage } from '../../../shared/commerce/mystery-box';
 import { SHOP_CURRENCY } from '../currency';
 import {
   createProduct,
@@ -46,8 +47,28 @@ async function readSettings(db: Db): Promise<MysteryBoxSettings & { updatedBy: s
     updatedAt: Number(r.updated_at),
     updatedBy: r.updated_by == null ? null : String(r.updated_by),
     productId: r.product_id == null ? null : String(r.product_id),
+    page: readBoxPage(r.page),
+    onSaleSince: r.on_sale_since == null ? null : Number(r.on_sale_since),
   };
 }
+
+/**
+ * Boxes of this variant paid for in the last 24 hours, for the "selling fast"
+ * cue. Cancelled and refunded orders don't count.
+ */
+export async function boxesSoldSince(db: Db, variantId: string, since: number): Promise<number> {
+  const res = await db.execute(sql`
+    SELECT COALESCE(sum(ol.qty), 0)::int AS n
+      FROM shop_order_lines ol
+      JOIN shop_orders o ON o.id = ol.order_id
+     WHERE ol.variant_id = ${variantId}
+       AND o.paid_at IS NOT NULL AND o.paid_at >= ${since}
+       AND o.status IN ('paid', 'fulfilled', 'partially_refunded')`);
+  return Number(res.rows[0]?.n ?? 0);
+}
+
+/** The box's size: the one variant's Size option. */
+const SIZE_OPTION = 'Size';
 
 /** The settings row alone, for the sweep. */
 export async function mysteryBoxSettings(db: Db) {
@@ -66,17 +87,24 @@ async function readBox(db: Db, productId: string | null): Promise<MysteryBoxProd
   const variants = await listVariantsWithPrices(db, productId);
   if (variants.length !== 1) return null;
   const variant = variants[0];
-  const stats = await db.execute(sql`
-    SELECT ${boxCapacitySql(sql`${variant.id}::text`)} AS can_buy,
-           (SELECT count(*) FROM shop_box_fills f
-             WHERE f.built_state = 'ready' AND f.box_variant_id = ${variant.id})::int AS ready`);
+  const [stats, sold] = await Promise.all([
+    db.execute(sql`
+      SELECT ${boxCapacitySql(sql`${variant.id}::text`)} AS can_buy,
+             (SELECT count(*) FROM shop_box_fills f
+               WHERE f.built_state = 'ready' AND f.box_variant_id = ${variant.id})::int AS ready`),
+    boxesSoldSince(db, variant.id, Date.now() - 24 * 60 * 60 * 1000),
+  ]);
+  const size = variant.optionValues[SIZE_OPTION]?.trim();
   return {
     productId,
     variantId: variant.id,
     slug: product.slug,
     status: product.status,
     name: product.title,
+    size: size ? size : null,
     description: product.description,
+    overview: product.overview,
+    overviewFallback: product.overviewFallback,
     coverImageId: product.coverImageId,
     imageIds: product.imageIds,
     priceMinor: variant.price?.amount ?? null,
@@ -84,6 +112,7 @@ async function readBox(db: Db, productId: string | null): Promise<MysteryBoxProd
     itemCount: variant.boxItemCount,
     canBuy: stats.rows[0]?.can_buy == null ? 0 : Number(stats.rows[0].can_buy),
     ready: Number(stats.rows[0]?.ready ?? 0),
+    soldLast24Hours: sold,
   };
 }
 
@@ -132,8 +161,14 @@ export interface SaveMysteryBoxInput {
   mode: MysteryBoxSettings['mode'];
   shortfall: MysteryBoxSettings['shortfall'];
   name: string;
+  /** "Large", "Standard"; blank for no size. */
+  size: string;
   /** A TipTap document, or null to leave the stored one alone. */
   description: unknown | null;
+  /** The owner's overview; blank lets the shop derive it from the description. */
+  overview: string;
+  /** How it works, and the cues. Already validated by the route. */
+  page: BoxPage;
   coverImageId: string | null;
   imageIds: string[];
   /** Minor units, or null for not set yet. */
@@ -162,6 +197,7 @@ export async function saveMysteryBox(
     throw new StaleWriteError(input.expectedRevision, before.revision, null);
   }
   const name = input.name.trim();
+  const size = input.size.trim();
 
   if (input.priceMinor !== null && (!Number.isInteger(input.priceMinor) || input.priceMinor < 0)) {
     throw new BadRequestError('priceMinor');
@@ -173,8 +209,13 @@ export async function saveMysteryBox(
     throw new BadRequestError('box_incomplete');
   }
 
+  /* A variant ticked on BOTH lists is on the main list. Counting it twice is how
+     "boxes can be bought" read 22 from 11 items. */
+  const mainIds = new Set(input.main);
+  const backupIds = [...new Set(input.backup)].filter((id) => !mainIds.has(id));
+
   /* Only ordinary, ACTIVE products can go inside — never a draft, and never the box. */
-  const listed = [...new Set([...input.main, ...input.backup])];
+  const listed = [...new Set([...input.main, ...backupIds])];
   if (listed.length > 0) {
     const ok = await db.execute(sql`
       SELECT count(*)::int AS n FROM shop_variants v JOIN shop_products p ON p.id = v.product_id
@@ -207,7 +248,7 @@ export async function saveMysteryBox(
 
   const items = [
     ...[...new Set(input.main)].map((variant_id) => ({ variant_id, list: 'main' })),
-    ...[...new Set(input.backup)].map((variant_id) => ({ variant_id, list: 'backup' })),
+    ...backupIds.map((variant_id) => ({ variant_id, list: 'backup' })),
   ];
 
   const res = await db.execute(sql`
@@ -215,6 +256,14 @@ export async function saveMysteryBox(
       UPDATE shop_mystery_box_settings
          SET enabled = ${input.enabled}, product_id = ${box.productId}, mode = ${input.mode},
              shortfall = ${input.shortfall}, updated_by = ${actor.id}::uuid, updated_at = ${now},
+             page = ${JSON.stringify(input.page)}::jsonb,
+             /* SET sees the row as it was, so "enabled" here is the old switch:
+                off -> on starts the clock, on stays on keeps it, off clears it. */
+             on_sale_since = CASE
+               WHEN NOT ${input.enabled} THEN NULL
+               WHEN enabled AND on_sale_since IS NOT NULL THEN on_sale_since
+               ELSE ${now}::bigint
+             END,
              revision = revision + 1
        WHERE id = 'main' AND revision = ${input.expectedRevision}
       RETURNING id
@@ -227,7 +276,8 @@ export async function saveMysteryBox(
        WHERE id = ${box.productId} AND EXISTS (SELECT 1 FROM s)
       RETURNING 1
     ), cnt AS (
-      UPDATE shop_variants SET box_item_count = ${input.itemCount}::int
+      UPDATE shop_variants SET box_item_count = ${input.itemCount}::int,
+             option_values = ${JSON.stringify(size ? { [SIZE_OPTION]: size } : {})}::jsonb
        WHERE id = ${box.variantId} AND EXISTS (SELECT 1 FROM s)
       RETURNING 1
     ), inv AS (
@@ -266,6 +316,7 @@ export async function saveMysteryBox(
         title: name || product.title,
         coverImageId: input.coverImageId,
         imageIds: input.imageIds,
+        overview: input.overview,
         ...(input.description === null ? {} : { description: input.description as DocNode }),
       },
       { actor, baseRevision: product.revision, note: 'Mystery box settings' },

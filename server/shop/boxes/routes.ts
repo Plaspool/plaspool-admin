@@ -5,6 +5,8 @@ import { requireAuth } from '../../middleware/session';
 import { currentDb, currentUser } from '../../app-env';
 import type { AppEnv } from '../../app-env';
 import { NotFoundError } from '../../repo/errors';
+import { BOX_PAGE_LIMITS as L, readBoxPage } from '../../../shared/commerce/mystery-box';
+import { revalidateProductById } from '../catalog/revalidate';
 import { breakUpBox, buildBox } from './fills';
 import { getMysteryBox, saveMysteryBox } from './settings';
 
@@ -16,6 +18,29 @@ export const mysteryBoxRoutes = new Hono<AppEnv>();
 
 const auth = requireAuth();
 
+const cueText = str().max(L.cueText);
+const PageBody = z
+  .object({
+    howItWorks: z
+      .object({ title: str().max(L.title), steps: z.array(str().max(L.step)).max(L.steps) })
+      .strict(),
+    cues: z
+      .object({
+        lowStock: z
+          .object({ enabled: z.boolean(), threshold: z.number().int().min(1).max(L.threshold), text: cueText })
+          .strict(),
+        justDropped: z
+          .object({ enabled: z.boolean(), hours: z.number().int().min(1).max(L.hours), text: cueText })
+          .strict(),
+        sellingFast: z
+          .object({ enabled: z.boolean(), minimum: z.number().int().min(1).max(L.minimum), text: cueText })
+          .strict(),
+        soldOut: z.object({ enabled: z.boolean(), text: cueText }).strict(),
+      })
+      .strict(),
+  })
+  .strict();
+
 const SaveBody = z
   .object({
     expectedRevision: z.number().int().min(1),
@@ -23,6 +48,9 @@ const SaveBody = z
     mode: z.enum(['pack', 'built', 'auto']),
     shortfall: z.enum(['hold', 'backup', 'cancel_refund']),
     name: str().max(200),
+    size: str().max(40),
+    overview: str().max(500),
+    page: PageBody,
     /** A TipTap document; null leaves the stored description alone. */
     description: z.unknown().nullable(),
     coverImageId: str().min(1).max(200).nullable(),
@@ -49,7 +77,10 @@ mysteryBoxRoutes.get('/admin/mystery-box', auth, async (c) =>
 /** `PUT /admin/mystery-box` — save the whole screen, behind its revision. */
 mysteryBoxRoutes.put('/admin/mystery-box', auth, async (c) => {
   const body = await readJson(c, SaveBody);
-  const mysteryBox = await saveMysteryBox(currentDb(c), body, currentUser(c), Date.now());
+  const db = currentDb(c);
+  const mysteryBox = await saveMysteryBox(db, { ...body, page: readBoxPage(body.page) }, currentUser(c), Date.now());
+  /* The shop caches the box's page: its words, size and pictures change here. */
+  if (mysteryBox.box) revalidateProductById(db, mysteryBox.box.productId);
   return c.json({ mysteryBox });
 });
 
