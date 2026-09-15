@@ -8,7 +8,7 @@ import { NotFoundError } from '../../repo/errors';
 import { BOX_PAGE_LIMITS as L, readBoxPage } from '../../../shared/commerce/mystery-box';
 import { revalidateProductById } from '../catalog/revalidate';
 import { breakUpBox, buildBox } from './fills';
-import { getMysteryBox, saveMysteryBox } from './settings';
+import { MAX_BOX_SIZES, getMysteryBox, saveMysteryBox } from './settings';
 
 /**
  * Settings → Mystery box (migration 1240). On the `settings` domain in
@@ -41,6 +41,19 @@ const PageBody = z
   })
   .strict();
 
+const SizeBody = z
+  .object({
+    /** Null for a size added on this save. */
+    variantId: str().min(1).max(300).nullable(),
+    size: str().max(40),
+    itemCount: z.number().int().min(1).max(1000).nullable(),
+    priceMinor: z.number().int().min(0).max(1_000_000_000).nullable(),
+    weightGrams: z.number().int().min(0).max(10_000_000).nullable(),
+    shippingWeightGrams: z.number().int().min(0).max(10_000_000).nullable(),
+    imageId: str().min(1).max(200).nullable(),
+  })
+  .strict();
+
 const SaveBody = z
   .object({
     expectedRevision: z.number().int().min(1),
@@ -48,15 +61,13 @@ const SaveBody = z
     mode: z.enum(['pack', 'built', 'auto']),
     shortfall: z.enum(['hold', 'backup', 'cancel_refund']),
     name: str().max(200),
-    size: str().max(40),
     overview: str().max(500),
     page: PageBody,
     /** A TipTap document; null leaves the stored description alone. */
     description: z.unknown().nullable(),
     coverImageId: str().min(1).max(200).nullable(),
     imageIds: z.array(str().min(1).max(200)).max(50),
-    priceMinor: z.number().int().min(0).max(1_000_000_000).nullable(),
-    itemCount: z.number().int().min(1).max(1000).nullable(),
+    sizes: z.array(SizeBody).min(1).max(MAX_BOX_SIZES),
     main: z.array(str().min(1).max(300)).max(5000),
     backup: z.array(str().min(1).max(300)).max(5000),
   })

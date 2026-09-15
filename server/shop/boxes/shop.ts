@@ -16,10 +16,22 @@ import { boxesSoldSince, mysteryBoxSettings } from './settings';
  * cue the owner switched on does.
  */
 
-export interface StorefrontMysteryBox {
-  /** "Large"; null when the owner set no size. Also the variant's Size option. */
+export interface StorefrontBoxSize {
+  variantId: string;
+  /** "5kg"; null when the only size has no name. Also the variant's Size option. */
   size: string | null;
-  /** Items in every box. */
+  /** Items in every box of this size. */
+  itemCount: number | null;
+}
+
+export interface StorefrontMysteryBox {
+  /**
+   * The sizes on sale, in the owner's order. A size's price, photo and weight
+   * ride the matching entry in `variants`, as for any product.
+   */
+  sizes: StorefrontBoxSize[];
+  /** The FIRST size's name and count, kept for a storefront built before sizes. */
+  size: string | null;
   itemCount: number | null;
   howItWorks: BoxHowItWorks;
 }
@@ -38,14 +50,26 @@ export async function loadBoxShop(db: Db): Promise<{ fallback: BoxFallback; page
 }
 
 export function boxShopContent(
-  variants: { optionValues: Record<string, string>; boxItemCount: number | null }[],
+  variants: {
+    id: string;
+    status: string;
+    position: number;
+    optionValues: Record<string, string>;
+    boxItemCount: number | null;
+  }[],
   page: BoxPage,
 ): StorefrontMysteryBox {
-  const variant = variants[0];
-  const size = variant?.optionValues.Size?.trim();
+  const sizes = variants
+    .filter((v) => v.status === 'active')
+    .sort((a, b) => a.position - b.position)
+    .map((v) => {
+      const size = v.optionValues.Size?.trim();
+      return { variantId: v.id, size: size ? size : null, itemCount: v.boxItemCount };
+    });
   return {
-    size: size ? size : null,
-    itemCount: variant?.boxItemCount ?? null,
+    sizes,
+    size: sizes[0]?.size ?? null,
+    itemCount: sizes[0]?.itemCount ?? null,
     howItWorks: page.howItWorks,
   };
 }

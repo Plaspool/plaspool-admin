@@ -38,6 +38,19 @@ export async function hasOpenBoxes(db: Db, productId: string): Promise<boolean> 
 }
 
 /**
+ * Boxes of one size that somebody is owed or holding: paid and not yet filled or
+ * sent, plus boxes sitting in a checkout right now. While any exist, the size's
+ * item count is fixed and the size can't be removed, because a box is filled to
+ * the count its variant says at the time.
+ */
+export const owedBoxesSql = (variant: SQL) => sql`((
+  SELECT COALESCE(sum(GREATEST(ol.qty - ${settledUnits(sql`ol`)}, 0)), 0)
+    FROM shop_order_lines ol JOIN shop_orders o ON o.id = ol.order_id
+   WHERE ol.variant_id = ${variant} AND o.status IN ('paid', 'partially_refunded'))
+  + (SELECT COALESCE(sum(h.qty), 0) FROM shop_inventory_holds h
+      WHERE h.state = 'held' AND h.variant_id = ${variant}))::int`;
+
+/**
  * A pool member on a list: an active variant of an active, untrashed, ORDINARY
  * product that is ticked on that list. Never the box itself.
  */

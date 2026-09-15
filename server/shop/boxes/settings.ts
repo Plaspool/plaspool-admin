@@ -1,6 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { BadRequestError, StaleWriteError } from '../../repo/errors';
+import { committedImageIds } from '../../repo/images';
+import { normalizeBlobId } from '../../repo/public-projection';
 import type { AuthUser, DocNode } from '../../../shared/types';
 import { money } from '../../../shared/commerce/money';
 import { readBoxPage, type BoxPage } from '../../../shared/commerce/mystery-box';
@@ -12,9 +15,11 @@ import {
   saveProduct,
   unpublishProduct,
 } from '../catalog/products';
-import { createVariant, listVariantsWithPrices } from '../catalog/variants';
+import { DuplicateSkuError, createVariant, deleteVariant, listVariantsWithPrices } from '../catalog/variants';
+import { VariantPreconditionFailedError } from '../catalog/errors';
+import { fold } from '../catalog/fold';
 import { setPrice } from '../catalog/prices';
-import { boxCapacitySql, hasOpenBoxes } from './capacity';
+import { boxCapacitySql, hasOpenBoxes, owedBoxesSql } from './capacity';
 import { boxFallback } from './fallback';
 import { listBuiltBoxes } from './fills';
 import type { MysteryBoxItem, MysteryBoxProduct, MysteryBoxSettings, MysteryBoxView } from './types';
@@ -25,9 +30,13 @@ import type { MysteryBoxItem, MysteryBoxProduct, MysteryBoxSettings, MysteryBoxV
  *
  * THE BOX OWNS ITS PRODUCT. The owner does not pick an existing product: the
  * first save creates one, and this screen is the only place it is edited — its
- * name, description, pictures, one price and one number of items per box. It
- * is a real product underneath so the cart, checkout and orders need nothing
- * new, and it is left out of the Products list so nobody edits it twice.
+ * name, description, pictures and its SIZES. It is a real product underneath so
+ * the cart, checkout and orders need nothing new, and it is left out of the
+ * Products list so nobody edits it twice.
+ *
+ * SIZES ARE THE PRODUCT'S VARIANTS ("5kg" and "10kg"): each has its own name
+ * (the Size option), items per box, price, weight, shipping weight and photo.
+ * All of them draw on the same tick lists, so they share the stock.
  *
  * `shop_products.box_mode` stays the one fact the rest of the shop reads ("is
  * this line a box?"); the settings row's `product_id` points at the owned product.
@@ -52,6 +61,8 @@ async function readSettings(db: Db): Promise<MysteryBoxSettings & { updatedBy: s
   };
 }
 
+const DAY = 24 * 60 * 60 * 1000;
+
 /**
  * Boxes of this variant paid for in the last 24 hours, for the "selling fast"
  * cue. Cancelled and refunded orders don't count.
@@ -67,8 +78,12 @@ export async function boxesSoldSince(db: Db, variantId: string, since: number): 
   return Number(res.rows[0]?.n ?? 0);
 }
 
-/** The box's size: the one variant's Size option. */
+/** A size's name is its variant's Size option. */
 const SIZE_OPTION = 'Size';
+/** Every variant the box owns is made here, under this SKU prefix. */
+const SKU_PREFIX = 'MYSTERY-BOX-';
+export const MAX_BOX_SIZES = 10;
+const MAX_GRAMS = 10_000_000;
 
 /** The settings row alone, for the sweep. */
 export async function mysteryBoxSettings(db: Db) {
@@ -76,43 +91,72 @@ export async function mysteryBoxSettings(db: Db) {
 }
 
 /**
- * The owned box product, or null. A linked product that is gone, trashed, or has
- * more than one variant is NOT the box's own — that is the shape an ordinary
- * product linked by the earlier version of this screen had — so it reads as none.
+ * The owned box product and its sizes, or null.
+ *
+ * A linked product whose variants were NOT made here (the earlier version of
+ * this screen could link an ordinary product) is not the box's own, so it reads
+ * as none and is released on the next save. A box with no variants yet IS its
+ * own: a first save that failed half way reuses it rather than minting another.
  */
 async function readBox(db: Db, productId: string | null): Promise<MysteryBoxProduct | null> {
   if (!productId) return null;
   const product = await getProduct(db, productId);
   if (!product || product.deletedAt !== null) return null;
   const variants = await listVariantsWithPrices(db, productId);
-  if (variants.length !== 1) return null;
-  const variant = variants[0];
-  const [stats, sold] = await Promise.all([
-    db.execute(sql`
-      SELECT ${boxCapacitySql(sql`${variant.id}::text`)} AS can_buy,
-             (SELECT count(*) FROM shop_box_fills f
-               WHERE f.built_state = 'ready' AND f.box_variant_id = ${variant.id})::int AS ready`),
-    boxesSoldSince(db, variant.id, Date.now() - 24 * 60 * 60 * 1000),
-  ]);
-  const size = variant.optionValues[SIZE_OPTION]?.trim();
+  if (variants.some((v) => !v.sku.startsWith(SKU_PREFIX))) return null;
+
+  const active = variants
+    .filter((v) => v.status === 'active')
+    .sort((a, b) => a.position - b.position || a.createdAt - b.createdAt);
+  const stats =
+    active.length === 0
+      ? []
+      : (
+          await db.execute(sql`
+            SELECT v.id,
+                   ${boxCapacitySql(sql`v.id`)} AS can_buy,
+                   (SELECT count(*) FROM shop_box_fills f
+                     WHERE f.built_state = 'ready' AND f.box_variant_id = v.id)::int AS ready,
+                   ${owedBoxesSql(sql`v.id`)} AS owed,
+                   (SELECT COALESCE(sum(ol.qty), 0) FROM shop_order_lines ol
+                      JOIN shop_orders o ON o.id = ol.order_id
+                     WHERE ol.variant_id = v.id
+                       AND o.paid_at IS NOT NULL AND o.paid_at >= ${Date.now() - DAY}
+                       AND o.status IN ('paid', 'fulfilled', 'partially_refunded'))::int AS sold
+              FROM shop_variants v
+             WHERE v.id = ANY(${sql.param(active.map((v) => v.id))}::text[])`)
+        ).rows;
+  const byId = new Map(stats.map((r) => [String(r.id), r]));
+
   return {
     productId,
-    variantId: variant.id,
     slug: product.slug,
     status: product.status,
     name: product.title,
-    size: size ? size : null,
     description: product.description,
     overview: product.overview,
     overviewFallback: product.overviewFallback,
     coverImageId: product.coverImageId,
     imageIds: product.imageIds,
-    priceMinor: variant.price?.amount ?? null,
-    currency: variant.price?.currency ?? SHOP_CURRENCY,
-    itemCount: variant.boxItemCount,
-    canBuy: stats.rows[0]?.can_buy == null ? 0 : Number(stats.rows[0].can_buy),
-    ready: Number(stats.rows[0]?.ready ?? 0),
-    soldLast24Hours: sold,
+    currency: active[0]?.price?.currency ?? SHOP_CURRENCY,
+    sizes: active.map((v) => {
+      const r = byId.get(v.id);
+      const label = v.optionValues[SIZE_OPTION]?.trim();
+      return {
+        variantId: v.id,
+        size: label ? label : null,
+        itemCount: v.boxItemCount,
+        priceMinor: v.price?.amount ?? null,
+        weightGrams: v.weightGrams,
+        shippingWeightGrams: v.shippingWeightGrams,
+        imageId: v.imageId,
+        canBuy: r?.can_buy == null ? 0 : Number(r.can_buy),
+        ready: Number(r?.ready ?? 0),
+        owed: Number(r?.owed ?? 0),
+        soldLast24Hours: Number(r?.sold ?? 0),
+        everOrdered: v.everOrdered,
+      };
+    }),
   };
 }
 
@@ -155,14 +199,27 @@ export async function getMysteryBox(db: Db): Promise<MysteryBoxView> {
   };
 }
 
+/** One size as the screen saves it. The array's order is the order on the shop. */
+export interface SaveBoxSize {
+  /** Null for a size added on this save. */
+  variantId: string | null;
+  /** "5kg". Needed as soon as there is more than one size. */
+  size: string;
+  itemCount: number | null;
+  /** Minor units, or null for not set yet. */
+  priceMinor: number | null;
+  weightGrams: number | null;
+  /** Null means "use the weight". */
+  shippingWeightGrams: number | null;
+  imageId: string | null;
+}
+
 export interface SaveMysteryBoxInput {
   expectedRevision: number;
   enabled: boolean;
   mode: MysteryBoxSettings['mode'];
   shortfall: MysteryBoxSettings['shortfall'];
   name: string;
-  /** "Large", "Standard"; blank for no size. */
-  size: string;
   /** A TipTap document, or null to leave the stored one alone. */
   description: unknown | null;
   /** The owner's overview; blank lets the shop derive it from the description. */
@@ -171,18 +228,22 @@ export interface SaveMysteryBoxInput {
   page: BoxPage;
   coverImageId: string | null;
   imageIds: string[];
-  /** Minor units, or null for not set yet. */
-  priceMinor: number | null;
-  itemCount: number | null;
+  sizes: SaveBoxSize[];
   main: string[];
   backup: string[];
 }
 
+const newSku = (productId: string) =>
+  `${SKU_PREFIX}${productId.slice(-6).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
+
 /**
- * Save the whole screen. The settings row's revision is claimed FIRST, in one
- * guarded statement with the tick lists and the box flags, so two tabs can't
- * both save; the product's own name, pictures and price then go through the
- * catalogue's functions, which keep its revision history and price log.
+ * Save the whole screen.
+ *
+ * EVERYTHING THAT CAN REFUSE IS CHECKED BEFORE ANYTHING IS WRITTEN: the sizes'
+ * shapes and names, their photos, which sizes are locked, and the tick lists.
+ * Then the settings row's revision is claimed in one guarded statement with the
+ * tick lists and the box flags, so two tabs can't both save, and only then do
+ * the sizes, the product's words and the prices change.
  */
 export async function saveMysteryBox(
   db: Db,
@@ -197,21 +258,42 @@ export async function saveMysteryBox(
     throw new StaleWriteError(input.expectedRevision, before.revision, null);
   }
   const name = input.name.trim();
-  const size = input.size.trim();
 
-  if (input.priceMinor !== null && (!Number.isInteger(input.priceMinor) || input.priceMinor < 0)) {
-    throw new BadRequestError('priceMinor');
+  /* ── The sizes' own shapes ── */
+  const sizes = input.sizes.map((s) => ({ ...s, size: s.size.trim(), imageId: s.imageId || null }));
+  if (sizes.length < 1 || sizes.length > MAX_BOX_SIZES) throw new BadRequestError('sizes');
+  for (const s of sizes) {
+    if (s.priceMinor !== null && (!Number.isInteger(s.priceMinor) || s.priceMinor < 0)) {
+      throw new BadRequestError('priceMinor');
+    }
+    if (s.itemCount !== null && (!Number.isInteger(s.itemCount) || s.itemCount < 1)) {
+      throw new BadRequestError('itemCount');
+    }
+    for (const grams of [s.weightGrams, s.shippingWeightGrams]) {
+      if (grams !== null && (!Number.isInteger(grams) || grams < 0 || grams > MAX_GRAMS)) {
+        throw new BadRequestError('weightGrams');
+      }
+    }
   }
-  if (input.itemCount !== null && (!Number.isInteger(input.itemCount) || input.itemCount < 1)) {
-    throw new BadRequestError('itemCount');
+  /* Two sizes the shopper can't tell apart are one size; with one size a name is optional. */
+  const names = sizes.map((s) => fold(s.size));
+  if (sizes.length > 1 && (names.some((n) => n === '') || new Set(names).size !== names.length)) {
+    throw new BadRequestError('size_names');
   }
-  if (input.enabled && (!name || input.priceMinor === null || input.itemCount === null)) {
+  const keptIds = sizes.map((s) => s.variantId).filter((id): id is string => id !== null);
+  if (new Set(keptIds).size !== keptIds.length) throw new BadRequestError('sizes');
+  if (input.enabled && (!name || sizes.some((s) => s.priceMinor === null || s.itemCount === null))) {
     throw new BadRequestError('box_incomplete');
   }
+  const photoIds = [...new Set(sizes.map((s) => s.imageId).filter((id): id is string => id !== null))];
+  if (photoIds.length > 0) {
+    const known = await committedImageIds(db, photoIds);
+    if (photoIds.some((id) => !known.has(normalizeBlobId(id)))) throw new BadRequestError('imageId');
+  }
 
+  /* ── The tick lists ── */
   const mainIds = [...new Set(input.main)];
   let backupIds = [...new Set(input.backup)];
-
   /* Only ordinary, ACTIVE products can go inside — never a draft, and never the box. */
   const listed = [...new Set([...mainIds, ...backupIds])];
   if (listed.length > 0) {
@@ -231,36 +313,36 @@ export async function saveMysteryBox(
     backupIds = backupIds.filter((id) => !mainProducts.has(productOf.get(id)));
   }
 
-  /*
-   * THE BOX'S OWN PRODUCT. Created on the first save; re-created if the linked
-   * one is not the box's own (the earlier version of this screen could link an
-   * ordinary product, and that product is released back to being ordinary below).
-   */
-  let box = await readBox(db, before.productId);
+  /* ── The box's own product, and which sizes may change ── */
+  const box = await readBox(db, before.productId);
   if (before.productId && !box && (await hasOpenBoxes(db, before.productId))) {
     throw new BadRequestError('box_has_open_orders');
   }
-  if (!box) {
-    const product = await createProduct(db, actor, { title: name || 'Mystery box' });
-    await createVariant(
-      db,
-      product.id,
-      { sku: `MYSTERY-BOX-${product.id.slice(-6).toUpperCase()}`, onHand: 0, backorderable: true },
-      actor,
-    );
-    box = await readBox(db, product.id);
-    if (!box) throw new Error('mystery box product could not be created');
+  const existing = new Map((box?.sizes ?? []).map((s) => [s.variantId, s]));
+  for (const s of sizes) {
+    if (s.variantId === null) continue;
+    const was = existing.get(s.variantId);
+    if (!was) throw new BadRequestError('sizes');
+    /* A box is filled to the count its size says at the time, so the count can't
+       move under a paid box waiting to be packed, a checkout, or a packed box. */
+    if (was.itemCount !== s.itemCount && (was.owed > 0 || was.ready > 0)) {
+      throw new BadRequestError('size_count_locked');
+    }
   }
+  const removed = [...existing.values()].filter((s) => !keptIds.includes(s.variantId));
+  if (removed.some((s) => s.owed > 0 || s.ready > 0)) throw new BadRequestError('size_in_use');
+
+  const productId = box?.productId ?? (await createProduct(db, actor, { title: name || 'Mystery box' })).id;
 
   const items = [
-    ...[...new Set(input.main)].map((variant_id) => ({ variant_id, list: 'main' })),
+    ...mainIds.map((variant_id) => ({ variant_id, list: 'main' })),
     ...backupIds.map((variant_id) => ({ variant_id, list: 'backup' })),
   ];
 
   const res = await db.execute(sql`
     WITH s AS (
       UPDATE shop_mystery_box_settings
-         SET enabled = ${input.enabled}, product_id = ${box.productId}, mode = ${input.mode},
+         SET enabled = ${input.enabled}, product_id = ${productId}, mode = ${input.mode},
              shortfall = ${input.shortfall}, updated_by = ${actor.id}::uuid, updated_at = ${now},
              page = ${JSON.stringify(input.page)}::jsonb,
              /* SET sees the row as it was, so "enabled" here is the old switch:
@@ -275,21 +357,17 @@ export async function saveMysteryBox(
       RETURNING id
     ), off AS (
       UPDATE shop_products SET box_mode = NULL
-       WHERE box_mode IS NOT NULL AND id <> ${box.productId} AND EXISTS (SELECT 1 FROM s)
+       WHERE box_mode IS NOT NULL AND id <> ${productId} AND EXISTS (SELECT 1 FROM s)
       RETURNING 1
     ), onp AS (
       UPDATE shop_products SET box_mode = ${input.mode}, bulk_discount_enabled = false
-       WHERE id = ${box.productId} AND EXISTS (SELECT 1 FROM s)
-      RETURNING 1
-    ), cnt AS (
-      UPDATE shop_variants SET box_item_count = ${input.itemCount}::int,
-             option_values = ${JSON.stringify(size ? { [SIZE_OPTION]: size } : {})}::jsonb
-       WHERE id = ${box.variantId} AND EXISTS (SELECT 1 FROM s)
+       WHERE id = ${productId} AND EXISTS (SELECT 1 FROM s)
       RETURNING 1
     ), inv AS (
-      /* The box's own stock number is not a limit: what can be filled is. */
+      /* A size's own stock number is not a limit: what can be filled is. */
       UPDATE shop_inventory SET backorderable = true
-       WHERE variant_id = ${box.variantId} AND EXISTS (SELECT 1 FROM s)
+       WHERE variant_id IN (SELECT id FROM shop_variants WHERE product_id = ${productId})
+         AND EXISTS (SELECT 1 FROM s)
       RETURNING 1
     ), del AS (
       DELETE FROM shop_mystery_box_items mi
@@ -312,12 +390,111 @@ export async function saveMysteryBox(
     throw new StaleWriteError(input.expectedRevision, current.revision, null);
   }
 
+  /*
+   * ── Sizes that go ──
+   * Never bought: deleted. Bought before: RETIRED, so past orders keep pointing at
+   * it (they carry their own copy of the name anyway), and renamed "(removed)" so
+   * the name is free for a new size.
+   */
+  for (const gone of removed) {
+    let retire = gone.everOrdered;
+    if (!retire) {
+      try {
+        await deleteVariant(db, gone.variantId);
+      } catch (cause) {
+        /* Bought between the read and now: retire it instead. */
+        if (!(cause instanceof VariantPreconditionFailedError)) throw cause;
+        retire = true;
+      }
+    }
+    if (retire) {
+      await db.execute(sql`
+        UPDATE shop_variants
+           SET status = 'discontinued',
+               option_values = ${JSON.stringify({ [SIZE_OPTION]: `${gone.size ?? 'Size'} (removed)` })}::jsonb,
+               updated_at = ${now}
+         WHERE id = ${gone.variantId} AND product_id = ${productId}`);
+    }
+  }
+
+  /*
+   * ── Sizes that stay ──
+   * One statement for all of them, so renaming two sizes into each other's names
+   * never trips over itself half way. The item count is guarded again here: if a
+   * paid box arrived since the check above, the count it is owed stays.
+   */
+  const kept = sizes
+    .map((s, position) => ({ ...s, position }))
+    .filter((s) => s.variantId !== null)
+    .map((s) => ({
+      id: s.variantId,
+      position: s.position,
+      options: s.size ? { [SIZE_OPTION]: s.size } : {},
+      item_count: s.itemCount,
+      weight: s.weightGrams,
+      ship: s.shippingWeightGrams,
+      image: s.imageId,
+    }));
+  if (kept.length > 0) {
+    await db.execute(sql`
+      UPDATE shop_variants v
+         SET option_values = x.options,
+             position = x.position,
+             weight_grams = x.weight,
+             shipping_weight_grams = x.ship,
+             image_id = x.image,
+             box_item_count = CASE
+               WHEN ${owedBoxesSql(sql`v.id`)} > 0
+                 OR EXISTS (SELECT 1 FROM shop_box_fills rf
+                             WHERE rf.built_state = 'ready' AND rf.box_variant_id = v.id)
+               THEN v.box_item_count
+               ELSE x.item_count
+             END,
+             updated_at = ${now}
+        FROM jsonb_to_recordset(${JSON.stringify(kept)}::jsonb)
+             AS x(id text, position int, options jsonb, item_count int, weight int, ship int, image text)
+       WHERE v.id = x.id AND v.product_id = ${productId}`);
+  }
+  for (const s of sizes) {
+    if (s.variantId === null || s.priceMinor === null) continue;
+    if (s.priceMinor !== existing.get(s.variantId)?.priceMinor) {
+      await setPrice(db, s.variantId, money(s.priceMinor, SHOP_CURRENCY), 'Mystery box settings');
+    }
+  }
+
+  /* ── Sizes that are new ── */
+  for (const [position, s] of sizes.entries()) {
+    if (s.variantId !== null) continue;
+    const optionValues: Record<string, string> = s.size ? { [SIZE_OPTION]: s.size } : {};
+    const fields = {
+      optionValues,
+      position,
+      weightGrams: s.weightGrams,
+      shippingWeightGrams: s.shippingWeightGrams,
+      imageId: s.imageId,
+      onHand: 0,
+      backorderable: true,
+    };
+    const created = await createVariant(db, productId, { ...fields, sku: newSku(productId) }, actor).catch(
+      (cause: unknown) => {
+        /* Six random characters colliding is one retry, not an error for the owner. */
+        if (cause instanceof DuplicateSkuError) return createVariant(db, productId, { ...fields, sku: newSku(productId) }, actor);
+        throw cause;
+      },
+    );
+    await db.execute(sql`
+      UPDATE shop_variants SET box_item_count = ${s.itemCount}::int WHERE id = ${created.id}`);
+    if (s.priceMinor !== null) {
+      await setPrice(db, created.id, money(s.priceMinor, SHOP_CURRENCY), 'Mystery box settings');
+    }
+  }
+
   /* The product's own words and pictures, through the catalogue's save. */
-  const product = await getProduct(db, box.productId);
+  const product = await getProduct(db, productId);
   if (product) {
     await saveProduct(
       db,
-      box.productId,
+      productId,
       {
         title: name || product.title,
         coverImageId: input.coverImageId,
@@ -328,9 +505,6 @@ export async function saveMysteryBox(
       { actor, baseRevision: product.revision, note: 'Mystery box settings' },
     );
   }
-  if (input.priceMinor !== null && input.priceMinor !== box.priceMinor) {
-    await setPrice(db, box.variantId, money(input.priceMinor, SHOP_CURRENCY), 'Mystery box settings');
-  }
 
   /*
    * THE SWITCH SHOWS OR HIDES THE BOX (owner's decision): on publishes it, off
@@ -338,12 +512,12 @@ export async function saveMysteryBox(
    * because box_mode stays set. Best effort: a state the lifecycle refuses is
    * logged and the screen shows the product's real status.
    */
-  const status = (await getProduct(db, box.productId))?.status;
+  const status = (await getProduct(db, productId))?.status;
   try {
-    if (input.enabled && status === 'draft') await publishProduct(db, box.productId, actor);
-    if (!input.enabled && status === 'active') await unpublishProduct(db, box.productId, actor);
+    if (input.enabled && status === 'draft') await publishProduct(db, productId, actor);
+    if (!input.enabled && status === 'active') await unpublishProduct(db, productId, actor);
   } catch (cause) {
-    console.error('mystery box: could not change the product status', box.productId, cause);
+    console.error('mystery box: could not change the product status', productId, cause);
   }
 
   return getMysteryBox(db);

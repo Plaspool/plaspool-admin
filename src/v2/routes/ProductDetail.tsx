@@ -33,7 +33,7 @@ import { Badge, Banner, Button, ButtonLink, EmptyState } from '../ui/primitives'
 import { Card } from '../ui/Card';
 import { Defs } from '../ui/Defs';
 import { AffixField, Checkbox, MoneyField, SelectField, TextArea, TextField } from '../ui/Field';
-import { StoredImg, MediaManager, type MediaValue } from '../ui/Img';
+import { StoredImg, MediaManager, PhotoPicker, type MediaValue } from '../ui/Img';
 import { Menu, MenuItem, MenuSeparator } from '../ui/Menu';
 import { TableScroll } from '../ui/TableScroll';
 import { Modal } from '../ui/Modal';
@@ -1758,55 +1758,11 @@ function VariantModal({
           </div>
         </div>
 
-        {productImages.length > 0 ? (
-          <div className="stack stack--tight">
-            <span className="field__label">Variant photo</span>
-            <div className="row" style={{ flexWrap: 'wrap', gap: 'var(--s2)' }}>
-              <button
-                type="button"
-                className="imgg__tile"
-                style={{
-                  width: '3.5rem',
-                  aspectRatio: '1',
-                  cursor: 'pointer',
-                  boxShadow:
-                    imageId === null
-                      ? '0 0 0 2px var(--accent) inset'
-                      : '0 0 0 1px rgb(26 26 26 / 0.08) inset',
-                }}
-                aria-pressed={imageId === null}
-                aria-label="No photo"
-                onClick={() => setImageId(null)}
-              >
-                <span className="muted" style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', fontSize: 'var(--t-xs)' }}>
-                  None
-                </span>
-              </button>
-              {productImages.map((pid) => (
-                <button
-                  key={pid}
-                  type="button"
-                  className="imgg__tile"
-                  style={{
-                    width: '3.5rem',
-                    aspectRatio: '1',
-                    cursor: 'pointer',
-                    boxShadow:
-                      imageId === pid
-                        ? '0 0 0 2px var(--accent) inset'
-                        : '0 0 0 1px rgb(26 26 26 / 0.08) inset',
-                  }}
-                  aria-pressed={imageId === pid}
-                  aria-label="Use this product image"
-                  onClick={() => setImageId(pid)}
-                >
-                  <StoredImg id={pid} />
-                </button>
-              ))}
-            </div>
-            <span className="field__hint">Picked from the product’s own media.</span>
-          </div>
-        ) : null}
+        <div className="stack stack--tight">
+          <span className="field__label">Variant photo</span>
+          <PhotoPicker value={imageId} onChange={setImageId} choices={productImages} alt="Variant photo" />
+          <span className="field__hint">Pick one of the product’s pictures, or upload a photo of this variant.</span>
+        </div>
 
         {creating ? (
           <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>

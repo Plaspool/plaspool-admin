@@ -5,6 +5,7 @@ import {
   Clock,
   Flame,
   Gift,
+  ImagePlus,
   Lock,
   Minus,
   Package,
@@ -42,9 +43,9 @@ import { dateTime, money } from '../lib/format';
 import { PageHeader } from '../ui/Page';
 import { Card } from '../ui/Card';
 import { Badge, Banner, Button, EmptyState, Loading, type BadgeTone } from '../ui/primitives';
-import { Checkbox, MoneyField, Radio, Segmented, TextArea, TextField, Toggle } from '../ui/Field';
+import { AffixField, Checkbox, MoneyField, Radio, Segmented, TextArea, TextField, Toggle } from '../ui/Field';
 import { InfoTip } from '../ui/InfoTip';
-import { MediaManager, StoredImg, type MediaValue } from '../ui/Img';
+import { MediaManager, PhotoPicker, StoredImg, type MediaValue } from '../ui/Img';
 import { Modal } from '../ui/Modal';
 import { RichText } from '../ui/RichText';
 import { SaveBar } from '../ui/SaveBar';
@@ -54,8 +55,9 @@ import { BoxFillModal } from './BoxFillModal';
 /**
  * SETTINGS → MYSTERY BOX (migrations 1240 and 1260; owner's decisions 2026-09-15).
  *
- * ONE mystery box, and it is its own thing: a name, a size, a description, an
- * overview, pictures, a price and how many items go in each box, all set here.
+ * ONE mystery box, and it is its own thing: a name, a description, an overview,
+ * pictures and its SIZES ("5kg", "10kg"), each with its own price, items per box,
+ * weight, shipping weight and photo, all set here.
  * Until pictures and a description are added, the shop shows the pool's product
  * photos and a line naming them. What can go inside is chosen product by
  * product, variant by variant; only products on sale can be added, never drafts.
@@ -69,18 +71,61 @@ type List = 'main' | 'backup';
 const STORE_CURRENCY = 'NGN';
 const HOUR = 60 * 60 * 1000;
 
+/** One size as the form holds it: everything as typed. */
+interface SizeDraft {
+  /** Stable while editing: the variant id, or a local one for a new size. */
+  key: string;
+  variantId: string | null;
+  size: string;
+  itemCount: string;
+  price: string;
+  /** Kilograms, as typed. */
+  weight: string;
+  shippingWeight: string;
+  imageId: string | null;
+}
+
+let localKey = 0;
+const blankSize = (itemCount = '3'): SizeDraft => ({
+  key: `new-${(localKey += 1)}`,
+  variantId: null,
+  size: '',
+  itemCount,
+  price: '',
+  weight: '',
+  shippingWeight: '',
+  imageId: null,
+});
+
+/** 5000 → "5", 6250 → "6.25": grams as kilograms, worked on digits, never a float. */
+function gramsToKg(grams: number | null): string {
+  if (grams === null) return '';
+  const rest = String(grams % 1000).padStart(3, '0').replace(/0+$/, '');
+  return rest ? `${Math.floor(grams / 1000)}.${rest}` : String(Math.floor(grams / 1000));
+}
+
+/** "6.25" → 6250. Null for a blank box; undefined for text that isn't a weight. */
+function kgToGrams(text: string): number | null | undefined {
+  const t = text.trim().replace(/,/g, '');
+  if (t === '') return null;
+  const m = /^(\d*)(?:\.(\d{0,3}))?$/.exec(t);
+  if (!m || (m[1] === '' && !m[2])) return undefined;
+  const grams = Number(m[1] || '0') * 1000 + Number((m[2] ?? '').padEnd(3, '0'));
+  return grams <= 10_000_000 ? grams : undefined;
+}
+
+const MAX_SIZES = 10;
+
 interface Draft {
   enabled: boolean;
   mode: ShopBoxMode;
   shortfall: ShopBoxShortfall;
   name: string;
-  size: string;
   /** null = the editor hasn't produced a document, so the stored one is left alone. */
   description: unknown | null;
   overview: string;
   media: MediaValue;
-  price: string;
-  itemCount: string;
+  sizes: SizeDraft[];
   page: BoxPage;
   ticked: Record<List, string[]>;
   /** Products shown on each list, in order — kept while editing even with nothing ticked. */
@@ -101,12 +146,22 @@ function draftOf(view: ShopMysteryBox): Draft {
     mode: view.settings.mode,
     shortfall: view.settings.shortfall,
     name: box?.name ?? 'Mystery box',
-    size: box?.size ?? '',
     description: null,
     overview: box?.overview ?? '',
     media: { coverImageId: box?.coverImageId ?? null, imageIds: box?.imageIds ?? [] },
-    price: box?.priceMinor != null ? plainMajor(box.priceMinor, box.currency) : '',
-    itemCount: box?.itemCount != null ? String(box.itemCount) : '3',
+    sizes:
+      box && box.sizes.length > 0
+        ? box.sizes.map((z) => ({
+            key: z.variantId,
+            variantId: z.variantId,
+            size: z.size ?? '',
+            itemCount: z.itemCount != null ? String(z.itemCount) : '',
+            price: z.priceMinor != null ? plainMajor(z.priceMinor, box.currency) : '',
+            weight: gramsToKg(z.weightGrams),
+            shippingWeight: gramsToKg(z.shippingWeightGrams),
+            imageId: z.imageId,
+          }))
+        : [blankSize()],
     page: view.settings.page ?? BOX_PAGE_DEFAULTS,
     ticked,
     groups,
@@ -118,8 +173,14 @@ const sameDraft = (a: Draft, b: Draft): boolean => {
     JSON.stringify({
       ...d,
       groups: undefined,
-      /* The price box shows "200,000.00"; what matters is the amount. */
-      price: d.price.replace(/[\s,]/g, ''),
+      /* A local key is not a change, and the boxes show "200,000.00" and "6.250";
+         what matters is the amount. */
+      sizes: d.sizes.map(({ key: _key, ...z }) => ({
+        ...z,
+        price: z.price.replace(/[\s,]/g, ''),
+        weight: String(kgToGrams(z.weight) ?? z.weight),
+        shippingWeight: String(kgToGrams(z.shippingWeight) ?? z.shippingWeight),
+      })),
       ticked: { main: [...d.ticked.main].sort(), backup: [...d.ticked.backup].sort() },
     });
   return norm(a) === norm(b);
@@ -158,7 +219,10 @@ export default function SettingsMysteryBox() {
   const [problem, setProblem] = useState<string | null>(null);
   const [beaten, setBeaten] = useState(false);
   const [picking, setPicking] = useState<List | null>(null);
-  const [building, setBuilding] = useState(false);
+  const [building, setBuilding] = useState<string | null>(null);
+  const [photoFor, setPhotoFor] = useState<string | null>(null);
+  /* Field errors wait for a first save, so adding a size isn't a wall of red. */
+  const [tried, setTried] = useState(false);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -262,8 +326,6 @@ export default function SettingsMysteryBox() {
   };
   const dirty = !sameDraft(draft, draftOf(view)) || draft.description !== null;
   const box = view.box;
-  const count = Number(draft.itemCount);
-  const countOk = Number.isInteger(count) && count >= 1;
   /* A PRODUCT SITS ON ONE LIST (owner's decision 2026-09-15): the backup is a
      different product, never more of the same one. The server holds the same
      rule, and ignores a backup product that is also on the main list. */
@@ -298,11 +360,84 @@ export default function SettingsMysteryBox() {
   const unitsOn = (list: List) => tickedOn(list).reduce((n, id) => n + stockOf(id), 0);
   const mainUnits = unitsOn('main');
   const backupUnits = draft.shortfall === 'backup' ? unitsOn('backup') : 0;
-  const estimate =
-    draft.mode === 'built' ? (box?.ready ?? 0) : countOk ? Math.floor((mainUnits + backupUnits) / count) : 0;
-  const canBuy = dirty || !box ? estimate : box.canBuy;
   const noOwnPictures = draft.media.coverImageId === null && draft.media.imageIds.length === 0;
-  const parsedPrice = draft.price.trim() === '' ? null : parseMajor(draft.price, STORE_CURRENCY);
+
+  /* What one item on the main list weighs, on average: the basis for each size's
+     suggested weight and shipping weight. Every filament today is a 1kg spool. */
+  const poolWeights = (() => {
+    const shown: number[] = [];
+    const ship: number[] = [];
+    for (const id of draft.ticked.main) {
+      const v = Object.values(details)
+        .flatMap((d) => d.variants)
+        .find((x) => x.id === id);
+      if (!v) continue;
+      if (v.weightGrams != null) shown.push(v.weightGrams);
+      const shipping = v.shippingWeightGrams ?? v.weightGrams;
+      if (shipping != null) ship.push(shipping);
+    }
+    const avg = (xs: number[]) => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
+    return { shown: avg(shown), ship: avg(ship) };
+  })();
+
+  const sizeFacts = (z: SizeDraft) => {
+    const saved = z.variantId ? box?.sizes.find((x) => x.variantId === z.variantId) : undefined;
+    const count = Number(z.itemCount);
+    const countOk = z.itemCount.trim() !== '' && Number.isInteger(count) && count >= 1;
+    const estimate =
+      draft.mode === 'built' ? (saved?.ready ?? 0) : countOk ? Math.floor((mainUnits + backupUnits) / count) : 0;
+    return {
+      saved,
+      count,
+      countOk,
+      canBuy: dirty || !saved ? estimate : saved.canBuy,
+      /* A box is filled to the count its size says, so the count stays put while
+         boxes of it are paid for and waiting, in a checkout, or packed ahead. */
+      locked: saved ? saved.owed > 0 || saved.ready > 0 : false,
+      price: z.price.trim() === '' ? null : parseMajor(z.price, STORE_CURRENCY),
+      weight: kgToGrams(z.weight),
+      ship: kgToGrams(z.shippingWeight),
+    };
+  };
+  const sizeName = (z: SizeDraft, i: number) => z.size.trim() || (draft.sizes.length > 1 ? `Size ${i + 1}` : 'The box');
+  const folded = draft.sizes.map((z) => z.size.trim().toLowerCase());
+  const nameProblem = (i: number): string | null => {
+    if (draft.sizes.length < 2) return null;
+    if (folded[i] === '') return tried ? 'Give each size a name, like 5kg.' : null;
+    return folded.indexOf(folded[i]) !== i ? 'Another size already has this name.' : null;
+  };
+  const removedSizes = (box?.sizes ?? []).filter((x) => !draft.sizes.some((z) => z.variantId === x.variantId));
+
+  function editSize(key: string, patch: Partial<SizeDraft>) {
+    setProblem(null);
+    setDraft((d) => (d ? { ...d, sizes: d.sizes.map((z) => (z.key === key ? { ...z, ...patch } : z)) } : d));
+  }
+  function moveSize(key: string, by: -1 | 1) {
+    const i = draft!.sizes.findIndex((z) => z.key === key);
+    const j = i + by;
+    if (i < 0 || j < 0 || j >= draft!.sizes.length) return;
+    const next = [...draft!.sizes];
+    [next[i], next[j]] = [next[j], next[i]];
+    edit({ sizes: next });
+  }
+  function addSize() {
+    const last = draft!.sizes[draft!.sizes.length - 1];
+    const lastCount = last ? Number(last.itemCount) : NaN;
+    /* 5kg then 10kg: the next size starts at double the last one. */
+    const count = Number.isInteger(lastCount) && lastCount >= 1 ? String(Math.min(lastCount * 2, 1000)) : '3';
+    edit({ sizes: [...draft!.sizes, blankSize(count)] });
+  }
+  /* Puts a removed size back where it was, counted among the sizes still there. */
+  function undoRemove(variantId: string) {
+    const original = draftOf(view!).sizes;
+    const at = original.findIndex((z) => z.variantId === variantId);
+    if (at < 0) return;
+    const before = new Set(original.slice(0, at).map((z) => z.variantId));
+    const index = draft!.sizes.filter((z) => z.variantId !== null && before.has(z.variantId)).length;
+    const next = [...draft!.sizes];
+    next.splice(index, 0, original[at]);
+    edit({ sizes: next });
+  }
 
   function setTicked(list: List, ids: string[], on: boolean) {
     const current = new Set(draft!.ticked[list]);
@@ -379,20 +514,39 @@ export default function SettingsMysteryBox() {
 
   async function save() {
     if (!view || !draft) return;
-    let priceMinor: number | null = null;
-    if (parsedPrice !== null) {
-      if (!parsedPrice.ok) {
-        setProblem(`Price: ${moneyRefusalMessage(parsedPrice.reason, STORE_CURRENCY)}`);
+    setTried(true);
+    const sizes = [];
+    for (const [i, z] of draft.sizes.entries()) {
+      const f = sizeFacts(z);
+      const label = sizeName(z, i);
+      if (f.price !== null && !f.price.ok) {
+        setProblem(`${label}: ${moneyRefusalMessage(f.price.reason, STORE_CURRENCY)}`);
         return;
       }
-      priceMinor = parsedPrice.minor;
+      if (z.itemCount.trim() !== '' && !f.countOk) {
+        setProblem(`${label}: items per box is a whole number, 1 or more.`);
+        return;
+      }
+      if (f.weight === undefined || f.ship === undefined) {
+        setProblem(`${label}: enter weights in kilograms, like 5 or 6.25.`);
+        return;
+      }
+      sizes.push({
+        variantId: z.variantId,
+        size: z.size.trim(),
+        itemCount: f.countOk ? f.count : null,
+        priceMinor: f.price?.ok ? f.price.minor : null,
+        weightGrams: f.weight,
+        shippingWeightGrams: f.ship,
+        imageId: z.imageId,
+      });
     }
-    if (draft.itemCount.trim() !== '' && !countOk) {
-      setProblem('Items per box is a whole number, 1 or more.');
+    if (draft.sizes.some((_, i) => nameProblem(i) !== null) || (draft.sizes.length > 1 && folded.some((n) => n === ''))) {
+      setProblem('Give every size its own name, like 5kg and 10kg.');
       return;
     }
-    if (draft.enabled && (!draft.name.trim() || priceMinor === null || !countOk)) {
-      setProblem('Give the box a name, a price and a number of items before putting it on sale.');
+    if (draft.enabled && (!draft.name.trim() || sizes.some((z) => z.priceMinor === null || z.itemCount === null))) {
+      setProblem('Give the box a name, and every size a price and a number of items, before putting it on sale.');
       return;
     }
     setSaving(true);
@@ -403,7 +557,6 @@ export default function SettingsMysteryBox() {
         mode: draft.mode,
         shortfall: draft.shortfall,
         name: draft.name,
-        size: draft.size.trim(),
         description: draft.description,
         overview: draft.overview.trim(),
         page: {
@@ -415,19 +568,28 @@ export default function SettingsMysteryBox() {
         },
         coverImageId: draft.media.coverImageId,
         imageIds: draft.media.imageIds,
-        priceMinor,
-        itemCount: countOk ? count : null,
+        sizes,
         main: draft.ticked.main,
         backup: tickedOn('backup'),
       });
       setView(next);
       setDraft(draftOf(next));
       setEditorKey((k) => k + 1);
+      setTried(false);
       toast.show('Mystery box saved');
     } catch (cause) {
+      const said: Record<string, string> = {
+        items: 'One of the ticked products is no longer on sale. Reload the page to see the current list.',
+        size_names: 'Give every size its own name, like 5kg and 10kg.',
+        size_count_locked:
+          'Boxes of that size were just paid for or packed, so its items per box can’t change now. Reload to see them.',
+        size_in_use: 'A size you removed has boxes paid for or packed, so it can’t be removed yet. Reload to see them.',
+        imageId: 'A size’s photo didn’t finish uploading. Pick it again.',
+        box_incomplete: 'Give the box a name, and every size a price and a number of items, before putting it on sale.',
+      };
       if (cause instanceof ApiError && cause.status === 409) setBeaten(true);
-      else if (cause instanceof ApiError && cause.detail === 'items') {
-        setProblem('One of the ticked products is no longer on sale. Reload the page to see the current list.');
+      else if (cause instanceof ApiError && cause.detail && said[cause.detail]) {
+        setProblem(said[cause.detail]);
       } else {
         setProblem(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
       }
@@ -575,17 +737,7 @@ export default function SettingsMysteryBox() {
       <div className="form2">
         <div className="form2__main">
           <Card title="Details">
-            <div className="mbx-name">
-              <TextField label="Name" value={draft.name} maxLength={200} onChange={(e) => edit({ name: e.target.value })} />
-              <TextField
-                label="Size"
-                value={draft.size}
-                maxLength={40}
-                placeholder="e.g. Large"
-                hint="Shown on the shop and on orders. Leave blank for no size."
-                onChange={(e) => edit({ size: e.target.value })}
-              />
-            </div>
+            <TextField label="Name" value={draft.name} maxLength={200} onChange={(e) => edit({ name: e.target.value })} />
             <div className="field">
               <span className="field__label">Description</span>
               <RichText
@@ -625,65 +777,194 @@ export default function SettingsMysteryBox() {
             </div>
           </Card>
 
-          <Card title="Price and contents">
-            <div className="mbx-pricing">
-              <MoneyField
-                label="Price"
-                currency={STORE_CURRENCY}
-                value={draft.price}
-                placeholder="0.00"
-                error={parsedPrice !== null && !parsedPrice.ok ? moneyRefusalMessage(parsedPrice.reason, STORE_CURRENCY) : null}
-                onChange={(e) => edit({ price: e.target.value })}
-              />
-              <div className="field">
-                <span className="field__label mbx-label">
-                  Items per box
-                  <InfoTip label="What items per box means">
-                    How many products go into each box a customer buys. With 3, every box holds 3 items picked from
-                    the products you tick below. The same product can go in twice if it has to.
-                  </InfoTip>
-                </span>
-                <div className="mbx-stepper">
-                  <Button
-                    iconOnly
-                    aria-label="One fewer item"
-                    disabled={!countOk || count <= 1}
-                    onClick={() => edit({ itemCount: String(Math.max(1, count - 1)) })}
+          <Card
+            title="Sizes"
+            action={
+              <Button tone="plain" disabled={draft.sizes.length >= MAX_SIZES} onClick={addSize}>
+                <Plus aria-hidden="true" />
+                Add a size
+              </Button>
+            }
+          >
+            <p className="field__hint">
+              Each size has its own price and number of items, like a 5kg box with 5 spools and a 10kg box with 10.
+              Shoppers pick a size on the box’s page.
+            </p>
+            {draft.sizes.map((z, i) => {
+              const f = sizeFacts(z);
+              const label = sizeName(z, i);
+              const suggestShown =
+                f.countOk && poolWeights.shown !== null ? gramsToKg(f.count * poolWeights.shown) : undefined;
+              const suggestShip =
+                f.countOk && poolWeights.ship !== null ? gramsToKg(f.count * poolWeights.ship) : undefined;
+              return (
+                <section key={z.key} className="mbx-size" aria-label={label}>
+                  <button
+                    type="button"
+                    className="mbx-size__photo"
+                    aria-label={z.imageId ? `Change the photo for ${label}` : `Add a photo for ${label}`}
+                    onClick={() => setPhotoFor(z.key)}
                   >
-                    <Minus aria-hidden="true" />
-                  </Button>
-                  <input
-                    className="input"
-                    inputMode="numeric"
-                    aria-label="Items per box"
-                    value={draft.itemCount}
-                    onChange={(e) => edit({ itemCount: e.target.value })}
-                  />
-                  <Button iconOnly aria-label="One more item" onClick={() => edit({ itemCount: String(countOk ? count + 1 : 1) })}>
-                    <Plus aria-hidden="true" />
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            <div className="mbx-stat">
-              <span className="mbx-stat__number num">{canBuy}</span>
-              <span className="mbx-stat__text">
-                <span className="mbx-label">
-                  {canBuy === 1 ? 'box can be bought right now' : 'boxes can be bought right now'}
-                  <InfoTip label="How this is worked out">
-                    {draft.mode === 'built'
-                      ? 'You pack boxes ahead, so this is how many packed boxes are ready and not already sold.'
-                      : `The items in stock on your list${draft.shortfall === 'backup' ? ' and the backup list' : ''}, divided by ${countOk ? count : 'the items per box'}, less boxes already sold and waiting to be filled. When it reaches 0 the box shows as sold out.`}
-                  </InfoTip>
-                </span>
-                <span className="muted">
-                  {draft.mode === 'built'
-                    ? `${box?.ready ?? 0} packed and ready`
-                    : `${mainUnits} in stock on the list${draft.shortfall === 'backup' ? ` + ${backupUnits} backup` : ''} ÷ ${countOk ? count : '—'} per box${dirty ? ' · save to update' : ''}`}
-                </span>
-              </span>
-            </div>
+                    {z.imageId ? (
+                      <StoredImg id={z.imageId} alt="" />
+                    ) : (
+                      <>
+                        <ImagePlus aria-hidden="true" />
+                        <span>Photo</span>
+                      </>
+                    )}
+                  </button>
+                  <div className="mbx-size__fields">
+                    <TextField
+                      label="Size name"
+                      value={z.size}
+                      maxLength={40}
+                      placeholder={draft.sizes.length > 1 ? 'e.g. 5kg' : 'e.g. 5kg (optional)'}
+                      error={nameProblem(i)}
+                      onChange={(e) => editSize(z.key, { size: e.target.value })}
+                    />
+                    <MoneyField
+                      label="Price"
+                      currency={STORE_CURRENCY}
+                      value={z.price}
+                      placeholder="0.00"
+                      error={
+                        f.price !== null && !f.price.ok
+                          ? moneyRefusalMessage(f.price.reason, STORE_CURRENCY)
+                          : tried && draft.enabled && f.price === null
+                            ? 'Needed to put the box on sale.'
+                            : null
+                      }
+                      onChange={(e) => editSize(z.key, { price: e.target.value })}
+                    />
+                    <div className="field">
+                      <span className="field__label mbx-label">
+                        Items per box
+                        <InfoTip label="What items per box means">
+                          How many products go into each box of this size. With 5, every box holds 5 items picked
+                          from the products you tick below. The same product can go in twice if it has to.
+                        </InfoTip>
+                      </span>
+                      <div className="mbx-stepper">
+                        <Button
+                          iconOnly
+                          aria-label={`One fewer item in ${label}`}
+                          disabled={f.locked || !f.countOk || f.count <= 1}
+                          onClick={() => editSize(z.key, { itemCount: String(Math.max(1, f.count - 1)) })}
+                        >
+                          <Minus aria-hidden="true" />
+                        </Button>
+                        <input
+                          className="input"
+                          inputMode="numeric"
+                          aria-label={`Items per box in ${label}`}
+                          value={z.itemCount}
+                          disabled={f.locked}
+                          onChange={(e) => editSize(z.key, { itemCount: e.target.value })}
+                        />
+                        <Button
+                          iconOnly
+                          aria-label={`One more item in ${label}`}
+                          disabled={f.locked}
+                          onClick={() => editSize(z.key, { itemCount: String(f.countOk ? f.count + 1 : 1) })}
+                        >
+                          <Plus aria-hidden="true" />
+                        </Button>
+                      </div>
+                      {f.locked ? (
+                        <span className="field__hint">
+                          Fixed while {f.saved!.owed > 0 ? `${f.saved!.owed} paid ${f.saved!.owed === 1 ? 'box waits' : 'boxes wait'} to be packed` : `${f.saved!.ready} packed ${f.saved!.ready === 1 ? 'box is' : 'boxes are'} ready`}.
+                        </span>
+                      ) : null}
+                    </div>
+                    <AffixField
+                      label="Weight"
+                      suffix="kg"
+                      inputMode="decimal"
+                      value={z.weight}
+                      hint="Shown on the shop."
+                      error={f.weight === undefined ? 'Enter kilograms, like 5 or 6.25.' : null}
+                      suggestion={suggestShown}
+                      onSuggest={(v) => editSize(z.key, { weight: v })}
+                      onChange={(e) => editSize(z.key, { weight: e.target.value })}
+                    />
+                    <AffixField
+                      label="Shipping weight"
+                      suffix="kg"
+                      inputMode="decimal"
+                      value={z.shippingWeight}
+                      hint={
+                        suggestShip
+                          ? `Prices delivery. About ${suggestShip} kg for ${f.count} ${f.count === 1 ? 'item' : 'items'} at ${gramsToKg(poolWeights.ship)} kg each. Blank uses the weight.`
+                          : 'Prices delivery. Blank uses the weight.'
+                      }
+                      error={f.ship === undefined ? 'Enter kilograms, like 5 or 6.25.' : null}
+                      suggestion={suggestShip}
+                      onSuggest={(v) => editSize(z.key, { shippingWeight: v })}
+                      onChange={(e) => editSize(z.key, { shippingWeight: e.target.value })}
+                    />
+                  </div>
+                  <footer className="mbx-size__foot">
+                    <span className="mbx-size__stat">
+                      <strong className="num">{f.canBuy}</strong>{' '}
+                      {f.canBuy === 1 ? 'box can be bought now' : 'boxes can be bought now'}
+                      {f.saved && f.saved.soldLast24Hours > 0 ? ` · ${f.saved.soldLast24Hours} sold today` : ''}
+                      {dirty ? ' · save to update' : ''}
+                    </span>
+                    <span className="mbx-size__acts">
+                      <Button tone="plain" iconOnly aria-label={`Move ${label} up`} disabled={i === 0} onClick={() => moveSize(z.key, -1)}>
+                        <ArrowUp aria-hidden="true" />
+                      </Button>
+                      <Button
+                        tone="plain"
+                        iconOnly
+                        aria-label={`Move ${label} down`}
+                        disabled={i === draft.sizes.length - 1}
+                        onClick={() => moveSize(z.key, 1)}
+                      >
+                        <ArrowDown aria-hidden="true" />
+                      </Button>
+                      <Button
+                        tone="plain"
+                        disabled={draft.sizes.length === 1 || f.locked}
+                        title={
+                          draft.sizes.length === 1
+                            ? 'The box needs at least one size'
+                            : f.locked
+                              ? 'Boxes of this size are paid for or packed'
+                              : undefined
+                        }
+                        onClick={() => edit({ sizes: draft.sizes.filter((x) => x.key !== z.key) })}
+                      >
+                        <X aria-hidden="true" />
+                        Remove
+                      </Button>
+                    </span>
+                  </footer>
+                </section>
+              );
+            })}
+            {removedSizes.map((x) => (
+              <Banner
+                key={x.variantId}
+                tone="warn"
+                title={`${x.size ?? 'A size'} will be removed when you save`}
+                action={<Button onClick={() => undoRemove(x.variantId)}>Undo</Button>}
+              >
+                {x.everOrdered
+                  ? 'Customers have bought it before, so it’s taken off the shop and kept on their orders.'
+                  : 'Nobody has bought it yet, so it’s deleted.'}
+              </Banner>
+            ))}
+            <p className="field__hint mbx-label">
+              Every size shares the same stock: {mainUnits} {mainUnits === 1 ? 'item' : 'items'} on the list
+              {draft.shortfall === 'backup' ? ` + ${backupUnits} backup` : ''}.
+              <InfoTip label="How sizes share stock">
+                Each size can be bought while there are enough items for one more box. Selling a 10-item box uses 10
+                items, so the smaller sizes go down too. Boxes already sold and waiting to be packed are counted
+                first.
+              </InfoTip>
+            </p>
           </Card>
 
           <Card title="What can go inside">
@@ -722,10 +1003,16 @@ export default function SettingsMysteryBox() {
             page={draft.page}
             onChange={editPage}
             name={draft.name}
-            size={draft.size}
-            priceMinor={parsedPrice?.ok ? parsedPrice.minor : null}
-            canBuy={canBuy}
-            soldLast24Hours={box?.soldLast24Hours ?? 0}
+            sizes={draft.sizes.map((z, i) => {
+              const f = sizeFacts(z);
+              return {
+                key: z.key,
+                label: draft.sizes.length > 1 || z.size.trim() ? sizeName(z, i) : '',
+                priceMinor: f.price?.ok ? f.price.minor : null,
+                canBuy: f.canBuy,
+                soldLast24Hours: f.saved?.soldLast24Hours ?? 0,
+              };
+            })}
             onSaleSince={view.settings.enabled ? view.settings.onSaleSince : null}
           />
 
@@ -733,19 +1020,23 @@ export default function SettingsMysteryBox() {
 
           {draft.mode === 'built' && box ? (
             <Card title="Boxes packed ahead">
-              <div className="row" style={{ justifyContent: 'space-between' }}>
-                <span>
-                  <Badge tone={box.ready === 0 ? 'critical' : 'ok'}>{box.ready} ready</Badge>
-                </span>
-                <Button disabled={dirty || !box.itemCount} onClick={() => setBuilding(true)}>
-                  <Gift aria-hidden="true" />
-                  Pack a box
-                </Button>
-              </div>
+              {box.sizes.map((z) => (
+                <div key={z.variantId} className="row" style={{ justifyContent: 'space-between', gap: 'var(--s3)' }}>
+                  <span className="row" style={{ gap: 'var(--s2)' }}>
+                    <strong>{z.size ?? box.name}</strong>
+                    <Badge tone={z.ready === 0 ? 'critical' : 'ok'}>{z.ready} ready</Badge>
+                  </span>
+                  <Button disabled={dirty || !z.itemCount} onClick={() => setBuilding(z.variantId)}>
+                    <Gift aria-hidden="true" />
+                    Pack a {z.size ?? 'box'}
+                  </Button>
+                </div>
+              ))}
               {dirty ? <p className="field__hint">Save your changes before packing boxes.</p> : null}
               {view.built.map((b) => (
                 <div key={b.id} className="row" style={{ justifyContent: 'space-between', gap: 'var(--s3)' }}>
                   <span className="muted" style={{ fontSize: 'var(--t-md)' }}>
+                    {box.sizes.length > 1 ? `${box.sizes.find((z) => z.variantId === b.sizeVariantId)?.size ?? 'Box'}: ` : ''}
                     {b.items.map((i) => i.title).join(', ')}{' '}
                     <span style={{ fontSize: 'var(--t-sm)' }}>· packed {dateTime(b.filledAt)}</span>
                   </span>
@@ -841,17 +1132,53 @@ export default function SettingsMysteryBox() {
         />
       ) : null}
 
-      {building && box?.itemCount ? (
-        <BoxFillModal
-          target={{ kind: 'build', sizeVariantId: box.variantId, sizeLabel: box.name }}
-          itemCount={box.itemCount}
-          onClose={() => setBuilding(false)}
-          onDone={() => {
-            setBuilding(false);
-            void load();
-          }}
-        />
-      ) : null}
+      {(() => {
+        const size = building ? box?.sizes.find((z) => z.variantId === building) : undefined;
+        return size?.itemCount ? (
+          <BoxFillModal
+            target={{
+              kind: 'build',
+              sizeVariantId: size.variantId,
+              sizeLabel: size.size ? `${box!.name} · ${size.size}` : box!.name,
+            }}
+            itemCount={size.itemCount}
+            onClose={() => setBuilding(null)}
+            onDone={() => {
+              setBuilding(null);
+              void load();
+            }}
+          />
+        ) : null;
+      })()}
+
+      {(() => {
+        const size = photoFor ? draft.sizes.find((z) => z.key === photoFor) : undefined;
+        if (!size) return null;
+        const label = sizeName(size, draft.sizes.indexOf(size));
+        return (
+          <Modal
+            title={`Photo for ${label}`}
+            onClose={() => setPhotoFor(null)}
+            footer={
+              <Button tone="primary" onClick={() => setPhotoFor(null)}>
+                Done
+              </Button>
+            }
+          >
+            <div className="stack">
+              <PhotoPicker
+                value={size.imageId}
+                onChange={(imageId) => editSize(size.key, { imageId })}
+                choices={[...(draft.media.coverImageId ? [draft.media.coverImageId] : []), ...draft.media.imageIds]}
+                alt={label}
+              />
+              <p className="field__hint">
+                Shown when a shopper picks this size. Pick one of the box’s pictures, or upload one.
+              </p>
+            </div>
+          </Modal>
+        );
+      })()}
     </div>
   );
 }
@@ -872,26 +1199,36 @@ const CUE_TONE: Record<BoxCueKind, BadgeTone> = {
  * of the box as a shopper sees it. "Right now" uses the real numbers; the other
  * two stage a moment so every line can be read before it is live.
  */
+interface PreviewSize {
+  key: string;
+  /** Empty for a box with one unnamed size. */
+  label: string;
+  priceMinor: number | null;
+  canBuy: number;
+  soldLast24Hours: number;
+}
+
 function CuesCard({
   page,
   onChange,
   name,
-  size,
-  priceMinor,
-  canBuy,
-  soldLast24Hours,
+  sizes,
   onSaleSince,
 }: {
   page: BoxPage;
   onChange: (patch: (page: BoxPage) => BoxPage) => void;
   name: string;
-  size: string;
-  priceMinor: number | null;
-  canBuy: number;
-  soldLast24Hours: number;
+  sizes: PreviewSize[];
   onSaleSince: number | null;
 }) {
   const [scenario, setScenario] = useState<Scenario>('now');
+  const [sizeKey, setSizeKey] = useState<string | null>(null);
+  /* The cues are worked out per size, from that size's own numbers. */
+  const picked = sizes.find((z) => z.key === sizeKey) ?? sizes[0];
+  const size = picked?.label ?? '';
+  const priceMinor = picked?.priceMinor ?? null;
+  const canBuy = picked?.canBuy ?? 0;
+  const soldLast24Hours = picked?.soldLast24Hours ?? 0;
   const now = Date.now();
   const { cues } = page;
   const cue = <K extends keyof BoxPage['cues']>(key: K, patch: Partial<BoxPage['cues'][K]>) =>
@@ -939,6 +1276,15 @@ function CuesCard({
             ]}
             onChange={setScenario}
           />
+          {sizes.length > 1 ? (
+            <Segmented<string>
+              label="Size"
+              value={picked?.key ?? ''}
+              options={sizes.map((z) => ({ value: z.key, label: z.label }))}
+              onChange={setSizeKey}
+              collapse
+            />
+          ) : null}
         </div>
         <div className="mbx-preview__shop">
           <span className="mbx-preview__tag">
