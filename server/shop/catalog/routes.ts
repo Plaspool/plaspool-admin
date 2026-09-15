@@ -5,7 +5,9 @@ import { requireAuth } from '../../middleware/session';
 import { currentDb, currentUser } from '../../app-env';
 import type { AppEnv } from '../../app-env';
 import { BadRequestError, NotFoundError } from '../../repo/errors';
-import { hasOpenBoxes } from '../boxes/capacity';
+import { boxCapacitySql, hasOpenBoxes, poolPreview } from '../boxes/capacity';
+import { canonicalTags } from './fold';
+import { sql } from 'drizzle-orm';
 import { money } from '../../../shared/commerce/money';
 import type { DocNode } from '../../../shared/types';
 import {
@@ -448,13 +450,19 @@ routes.get('/variants/:id/availability', async (c) => {
   const variant = await getVariant(db, id);
   if (!variant) throw new NotFoundError(id);
   const level = await getInventory(db, id);
+  /* Migration 1220. How many more boxes the pool can fill; null for an ordinary
+     variant. A box is only as available as the smaller of its own stock and that. */
+  const cap = await db.execute(sql`SELECT ${boxCapacitySql(sql`${id}::text`)} AS c`);
+  const canFill = cap.rows[0]?.c == null ? null : Number(cap.rows[0].c);
+  const available = level?.available ?? null;
   return c.json({
     variantId: id,
     // Null when the variant has no inventory row at all. A shop that renders
     // "0 left" for something nobody has stocked is telling the customer
     // something different from "we do not track this".
-    available: level?.available ?? null,
+    available: canFill === null || available === null ? available : Math.min(available, canFill),
     backorderable: level?.backorderable ?? false,
+    canFill,
   });
 });
 
@@ -677,6 +685,18 @@ routes.post('/admin/products', auth, async (c) => {
  * renders as a 409 carrying `expected`, `actual` AND the server's current
  * product — so an admin form's "load theirs" needs no second request (brief §4).
  */
+/**
+ * `GET /admin/box-pools/:tag` — what a mystery box pool holds (migration 1220):
+ * its in-stock items and how many units are free after what is already owed.
+ * The tag is folded to the catalogue's spelling first, as the pool itself is.
+ */
+routes.get('/admin/box-pools/:tag', auth, async (c) => {
+  const db = currentDb(c);
+  const tag = pathParam(c, 'tag');
+  const [canonical] = await canonicalTags(db, [tag]);
+  return c.json({ pool: await poolPreview(db, canonical ?? tag) });
+});
+
 routes.patch('/admin/products/:id', auth, async (c) => {
   const { patch, baseRevision, note } = await readJson(c, PatchBody);
   /*
