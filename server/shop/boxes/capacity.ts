@@ -96,6 +96,26 @@ export function freeUnitsSql(list: 'main' | 'backup'): SQL {
  *  - PACK / SHOP PICKS: floor(free units / item count), counting the backup list
  *    too when the box is set to fill from it.
  */
+/**
+ * How many of a variant a shopper can still buy, given its own stock and what
+ * the box can fill (canFill, null for an ordinary variant).
+ *
+ * THE SETTINGS BOX KEEPS NO STOCK OF ITS OWN: its one variant sits at 0 with
+ * backorders on, so its own number is 0 or below and means nothing. Taking the
+ * smaller of that and canFill showed the box as sold out forever while checkout
+ * (which honours backorders) went on selling it. A backorderable box is capped
+ * by canFill alone.
+ */
+export function boxAvailable(
+  available: number | null,
+  backorderable: boolean,
+  canFill: number | null,
+): number | null {
+  if (canFill === null) return available;
+  if (backorderable || available === null) return canFill;
+  return Math.min(available, canFill);
+}
+
 export function boxCapacitySql(variantId: SQL): SQL {
   return sql`(
     SELECT CASE
