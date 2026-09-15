@@ -26,10 +26,12 @@ import type { ProviderName } from './schema';
  * What is known about the money, which is what decides the next move.
  *
  * - `refused`: the gateway read the request and said no. Nothing moved, so the
- *   same key may try again (`createRefund` frees it).
- * - `unconfirmed`: the gateway may have acted — a 5xx, or a 2xx this adapter
- *   could not read. Somebody must look at the gateway before refunding again,
- *   so the key stays taken and a retry on it is refused without asking.
+ *   amount is released and the same key may try again (`createRefund` frees it).
+ * - `unconfirmed`: the gateway may have acted — a timeout, a dropped connection,
+ *   a 5xx, a 2xx this adapter could not read, or our own save failing after the
+ *   gateway said yes. The refund stays pending with its amount HELD, the key
+ *   stays taken, and the owner settles it from the order page after looking at
+ *   the gateway (owner's rule, 2026-09-15; `resolveUnconfirmedRefund`).
  */
 export type RefundFailureOutcome = 'refused' | 'unconfirmed';
 
@@ -37,8 +39,7 @@ export type RefundFailureOutcome = 'refused' | 'unconfirmed';
  * Codes where the gateway positively refused. Anything not listed is
  * `unconfirmed`, the safe direction: a refusal wrongly called unconfirmed costs
  * the owner a look at a dashboard, while an unconfirmed failure wrongly called a
- * refusal lets the same money be refunded twice. `timeout` and `network` never
- * reach this — `createRefund` keeps those pending (`isIndeterminate`).
+ * refusal lets the same money be refunded twice.
  */
 const REFUSED: ReadonlySet<ProviderErrorCode> = new Set<ProviderErrorCode>([
   'auth',

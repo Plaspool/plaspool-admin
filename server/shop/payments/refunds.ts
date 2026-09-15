@@ -1,12 +1,12 @@
 import { sql } from 'drizzle-orm';
 import { BadRequestError, NotFoundError } from '../../repo/errors';
 import { toEpochMs, uniqueViolation } from '../../db/client';
-import { ProviderError, isIndeterminate } from './provider/scrub';
+import { ProviderError } from './provider/scrub';
 import { RefundFailedError, refundFailureOutcome } from './refund-failure';
 import { refundId as mintRefundId, eventId as mintEventId } from './ids';
 import { getIntent } from './intents';
 import type { Db } from '../../db/client';
-import type { PaymentProvider } from './provider/types';
+import type { PaymentProvider, ProviderRefund } from './provider/types';
 
 /**
  * Refunds. Admin-initiated only in v1 (contract §13 — there is no customer RMA
@@ -177,26 +177,23 @@ export async function createRefund(
      * statements.
      */
     if (uniqueViolation(err) === 'shop_refunds_idempotency_key_unique') {
-      const existing = await getRefundByKey(db, input.idempotencyKey);
-      /*
-       * A FAILED ROW IS NOT A RESULT TO REPLAY. Handed back, it was a 200 the
-       * screen toasted as "Refunded" (production, 2026-09-15). A clear refusal
-       * frees its key (`failRefundLocally`), so what is left here is a failure
-       * nobody could confirm, or one the gateway reported later by webhook —
-       * and neither may be answered as a refund, or sent to the gateway again,
-       * before somebody has looked.
-       */
-      if (existing?.status === 'failed') {
-        const paidThrough = await getIntent(db, existing.intentId);
-        if (!paidThrough) throw new NotFoundError(existing.intentId);
-        throw new RefundFailedError({ provider: paidThrough.provider, outcome: 'unconfirmed', code: 'unknown' });
-      }
-      if (existing) return { refund: existing, created: false };
+      const replayed = await replayByKey(db, input.idempotencyKey);
+      if (replayed) return replayed;
     }
     throw err;
   }
 
   if (!inserted.rows[0]) {
+    /*
+     * THE KEY IS ASKED FIRST. A refund already holding this amount makes the
+     * sum-check refuse before the INSERT can meet the key, so a retry of a
+     * full refund never reached the read-through above and came back
+     * `bad_request: amount` — which is what the cancel route's fixed key sends
+     * after a refund nobody could confirm.
+     */
+    const replayed = await replayByKey(db, input.idempotencyKey);
+    if (replayed) return replayed;
+
     /*
      * Zero rows means the guard refused. Which guard, told apart by a read —
      * and all three answers are 400, because all three are PERMANENT. Contract
@@ -216,8 +213,9 @@ export async function createRefund(
   const intent = await getIntent(db, input.intentId);
   if (!intent?.providerIntentId) throw new BadRequestError('provider_intent_id');
 
+  let providerRefund: ProviderRefund;
   try {
-    const providerRefund = await provider.refund(
+    providerRefund = await provider.refund(
       {
         providerIntentId: intent.providerIntentId,
         amount: refund.amount,
@@ -226,86 +224,207 @@ export async function createRefund(
       },
       input.idempotencyKey,
     );
-    /*
-     * A GATEWAY THAT ANSWERS "FAILED" HAS REFUSED. Stored as this row's result
-     * it went back to the caller as a refund, with the amount still reserved
-     * against money that never moved — so it takes the refusal path below.
-     */
-    if (providerRefund.status === 'failed') {
-      throw new ProviderError({ code: 'declined', provider: intent.provider, operation: 'refund' });
-    }
-    const updated = await db.execute(sql`
-      UPDATE shop_refunds
-         SET provider_refund_id = ${providerRefund.providerRefundId},
-             status = ${providerRefund.status},
-             updated_at = ${now}
-       WHERE id = ${refund.id} AND provider_refund_id IS NULL
-      RETURNING ${REFUND_COLUMNS}`);
-    return {
-      refund: updated.rows[0] ? mapRefundRow(updated.rows[0]) : refund,
-      created: true,
-    };
   } catch (err) {
     const code = err instanceof ProviderError ? err.code : 'unknown';
+    const outcome = refundFailureOutcome(code);
     /*
      * THE DISTINCTION THAT DECIDES WHETHER A CUSTOMER IS PAID TWICE.
      *
-     * A KNOWN failure (the provider understood and refused) means no money
+     * A CLEAR REFUSAL (the gateway read the request and said no) means no money
      * moved, so the reservation is released and the refund is marked failed —
      * the balance becomes refundable again, which is correct and necessary.
      *
-     * An INDETERMINATE failure (timeout, connection reset) means WE DO NOT KNOW.
-     * The refund may well have been created. Releasing the reservation there
-     * would let an operator refund the same money again and only find out from
-     * the bank. So the row stays `pending` with its amount still reserved, and
-     * the truth arrives from the provider's own webhook or from reconciliation
-     * — which is exactly the case `03-payments.md` §5 says only a key makes
-     * recoverable.
+     * ANYTHING ELSE MEANS WE DO NOT KNOW — a timeout, a dropped connection, a
+     * 5xx, an answer the adapter could not read. The refund may well have been
+     * created. Releasing the reservation there lets an operator refund the same
+     * money again and find out from the bank. So the row stays `pending` with
+     * its amount held (owner's rule, 2026-09-15), and it is REPORTED rather than
+     * returned: no webhook can ever match a row with no gateway id, so this
+     * used to be a 201 the screen called "Refunded" for a refund that then
+     * never settled. The owner settles it from the order page
+     * (`resolveUnconfirmedRefund`).
+     *
+     * NAMED, NOT RETHROWN, either way. A bare `ProviderError` has no row in the
+     * error table, so a gateway's plain "no" reached the owner as `internal`.
      */
-    if (isIndeterminate(code)) return { refund, created: true };
-    if (!(err instanceof ProviderError)) {
-      await failRefundLocally(db, refund.id, now);
-      throw err;
+    if (outcome === 'refused') {
+      await releaseRefusedRefund(db, refund.id, now);
+    } else {
+      logUnconfirmed(refund.id, intent.provider, code, err);
     }
-    /*
-     * NAMED, NOT RETHROWN. A bare `ProviderError` has no row in the error
-     * table, so a gateway's plain "no" reached the owner as `internal`.
-     * `RefundFailedError` is answered 422 with the gateway recorded on THIS
-     * intent — never the adapter handle's name — and what is known about the
-     * money (`refund-failure.ts`).
-     */
-    const outcome = refundFailureOutcome(code);
-    await failRefundLocally(db, refund.id, now, { freeKey: outcome === 'refused' });
     throw new RefundFailedError({ provider: intent.provider, outcome, code });
   }
+
+  /*
+   * A GATEWAY THAT ANSWERS "FAILED" HAS REFUSED. Stored as this row's result it
+   * went back to the caller as a refund, with the amount still reserved against
+   * money that never moved.
+   */
+  if (providerRefund.status === 'failed') {
+    await releaseRefusedRefund(db, refund.id, now);
+    throw new RefundFailedError({ provider: intent.provider, outcome: 'refused', code: 'declined' });
+  }
+
+  /*
+   * RECORDED, AND SETTLED IN THE SAME STATEMENT WHEN THE GATEWAY SAYS IT IS
+   * DONE. Flutterwave usually answers "completed" at once, and that used to be
+   * stored as `succeeded` and nothing else: the intent never moved and no
+   * `payment.refunded` was written, so the order never showed the refund — and
+   * Flutterwave's refund notifications are never processed to do it later.
+   * A `pending` answer is recorded only; its webhook settles it.
+   */
+  let recorded;
+  try {
+    recorded = await db.execute(sql`
+      WITH recorded AS (
+        UPDATE shop_refunds
+           SET provider_refund_id = ${providerRefund.providerRefundId},
+               status = ${providerRefund.status},
+               updated_at = ${now}
+         WHERE id = ${refund.id} AND provider_refund_id IS NULL
+        RETURNING ${REFUND_COLUMNS}
+      ),
+      settled AS (
+        SELECT id, intent_id, amount FROM recorded WHERE status = 'succeeded'
+      ),
+      ${refundedEffects(mintEventId(now), now)}
+      SELECT * FROM recorded`);
+  } catch (err) {
+    /*
+     * THE GATEWAY SAID YES AND THIS WRITE FAILED. The money is moving, so the
+     * row stays pending and the amount stays held. This catch used to share
+     * the gateway call's, which released the amount — a refund that had been
+     * sent became refundable again.
+     */
+    logUnconfirmed(refund.id, intent.provider, 'unknown', err);
+    throw new RefundFailedError({ provider: intent.provider, outcome: 'unconfirmed', code: 'unknown' });
+  }
+  return {
+    refund: recorded.rows[0] ? mapRefundRow(recorded.rows[0]) : refund,
+    created: true,
+  };
 }
 
 /**
- * Mark a refund failed and give its reservation back, in one statement.
+ * How old a pending refund with no gateway id must be before a person may
+ * settle it by hand.
+ *
+ * Until then its gateway call may still be running: both adapters abort after
+ * 10 s (`DEFAULT_TIMEOUT_MS` in `provider/paystack.ts` and
+ * `provider/flutterwave.ts`) and `vercel.json` stops the function at 30 s. A row
+ * twice that old with no gateway id is not in flight. It is a refund nobody
+ * could confirm — including one whose function was stopped mid-call and never
+ * got to say so.
+ */
+export const UNCONFIRMED_AFTER_MS = 60_000;
+
+/** Pending, and the gateway's answer never recorded: held until settled by hand. */
+function isUnconfirmed(refund: RefundRow): boolean {
+  return refund.status === 'pending' && refund.providerRefundId === null;
+}
+
+/**
+ * The earlier call's result for this key, or `null` when there was none.
+ *
+ * ONLY A REFUND THE GATEWAY ANSWERED IS A RESULT TO REPLAY. A failed row handed
+ * back was a 200 the screen toasted as "Refunded" (production, 2026-09-15), and
+ * so is a pending row with no gateway id — a refund nobody could confirm, held
+ * for the owner to settle. A clear refusal frees its key
+ * (`releaseRefusedRefund`), so a failed row found here is one the gateway
+ * failed later by webhook. None of these may be answered as a refund, or sent
+ * to the gateway again, before somebody has looked.
+ */
+async function replayByKey(db: Db, key: string): Promise<CreateRefundResult | null> {
+  const existing = await getRefundByKey(db, key);
+  if (!existing) return null;
+  if (existing.status === 'failed' || isUnconfirmed(existing)) {
+    const paidThrough = await getIntent(db, existing.intentId);
+    if (!paidThrough) throw new NotFoundError(existing.intentId);
+    throw new RefundFailedError({ provider: paidThrough.provider, outcome: 'unconfirmed', code: 'unknown' });
+  }
+  return { refund: existing, created: false };
+}
+
+/**
+ * The only record of an unknown result, because the error table does not log
+ * an answered 4xx. Enumerated fields and an error NAME only — never a message,
+ * which is where a gateway body or a query parameter would ride along
+ * (`provider/scrub.ts`).
+ */
+function logUnconfirmed(refundId: string, provider: string, code: string, err: unknown): void {
+  // eslint-disable-next-line no-console -- an unconfirmed refund needs a person, and this is where one looks
+  console.error(
+    '[payments] refund unconfirmed, amount held',
+    JSON.stringify({ refundId, provider, code, error: err instanceof Error ? err.name : typeof err }),
+  );
+}
+
+/**
+ * The succeeded half of a settlement, as CTEs over a `settled` CTE of
+ * (id, intent_id, amount): move the intent, and write `payment.refunded` so
+ * Orders updates the order, emails the customer and gives points back. The same
+ * two effects `applyRefundEvent` has for a webhook's `succeeded`, for the two
+ * paths no webhook ever reaches — a gateway that finishes the refund at once,
+ * and an owner saying an unconfirmed one went through.
+ *
+ * The intent's status is a function of its `refunded_total`, which already
+ * holds this refund's reservation — see `applyRefundEvent` for why it is not
+ * rank-guarded.
+ */
+function refundedEffects(outboxId: string, now: number) {
+  return sql`
+    intent AS (
+      UPDATE shop_payment_intents i
+         SET status = CASE WHEN i.refunded_total >= i.amount THEN 'refunded'
+                           ELSE 'partially_refunded' END,
+             updated_at = ${now},
+             revision = i.revision + 1
+       WHERE i.id = (SELECT intent_id FROM settled)
+      RETURNING i.id, i.checkout_id, i.amount, i.currency, i.refunded_total
+    ),
+    emitted AS (
+      INSERT INTO commerce_events (id, type, subject_id, payload, occurred_at, attempts)
+      SELECT ${outboxId}, 'payment.refunded', i.id,
+             jsonb_build_object(
+               'intentId', i.id,
+               'checkoutId', i.checkout_id,
+               'amount', i.amount,
+               'currency', i.currency,
+               'occurredAt', ${now}::bigint,
+               'refundId', s.id,
+               'refundedAmount', s.amount,
+               'refundedTotal', i.refunded_total,
+               'remainingBalance', i.amount - i.refunded_total
+             ),
+             ${now}, 0
+        FROM intent i JOIN settled s ON s.intent_id = i.id
+      RETURNING id
+    )`;
+}
+
+/**
+ * Mark a refund failed, give its reservation back, and free its key — in one
+ * statement. For a refund where NOTHING MOVED: the gateway refused it, or the
+ * owner checked and it never went out.
  *
  * Gated on `status = 'pending'` so that a concurrent webhook that already
  * settled it cannot be undone, and so the release cannot happen twice — a
  * double release would understate `refunded_total` and let the same money be
  * refunded again.
  *
- * `freeKey` IS FOR A CLEAR REFUSAL ONLY. The key exists to stop a second refund
- * while the first may still be moving money; after a refusal nothing is moving,
- * and a key left taken makes the same click read the refusal back forever — for
- * the cancel route, whose key is fixed, that meant an order that could never be
- * cancelled with that refund. So the failed row keeps its key with its own id
- * appended (still unique, still readable) and the original key is free again.
+ * THE KEY IS FREED because it exists to stop a second refund while the first
+ * may still be moving money, and nothing is moving. Left taken, the same click
+ * reads the refusal back forever — for the cancel route, whose key is fixed,
+ * an order that could never be cancelled with that refund. So the failed row
+ * keeps its key with its own id appended (still unique, still readable) and
+ * the original key is free again.
  */
-async function failRefundLocally(
-  db: Db,
-  id: string,
-  now: number,
-  opts: { freeKey?: boolean } = {},
-): Promise<void> {
-  const key = opts.freeKey ? sql`idempotency_key || ':refused:' || id` : sql`idempotency_key`;
+async function releaseRefusedRefund(db: Db, id: string, now: number): Promise<void> {
   await db.execute(sql`
     WITH failed AS (
       UPDATE shop_refunds
-         SET status = 'failed', updated_at = ${now}, idempotency_key = ${key}
+         SET status = 'failed', updated_at = ${now},
+             idempotency_key = idempotency_key || ':refused:' || id
        WHERE id = ${id} AND status = 'pending'
       RETURNING intent_id, amount
     )
@@ -313,6 +432,81 @@ async function failRefundLocally(
        SET refunded_total = i.refunded_total - f.amount, updated_at = ${now}
       FROM failed f
      WHERE i.id = f.intent_id`);
+}
+
+/** Refunds held against a payment because nobody could confirm them, oldest first. */
+export async function listUnconfirmedRefunds(db: Db, intentId: string): Promise<RefundRow[]> {
+  const res = await db.execute(sql`
+    SELECT ${REFUND_COLUMNS} FROM shop_refunds
+     WHERE intent_id = ${intentId} AND status = 'pending' AND provider_refund_id IS NULL
+     ORDER BY created_at ASC, id ASC`);
+  return res.rows.map(mapRefundRow);
+}
+
+export type ResolveRefundOutcome = 'sent' | 'not_sent';
+
+export type ResolveRefundResult =
+  | { ok: true; refund: RefundRow }
+  | { ok: false; reason: 'gone' | 'not_unconfirmed' | 'too_new' };
+
+/**
+ * The owner settles a refund nobody could confirm, after checking the gateway's
+ * dashboard (owner's rule, 2026-09-15).
+ *
+ * - `sent`: it went through. The refund succeeds, the amount stays counted, and
+ *   `payment.refunded` tells Orders — the same effects as a webhook's success.
+ * - `not_sent`: it never went out. Released exactly like a refusal, key freed.
+ *   No `payment.refund_failed`: the customer was never told a refund was
+ *   coming, so an email saying it failed would be the first they heard of it.
+ *
+ * THE GUARD IS THE STATEMENT'S OWN WHERE — pending, no gateway id, and older
+ * than `UNCONFIRMED_AFTER_MS` — never a read before it. The read after a
+ * refusal only explains which part said no.
+ */
+export async function resolveUnconfirmedRefund(
+  db: Db,
+  refundId: string,
+  outcome: ResolveRefundOutcome,
+  now: number = Date.now(),
+): Promise<ResolveRefundResult> {
+  const cutoff = now - UNCONFIRMED_AFTER_MS;
+  const held = sql`
+    id = ${refundId} AND status = 'pending' AND provider_refund_id IS NULL
+    AND created_at <= ${cutoff}`;
+
+  const res =
+    outcome === 'sent'
+      ? await db.execute(sql`
+          WITH settled AS (
+            UPDATE shop_refunds SET status = 'succeeded', updated_at = ${now}
+             WHERE ${held}
+            RETURNING ${REFUND_COLUMNS}
+          ),
+          ${refundedEffects(mintEventId(now), now)}
+          SELECT * FROM settled`)
+      : await db.execute(sql`
+          WITH settled AS (
+            UPDATE shop_refunds
+               SET status = 'failed', updated_at = ${now},
+                   idempotency_key = idempotency_key || ':refused:' || id
+             WHERE ${held}
+            RETURNING ${REFUND_COLUMNS}
+          ),
+          released AS (
+            UPDATE shop_payment_intents i
+               SET refunded_total = i.refunded_total - s.amount, updated_at = ${now}
+              FROM settled s
+             WHERE i.id = s.intent_id
+            RETURNING i.id
+          )
+          SELECT * FROM settled`);
+
+  if (res.rows[0]) return { ok: true, refund: mapRefundRow(res.rows[0]) };
+
+  const current = await db.execute(sql`SELECT ${REFUND_COLUMNS} FROM shop_refunds WHERE id = ${refundId}`);
+  if (!current.rows[0]) return { ok: false, reason: 'gone' };
+  const row = mapRefundRow(current.rows[0]);
+  return { ok: false, reason: isUnconfirmed(row) && row.createdAt > cutoff ? 'too_new' : 'not_unconfirmed' };
 }
 
 export interface ApplyRefundResult {

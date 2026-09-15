@@ -107,6 +107,13 @@ export interface PaymentSnapshot {
   currency: string;
   /** Sum of refunds that have not failed. `0` when none. */
   refundedTotal: number;
+  /**
+   * Refunds nobody could confirm — the gateway's answer was unknown — held
+   * against this payment until the owner says whether they went through
+   * (owner's rule, 2026-09-15). Their amounts are inside `refundedTotal`.
+   * Empty when there are none.
+   */
+  unconfirmedRefunds: { id: string; amount: number; currency: string; createdAt: number }[];
   createdAt: number;
   updatedAt: number;
 }

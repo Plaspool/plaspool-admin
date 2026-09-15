@@ -8,7 +8,7 @@ import { currentDb, currentUser } from '../../app-env';
 import { ProviderError } from './provider/scrub';
 import { flutterwaveProvider, paystackProvider, paymentsEnv, providerCeilings, providerKeyPresence } from './config';
 import { cancelIntent, createIntent, getIntent, applyIntentStatus } from './intents';
-import { createRefund, listRefunds } from './refunds';
+import { createRefund, listRefunds, resolveUnconfirmedRefund } from './refunds';
 import { chooseProvider, providerFor, NoGatewayAvailableError, NoProviderForCurrencyError } from './routing';
 import { readPaymentSettings, writePaymentSettings } from './settings';
 import { PROVIDER_NAMES } from './schema';
@@ -161,6 +161,9 @@ const CreateRefundBody = z
     idempotencyKey: str().min(8).max(200),
   })
   .strict();
+
+/** What the owner found in the gateway's dashboard for a refund nobody could confirm. */
+const ResolveRefundBody = z.object({ outcome: z.enum(['sent', 'not_sent']) }).strict();
 
 /**
  * The `PATCH /shop/admin/payments/settings` body. `.strict()`, carries
@@ -752,7 +755,41 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
       idempotencyKey: body.idempotencyKey,
       createdBy: currentUser(c).id,
     });
+    // A refund the gateway finished at once has written `payment.refunded`;
+    // drain it now so the order this owner is looking at shows the refund.
+    if (result.created && result.refund.status === 'succeeded') {
+      await deps.sweepEvents?.(db, storefrontOrigin()).catch(() => undefined);
+    }
     return c.json({ refund: result.refund }, result.created ? 201 : 200);
+  });
+
+  /**
+   * Settle a refund nobody could confirm — "It went through" or "It didn't go
+   * through" on the order page (owner's rule, 2026-09-15). Same gate as the
+   * refund route: this decides where money is recorded as having gone.
+   *
+   * 409 AND NOT 400 for the two refusals, because both are about the refund's
+   * STATE, not the request: `refund_still_sending` while its gateway call may
+   * still be running (`UNCONFIRMED_AFTER_MS`), `refund_not_unconfirmed` once
+   * it is settled or was answered by the gateway after all.
+   */
+  app.post('/shop/admin/payments/refunds/:id/resolve', admin, async (c) => {
+    const db = currentDb(c);
+    const body = await readJson(c, ResolveRefundBody);
+    const result = await resolveUnconfirmedRefund(db, pathParam(c, 'id'), body.outcome);
+    if (!result.ok) {
+      if (result.reason === 'gone') throw new NotFoundError('refund');
+      return c.json(
+        { error: result.reason === 'too_new' ? 'refund_still_sending' : 'refund_not_unconfirmed' },
+        409,
+      );
+    }
+    // "It went through" wrote `payment.refunded`: Orders must hear it in this
+    // request, or the order page still shows the money as not refunded.
+    if (body.outcome === 'sent') {
+      await deps.sweepEvents?.(db, storefrontOrigin()).catch(() => undefined);
+    }
+    return c.json({ refund: result.refund });
   });
 
   /**

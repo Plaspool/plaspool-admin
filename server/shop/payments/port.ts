@@ -1,5 +1,6 @@
 import { BadRequestError, NotFoundError } from '../../repo/errors';
 import { cancelIntent, getIntent, intentsForCheckout } from './intents';
+import { listUnconfirmedRefunds } from './refunds';
 import type { Db } from '../../db/client';
 import type { PaymentPort, PaymentSnapshot, PaymentStatus } from '../../../shared/commerce/ports';
 
@@ -36,6 +37,12 @@ export const paymentPort: PaymentPort<Db> = {
       amount: intent.amount,
       currency: intent.currency,
       refundedTotal: intent.refundedTotal,
+      unconfirmedRefunds: (await listUnconfirmedRefunds(db, intent.id)).map((r) => ({
+        id: r.id,
+        amount: r.amount,
+        currency: r.currency,
+        createdAt: r.createdAt,
+      })),
       createdAt: intent.createdAt,
       updatedAt: intent.updatedAt,
     };

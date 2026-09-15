@@ -1742,6 +1742,103 @@ describe('a gateway that turns a refund down, through the real composition root'
     expect(flutterwave.countOf('refund')).toBe(2);
     expect(paystack.countOf('refund')).toBe(0);
   });
+
+  /*
+   * THE OWNER'S RULE (2026-09-15): a refund whose result is unknown stays
+   * pending with its amount held, and the order page settles it by hand. The
+   * resolve route is driven here through the real app so its `sweepEvents`
+   * wiring is proven too — "It went through" is only true on the order page if
+   * Orders hears `payment.refunded` in the same request.
+   */
+  describe('a refund nobody could confirm, held until the owner settles it', () => {
+    const refundsOf = (intentId: string) => `/api/shop/admin/payments/intents/${intentId}/refunds`;
+    const resolve = (refundId: string) => `/api/shop/admin/payments/refunds/${refundId}/resolve`;
+
+    /** A refund the gateway did not confirm, made through the real route. */
+    async function heldRefund(intentId: string, key: string): Promise<string> {
+      flutterwave.program('refund', { kind: 'fail', code: 'provider_unavailable' });
+      const res = await money.post(refundsOf(intentId), { amount: 5400, idempotencyKey: key });
+      expect(res.status).toBe(422);
+      const rows = await ctx.db.execute(sql`SELECT id FROM shop_refunds WHERE intent_id = ${intentId}`);
+      return String(rows.rows[0]?.id);
+    }
+
+    /** The minute in which a gateway call could still be running has passed. */
+    async function aMinuteLater(refundId: string): Promise<void> {
+      await ctx.db.execute(
+        sql`UPDATE shop_refunds SET created_at = created_at - 120000 WHERE id = ${refundId}`,
+      );
+    }
+
+    it('shows the held refund on the order, and a new refund window cannot take that money', async () => {
+      const intentId = 'pi_held_page';
+      const orderId = await paidOrder('cust_held_page', intentId);
+      await flutterwaveIntent(intentId, 5400);
+      const id = await heldRefund(intentId, 'refund-attempt-held-1');
+
+      const page = await json<{ payment: { unconfirmedRefunds: { id: string; amount: number }[] } }>(
+        await money.get(`/api/shop/admin/orders/${orderId}`),
+      );
+      expect(page.payment.unconfirmedRefunds).toEqual([expect.objectContaining({ id, amount: 5400 })]);
+
+      const again = await money.post(refundsOf(intentId), {
+        amount: 5400,
+        idempotencyKey: 'refund-attempt-held-2',
+      });
+      expect(again.status).toBe(400);
+      expect(flutterwave.countOf('refund')).toBe(1);
+    });
+
+    it('marks it sent, and the order shows the refund straight away', async () => {
+      const intentId = 'pi_held_sent';
+      const orderId = await paidOrder('cust_held_sent', intentId);
+      await flutterwaveIntent(intentId, 5400);
+      const id = await heldRefund(intentId, 'refund-attempt-held-3');
+      await aMinuteLater(id);
+
+      const res = await money.post(resolve(id), { outcome: 'sent' });
+
+      expect(res.status).toBe(200);
+      expect((await json<{ refund: { status: string } }>(res)).refund.status).toBe('succeeded');
+      const page = await json<{
+        order: { status: string; refundedTotal: number };
+        payment: { unconfirmedRefunds: unknown[] };
+      }>(await money.get(`/api/shop/admin/orders/${orderId}`));
+      expect(page.order).toMatchObject({ status: 'refunded', refundedTotal: 5400 });
+      expect(page.payment.unconfirmedRefunds).toEqual([]);
+    });
+
+    it('marks it not sent, and the same money can be refunded again', async () => {
+      const intentId = 'pi_held_not_sent';
+      await paidOrder('cust_held_not_sent', intentId);
+      await flutterwaveIntent(intentId, 5400);
+      const id = await heldRefund(intentId, 'refund-attempt-held-4');
+      await aMinuteLater(id);
+
+      const res = await money.post(resolve(id), { outcome: 'not_sent' });
+      expect(res.status).toBe(200);
+      expect((await json<{ refund: { status: string } }>(res)).refund.status).toBe('failed');
+
+      const retry = await money.post(refundsOf(intentId), {
+        amount: 5400,
+        idempotencyKey: 'refund-attempt-held-5',
+      });
+      expect(retry.status).toBe(201);
+      expect(flutterwave.countOf('refund')).toBe(2);
+    });
+
+    it('refuses to settle a refund sent less than a minute ago', async () => {
+      const intentId = 'pi_held_too_new';
+      await paidOrder('cust_held_too_new', intentId);
+      await flutterwaveIntent(intentId, 5400);
+      const id = await heldRefund(intentId, 'refund-attempt-held-6');
+
+      const res = await money.post(resolve(id), { outcome: 'not_sent' });
+
+      expect(res.status).toBe(409);
+      expect(await json(res)).toMatchObject({ error: 'refund_still_sending' });
+    });
+  });
 });
 
 describe('the add-on port, as the deployment registers it', () => {

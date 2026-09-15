@@ -17,6 +17,7 @@ import {
   type ShopOrderLine,
   type ShopRestockChoice,
   type ShopTimelineEntry,
+  type ShopUnconfirmedRefund,
 } from '../../data/api-shop';
 import { ApiError } from '../../data/errors';
 import { getSession } from '../../data/session';
@@ -45,7 +46,14 @@ import {
   stockReason,
 } from './manual-order-copy';
 import { countryName } from './countries';
-import { describeRefundError, gatewayName } from './payment-copy';
+import {
+  RESOLVE_REFUND_COPY,
+  describeRefundError,
+  describeResolveError,
+  gatewayName,
+  heldRefundNote,
+  refundFailureOf,
+} from './payment-copy';
 import { isAdminRole } from '../../../shared/roles';
 
 /**
@@ -252,6 +260,11 @@ export default function OrderDetail() {
   const [modal, setModal] = useState<'none' | 'fulfil' | 'cancel' | 'refund' | 'void'>('none');
   /* Migration 1220. The mystery box being filled, if any. */
   const [filling, setFilling] = useState<{ lineId: string; boxNo: number } | null>(null);
+  /* A refund nobody could confirm, and what the owner is about to say happened to it. */
+  const [resolving, setResolving] = useState<{
+    refund: ShopUnconfirmedRefund;
+    outcome: 'sent' | 'not_sent';
+  } | null>(null);
   /** Booking a courier for ONE parcel, so it carries which parcel — the same
    *  shape and the same reason as the ship dialog below. */
   const [courierDialog, setCourierDialog] = useState<{
@@ -323,7 +336,12 @@ export default function OrderDetail() {
   const intentId = payment?.intentId ?? order.paymentIntentId;
   /* The gateway THIS payment went through — a refund goes back the same way. */
   const gateway = gatewayName(payment?.provider);
-  const refundable = order.grandTotal - order.refundedTotal;
+  /* Refunds nobody could confirm hold their amount (owner's rule, 2026-09-15).
+     The order's own total only counts settled ones, so the held money is taken
+     off here too — offering it again is a refund the server must refuse. */
+  const heldRefunds = payment?.unconfirmedRefunds ?? [];
+  const refundable =
+    order.grandTotal - order.refundedTotal - heldRefunds.reduce((sum, r) => sum + r.amount, 0);
   const canRefund =
     !isManual &&
     isOwner &&
@@ -531,6 +549,26 @@ export default function OrderDetail() {
           {gateway ? `${gateway} confirms` : 'the payment is confirmed'}. Nothing to do here yet.
         </Banner>
       ) : null}
+
+      {heldRefunds.map((held) => (
+        <Banner
+          key={held.id}
+          tone="warn"
+          title="Refund not confirmed"
+          action={
+            isOwner ? (
+              <div className="row" style={{ gap: 'var(--s2)', flexWrap: 'wrap' }}>
+                <Button onClick={() => setResolving({ refund: held, outcome: 'sent' })}>It went through</Button>
+                <Button onClick={() => setResolving({ refund: held, outcome: 'not_sent' })}>
+                  It didn’t go through
+                </Button>
+              </div>
+            ) : undefined
+          }
+        >
+          {heldRefundNote(gateway, money(held.amount, held.currency), dateTime(held.createdAt))}
+        </Banner>
+      ))}
 
       {boxPaid && data.boxShortAt && emptyBoxes.length > 0 ? (
         <Banner tone="critical" title="The shop couldn’t fill this mystery box by itself">
@@ -899,6 +937,18 @@ export default function OrderDetail() {
           maxMinor={refundable}
           onClose={() => setModal('none')}
           onDone={done}
+        />
+      ) : null}
+      {resolving ? (
+        <ResolveRefundModal
+          refund={resolving.refund}
+          outcome={resolving.outcome}
+          gateway={gateway}
+          onClose={() => setResolving(null)}
+          onDone={() => {
+            setResolving(null);
+            reload();
+          }}
         />
       ) : null}
       {courierDialog ? (
@@ -1815,6 +1865,12 @@ function CancelModal({
       }
       onDone();
     } catch (cause) {
+      /* The order is still paid and its refund is held — see RefundModal. */
+      if (refundFailureOf(cause) === 'unconfirmed') {
+        toast.show(describeRefundError(cause), 'critical');
+        onDone();
+        return;
+      }
       setError(describeRefundError(cause));
       setBusy(false);
     }
@@ -2006,6 +2062,13 @@ function RefundModal({
       toast.show(`Refunded ${money(refund.amount, refund.currency)}`);
       onDone();
     } catch (cause) {
+      /* Held, not failed: the order page now carries the refund and the two
+         buttons that settle it, so the window gets out of the way. */
+      if (refundFailureOf(cause) === 'unconfirmed') {
+        toast.show(describeRefundError(cause), 'critical');
+        onDone();
+        return;
+      }
       setError(describeRefundError(cause));
       setBusy(false);
     }
@@ -2048,6 +2111,70 @@ function RefundModal({
           placeholder="Optional — the customer never sees this"
           onChange={(e) => setReason(e.target.value)}
         />
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * "It went through" / "It didn’t go through" for a refund nobody could confirm
+ * (owner's rule, 2026-09-15). A confirmation first, because the owner is
+ * recording where money went on the strength of another company's dashboard,
+ * and "sent" also emails the customer.
+ */
+function ResolveRefundModal({
+  refund,
+  outcome,
+  gateway,
+  onClose,
+  onDone,
+}: {
+  refund: ShopUnconfirmedRefund;
+  outcome: 'sent' | 'not_sent';
+  gateway: string | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const toast = useToast();
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const copy = RESOLVE_REFUND_COPY[outcome];
+
+  async function commit() {
+    setBusy(true);
+    setError(null);
+    try {
+      await shopApi.resolveRefund(refund.id, outcome);
+      toast.show(copy.done);
+      onDone();
+    } catch (cause) {
+      setError(describeResolveError(cause));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={copy.title}
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Go back</Button>
+          <Button tone="primary" busy={busy} onClick={() => void commit()}>
+            {copy.confirm}
+          </Button>
+        </>
+      }
+    >
+      <div className="stack">
+        <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
+          {copy.body(gateway, money(refund.amount, refund.currency))}
+        </p>
+        {error ? (
+          <span className="field__error" role="alert">
+            {error}
+          </span>
+        ) : null}
       </div>
     </Modal>
   );

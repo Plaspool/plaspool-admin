@@ -951,6 +951,13 @@ export interface ShopPayment {
   amount: number;
   currency: string;
   refundedTotal: number;
+  /**
+   * Refunds held because the gateway's answer was unknown, until the owner
+   * says whether they went through (owner's rule, 2026-09-15). Their amounts
+   * are inside `refundedTotal`. Optional so a fixture or an older response
+   * without it reads as none.
+   */
+  unconfirmedRefunds?: ShopUnconfirmedRefund[];
   createdAt: number;
   updatedAt: number;
 }
@@ -1695,6 +1702,14 @@ export interface ShopRefund {
   amount: number;
   currency: string;
   status: string;
+  createdAt: number;
+}
+
+/** A refund nobody could confirm, held against its payment (`ShopPayment.unconfirmedRefunds`). */
+export interface ShopUnconfirmedRefund {
+  id: string;
+  amount: number;
+  currency: string;
   createdAt: number;
 }
 
@@ -2902,6 +2917,21 @@ export const shopApi = {
     const res = await shopFetch<{ refund: ShopRefund }>(
       `${BASE}/payments/intents/${seg(intentId)}/refunds`,
       { method: 'POST', body, id: intentId, subject: 'Payment' },
+    );
+    return res.refund;
+  },
+
+  /**
+   * Settle a refund nobody could confirm (owner's rule, 2026-09-15): `sent`
+   * when the owner found it in the gateway's dashboard, `not_sent` when it is
+   * not there. Same gate as `refundPayment`. 409 `refund_still_sending` inside
+   * the minute its gateway call could still be running, and
+   * `refund_not_unconfirmed` once something else has settled it.
+   */
+  async resolveRefund(refundId: string, outcome: 'sent' | 'not_sent'): Promise<ShopRefund> {
+    const res = await shopFetch<{ refund: ShopRefund }>(
+      `${BASE}/payments/refunds/${seg(refundId)}/resolve`,
+      { method: 'POST', body: { outcome }, id: refundId, subject: 'Refund' },
     );
     return res.refund;
   },

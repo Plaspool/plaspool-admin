@@ -669,6 +669,7 @@ describe('the admin surface', () => {
       amount: 5400,
       currency: 'USD',
       refundedTotal: 0,
+      unconfirmedRefunds: [],
       createdAt: T0,
       updatedAt: T0,
     };
