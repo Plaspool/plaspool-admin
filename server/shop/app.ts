@@ -21,6 +21,7 @@ import { addOnPort } from './catalog/add-ons/port';
 import { checkoutPaymentsPort } from './payments/port';
 import { orders } from './orders/routes';
 import { CourierConflictError } from './orders/repo/courier';
+import { BoxRefusedError } from './boxes/errors';
 import { drainCommerceEvents } from './orders/repo/consumer';
 import { adoptGuestOrders } from './orders/repo/orders';
 import { cartShopRoutes } from './cart/routes';
@@ -196,7 +197,10 @@ export function shopApp(opts: ShopAppOptions = {}): Hono<AppEnv> {
                  */
                 err instanceof CourierConflictError
                 ? { error: err.reason }
-                : null;
+                : /* Migration 1220: a box fill the database refused as a whole. */
+                  err instanceof BoxRefusedError
+                  ? { error: 'box_refused', reason: err.reason, short: err.short }
+                  : null;
 
     if (!body) return toResponse(err, requestId);
 

@@ -80,6 +80,8 @@ const RULES: readonly Rule[] = [
   { prefix: '/api/shop/admin/add-ons', domain: 'products' },
   { prefix: '/api/shop/admin/bulk-tiers', domain: 'products' },
   { prefix: '/api/shop/admin/tags', domain: 'products' },
+  /* Migration 1220. A mystery box's pool is catalogue data, read beside tags. */
+  { prefix: '/api/shop/admin/box-pools', domain: 'products' },
   /*
    * The sweep stays OUT of the table on purpose: its GET authenticates with
    * the cron bearer and carries no session (the gate never fires), and its

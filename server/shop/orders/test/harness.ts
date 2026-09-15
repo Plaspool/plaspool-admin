@@ -41,7 +41,8 @@ export const TEST_CURRENCY = 'USD';
  */
 export async function resetOrderTables(db: Db): Promise<void> {
   await db.execute(sql`
-    TRUNCATE shop_fulfillment_lines, shop_fulfillments, shop_order_email_intents,
+    TRUNCATE shop_box_fill_items, shop_box_fills,
+             shop_fulfillment_lines, shop_fulfillments, shop_order_email_intents,
              shop_order_events, shop_order_lines, shop_order_add_ons, shop_order_revisions, shop_orders,
              shop_order_event_consumptions, commerce_events`);
   /*

@@ -21,6 +21,7 @@ import {
   type ShopProduct,
   type ShopProductDetail,
   type ShopProductPatch,
+  type ShopPoolPreview,
   type ShopTag,
   type ShopVariant,
 } from '../../data/api-shop';
@@ -32,7 +33,7 @@ import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, EmptyState } from '../ui/primitives';
 import { Card } from '../ui/Card';
 import { Defs } from '../ui/Defs';
-import { AffixField, Checkbox, SelectField, TextArea, TextField } from '../ui/Field';
+import { AffixField, Checkbox, Radio, SelectField, TextArea, TextField, Toggle } from '../ui/Field';
 import { StoredImg, MediaManager, type MediaValue } from '../ui/Img';
 import { Menu, MenuItem, MenuSeparator } from '../ui/Menu';
 import { TableScroll } from '../ui/TableScroll';
@@ -124,6 +125,8 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
   const [seoDescription, setSeoDescription] = useState('');
   const [overview, setOverview] = useState('');
   const [bulkEnabled, setBulkEnabled] = useState(true);
+  /* Migration 1220. Whether this product sells as a mystery box. */
+  const [boxOn, setBoxOn] = useState(false);
   /* The shop-wide default, read once — the ladder shown while this product
      inherits, and what "Use the shop default" reverts to. */
   const [bulkTiers, setBulkTiers] = useState<BulkTier[]>([]);
@@ -190,6 +193,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
        own description. It goes in the placeholder instead. */
     setOverview(next?.overview ?? '');
     setBulkEnabled(next?.bulkDiscountEnabled ?? true);
+    setBoxOn((next?.boxMode ?? null) !== null);
     setDescription(next?.description ?? null);
     setDescDirty(false);
     setEditorKey((k) => k + 1);
@@ -413,6 +417,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
         seoDescription !== (product.seoDescription ?? '') ||
         overview !== (product.overview ?? '') ||
         bulkEnabled !== product.bulkDiscountEnabled ||
+        boxOn !== (product.boxMode !== null) ||
         descDirty
       : false;
 
@@ -430,6 +435,11 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
        stores as NULL, which means "go back to deriving it". */
     overview,
     bulkDiscountEnabled: bulkEnabled,
+    /* Migration 1220. Only when it moved, so an untouched product's save is
+       exactly what it was before boxes existed. */
+    ...(!create && product && boxOn !== (product.boxMode !== null)
+      ? { boxMode: boxOn ? ('pack' as const) : null }
+      : {}),
     /* `null` is an editor that never mounted or hydrated — omitting the key
        leaves the stored description alone, v1's own rule. */
     ...(description === null ? {} : { description }),
@@ -1009,6 +1019,53 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
             </Card>
           )}
 
+          {create || inTrash ? null : (
+            <Card title="Mystery box">
+              <Toggle
+                label="Sell this as a mystery box"
+                checked={boxOn}
+                onChange={(on) => {
+                  setBoxOn(on);
+                  /* A box is already priced as a deal, so bulk discounts start
+                     off the moment it becomes one. They can be switched back on. */
+                  if (on && product!.boxMode === null) setBulkEnabled(false);
+                }}
+              />
+              {boxOn ? (
+                <div className="stack stack--tight">
+                  <span className="field__label">When the contents get decided</span>
+                  <Radio
+                    name="box-mode"
+                    label="I pack it myself"
+                    hint="You choose what goes in after the order comes in."
+                    checked
+                    onChange={() => {}}
+                  />
+                  <Radio
+                    name="box-mode"
+                    label="I build boxes ahead"
+                    hint="Coming in a later update."
+                    checked={false}
+                    disabled
+                    onChange={() => {}}
+                  />
+                  <Radio
+                    name="box-mode"
+                    label="The shop picks at checkout"
+                    hint="Coming in a later update."
+                    checked={false}
+                    disabled
+                    onChange={() => {}}
+                  />
+                  <span className="field__hint">
+                    Each variant is filled from a pool of tagged products. Customers see what was
+                    inside once the parcel is delivered.
+                  </span>
+                </div>
+              ) : null}
+            </Card>
+          )}
+
           <Card title="Organisation">
             {namingCategory ? (
               <TextField
@@ -1108,6 +1165,7 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
       {variantModal !== 'closed' && product ? (
         <VariantModal
           product={product}
+          tags={bundle?.tags ?? []}
           variant={variantModal === 'new' ? null : variantModal}
           onClose={() => setVariantModal('closed')}
           onDone={() => {
@@ -1179,6 +1237,33 @@ function VariantsCard({
   const toast = useToast();
   const variants = product.variants;
 
+  /*
+   * MIGRATION 1220: HOW MANY MORE BOXES EACH POOL CAN FILL. One read per
+   * distinct pool, refreshed whenever the product reloads (a variant write, a
+   * stock change), because "Can fill" moves with stock the owner just edited.
+   */
+  const isBox = product.boxMode !== null;
+  const poolKey = isBox
+    ? [...new Set(variants.map((v) => v.boxPoolTag).filter((t): t is string => !!t))].join('\u0000')
+    : '';
+  const [pools, setPools] = useState<Record<string, number>>({});
+  useEffect(() => {
+    if (!poolKey) return;
+    const controller = new AbortController();
+    void Promise.all(
+      poolKey.split('\u0000').map((tag) =>
+        shopApi
+          .boxPool(tag, controller.signal)
+          .then((p) => [tag, p.freeUnits] as const)
+          .catch(() => null),
+      ),
+    ).then((rows) => {
+      if (controller.signal.aborted) return;
+      setPools(Object.fromEntries(rows.filter((r): r is readonly [string, number] => r !== null)));
+    });
+    return () => controller.abort();
+  }, [poolKey, product]);
+
   async function setVariantStatus(v: ShopVariant, status: 'active' | 'discontinued') {
     try {
       await shopApi.updateVariant(v.id, { status });
@@ -1217,6 +1302,13 @@ function VariantsCard({
             <thead>
               <tr>
                 <th scope="col">Variant</th>
+                {isBox ? (
+                  <>
+                    <th scope="col">Pool</th>
+                    <th scope="col" className="th--num">Items</th>
+                    <th scope="col" className="th--tight">Can fill</th>
+                  </>
+                ) : null}
                 <th scope="col" className="th--num">Price</th>
                 <th scope="col" className="th--num">Available</th>
                 <th scope="col" className="th--tight">Status</th>
@@ -1251,6 +1343,19 @@ function VariantsCard({
                       on the card, '' floats to the corner) is stated here
                       explicitly. Price and Available are the working surface
                       and Status the scan, so all three stay on the card. */}
+                  {isBox ? (
+                    <>
+                      <td data-label="Pool">
+                        {v.boxPoolTag ? <span className="tag">{v.boxPoolTag}</span> : <span className="muted">None</span>}
+                      </td>
+                      <td className="cell--num" data-label="Items">
+                        {v.boxItemCount ?? '—'}
+                      </td>
+                      <td className="cell--tight" data-label="Can fill" data-mobile="keep">
+                        <CanFill variant={v} pools={pools} />
+                      </td>
+                    </>
+                  ) : null}
                   <td className="cell--num" data-label="Price" data-mobile="keep">
                     {/* Keyed by the live value so a refresh restates the
                         editor's draft from what the server now holds. */}
@@ -1518,13 +1623,26 @@ function StockCell({ variant, onWrite }: { variant: ShopVariant; onWrite: () => 
 
 /* ════════════════════════════════════════════════════ VARIANT MODAL ════ */
 
+/** How many more boxes a variant's pool can fill, as a badge (migration 1220). */
+function CanFill({ variant, pools }: { variant: ShopVariant; pools: Record<string, number> }) {
+  if (!variant.boxPoolTag || !variant.boxItemCount) return <Badge tone="critical">No pool</Badge>;
+  const free = pools[variant.boxPoolTag];
+  if (free === undefined) return <span className="muted">—</span>;
+  const n = Math.floor(free / variant.boxItemCount);
+  if (n <= 0) return <Badge tone="critical">Sold out</Badge>;
+  return <Badge tone={n <= 2 ? 'warn' : 'ok'}>{n === 1 ? '1 more box' : `${n} more boxes`}</Badge>;
+}
+
 function VariantModal({
   product,
+  tags,
   variant,
   onClose,
   onDone,
 }: {
   product: ShopProductDetail;
+  /** Every tag on a product, for the mystery box pool choice. */
+  tags: ShopTag[];
   /** `null` creates. */
   variant: ShopVariant | null;
   onClose: () => void;
@@ -1532,6 +1650,31 @@ function VariantModal({
 }) {
   const toast = useToast();
   const creating = variant === null;
+
+  /*
+   * MIGRATION 1220: A BOX VARIANT'S POOL AND ITEM COUNT. The pool is a tag that
+   * already exists on products — a select, never free text, so a typo cannot
+   * make an empty pool. The preview answers the owner's real question: how many
+   * boxes can I sell?
+   */
+  const isBox = product.boxMode !== null;
+  const [poolTag, setPoolTag] = useState(variant?.boxPoolTag ?? '');
+  const [itemCount, setItemCount] = useState(
+    variant?.boxItemCount != null ? String(variant.boxItemCount) : '3',
+  );
+  const [pool, setPool] = useState<ShopPoolPreview | null>(null);
+  useEffect(() => {
+    if (!isBox || !poolTag) {
+      setPool(null);
+      return;
+    }
+    const controller = new AbortController();
+    shopApi.boxPool(poolTag, controller.signal).then(setPool, () => setPool(null));
+    return () => controller.abort();
+  }, [isBox, poolTag]);
+  const poolOptions = [...new Set([...tags.map((t) => t.name), ...(poolTag ? [poolTag] : [])])].sort();
+  const countNumber = Number(itemCount);
+  const countOk = Number.isInteger(countNumber) && countNumber >= 1;
 
   const [sku, setSku] = useState(variant?.sku ?? '');
   const [pairs, setPairs] = useState<{ k: string; v: string }[]>(() => {
@@ -1637,6 +1780,18 @@ function VariantModal({
       setError(`Cost per item: ${moneyRefusalMessage(costMinor.reason, currency)}`);
       return;
     }
+    if (isBox && !poolTag) {
+      setError('Choose the pool this box is filled from.');
+      return;
+    }
+    if (isBox && !countOk) {
+      setError('Items in each box is a whole number, 1 or more.');
+      return;
+    }
+    const boxPool = isBox ? { tag: poolTag, itemCount: countNumber } : undefined;
+    const poolMoved =
+      boxPool !== undefined &&
+      (variant?.boxPoolTag !== boxPool.tag || variant?.boxItemCount !== boxPool.itemCount);
     const stock = Number(onHand);
     if (creating && (!Number.isInteger(stock) || stock < 0)) {
       setError('Initial stock is a whole number of zero or more.');
@@ -1656,6 +1811,7 @@ function VariantModal({
           onHand: stock,
           compareAtMinor: compareAtMinor === null ? null : compareAtMinor.minor,
           costMinor: costMinor === null ? null : costMinor.minor,
+          ...(boxPool ? { boxPool } : {}),
         });
         toast.show(`${created.sku} added`);
       } else {
@@ -1671,6 +1827,7 @@ function VariantModal({
           /* Only when it moved: the flag lands on the inventory row, and a
              no-op write would still bump that row's clock. */
           ...(backorderable !== variant.backorderable ? { backorderable } : {}),
+          ...(poolMoved ? { boxPool } : {}),
         });
         toast.show(`${sku.trim() || variant.sku} updated`);
       }
@@ -1746,6 +1903,48 @@ function VariantModal({
             </Button>
           </div>
         </div>
+
+        {isBox ? (
+          <div className="stack stack--tight">
+            <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
+              <div style={{ flex: 2 }}>
+                <SelectField
+                  label="Pool"
+                  value={poolTag}
+                  hint="Products with this tag are what the box is filled from. Tag products on the product list."
+                  onChange={(e) => setPoolTag(e.target.value)}
+                >
+                  <option value="">Choose a tag…</option>
+                  {poolOptions.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </SelectField>
+              </div>
+              <div style={{ flex: 1 }}>
+                <TextField
+                  label="Items in each box"
+                  inputMode="numeric"
+                  value={itemCount}
+                  onChange={(e) => setItemCount(e.target.value)}
+                />
+              </div>
+            </div>
+            {pool ? (
+              <Banner
+                tone="info"
+                title={`${pool.items.length} ${pool.items.length === 1 ? 'product' : 'products'} in this pool, ${pool.freeUnits} in stock`}
+              >
+                {countOk
+                  ? `Enough to fill ${Math.floor(pool.freeUnits / countNumber)} more ${
+                      Math.floor(pool.freeUnits / countNumber) === 1 ? 'box' : 'boxes'
+                    } of ${countNumber}.`
+                  : 'Enter how many items go in each box.'}
+              </Banner>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
           <div style={{ flex: 1 }}>

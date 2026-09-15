@@ -38,4 +38,8 @@ export const ID = {
   orderAddOn: 'oao_',
   /** A row of `shop_order_revisions` — one save of a manual order (migration 1110). */
   orderRevision: 'orv_',
+  /** A row of `shop_box_fills` — one filled mystery box (migration 1220). */
+  boxFill: 'bxf_',
+  /** A row of `shop_box_fill_items` — one item packed in a box. */
+  boxFillItem: 'bxi_',
 } as const;

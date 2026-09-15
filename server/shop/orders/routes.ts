@@ -71,6 +71,8 @@ import {
 } from './repo/emails';
 import { MAX_SEARCH_LENGTH, readOrderByNumber, searchOrders } from '../admin/orders';
 import { readRestock, restockCancelledOrder } from './repo/restock';
+import { boxLinesFor, listBoxFills, revealedBoxes, saveBoxFill } from '../boxes/fills';
+import { returnBoxItemsToStock } from '../boxes/restock';
 
 /**
  * The HTTP surface (brief §6).
@@ -183,6 +185,15 @@ const LookupQuery = z
   .object({ token: str().max(4000).optional() })
   .strict();
 
+/** `PUT …/lines/:lineId/boxes/:boxNo` (migration 1220). */
+const BoxFillBody = z
+  .object({
+    variantIds: z.array(str().min(1).max(300)).min(1).max(1000),
+    /** `null` for a first fill; the stored `filledAt` when changing a box. */
+    expectedFilledAt: z.number().int().nullable(),
+  })
+  .strict();
+
 const FulfillmentBody = z
   .object({
     lines: z
@@ -274,6 +285,8 @@ const CancelBody = z
           )
           .max(1000),
         keptOutReason: str().max(1000).nullable().optional(),
+        /** Migration 1220. Items packed inside this order's filled mystery boxes that go back on the shelf. */
+        boxItemIds: z.array(str().min(1).max(300)).max(10_000).optional(),
       })
       .strict()
       .optional(),
@@ -321,11 +334,20 @@ function customerView(
   lines: OrderLine[],
   fulfillments?: Fulfillment[],
   addOns?: OrderAddOn[],
+  boxes?: Map<string, { title: string; optionValues: Record<string, string> }[][]>,
 ) {
   const { checkoutId: _checkout, paymentIntentId: _intent, ...rest } = order;
   return {
     order: rest,
-    lines,
+    /*
+     * MIGRATION 1220: A MYSTERY BOX'S CONTENTS, ONLY ONCE ITS PARCEL IS
+     * DELIVERED. Until then the line is just the box. This route is behind the
+     * customer's session or guest token, never on a public cached catalogue page.
+     */
+    lines: lines.map((l) => {
+      const revealed = boxes?.get(l.id);
+      return revealed ? { ...l, boxes: revealed.map((items) => ({ items })) } : l;
+    }),
     ...(fulfillments === undefined
       ? {}
       : { fulfillments: fulfillments.flatMap(customerFulfillmentView) }),
@@ -422,7 +444,8 @@ function registerCustomerRoutes(routes: Hono<AppEnv>, deps: Deps): void {
      * here through the same check, so both get the same body.
      */
     const fulfillments = await listFulfillments(currentDb(c), read.order.id);
-    return c.json(customerView(read.order, read.lines, fulfillments, read.addOns));
+    const boxes = await revealedBoxes(currentDb(c), { orderId: read.order.id });
+    return c.json(customerView(read.order, read.lines, fulfillments, read.addOns, boxes));
   });
 
   routes.get('/orders/:orderNumber/events', async (c) => {
@@ -578,6 +601,26 @@ function registerAdminRoutes(
     const read = await readOrderByNumber(db, orderNumber);
     if (!read) throw new NotFoundError(orderNumber);
     return c.json(await orderDetail(db, read, deps()));
+  });
+
+  /**
+   * `PUT /shop/admin/orders/:id/lines/:lineId/boxes/:boxNo` — fill one mystery
+   * box, or change what is in it (migration 1220). On the orders domain, like
+   * sending a parcel: it is packing.
+   */
+  routes.put('/admin/orders/:id/lines/:lineId/boxes/:boxNo', auth, async (c) => {
+    const db = currentDb(c);
+    const body = await readJson(c, BoxFillBody);
+    const fill = await saveBoxFill(db, {
+      orderId: pathParam(c, 'id'),
+      orderLineId: pathParam(c, 'lineId'),
+      boxNo: Number(pathParam(c, 'boxNo')),
+      variantIds: body.variantIds,
+      expectedFilledAt: body.expectedFilledAt,
+      actorId: currentUser(c).id,
+      now: deps().now(),
+    });
+    return c.json({ fill });
   });
 
   routes.post('/admin/orders/:id/fulfillments', auth, async (c) => {
@@ -1043,7 +1086,14 @@ function registerAdminRoutes(
           actorId: currentUser(c).id,
           now: deps().now(),
         });
-        return c.json({ order, restock });
+        /* Migration 1220: what was packed inside the order's mystery boxes. */
+        const boxItemsReturned = await returnBoxItemsToStock(db, {
+          orderId: read.order.id,
+          itemIds: body.restock.boxItemIds ?? [],
+          actorId: currentUser(c).id,
+          now: deps().now(),
+        });
+        return c.json({ order, restock: { ...restock, boxItemsReturned } });
       } catch (cause) {
         console.error('restock after cancel failed', read.order.id, cause);
         return c.json({ order, restock: { failed: true } });
@@ -1251,6 +1301,10 @@ async function orderDetail(db: Db, read: OrderRead, deps: ResolvedDeps) {
      * spreads `Order` and `OrderLine`, so neither carries these fields.
      */
     restock: await readRestock(db, read.order.id),
+    /* Migration 1220. Which lines are mystery boxes, and what is packed in the
+       filled ones. ADMIN ONLY: the customer sees contents only after delivery. */
+    boxLines: await boxLinesFor(db, read.order.id),
+    boxFills: await listBoxFills(db, read.order.id),
     fulfillments: await listFulfillments(db, read.order.id),
     timeline: await withActorNames(db, await listTimeline(db, read.order.id)),
     /*

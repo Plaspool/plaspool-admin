@@ -92,6 +92,8 @@ export const PRODUCT_COLUMNS: string[] = [
   'overview_fallback',
   /** Migration 0600. */
   'bulk_discount_enabled',
+  /* Migration 1220. */
+  'box_mode',
   'author_id',
   'revision',
 ];
@@ -118,6 +120,9 @@ export const VARIANT_COLUMNS: string[] = [
   'position',
   'weight_grams',
   'shipping_weight_grams',
+  /* Migration 1220. */
+  'box_pool_tag',
+  'box_item_count',
   'status',
   'image_id',
   'color_hex',
@@ -190,6 +195,8 @@ export function rowToProduct(row: Record<string, unknown>): Product {
      * switched off. The explicit comparison refuses to be clever about it.
      */
     bulkDiscountEnabled: row.bulk_discount_enabled === true || row.bulk_discount_enabled === 't',
+    /** Migration 1220. NULL is an ordinary product. */
+    boxMode: row.box_mode == null ? null : (String(row.box_mode) as Product['boxMode']),
     authorId: String(row.author_id),
     revision: Number(row.revision),
   };
@@ -309,6 +316,9 @@ export function rowToVariant(row: Record<string, unknown>): Variant {
      */
     shippingWeightGrams:
       row.shipping_weight_grams == null ? null : Number(row.shipping_weight_grams),
+    /** Migration 1220. Both null on an ordinary variant. */
+    boxPoolTag: row.box_pool_tag == null ? null : String(row.box_pool_tag),
+    boxItemCount: row.box_item_count == null ? null : Number(row.box_item_count),
     status: row.status as VariantStatus,
     /** Migration 0009. NULL until somebody uploads a photograph of this colour. */
     imageId: row.image_id == null ? null : String(row.image_id),

@@ -4,7 +4,10 @@ import { pathParam, readJson, readJsonOrEmpty, readQuery, str } from '../../midd
 import { requireAuth } from '../../middleware/session';
 import { currentDb, currentUser } from '../../app-env';
 import type { AppEnv } from '../../app-env';
-import { NotFoundError } from '../../repo/errors';
+import { BadRequestError, NotFoundError } from '../../repo/errors';
+import { boxCapacitySql, hasOpenBoxes, poolPreview } from '../boxes/capacity';
+import { canonicalTags } from './fold';
+import { sql } from 'drizzle-orm';
 import { money } from '../../../shared/commerce/money';
 import type { DocNode } from '../../../shared/types';
 import {
@@ -128,6 +131,8 @@ const ProductPatchBody = z
     overview: str().max(500).nullable(),
     /** Migration 0600. Absent leaves it alone; there is no "clear". */
     bulkDiscountEnabled: z.boolean(),
+    /** Migration 1220. `null` switches the box off. 'built' and 'auto' arrive in later phases. */
+    boxMode: z.enum(['pack']).nullable(),
   })
   .partial()
   .strict();
@@ -225,6 +230,12 @@ const CreateVariantBody = z
     /** What DELIVERY is priced on (migration 1180). Absent or `null` means
      *  "use `weightGrams`". Same bounds — it is the same unit and column type. */
     shippingWeightGrams: z.number().int().min(0).max(10_000_000).nullable().optional(),
+    /** Migration 1220. The pool tag and how many items one box holds. */
+    boxPool: z
+      .object({ tag: str().min(1).max(100), itemCount: z.number().int().min(1).max(1000) })
+      .strict()
+      .nullable()
+      .optional(),
     onHand: z.number().int().min(0).max(100_000_000).optional(),
     backorderable: z.boolean().optional(),
     /** The photograph of this colour (migration 0009). */
@@ -256,6 +267,11 @@ const UpdateVariantBody = z
     weightGrams: z.number().int().min(0).max(10_000_000).nullable(),
     /** `null` CLEARS the override, so delivery rejoins `weightGrams`. */
     shippingWeightGrams: z.number().int().min(0).max(10_000_000).nullable(),
+    /** Migration 1220. The pool tag and how many items one box holds. */
+    boxPool: z
+      .object({ tag: str().min(1).max(100), itemCount: z.number().int().min(1).max(1000) })
+      .strict()
+      .nullable(),
     status: z.enum(['active', 'discontinued']),
     /** `null` clears the colour photograph; a string sets it. */
     imageId: str().min(1).max(200).nullable(),
@@ -434,13 +450,19 @@ routes.get('/variants/:id/availability', async (c) => {
   const variant = await getVariant(db, id);
   if (!variant) throw new NotFoundError(id);
   const level = await getInventory(db, id);
+  /* Migration 1220. How many more boxes the pool can fill; null for an ordinary
+     variant. A box is only as available as the smaller of its own stock and that. */
+  const cap = await db.execute(sql`SELECT ${boxCapacitySql(sql`${id}::text`)} AS c`);
+  const canFill = cap.rows[0]?.c == null ? null : Number(cap.rows[0].c);
+  const available = level?.available ?? null;
   return c.json({
     variantId: id,
     // Null when the variant has no inventory row at all. A shop that renders
     // "0 left" for something nobody has stocked is telling the customer
     // something different from "we do not track this".
-    available: level?.available ?? null,
+    available: canFill === null || available === null ? available : Math.min(available, canFill),
     backorderable: level?.backorderable ?? false,
+    canFill,
   });
 });
 
@@ -663,8 +685,27 @@ routes.post('/admin/products', auth, async (c) => {
  * renders as a 409 carrying `expected`, `actual` AND the server's current
  * product — so an admin form's "load theirs" needs no second request (brief §4).
  */
+/**
+ * `GET /admin/box-pools/:tag` — what a mystery box pool holds (migration 1220):
+ * its in-stock items and how many units are free after what is already owed.
+ * The tag is folded to the catalogue's spelling first, as the pool itself is.
+ */
+routes.get('/admin/box-pools/:tag', auth, async (c) => {
+  const db = currentDb(c);
+  const tag = pathParam(c, 'tag');
+  const [canonical] = await canonicalTags(db, [tag]);
+  return c.json({ pool: await poolPreview(db, canonical ?? tag) });
+});
+
 routes.patch('/admin/products/:id', auth, async (c) => {
   const { patch, baseRevision, note } = await readJson(c, PatchBody);
+  /*
+   * MIGRATION 1220: A BOX WITH UNFILLED PAID ORDERS STAYS A BOX. Switching it
+   * off would turn those boxes into ordinary lines that ship empty.
+   */
+  if (patch.boxMode === null && (await hasOpenBoxes(currentDb(c), pathParam(c, 'id')))) {
+    throw new BadRequestError('box_has_open_orders');
+  }
   const product = await saveProduct(currentDb(c), pathParam(c, 'id'), toPatch(patch), {
     actor: currentUser(c),
     baseRevision,

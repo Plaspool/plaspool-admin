@@ -77,6 +77,8 @@ export interface Product {
   overviewFallback: string;
   /** Whether the quantity ladder applies here (migration 0600). Default true. */
   bulkDiscountEnabled: boolean;
+  /** Migration 1220. `null` is an ordinary product; `'pack'` a box staff fill by hand. */
+  boxMode: 'pack' | 'built' | 'auto' | null;
   authorId: string;
   /** The CAS token. Every write carries the revision it derived from. */
   revision: number;
@@ -189,6 +191,10 @@ export interface Variant {
    * between "same as the displayed weight" and a deliberate override.
    */
   shippingWeightGrams: number | null;
+  /** Migration 1220. The tag this box draws from; `null` on an ordinary variant. */
+  boxPoolTag: string | null;
+  /** Migration 1220. Items in one box; `null` exactly when `boxPoolTag` is. */
+  boxItemCount: number | null;
   status: VariantStatus;
   /**
    * The photograph of THIS option (migration 0009).
@@ -290,6 +296,8 @@ export interface ProductPatch {
   overview?: string | null;
   /** Absent leaves it alone; the column's own default is `true`. */
   bulkDiscountEnabled?: boolean;
+  /** Migration 1220. `null` switches the box off. Phase 1 accepts only `'pack'`. */
+  boxMode?: 'pack' | null;
 }
 
 /** The patchable half of a variant. `productId` is absent: a variant does not
@@ -302,6 +310,9 @@ export interface VariantPatch {
   /** `null` clears the override, so delivery rejoins `weightGrams`. Grams,
    *  non-negative int. Migration 1180. */
   shippingWeightGrams?: number | null;
+  /** Migration 1220. The pool a box variant draws from. `null` clears it, which
+   *  is refused on a box product. */
+  boxPool?: { tag: string; itemCount: number } | null;
   status?: VariantStatus;
   /** `null` clears it. Validated as a committed image, like a product's cover. */
   imageId?: string | null;

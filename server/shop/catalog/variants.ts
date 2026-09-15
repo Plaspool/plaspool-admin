@@ -5,7 +5,8 @@ import { BadRequestError, NotFoundError } from '../../repo/errors';
 import { rejectNul } from '../../repo/cursor';
 import { committedImageIds } from '../../repo/images';
 import { generateSku } from './sku';
-import { canonicalizeOptions, foldedTupleKey } from './fold';
+import { canonicalTags, canonicalizeOptions, foldedTupleKey } from './fold';
+import { hasOpenBoxes } from '../boxes/capacity';
 import { normalizeBlobId } from '../../repo/public-projection';
 import { VariantPreconditionFailedError } from './errors';
 import type { AuthUser } from '../../../shared/types';
@@ -106,6 +107,35 @@ export interface CreateVariantInput {
   compareAtMinor?: number | null;
   /** What the shop pays per unit, minor units (migration 0420). Admin-only. */
   costMinor?: number | null;
+  /** Migration 1220. Required on a box product, refused on any other. */
+  boxPool?: { tag: string; itemCount: number } | null;
+}
+
+/**
+ * The pool a variant may carry, decided against its PRODUCT's box mode
+ * (migration 1220). A box variant must name one; an ordinary variant must not.
+ *
+ * The tag is folded to the catalogue's stored spelling, so the pool query's
+ * `= ANY(tags)` matches what `canonicalTags` wrote onto the products. A tag no
+ * product carries yet is stored as typed: an empty pool is a sold-out box,
+ * which the admin shows, not an error.
+ */
+async function checkedBoxPool(
+  db: Db,
+  productId: string,
+  pool: { tag: string; itemCount: number } | null | undefined,
+): Promise<{ tag: string; itemCount: number } | null> {
+  const res = await db.execute(sql`SELECT box_mode FROM shop_products WHERE id = ${productId}`);
+  const isBox = res.rows[0]?.box_mode != null;
+  if (!pool) {
+    if (isBox) throw new BadRequestError('boxPool');
+    return null;
+  }
+  if (!isBox) throw new BadRequestError('boxPool');
+  if (!Number.isInteger(pool.itemCount) || pool.itemCount <= 0) throw new BadRequestError('boxPool');
+  const [tag] = await canonicalTags(db, [rejectNul(pool.tag.trim(), 'boxPool')]);
+  if (!tag) throw new BadRequestError('boxPool');
+  return { tag, itemCount: pool.itemCount };
 }
 
 /**
@@ -379,6 +409,7 @@ export async function createVariant(
     input.shippingWeightGrams ?? null,
     'shippingWeightGrams',
   );
+  const boxPool = await checkedBoxPool(db, productId, input.boxPool);
   await checkVariantImage(db, input.imageId);
 
   /*
@@ -400,12 +431,14 @@ export async function createVariant(
       ), ins AS (
         INSERT INTO shop_variants (id, product_id, sku, option_values, position,
                                    weight_grams, shipping_weight_grams,
+                                   box_pool_tag, box_item_count,
                                    status, image_id, color_hex,
                                    compare_at_minor, cost_minor,
                                    created_at, updated_at)
         SELECT ${id}, prod.id, ${sku},
                ${JSON.stringify(options)}::jsonb, ${position},
                ${input.weightGrams ?? null}, ${shippingWeightGrams},
+               ${boxPool?.tag ?? null}, ${boxPool?.itemCount ?? null},
                'active', ${input.imageId || null},
                ${colorHex}, ${compareAtMinor}, ${costMinor}, ${now}, ${now}
           FROM prod
@@ -492,6 +525,19 @@ export async function updateVariant(
     assignments.push(
       sql`shipping_weight_grams = ${checkedGrams(patch.shippingWeightGrams, 'shippingWeightGrams')}`,
     );
+  }
+  if (patch.boxPool !== undefined) {
+    /* Migration 1220. Clearing the pool of a box with unfilled paid orders would
+       leave those boxes with nothing to be filled from. */
+    const owner = await db.execute(sql`SELECT product_id FROM shop_variants WHERE id = ${id}`);
+    if (!owner.rows[0]) throw new NotFoundError(id);
+    const productId = String(owner.rows[0].product_id);
+    if (patch.boxPool === null && (await hasOpenBoxes(db, productId))) {
+      throw new BadRequestError('box_has_open_orders');
+    }
+    const pool = await checkedBoxPool(db, productId, patch.boxPool);
+    assignments.push(sql`box_pool_tag = ${pool?.tag ?? null}`);
+    assignments.push(sql`box_item_count = ${pool?.itemCount ?? null}`);
   }
   if (patch.status !== undefined) {
     assignments.push(sql`status = ${patch.status satisfies VariantStatus}`);

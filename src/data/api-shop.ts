@@ -388,6 +388,8 @@ export interface ShopProduct {
   overviewFallback: string;
   /** Whether the quantity ladder applies to this product (migration 0600). */
   bulkDiscountEnabled: boolean;
+  /** Migration 1220. `null` is an ordinary product; `'pack'` a mystery box staff fill by hand. */
+  boxMode: ShopBoxMode | null;
   authorId: string;
   /** The CAS token. Every save carries the revision it derived from. */
   revision: number;
@@ -464,6 +466,10 @@ export interface ShopVariantBase {
    * moment anybody touched anything else on the variant.
    */
   shippingWeightGrams: number | null;
+  /** Migration 1220. The tag a mystery box variant draws from; `null` on an ordinary variant. */
+  boxPoolTag: string | null;
+  /** Migration 1220. Items in one box; `null` exactly when `boxPoolTag` is. */
+  boxItemCount: number | null;
   status: VariantStatus;
   createdAt: number;
   updatedAt: number;
@@ -535,6 +541,8 @@ export interface ShopProductPatch {
   overview?: string | null;
   /** Absent leaves it alone — a boolean has no "clear" spelling. */
   bulkDiscountEnabled?: boolean;
+  /** Migration 1220. `null` switches the box off. Only `'pack'` is accepted today. */
+  boxMode?: 'pack' | null;
 }
 
 /** One rung of a quantity ladder (migration 0600). 10 000 bps is 100%. */
@@ -998,10 +1006,75 @@ export interface ShopRestockChoice {
   lines: { orderLineId: string; qty: number }[];
   /** Why the rest stays out. Optional; `null` or blank stores nothing. */
   keptOutReason: string | null;
+  /** Migration 1220. Items packed in this order's mystery boxes that go back on the shelf. */
+  boxItemIds?: string[];
 }
 
 /** The server's answer: units put back and lines refused, or that it failed after the cancel. */
-export type ShopRestockResult = { returned: number; refused: string[] } | { failed: true };
+export type ShopRestockResult =
+  | { returned: number; refused: string[]; boxItemsReturned?: number }
+  | { failed: true };
+
+// ----------------------------------------------------------- mystery boxes
+
+/** How a mystery box's contents get decided (migration 1220). Phase 1 ships `pack`. */
+export type ShopBoxMode = 'pack' | 'built' | 'auto';
+
+/** One product a pool can fill a box from. */
+export interface ShopPoolItem {
+  variantId: string;
+  productTitle: string;
+  sku: string;
+  optionValues: Record<string, string>;
+  colorHex: string | null;
+  imageId: string | null;
+  available: number;
+}
+
+/** A pool as the admin sees it: its in-stock items, and units free after what is owed. */
+export interface ShopPoolPreview {
+  tag: string;
+  freeUnits: number;
+  items: ShopPoolItem[];
+}
+
+export interface ShopBoxFillItem {
+  id: string;
+  position: number;
+  variantId: string;
+  sku: string;
+  title: string;
+  optionValues: Record<string, string>;
+  imageId: string | null;
+  returnedToStockAt: number | null;
+}
+
+/** One filled box on an order line. */
+export interface ShopBoxFill {
+  id: string;
+  orderLineId: string;
+  boxNo: number;
+  source: 'hand' | 'built' | 'auto' | 'backup';
+  /** The parcel it went out in; `null` until it is in one. */
+  fulfillmentId: string | null;
+  filledBy: string | null;
+  filledAt: number;
+  items: ShopBoxFillItem[];
+}
+
+/** An order line that is a mystery box, filled or not. */
+export interface ShopBoxLine {
+  orderLineId: string;
+  poolTag: string | null;
+  itemCount: number | null;
+}
+
+/** The 409 body when the database refused a fill as a whole. */
+export interface ShopBoxRefusal {
+  error: 'box_refused';
+  reason: 'box_short' | 'box_changed' | 'box_in_parcel';
+  short: string[];
+}
 
 export interface ShopOrderDetail {
   order: ShopOrder;
@@ -1024,6 +1097,10 @@ export interface ShopOrderDetail {
     lines: { orderLineId: string; returnedQty: number }[];
     keptOutReason: string | null;
   };
+  /** Migration 1220. Which lines are mystery boxes. Absent on older responses. */
+  boxLines?: ShopBoxLine[];
+  /** Migration 1220. What is packed in the filled boxes. Absent on older responses. */
+  boxFills?: ShopBoxFill[];
 }
 
 // ------------------------------------------------------------ manual orders
@@ -1947,6 +2024,8 @@ export const shopApi = {
       weightGrams?: number | null;
       /** Absent or `null` means "price delivery on `weightGrams`". */
       shippingWeightGrams?: number | null;
+      /** Migration 1220. Required on a mystery box product, refused on any other. */
+      boxPool?: { tag: string; itemCount: number } | null;
       onHand?: number;
       backorderable?: boolean;
       imageId?: string | null;
@@ -1974,6 +2053,8 @@ export const shopApi = {
       weightGrams?: number | null;
       /** `null` CLEARS the override, so delivery rejoins `weightGrams`. */
       shippingWeightGrams?: number | null;
+      /** Migration 1220. The mystery box pool and item count. */
+      boxPool?: { tag: string; itemCount: number } | null;
       status?: VariantStatus;
       /** `null` clears the colour photograph; a committed image id sets it. */
       imageId?: string | null;
@@ -2428,6 +2509,32 @@ export const shopApi = {
    * reused rather than re-invented. Same no-params, `.strict()` rule as
    * categories.
    */
+  /** What a mystery box pool holds now (migration 1220). */
+  async boxPool(tag: string, signal?: AbortSignal): Promise<ShopPoolPreview> {
+    const res = await shopFetch<{ pool: ShopPoolPreview }>(`${BASE}/box-pools/${seg(tag)}`, {
+      signal,
+    });
+    return res.pool;
+  },
+
+  /**
+   * Fill one mystery box, or change what is in it (migration 1220). A 409
+   * `box_refused` means nothing was saved: an item ran out, somebody else
+   * changed the box, or it is already in a parcel.
+   */
+  async saveBoxFill(
+    orderId: string,
+    lineId: string,
+    boxNo: number,
+    body: { variantIds: string[]; expectedFilledAt: number | null },
+  ): Promise<ShopBoxFill> {
+    const res = await shopFetch<{ fill: ShopBoxFill }>(
+      `${BASE}/orders/${seg(orderId)}/lines/${seg(lineId)}/boxes/${boxNo}`,
+      { method: 'PUT', body, id: orderId, subject: 'Order' },
+    );
+    return res.fill;
+  },
+
   async listTags(signal?: AbortSignal): Promise<ShopTag[]> {
     const res = await shopFetch<{ items: ShopTag[] }>(`${BASE}/tags`, { signal });
     return res.items ?? [];
