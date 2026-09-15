@@ -44,6 +44,7 @@ import SettingsShipping from './routes/SettingsShipping';
 import SettingsDeliveryCourier from './routes/SettingsDeliveryCourier';
 import SettingsTeam from './routes/SettingsTeam';
 import SettingsWriting from './routes/SettingsWriting';
+import SettingsMysteryBox from './routes/SettingsMysteryBox';
 import EmailBroadcasts from './routes/EmailBroadcasts';
 import EmailTemplates from './routes/EmailTemplates';
 import EmailSubscribers from './routes/EmailSubscribers';
@@ -249,6 +250,7 @@ const router = createHashRouter([
       { path: '/settings/delivery-courier', element: <SettingsDeliveryCourier /> },
       { path: '/settings/team', element: <SettingsTeam /> },
       { path: '/settings/writing', element: <SettingsWriting /> },
+      { path: '/settings/mystery-box', element: <SettingsMysteryBox /> },
 
       /* A typo lands on Home rather than on a blank. `replace`, so Back does
          not return to the URL that matched nothing. */
