@@ -38,6 +38,8 @@ export interface AdminReview {
   updatedAt: number;
   moderatedAt: number | null;
   moderatedBy: string | null;
+  /** Migration 1280. Absent on a response from before photos existed. */
+  photos?: AdminReviewPhoto[];
 }
 
 export interface ReviewPage {
@@ -169,4 +171,31 @@ export async function moderateReply(id: string, status: ReviewStatus): Promise<A
 /** Owner-only at the server; the UI hides it from everyone else. */
 export function destroyReply(id: string): Promise<{ ok: true }> {
   return apiFetch<{ ok: true }>(`/shop/replies/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// ------------------------------------------------- review links + photos (1280)
+
+/** A photo on a review. `url` is the staff route, so a pending review's photo loads too. */
+export interface AdminReviewPhoto {
+  id: string;
+  url: string;
+  width: number | null;
+  height: number | null;
+}
+
+export interface ReviewLink {
+  /** The storefront page the customer opens. */
+  url: string;
+  expiresAt: number;
+  productCount: number;
+}
+
+/**
+ * A fresh review link for one order, to send the customer by hand. Every call
+ * makes a new one; older ones keep working until they expire.
+ */
+export function createReviewLink(orderId: string): Promise<ReviewLink> {
+  return apiFetch<ReviewLink>(`/shop/admin/orders/${encodeURIComponent(orderId)}/review-link`, {
+    method: 'POST',
+  });
 }

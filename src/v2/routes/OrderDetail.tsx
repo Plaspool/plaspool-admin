@@ -46,6 +46,7 @@ import {
   stockReason,
 } from './manual-order-copy';
 import { countryName } from './countries';
+import { ReviewLinkCard } from './ReviewLinkCard';
 import {
   RESOLVE_REFUND_COPY,
   describeRefundError,
@@ -817,6 +818,8 @@ export default function OrderDetail() {
             ) : null}
           </Card>
 
+          <ReviewLinkCard orderId={order.id} status={order.status} />
+
           <Card title="Payment">
             <Defs
               rows={[
@@ -1055,6 +1058,8 @@ function ManualRail({ detail, itemCount }: { detail: ShopOrderDetail; itemCount:
         )}
         {hasAddress ? <AddressBlock label="Delivery address" addr={shownAddress} /> : null}
       </Card>
+
+      <ReviewLinkCard orderId={order.id} status={order.status} />
 
       <Card title="Payment">
         <Defs

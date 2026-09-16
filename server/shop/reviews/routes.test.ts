@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { sql } from 'drizzle-orm';
 import { freshDb } from '../../test/harness';
 import { TEST_ORIGIN, httpClient } from '../../test/http';
 import type { TestCtx } from '../../test/harness';
@@ -144,7 +145,7 @@ describe('the customer intake', () => {
     expect(body.status).toBe('pending');
     expect(body.sentiment).toBe('positive');
     // Narrow means narrow: no email travels back, no row shape leaks.
-    expect(Object.keys(body).sort()).toEqual(['reviewId', 'sentiment', 'status']);
+    expect(Object.keys(body).sort()).toEqual(['photoCount', 'reviewId', 'sentiment', 'status']);
   });
 
   it('rejects a rating outside 1–5 and a body below the floor', async () => {
@@ -344,12 +345,29 @@ describe('a signed-in customer, through the REAL composition root', () => {
     expect(await res.json()).toMatchObject({ error: 'bad_request', detail: 'account_email' });
   });
 
-  it('refuses when neither the account nor the body supplies a byline', async () => {
-    // `author_name` is NOT NULL and is rendered publicly, and three of four
-    // customers have no display name — so the body's value is a real path.
+  it('with no byline anywhere else, uses the FIRST name on the proving order', async () => {
+    // The live storefront never sends `authorName`, and most accounts have no
+    // display name — so without this every such customer got a 400.
+    const { id, cookie } = await signedInCustomer('nameless@example.com', null);
+    const { orderId } = await givePurchase(ctx.db, { slug: 'pla-basic', customerId: id });
+    const { authorName: _drop, ...noName } = submission();
+    void _drop;
+    const res = await anon.post(SUBMIT, noName, withCookie(cookie));
+    expect(res.status).toBe(201);
+    const { reviewId } = (await res.json()) as { reviewId: string };
+    const row = await ctx.db.execute(sql`SELECT author_name FROM shop_reviews WHERE id = ${reviewId}`);
+    /* 'Test Buyer' on the fixture's address: the first word only, never the surname. */
+    expect(row.rows[0]!.author_name).toBe('Test');
+    void orderId;
+  });
+
+  it('still refuses when the account, the body AND the order all lack a name', async () => {
     // Deriving one from the email would publish half of an address the public
     // projection deliberately never returns.
-    const { cookie } = await signedInCustomer('nameless@example.com', null);
+    const { id, cookie } = await signedInCustomer('reallynameless@example.com', null);
+    const { orderId } = await givePurchase(ctx.db, { slug: 'pla-basic', customerId: id });
+    await ctx.db.execute(sql`
+      UPDATE shop_orders SET shipping_address = shipping_address - 'name' WHERE id = ${orderId}`);
     const { authorName: _drop, ...noName } = submission();
     void _drop;
     const res = await anon.post(SUBMIT, noName, withCookie(cookie));
