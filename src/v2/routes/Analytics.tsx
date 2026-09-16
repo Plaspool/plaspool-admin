@@ -529,6 +529,48 @@ export default function Analytics() {
 
   const showSkeletons = loading || data === null;
 
+  /* ── profit ──────────────────────────────────────────────────────────────
+     Only units with a cost count toward profit — an item nobody priced the
+     cost of is not free, and treating it as free would inflate the number. */
+  const profit = data?.profit ?? null;
+  const uncosted = profit === null ? 0 : profit.units - profit.costedUnits;
+  const profitRows: DefRow[] =
+    profit === null
+      ? []
+      : [
+          {
+            label: 'Sales of costed items',
+            value: <span className="num">{money(profit.costedSales, ANALYTICS_CURRENCY)}</span>,
+          },
+          {
+            label: 'What those items cost you',
+            value: <span className="num">{deduction(profit.cost)}</span>,
+          },
+          {
+            label: 'Profit',
+            value: (
+              <span className="num" style={profit.profit < 0 ? { color: 'var(--critical)' } : undefined}>
+                {money(profit.profit, ANALYTICS_CURRENCY)}
+              </span>
+            ),
+            total: true,
+          },
+          {
+            label: 'Profit margin',
+            value: (
+              <span className="num">
+                {profit.costedSales > 0
+                  ? `${((profit.profit / profit.costedSales) * 100).toFixed(1)}%`
+                  : '—'}
+              </span>
+            ),
+          },
+          {
+            label: 'Items sold',
+            value: <span className="num">{profit.units}</span>,
+          },
+        ];
+
   /* ── the receipt ────────────────────────────────────────────────────────
      Top to bottom the way an order prints: item prices, what came off, what
      was added, what was charged, what went back, what was kept. The two
@@ -615,6 +657,36 @@ export default function Analytics() {
               />
             )}
           </Card>
+
+          {/* ── profit on products ──────────────────────────────────── */}
+          {showSkeletons ? null : profit === null ? null : (
+            <Card title="Profit on products">
+              {profit.costedUnits === 0 ? (
+                <EmptyState
+                  title={profit.units === 0 ? 'No sales in this period' : 'No cost prices yet'}
+                  body={
+                    profit.units === 0
+                      ? 'Profit shows here once something sells.'
+                      : 'Add a cost price to your variants and profit shows here from the next sale.'
+                  }
+                />
+              ) : (
+                <Defs rows={profitRows} />
+              )}
+              <p className="muted" style={{ fontSize: 'var(--t-xs)', marginTop: 'var(--s3)' }}>
+                Item prices minus what each item cost you, before delivery, VAT and refunds.
+                {uncosted > 0
+                  ? ` ${uncosted} ${uncosted === 1 ? 'item has' : 'items have'} no cost recorded, so ${uncosted === 1 ? 'it is' : 'they are'} left out of profit.`
+                  : ''}
+                {profit.estimatedUnits > 0
+                  ? ` ${profit.estimatedUnits} ${profit.estimatedUnits === 1 ? 'item was' : 'items were'} sold before costs were saved on orders, so ${profit.estimatedUnits === 1 ? 'it uses' : 'they use'} today’s cost.`
+                  : ''}
+              </p>
+              <div style={{ marginTop: 'var(--s3)' }}>
+                <ButtonLink to="/analytics/products">Profit by product</ButtonLink>
+              </div>
+            </Card>
+          )}
 
           {/* ── the receipt, the status donut and the best-sellers teaser ── */}
           <div

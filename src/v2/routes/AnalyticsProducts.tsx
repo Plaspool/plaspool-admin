@@ -104,6 +104,46 @@ export default function AnalyticsProducts() {
       render: (r) => <strong className="num">{money(r.gross, ANALYTICS_CURRENCY)}</strong>,
     },
     {
+      key: 'cost',
+      header: 'Cost',
+      label: 'Cost',
+      numeric: true,
+      render: (r) =>
+        r.cost === undefined || !r.costedUnits ? (
+          <span className="muted">No cost</span>
+        ) : (
+          <span className="num">{money(r.cost, ANALYTICS_CURRENCY)}</span>
+        ),
+    },
+    {
+      key: 'profit',
+      header: 'Profit',
+      label: 'Profit',
+      numeric: true,
+      mobile: 'keep',
+      /* Over the costed units only, with the margin beneath. A row where some
+         units had no cost says so rather than reading as a clean figure. */
+      render: (r) => {
+        if (r.cost === undefined || !r.costedUnits || r.costedGross === undefined) {
+          return <span className="muted">—</span>;
+        }
+        const profit = r.costedGross - r.cost;
+        const margin = r.costedGross > 0 ? `${((profit / r.costedGross) * 100).toFixed(1)}%` : '—';
+        const partial = r.costedUnits < r.units;
+        return (
+          <span className="num" style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+            <strong style={profit < 0 ? { color: 'var(--critical)' } : undefined}>
+              {money(profit, ANALYTICS_CURRENCY)}
+            </strong>
+            <span className="muted" style={{ fontSize: 'var(--t-xs)' }}>
+              {margin}
+              {partial ? ` · ${r.costedUnits} of ${r.units} costed` : ''}
+            </span>
+          </span>
+        );
+      },
+    },
+    {
       key: 'share',
       header: 'Share of sales',
       label: 'Share of sales',
@@ -163,7 +203,8 @@ export default function AnalyticsProducts() {
             rows.length > 0 ? (
               <div className="tfoot">
                 <span>
-                  Total sales from paid orders in this period, before refunds. Refunds apply to whole
+                  Total sales from paid orders in this period, before refunds. Profit is sales minus
+                  what the items cost you, counted only for items with a cost. Refunds apply to whole
                   orders, so they are shown on the Analytics page rather than per product.
                 </span>
               </div>

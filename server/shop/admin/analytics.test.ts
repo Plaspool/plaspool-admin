@@ -68,6 +68,7 @@ async function cloneOrder(
   n: number,
   at: number,
   refunded = 0,
+  withLines = true,
 ): Promise<void> {
   const id = `ord_clone_${n}`;
   /* Column lists on BOTH sides — a positional clone would silently shear the
@@ -88,6 +89,7 @@ async function cloneOrder(
            payment_intent_id, source_event_id || ${'_c' + n},
            lifecycle_generation
       FROM shop_orders WHERE id = ${sourceId}`);
+  if (!withLines) return;
   await ctx.db.execute(sql`
     INSERT INTO shop_order_lines (id, order_id, line_no, variant_id, sku, title,
                                   option_values, qty, unit_amount, line_total,
@@ -193,6 +195,38 @@ describe('GET /api/shop/admin/analytics', () => {
     expect(first.units).toBeGreaterThan(0);
     expect(first.gross).toBeGreaterThan(0);
     expect(typeof first.title).toBe('string');
+  });
+
+  /* Migration 1300: cost is the one frozen on the line, and a line with no cost
+   * anywhere is left OUT of profit rather than counted as free. */
+  it('prices profit off the cost frozen on each line, and never treats an uncosted item as free', async () => {
+    const REAL = Date.now();
+    const { id } = await pipelineOrder(REAL);
+    /* The pipeline line keeps whatever the catalogue had; force a known shape by
+     * cloning the order bare and writing lines with explicit costs (the lines
+     * table refuses UPDATE and DELETE). */
+    await cloneOrder(id, 7, REAL - DAY, 0, false);
+    await ctx.db.execute(sql`
+      INSERT INTO shop_order_lines (id, order_id, line_no, variant_id, sku, title,
+                                    option_values, qty, unit_amount, line_total,
+                                    fulfilled_qty, unit_cost_minor)
+      VALUES ('lin_cost_a', 'ord_clone_7', 0, 'var_no_such_a', 'COST-A', 'Costed', '{}'::jsonb,
+              2, 5000, 10000, 0, 3000),
+             ('lin_cost_b', 'ord_clone_7', 1, 'var_no_such_b', 'COST-B', 'Uncosted', '{}'::jsonb,
+              1, 7000, 7000, 0, NULL)`);
+
+    const c = await login(ctx.users.owner);
+    const body = await json<ShopAnalytics>(await c.get('/api/shop/admin/analytics?days=7'));
+
+    const a = body.topProducts.find((r) => r.sku === 'COST-A')!;
+    expect(a).toMatchObject({ units: 2, gross: 10000, costedUnits: 2, costedGross: 10000, cost: 6000, estimatedUnits: 0 });
+    const b = body.topProducts.find((r) => r.sku === 'COST-B')!;
+    expect(b).toMatchObject({ units: 1, gross: 7000, costedUnits: 0, costedGross: 0, cost: 0 });
+
+    /* The window total includes both, and profit covers only the costed one. */
+    expect(body.profit.units).toBe(body.totals.items);
+    expect(body.profit.costedSales - body.profit.cost).toBe(body.profit.profit);
+    expect(body.profit.costedUnits).toBeLessThan(body.profit.units);
   });
 
   it('refuses a range it does not offer, and the analytics-less roles', async () => {

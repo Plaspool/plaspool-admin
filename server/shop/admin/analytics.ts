@@ -114,6 +114,32 @@ export interface AnalyticsProductRow {
   title: string;
   units: number;
   gross: number;
+  /**
+   * PROFIT, COUNTED ONLY WHERE A COST IS KNOWN (migration 1300). `costedUnits`
+   * and `costedGross` are the part of `units`/`gross` that has a cost, and
+   * `cost` is what those units cost us — so `costedGross - cost` is honest
+   * profit, and never pretends an item with no cost was free.
+   *
+   * A line's cost is the one frozen onto it at sale time; lines sold before
+   * 1300 fall back to the variant's cost TODAY, and `estimatedUnits` counts
+   * those so the screen can say so.
+   */
+  costedUnits: number;
+  costedGross: number;
+  cost: number;
+  estimatedUnits: number;
+}
+
+/** Item profit over the window, same rules as the per-product row. */
+export interface AnalyticsProfit {
+  sales: number;
+  costedSales: number;
+  cost: number;
+  /** costedSales - cost. */
+  profit: number;
+  units: number;
+  costedUnits: number;
+  estimatedUnits: number;
 }
 
 export interface ShopAnalytics {
@@ -125,6 +151,8 @@ export interface ShopAnalytics {
     /** Sales (item prices) over orders, minor units, 0 when there were none. */
     averageOrder: number;
   };
+  /** Item sales against what those items cost. Before delivery, tax and refunds. */
+  profit: AnalyticsProfit;
   revenueByDay: AnalyticsDay[];
   ordersByStatus: AnalyticsStatusRow[];
   /**
@@ -197,7 +225,7 @@ export async function shopAnalytics(
 ): Promise<ShopAnalytics> {
   const since = a.now - a.days * DAY_MS;
 
-  const [byDay, byStatus, totals, products, bySource, byChannel, byMethod] = await Promise.all([
+  const [byDay, byStatus, totals, products, bySource, byChannel, byMethod, profit] = await Promise.all([
     db.execute(sql`
       SELECT ${WAT_DAY} AS day,
              ${MONEY_COLUMNS},
@@ -229,9 +257,11 @@ export async function shopAnalytics(
       SELECT l.variant_id, l.sku,
              max(l.title) AS title,
              sum(l.qty)::int AS units,
-             sum(l.line_total)::bigint AS gross
+             sum(l.line_total)::bigint AS gross,
+             ${LINE_COST_COLUMNS}
         FROM shop_order_lines l
         JOIN shop_orders o ON o.id = l.order_id
+        LEFT JOIN shop_variants v ON v.id = l.variant_id
        WHERE o.paid_at IS NOT NULL AND o.paid_at >= ${since}
        GROUP BY l.variant_id, l.sku
        ORDER BY gross DESC, units DESC, l.sku ASC
@@ -262,6 +292,16 @@ export async function shopAnalytics(
         FROM shop_orders o
        WHERE o.source = 'manual' AND o.paid_at IS NOT NULL AND o.paid_at >= ${since}
        GROUP BY 1 ORDER BY charged DESC, 1 ASC`),
+    /* The whole window, uncapped — the product table stops at 200 rows and a
+     * total summed off it would quietly miss the rest. */
+    db.execute(sql`
+      SELECT COALESCE(sum(l.qty), 0)::int AS units,
+             COALESCE(sum(l.line_total), 0)::bigint AS gross,
+             ${LINE_COST_COLUMNS}
+        FROM shop_order_lines l
+        JOIN shop_orders o ON o.id = l.order_id
+        LEFT JOIN shop_variants v ON v.id = l.variant_id
+       WHERE o.paid_at IS NOT NULL AND o.paid_at >= ${since}`),
   ]);
 
   const totalRow = totals.rows[0] ?? {};
@@ -277,6 +317,19 @@ export async function shopAnalytics(
       items: Number(totalRow.items ?? 0),
       averageOrder: orders === 0 ? 0 : Math.round(money.sales / orders),
     },
+    profit: (() => {
+      const row = profit.rows[0] ?? {};
+      const c = readLineCost(row);
+      return {
+        sales: Number(row.gross ?? 0),
+        costedSales: c.costedGross,
+        cost: c.cost,
+        profit: c.costedGross - c.cost,
+        units: Number(row.units ?? 0),
+        costedUnits: c.costedUnits,
+        estimatedUnits: c.estimatedUnits,
+      };
+    })(),
     revenueByDay: byDay.rows.map((row) => ({
       day: String(row.day),
       ...readMoney(row),
@@ -304,7 +357,32 @@ export async function shopAnalytics(
       title: String(row.title),
       units: Number(row.units),
       gross: Number(row.gross),
+      ...readLineCost(row),
     })),
+  };
+}
+
+/**
+ * A line's unit cost: the snapshot taken when it sold, else the variant's cost
+ * now. Over shop_order_lines l LEFT JOIN shop_variants v. A variant since
+ * deleted with no snapshot simply has no cost, and is left out of profit.
+ */
+const LINE_UNIT_COST = 'COALESCE(l.unit_cost_minor, v.cost_minor)';
+const LINE_COST_COLUMNS = sql.raw(
+  [
+    `COALESCE(sum(l.qty) FILTER (WHERE ${LINE_UNIT_COST} IS NOT NULL), 0)::int AS costed_units`,
+    `COALESCE(sum(l.line_total) FILTER (WHERE ${LINE_UNIT_COST} IS NOT NULL), 0)::bigint AS costed_gross`,
+    `COALESCE(sum(l.qty::bigint * ${LINE_UNIT_COST}), 0)::bigint AS cost`,
+    `COALESCE(sum(l.qty) FILTER (WHERE l.unit_cost_minor IS NULL AND v.cost_minor IS NOT NULL), 0)::int AS estimated_units`,
+  ].join(', '),
+);
+
+function readLineCost(row: Record<string, unknown>) {
+  return {
+    costedUnits: Number(row.costed_units ?? 0),
+    costedGross: Number(row.costed_gross ?? 0),
+    cost: Number(row.cost ?? 0),
+    estimatedUnits: Number(row.estimated_units ?? 0),
   };
 }
 

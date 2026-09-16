@@ -294,9 +294,9 @@ export async function createManualOrder(
           -- Already handed over, so every unit is sent out: fulfilled_qty equals qty.
           INSERT INTO shop_order_lines (id, order_id, line_no, variant_id, sku, title,
                                         option_values, qty, unit_amount, line_total,
-                                        fulfilled_qty, image_id)
+                                        fulfilled_qty, image_id, unit_cost_minor)
           SELECT l.id, ord.id, l.line_no, l.variant_id, l.sku, l.title,
-                 l.option_values, l.qty, l.unit_amount, l.line_total, l.qty, v.image_id
+                 l.option_values, l.qty, l.unit_amount, l.line_total, l.qty, v.image_id, v.cost_minor
             FROM ord, jsonb_to_recordset(${jsonb(lineRows(lines, 0))}) AS l(
                    id text, line_no integer, variant_id text, sku text, title text,
                    option_values jsonb, qty integer, unit_amount integer, line_total integer)
@@ -390,9 +390,9 @@ export async function updateManualOrder(
     ), ins_lines AS (
       INSERT INTO shop_order_lines (id, order_id, line_no, variant_id, sku, title,
                                     option_values, qty, unit_amount, line_total,
-                                    fulfilled_qty, image_id)
+                                    fulfilled_qty, image_id, unit_cost_minor)
       SELECT l.id, upd.id, l.line_no + (SELECT n FROM offset_no), l.variant_id, l.sku, l.title,
-             l.option_values, l.qty, l.unit_amount, l.line_total, l.qty, v.image_id
+             l.option_values, l.qty, l.unit_amount, l.line_total, l.qty, v.image_id, v.cost_minor
         FROM upd, jsonb_to_recordset(${jsonb(lineRows(lines, 0))}) AS l(
                id text, line_no integer, variant_id text, sku text, title text,
                option_values jsonb, qty integer, unit_amount integer, line_total integer)
