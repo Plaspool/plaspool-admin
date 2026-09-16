@@ -217,3 +217,45 @@ export const shopReviewReactions = pgTable(
 
 export type DbShopReviewReply = typeof shopReviewReplies.$inferSelect;
 export type DbShopReviewReaction = typeof shopReviewReactions.$inferSelect;
+
+/**
+ * PHOTOS ON A REVIEW (migration 1280).
+ *
+ * Uploaded BEFORE the review exists, so `reviewId` is null until the submit
+ * attaches it. `uploaderKey` is who may attach it — `cus:<customer id>` or
+ * `ord:<order id>` for a review link — and a photo nobody attaches is never
+ * served.
+ *
+ * NO `status` OF ITS OWN. A photo is public exactly while its review is
+ * approved, decided at serve time, so moderation has one switch and not two.
+ */
+export const shopReviewPhotos = pgTable(
+  'shop_review_photos',
+  {
+    id: text('id').primaryKey(),
+    reviewId: text('review_id').references(() => shopReviews.id, { onDelete: 'cascade' }),
+    uploaderKey: text('uploader_key').notNull(),
+    storageKey: text('storage_key').notNull().unique('shop_review_photos_storage_key_uq'),
+    contentType: text('content_type')
+      .$type<'image/jpeg' | 'image/png' | 'image/webp'>()
+      .notNull(),
+    byteSize: integer('byte_size').notNull(),
+    width: integer('width'),
+    height: integer('height'),
+    position: integer('position').notNull().default(0),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  },
+  (t) => [
+    index('shop_review_photos_review_idx').on(t.reviewId, t.position),
+    index('shop_review_photos_uploader_idx').on(t.uploaderKey, t.createdAt),
+    check(
+      'shop_review_photos_type_ck',
+      sql`${t.contentType} IN ('image/jpeg', 'image/png', 'image/webp')`,
+    ),
+    check('shop_review_photos_size_ck', sql`${t.byteSize} > 0`),
+    check('shop_review_photos_position_ck', sql`${t.position} BETWEEN 0 AND 3`),
+    check('shop_review_photos_uploader_ck', sql`${t.uploaderKey} ~ '^(cus|ord):.+$'`),
+  ],
+);
+
+export type DbShopReviewPhoto = typeof shopReviewPhotos.$inferSelect;

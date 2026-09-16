@@ -519,6 +519,13 @@
                         "when":  1786600005810,
                         "tag":  "1260_mystery_box_page",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  74,
+                        "version":  "7",
+                        "when":  1786600005830,
+                        "tag":  "1280_review_photos",
+                        "breakpoints":  true
                     }
                 ]
 }

@@ -304,3 +304,25 @@ export async function deleteObject(key: string): Promise<void> {
     throw err;
   }
 }
+
+/**
+ * Write a whole object from the server.
+ *
+ * THE ONE PATH WHERE BYTES PASS THROUGH THIS SERVER, and it exists for review
+ * photos (migration 1280). A customer's upload is untrusted in a way a staff
+ * upload is not, and it usually comes off a phone carrying GPS coordinates, so
+ * the server has to hold the bytes to strip that before they are stored. The
+ * staff path keeps its presigned PUT.
+ */
+export async function putObject(key: string, bytes: Uint8Array, contentType: string): Promise<void> {
+  const { client: s3, bucket: name } = r2();
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: name,
+      Key: key,
+      Body: bytes,
+      ContentType: contentType,
+      ContentLength: bytes.byteLength,
+    }),
+  );
+}

@@ -1,10 +1,12 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { readQuery, str } from '../../middleware/errors';
-import { BadRequestError } from '../../repo/errors';
+import { pathParam, readQuery, str } from '../../middleware/errors';
+import { BadRequestError, NotFoundError } from '../../repo/errors';
 import { currentDb } from '../../app-env';
 import { listReviewsPublic, productAggregate, productAggregates } from './repo';
 import { reactionCounts, repliesFor } from './threads';
+import { photoStorage, photosForReviews } from './photos';
+import { R2NotConfiguredError, presignGet } from '../../storage/r2';
 import type { AppEnv } from '../../app-env';
 
 /**
@@ -112,7 +114,12 @@ export function createReviewPublicRoutes(): Hono<AppEnv> {
     const ids = page.items.map((r) => r.id);
     /* Two statements, batched across the page rather than per review — a reply
        query per row is the N+1 `listVariantsForProducts` exists to avoid. */
-    const [replies, counts] = await Promise.all([repliesFor(db, ids), reactionCounts(db, ids)]);
+    const [replies, counts, photos] = await Promise.all([
+      repliesFor(db, ids),
+      reactionCounts(db, ids),
+      /* Migration 1280. Every item here is approved, so every photo on it is public. */
+      photosForReviews(db, ids),
+    ]);
 
     c.header('cache-control', CACHE);
     c.header(CORS_HEADER, CORS_VALUE);
@@ -122,8 +129,35 @@ export function createReviewPublicRoutes(): Hono<AppEnv> {
         ...review,
         replies: replies.get(review.id) ?? [],
         helpfulCount: counts.get(review.id)?.helpful ?? 0,
+        photos: photos.get(review.id) ?? [],
       })),
     });
+  });
+
+  /**
+   * ONE REVIEW PHOTO (migration 1280), as a redirect to a short signed R2 URL —
+   * the same shape as `/public/images/:id`.
+   *
+   * ONLY WHILE ITS REVIEW IS APPROVED. An unattached photo, or one on a pending
+   * or turned-down review, is the same 404 as an id that never existed.
+   *
+   * The redirect is cached for a minute, well inside the signed URL's five, so
+   * a shared cache can never hand out a URL that has already expired — and
+   * turning a review down reaches readers within that minute.
+   */
+  routes.get('/public/reviews/photos/:id', async (c) => {
+    const photo = await photoStorage(currentDb(c), pathParam(c, 'id'), true);
+    if (!photo) throw new NotFoundError('photo');
+    let url: string;
+    try {
+      url = await presignGet(photo.storageKey);
+    } catch (err) {
+      if (err instanceof R2NotConfiguredError) throw new BadRequestError('storage');
+      throw err;
+    }
+    c.header('cache-control', 'public, max-age=60, s-maxage=60');
+    c.header(CORS_HEADER, CORS_VALUE);
+    return c.redirect(url, 302);
   });
 
   /**
