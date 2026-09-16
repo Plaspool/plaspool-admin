@@ -83,8 +83,8 @@ export function PricingFields({
   const original = parse(values.original);
 
   const profitHint = (() => {
-    if (price === null) return 'What one costs you to make or buy. Only you see this.';
-    if (cost === null) return 'Add it to see your profit on each sale. Only you see this.';
+    if (price === null) return 'What one costs you to make or buy. Customers never see it.';
+    if (cost === null) return 'Add it to see your profit on each sale. Customers never see it.';
     const profit = price - cost;
     if (price === 0) return `${money(profit, currency)} profit on each sale.`;
     const pct = Math.round((profit / price) * 1000) / 10;
@@ -93,12 +93,11 @@ export function PricingFields({
       : `${money(profit, currency)} profit on each sale (${pct}% margin).`;
   })();
 
+  const originalTooLow = original !== null && price !== null && original <= price;
   const originalHint =
-    original !== null && price !== null && original <= price
-      ? `Must be higher than ${money(price, currency)}.`
-      : original !== null && price !== null
+    original !== null && price !== null && !originalTooLow
         ? `Customers see ${money(original, currency)} crossed out, saving ${money(original - price, currency)}.`
-        : 'Optional. A higher price shown crossed out, so customers see a saving.';
+        : 'Shown crossed out beside the price, so customers see a saving.';
 
   /* The owner's quick-fill rules (2026-08-25): original offers price +20%,
      cost offers price −15%, both rounded to the whole naira. Offers only — Tab
@@ -114,7 +113,7 @@ export function PricingFields({
             label="Price"
             currency={currency}
             value={values.price}
-            hint="What customers pay in your shop."
+            hint={price === null ? 'What customers pay. Needed before this can go on sale.' : 'What customers pay in your shop.'}
             onChange={(e) => set('price')(e.target.value)}
           />
         </div>
@@ -136,7 +135,8 @@ export function PricingFields({
             label="Original price (optional)"
             currency={currency}
             value={values.original}
-            hint={originalHint}
+            hint={originalTooLow ? undefined : originalHint}
+            error={originalTooLow ? `Must be higher than ${money(price!, currency)}, or left empty.` : undefined}
             suggestion={price !== null ? plainMajor(roundNaira(price * 1.2), currency) : undefined}
             onSuggest={set('original')}
             onChange={(e) => set('original')(e.target.value)}

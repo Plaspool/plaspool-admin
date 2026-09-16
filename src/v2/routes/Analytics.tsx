@@ -661,7 +661,18 @@ export default function Analytics() {
           {/* ── profit on products ──────────────────────────────────── */}
           {showSkeletons ? null : profit === null ? null : (
             <Card title="Profit on products">
-              <Defs rows={profitRows} />
+              {profit.costedUnits === 0 ? (
+                <EmptyState
+                  title={profit.units === 0 ? 'No sales in this period' : 'No cost prices yet'}
+                  body={
+                    profit.units === 0
+                      ? 'Profit shows here once something sells.'
+                      : 'Add a cost price to your variants and profit shows here from the next sale.'
+                  }
+                />
+              ) : (
+                <Defs rows={profitRows} />
+              )}
               <p className="muted" style={{ fontSize: 'var(--t-xs)', marginTop: 'var(--s3)' }}>
                 Item prices minus what each item cost you, before delivery, VAT and refunds.
                 {uncosted > 0

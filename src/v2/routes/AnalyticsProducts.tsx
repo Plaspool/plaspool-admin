@@ -110,7 +110,7 @@ export default function AnalyticsProducts() {
       numeric: true,
       render: (r) =>
         r.cost === undefined || !r.costedUnits ? (
-          <span className="muted">Not set</span>
+          <span className="muted">No cost</span>
         ) : (
           <span className="num">{money(r.cost, ANALYTICS_CURRENCY)}</span>
         ),
