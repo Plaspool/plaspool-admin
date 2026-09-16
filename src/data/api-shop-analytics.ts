@@ -89,6 +89,26 @@ export interface AnalyticsProductRow {
   /** GROSS line revenue, minor units — refunds are order-level and cannot be
    *  pinned to a line honestly, so they are netted in `totals`, not here. */
   gross: number;
+  /** The part of `units`/`gross` with a known cost, and what those units cost
+   *  us. Cost is frozen on each order line at sale time (migration 1300);
+   *  older lines use the variant's cost today, counted in `estimatedUnits`.
+   *  Optional: a server older than this change does not send them. */
+  costedUnits?: number;
+  costedGross?: number;
+  cost?: number;
+  estimatedUnits?: number;
+}
+
+/** Item sales against what those items cost, over the whole window. */
+export interface AnalyticsProfit {
+  sales: number;
+  costedSales: number;
+  cost: number;
+  /** costedSales - cost. */
+  profit: number;
+  units: number;
+  costedUnits: number;
+  estimatedUnits: number;
 }
 
 export interface ShopAnalytics {
@@ -101,6 +121,8 @@ export interface ShopAnalytics {
     /** `sales` over orders, minor units, 0 when there were none. */
     averageOrder: number;
   };
+  /** Absent from a server older than this change — read it defensively. */
+  profit?: AnalyticsProfit;
   revenueByDay: AnalyticsDay[];
   ordersByStatus: AnalyticsStatusRow[];
   /** The storefront against sales recorded by hand. Adds up to `totals`. */

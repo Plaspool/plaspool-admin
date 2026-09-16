@@ -314,6 +314,36 @@ describe('the analytics screen', () => {
     expect(rowValue(card, 'Collected after refunds')).toBe(norm(money(12_045_600, 'NGN')));
   });
 
+  it('shows profit on products over the costed items only, and says how many had no cost', async () => {
+    when(ANALYTICS, {
+      ...BODY,
+      ...{
+        profit: {
+          sales: 10_000_000,
+          costedSales: 8_000_000,
+          cost: 6_000_000,
+          profit: 2_000_000,
+          units: 9,
+          costedUnits: 7,
+          estimatedUnits: 0,
+        },
+      },
+    });
+    mount();
+    const card = (await screen.findByText('Profit on products')).closest('.card') as HTMLElement;
+    expect(rowValue(card, 'What those items cost you')).toBe(norm(`−${money(6_000_000, 'NGN')}`));
+    expect(rowValue(card, 'Profit')).toBe(norm(money(2_000_000, 'NGN')));
+    expect(rowValue(card, 'Profit margin')).toBe('25.0%');
+    expect(within(card).getByText(/2 items have no cost recorded/)).toBeTruthy();
+  });
+
+  it('leaves the profit card out for a server that sends no profit', async () => {
+    withAnalytics();
+    mount();
+    await screen.findByText('Where the money went');
+    expect(screen.queryByText('Profit on products')).toBeNull();
+  });
+
   it('asks with no days param by default, and refetches with ?days=90 when the picker moves', async () => {
     const user = userEvent.setup();
     withAnalytics();

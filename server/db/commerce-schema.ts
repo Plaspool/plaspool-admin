@@ -242,6 +242,8 @@ export const shopOrderLines = pgTable(
      * variant with no photograph has nothing to snapshot.
      */
     imageId: text('image_id'),
+    /** What one unit cost us at order time (migration 1300). NULL before it, or when no cost was recorded. */
+    unitCostMinor: integer('unit_cost_minor'),
     /**
      * The over-fulfilment bound, materialised so it can be DECLARATIVE.
      *
