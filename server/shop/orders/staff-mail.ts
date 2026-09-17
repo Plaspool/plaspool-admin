@@ -149,6 +149,9 @@ export async function queueStaffOrderEmail(
       email: read.order.email,
       currency: read.order.currency,
       grandTotal: read.order.grandTotal,
+      /* What was charged (1140), read back off the row the paid transition
+       * wrote it to — shown beside the total only when it is not naira. */
+      charge: read.order.charge,
       placedAt: read.order.placedAt,
       customer: customerLabel(read.order.shippingAddress, read.order.email),
       // Σ qty, not `lines.length` — three of one thing is three things to pack.

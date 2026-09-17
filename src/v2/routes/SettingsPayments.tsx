@@ -16,6 +16,8 @@ import { Card } from '../ui/Card';
 import { Checkbox, SelectField } from '../ui/Field';
 import { Modal } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
+import { capFirst, currencyName } from '../lib/currency';
+import CurrenciesCard from './CurrenciesCard';
 
 /**
  * HOW CUSTOMERS PAY — `/settings/payments`: which gateway takes a charge,
@@ -76,33 +78,9 @@ function isProviderName(value: string): value is PaymentProviderName {
   return (GATEWAY_NAMES as readonly string[]).includes(value);
 }
 
-/**
- * Plain English for every currency either gateway's API can charge
- * (`provider/paystack.ts`'s two, `provider/flutterwave.ts`'s fourteen), so a
- * checkbox and a summary sentence read as words rather than codes. Anything
- * not named here still renders — as its own bare code — rather than
- * disappearing; a gateway can widen its ceiling before this map catches up.
- */
-const CURRENCY_NAME: Record<string, string> = {
-  NGN: 'naira',
-  USD: 'dollars',
-  GBP: 'pounds',
-  EUR: 'euros',
-  GHS: 'cedis',
-  KES: 'Kenyan shillings',
-  UGX: 'Ugandan shillings',
-  TZS: 'Tanzanian shillings',
-  ZAR: 'rand',
-  XOF: 'West African CFA francs',
-  XAF: 'Central African CFA francs',
-  RWF: 'Rwandan francs',
-  ZMW: 'Zambian kwacha',
-  EGP: 'Egyptian pounds',
-};
-
-const currencyName = (code: string): string => CURRENCY_NAME[code] ?? code;
-
-const capFirst = (s: string): string => (s.length === 0 ? s : s.charAt(0).toUpperCase() + s.slice(1));
+/* Currency names in words (`currencyName`, `capFirst`) live in
+   `../lib/currency.ts` now, shared with the Currencies card below this one
+   and with the variant editor, so a currency is spelled one way everywhere. */
 
 /** `['naira']` → "naira". `['naira','dollars']` → "naira and dollars".
  *  `['naira','dollars','pounds']` → "naira, dollars and pounds" — no comma
@@ -145,6 +123,9 @@ export default function SettingsPayments() {
   /* Set only by a lost CAS, cleared the moment another change is tried —
      the banner it draws is about one refusal, not a standing condition. */
   const [conflict, setConflict] = useState(false);
+  /* Counts successful gateway saves, so the Currencies card re-reads after
+     each one — and only then, not on this card's own first load. */
+  const [gatewaySaves, setGatewaySaves] = useState(0);
   /* Non-null while the "switch naira off the gateway taking payments" modal
      is open, carrying exactly what `commit` needs if the owner proceeds.
      Cleared by either button — Cancel drops it, and Confirm reads it once
@@ -206,6 +187,7 @@ export default function SettingsPayments() {
     try {
       const next = await shopApi.savePaymentSettings({ ...change, revision: settings.revision });
       setSettings(next);
+      setGatewaySaves((n) => n + 1);
     } catch (cause) {
       if (cause instanceof StaleWriteError) {
         /* THEIRS WINS. Re-sending with the fresh revision would silently
@@ -355,6 +337,10 @@ export default function SettingsPayments() {
           ))}
         </Card>
       )}
+
+      {/* Re-reads on every gateway save: a currency box ticked above can be
+          what clears "no payment gateway takes it" in this card. */}
+      <CurrenciesCard refreshKey={gatewaySaves} />
 
       <p className="page__learn">
         A gateway switched off here refuses nothing already in flight — an order already paid for

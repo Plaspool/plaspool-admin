@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { shopCors } from '../cart/cors';
 import { pathParam, readJson, str } from '../../middleware/errors';
@@ -7,12 +8,26 @@ import { NotFoundError } from '../../repo/errors';
 import { currentDb, currentUser } from '../../app-env';
 import { ProviderError } from './provider/scrub';
 import { flutterwaveProvider, paystackProvider, paymentsEnv, providerCeilings, providerKeyPresence } from './config';
-import { cancelIntent, createIntent, getIntent, applyIntentStatus } from './intents';
+import { cancelIntent, chargedOf, createIntent, getIntent, applyIntentStatus } from './intents';
+import type { ChargeSpec, PaymentIntentRow } from './intents';
+import { BASE_CURRENCY, chargeBreakdown } from '../../../shared/commerce/fx';
+import {
+  chargeCurrencyFor,
+  chargeRatesFor,
+  publicCurrencyConfig,
+  readFxState,
+} from '../currency/state';
 import { createRefund, listRefunds, resolveUnconfirmedRefund } from './refunds';
 import { chooseProvider, providerFor, NoGatewayAvailableError, NoProviderForCurrencyError } from './routing';
 import { readPaymentSettings, writePaymentSettings } from './settings';
 import { PROVIDER_NAMES } from './schema';
-import { completeCheckoutForIntent, drainPaymentEvents, processEvent, storeEvent } from './webhook';
+import {
+  chargeVerdict,
+  completeCheckoutForIntent,
+  drainPaymentEvents,
+  processEvent,
+  storeEvent,
+} from './webhook';
 import type { Context } from 'hono';
 import type { AppEnv } from '../../app-env';
 import { paymentsCallbackUrl } from './utils/callback-url';
@@ -150,8 +165,28 @@ const CreateIntentBody = z
      */
     email: str().min(3).max(320),
     idempotencyKey: str().min(8).max(200),
+    /*
+     * THE CURRENCY HANDSHAKE (1140), all three optional — an old storefront
+     * sends none of them and gets exactly today's naira payment.
+     *
+     * `country` is where the storefront says the shopper is (Cloudflare's
+     * country, or the owner's dev override). A spoofed one only changes which
+     * currency is paid in, at the published multiplier: NOTHING HERE IS AN
+     * AMOUNT OR A MULTIPLIER, and neither is ever accepted from a request.
+     * `currency` and `ratesRevision` are what the storefront DISPLAYED; they
+     * are compared, never used.
+     */
+    country: str().regex(/^[A-Za-z]{2}$/).transform((s) => s.toUpperCase()).optional(),
+    currency: str().regex(/^[A-Za-z]{3}$/).transform((s) => s.toUpperCase()).optional(),
+    ratesRevision: z.number().int().min(0).optional(),
   })
   .strict();
+
+/** Vercel's own geolocation header, when it names a real country. */
+function headerCountry(value: string | undefined): string | null {
+  const code = value?.trim().toUpperCase();
+  return code && /^[A-Z]{2}$/.test(code) && code !== 'XX' && code !== 'T1' ? code : null;
+}
 
 const CreateRefundBody = z
   .object({
@@ -556,13 +591,66 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
      */
     const destination = await checkout.destination(db, body.checkoutId);
 
+    /*
+     * ═══ THE CURRENCY HANDSHAKE (1140) ═══
+     *
+     * Naira is the only real price. A non-naira amount becomes real money HERE
+     * and nowhere else: the country the storefront says the shopper is in maps
+     * to a currency, and the frozen NAIRA totals are converted component by
+     * component (`chargeBreakdown`) at the published multipliers.
+     *
+     * AN OLD STOREFRONT sends none of the three fields and gets exactly today's
+     * behaviour, in naira — so this admin and the storefront can deploy in
+     * either order. The `x-vercel-ip-country` fallback applies only once the
+     * storefront has joined the handshake at all.
+     *
+     * THE SYNC CHECK IS NOT A LOCK. If what the storefront displayed — the
+     * currency, or the revision of the numbers it multiplied by — is not what
+     * this would charge, nothing is created: 409 `rates_changed` carries the
+     * current config, the storefront re-renders, and the shopper presses pay
+     * again. Both sides stay on one set of numbers; nothing is held.
+     */
+    const handshake =
+      body.country !== undefined || body.currency !== undefined || body.ratesRevision !== undefined;
+    let charge: ChargeSpec | undefined;
+    let routeCurrency = totals.grandTotal.currency;
+    let routeCountry = destination?.country ?? null;
+    if (handshake) {
+      const state = await readFxState(db);
+      const country = body.country ?? headerCountry(c.req.header('x-vercel-ip-country'));
+      const currency = chargeCurrencyFor(state, country);
+      if (
+        (body.currency !== undefined && body.currency !== currency) ||
+        (body.ratesRevision !== undefined && body.ratesRevision !== state.revision)
+      ) {
+        return c.json({ error: 'rates_changed', config: publicCurrencyConfig(state) }, 409);
+      }
+      /*
+       * A NAIRA CHARGE KEEPS TODAY'S PATH — same amount, same routing on the
+       * delivery country — with the handshake recorded beside it. So does a
+       * frozen total that is not naira at all (a cart minted by the
+       * per-currency branch): converting it would read cedis as naira.
+       */
+      if (currency === totals.grandTotal.currency || totals.grandTotal.currency !== BASE_CURRENCY) {
+        charge = {
+          currency: totals.grandTotal.currency,
+          amount: totals.grandTotal.amount,
+          ratesRevision: state.revision,
+          country,
+          breakdown: null,
+        };
+      } else {
+        const breakdown = chargeBreakdown(totals, chargeRatesFor(state, currency));
+        if (breakdown.amount <= 0) return c.json({ error: 'charge_too_small' }, 400);
+        charge = { currency, amount: breakdown.amount, ratesRevision: state.revision, country, breakdown };
+        routeCurrency = currency;
+        routeCountry = country;
+      }
+    }
+
     let chosen: { name: ProviderName; provider: PaymentProvider };
     try {
-      chosen = await chooseProvider(
-        db,
-        { currency: totals.grandTotal.currency, country: destination?.country ?? null },
-        factories,
-      );
+      chosen = await chooseProvider(db, { currency: routeCurrency, country: routeCountry }, factories);
     } catch (err) {
       /*
        * A CLEAN REFUSAL, NOT A 500. `NoProviderForCurrencyError` means every
@@ -612,6 +700,7 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
        * `APP_ORIGINS`.
        */
       callbackUrl: deps.callbackUrl ?? safeCallbackUrl(c.req.header('Origin')),
+      charge,
     });
     /*
      * 200 ON A REPLAY, 201 ON A CREATE. The body is identical either way —
@@ -686,6 +775,27 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
       },
       intent.provider,
     );
+
+    /*
+     * THE SAME CHECK AS THE WEBHOOK (1140): money counts only in the charged
+     * currency and at least the charged amount. A payment that does not is
+     * written down on its event row and applied nowhere — the shopper sees an
+     * unpaid intent, and the operator a named anomaly to reconcile.
+     */
+    const verdict =
+      truth.status === 'captured' || truth.status === 'authorized'
+        ? chargeVerdict(intent, truth.amount, truth.currency)
+        : null;
+    if (verdict) {
+      if (!stored.duplicate) {
+        await currentDb(c).execute(sql`
+          UPDATE shop_payment_events SET processed_at = ${Date.now()}, anomaly = ${verdict}
+           WHERE id = ${stored.rowId} AND processed_at IS NULL`);
+      }
+      // eslint-disable-next-line no-console -- a payment that does not count is an operator's to reconcile
+      console.error('[payments] refused a capture', JSON.stringify({ intentId: intent.id, verdict }));
+      return c.json(publicIntent(intent));
+    }
 
     if (!stored.duplicate) {
       /*
@@ -884,15 +994,7 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
  * `{ ...intent }` would ship both the first time somebody stopped thinking
  * about it.
  */
-function publicIntent(intent: {
-  id: string;
-  checkoutId: string;
-  status: string;
-  amount: number;
-  currency: string;
-  authorizationUrl: string | null;
-  refundedTotal: number;
-}) {
+function publicIntent(intent: PaymentIntentRow) {
   return {
     id: intent.id,
     checkoutId: intent.checkoutId,
@@ -901,6 +1003,12 @@ function publicIntent(intent: {
     currency: intent.currency,
     authorizationUrl: intent.authorizationUrl,
     refundedTotal: intent.refundedTotal,
+    /*
+     * EXACTLY WHAT THE GATEWAY WILL ASK FOR (1140), so the storefront can show
+     * it. `amount`/`currency` above stay the naira grand total; `breakdown` is
+     * null for a naira charge and for every intent from before the handshake.
+     */
+    charged: { ...chargedOf(intent), breakdown: intent.chargeBreakdown },
   };
 }
 

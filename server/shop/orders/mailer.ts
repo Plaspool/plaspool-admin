@@ -58,6 +58,7 @@ import { facts, lineTable, timeline } from '../../mail/brand';
 import { normalizeBlobId, publicImageUrl } from '../../repo/public-projection';
 import { BUILT_IN } from '../../email/system-templates';
 import { render, textLines, textTimeline } from '../../mail/transactional';
+import { CURRENCY_EXPONENT } from '../../../shared/commerce/currencies';
 import type { TemplateSet } from '../../email/system-templates';
 import type { Step } from '../../mail/brand';
 import type { SystemKey } from '../../mail/defaults';
@@ -161,6 +162,13 @@ export interface OrderMailView {
   /** When the order was placed, epoch-ms. Optional so existing callers compile;
    * absent renders as an empty date rather than as "Invalid Date". */
   placedAt?: number | null;
+  /**
+   * What the gateway actually charged (migration 1140), in minor units of
+   * ITS currency. Shown beside the total only when that currency differs from
+   * the order's — a naira charge, or no charge at all, renders exactly as
+   * every order did before 1140.
+   */
+  charge?: { amount: number; currency: string } | null;
 }
 
 export interface ShipmentMailView extends OrderMailView {
@@ -243,6 +251,49 @@ export function formatAmount(minorUnits: number, currency: string): string {
   const whole = Math.trunc(magnitude / divisor);
   const fraction = String(magnitude % divisor).padStart(MINOR_UNIT_DIGITS, '0');
   return `${negative ? '-' : ''}${whole}.${fraction} ${currency}`;
+}
+
+/**
+ * How a CHARGED amount is written: `GH₵707.72`, `KSh 1,234.50`, `CFA 70,772`.
+ *
+ * DIFFERENT FROM `formatAmount` ON PURPOSE. That one prints every order total
+ * and changing it would re-word every email this shop has ever sent; this one
+ * prints only the figure a shopper will find on their bank statement, which is
+ * why it carries the currency's own symbol and grouping.
+ *
+ * THE EXPONENT COMES FROM `CURRENCY_EXPONENT`, never an assumed 100: UGX, XOF,
+ * XAF and RWF have no minor unit, and dividing their amounts by 100 would tell
+ * a shopper they paid a hundredth of what they did.
+ */
+const CHARGE_SYMBOL: Readonly<Record<string, string>> = Object.freeze({
+  NGN: '₦', GHS: 'GH₵', USD: '$', GBP: '£', EUR: '€', ZAR: 'R', ZMW: 'K', EGP: 'E£',
+  KES: 'KSh ', TZS: 'TSh ', UGX: 'USh ', XOF: 'CFA ', XAF: 'FCFA ', RWF: 'RF ',
+});
+
+/** `null` for a currency with no known exponent — never a guessed number. */
+export function formatCharged(minorUnits: number, currency: string): string | null {
+  const code = currency.toUpperCase();
+  const exponent = CURRENCY_EXPONENT[code];
+  if (exponent === undefined || !Number.isSafeInteger(minorUnits)) return null;
+  const magnitude = Math.abs(minorUnits);
+  const divisor = 10 ** exponent;
+  const whole = String(Math.trunc(magnitude / divisor)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const fraction =
+    exponent === 0 ? '' : `.${String(magnitude % divisor).padStart(exponent, '0')}`;
+  const symbol = CHARGE_SYMBOL[code] ?? `${code} `;
+  return `${minorUnits < 0 ? '-' : ''}${symbol}${whole}${fraction}`;
+}
+
+/**
+ * ` · charged GH₵707.72` when the order was charged in another currency, and
+ * the EMPTY STRING otherwise — so a naira order's total is byte-for-byte what
+ * it always was.
+ */
+function chargedSuffix(view: OrderMailView): string {
+  const charge = view.charge;
+  if (!charge || charge.currency.toUpperCase() === view.currency.toUpperCase()) return '';
+  const formatted = formatCharged(charge.amount, charge.currency);
+  return formatted === null ? '' : ` · charged ${formatted}`;
 }
 
 /**
@@ -452,7 +503,10 @@ function baseValues(
         : formatAmount(a.amount, view.currency),
     imageUrl: null,
   }));
-  const total = formatAmount(view.grandTotal, view.currency);
+  /* The naira total stays first and unchanged; a foreign charge rides beside
+     it, in the one string both `{{order_total}}` and the table's Total row
+     print, so the two can never disagree. */
+  const total = formatAmount(view.grandTotal, view.currency) + chargedSuffix(view);
   const steps = stepsFor(kind);
 
   return {

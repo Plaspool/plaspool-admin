@@ -246,6 +246,15 @@ export interface OrdersDeps {
    * them apart.
    */
   syncCouriers?: CourierSync;
+  /**
+   * REFRESH THE DAILY EXCHANGE RATES, on the schedule (1160). Wired at the
+   * composition root to `refreshFeedRates` — injected rather than imported for
+   * the same rule as `syncCouriers`. It fetches only when a rate is due (twelve
+   * hours), never throws, and never touches a hand-set rate.
+   *
+   * ABSENT MEANS THE SWEEP DOES NOT REFRESH, and reports `rates: null`.
+   */
+  refreshRates?: (db: Db, now: number) => Promise<unknown>;
 }
 
 export interface ResolvedDeps {
@@ -258,6 +267,8 @@ export interface ResolvedDeps {
   refund: RefundIssuer | null;
   /** `null` when no courier subsystem is wired — see {@link OrdersDeps.syncCouriers}. */
   syncCouriers: CourierSync | null;
+  /** `null` when not wired — see {@link OrdersDeps.refreshRates}. */
+  refreshRates: ((db: Db, now: number) => Promise<unknown>) | null;
 }
 
 /**
@@ -347,6 +358,7 @@ export function resolveDeps(deps: OrdersDeps = {}): ResolvedDeps {
     redemption: merged.redemption,
     refund: merged.refund ?? null,
     syncCouriers: merged.syncCouriers ?? null,
+    refreshRates: merged.refreshRates ?? null,
   };
 }
 

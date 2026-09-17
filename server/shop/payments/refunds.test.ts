@@ -234,8 +234,13 @@ describe('the sum-check: total refunded can never exceed captured', () => {
      * leaving twice, and it is what the two lines above prevent.
      */
     const intent = await capturedIntent();
+    /* AND ITS CHARGED TWIN (1140): a naira charge tracks the same figure in
+       `charge_refunded_minor`, whose own CHECK is a third net. Dropped with
+       the first so this control still shows what the naira nets prevent. */
     await db.execute(sql`
       ALTER TABLE shop_payment_intents DROP CONSTRAINT shop_payment_intents_refunded_total_ck`);
+    await db.execute(sql`
+      ALTER TABLE shop_payment_intents DROP CONSTRAINT shop_payment_intents_charge_refunded_ck`);
 
     try {
       const blind = mutateSql(db, '<= shop_payment_intents.amount', '<= 999999999');
@@ -265,6 +270,10 @@ describe('the sum-check: total refunded can never exceed captured', () => {
       await db.execute(sql`
         ALTER TABLE shop_payment_intents ADD CONSTRAINT shop_payment_intents_refunded_total_ck
           CHECK (refunded_total >= 0 AND refunded_total <= amount)`);
+      await db.execute(sql`
+        ALTER TABLE shop_payment_intents ADD CONSTRAINT shop_payment_intents_charge_refunded_ck
+          CHECK (charge_refunded_minor >= 0
+                 AND (charge_amount_minor IS NULL OR charge_refunded_minor <= charge_amount_minor))`);
     }
   });
 

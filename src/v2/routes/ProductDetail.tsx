@@ -44,6 +44,7 @@ import { StatusPicker, type StatusOption } from '../ui/StatusPicker';
 import { TagInput } from '../ui/TagInput';
 import { Timeline, type TimelineEvent } from '../ui/Timeline';
 import { useToast } from '../ui/Toast';
+import { VariantMultipliers } from './VariantMultipliers';
 import { StockCell } from './StockCell';
 import { EMPTY_PRICING, PricingFields, pricingFrom, readPricing, type PricingValues } from './PricingFields';
 
@@ -1783,6 +1784,10 @@ function VariantModal({
             }}
           />
         </div>
+
+        {/* A variant's own rate in another currency needs the variant's id,
+            so it is offered once the variant exists — never while adding. */}
+        {creating ? null : <VariantMultipliers variantId={variant.id} />}
 
         <div className="stack stack--tight">
           <span className="field__label">Variant photo</span>

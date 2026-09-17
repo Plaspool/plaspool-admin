@@ -156,8 +156,40 @@ export const shopPaymentIntents = pgTable(
     lastError: text('last_error'),
     /** The CAS token. Monotonic per intent. */
     revision: integer('revision').notNull(),
+    /**
+     * WHAT THE GATEWAY WAS ASKED FOR (1140). `amount`/`currency` stay the naira
+     * grand total; these are the charged currency and the converted sum of the
+     * breakdown's components. NULL on every intent from before 1140.
+     */
+    chargeCurrency: text('charge_currency'),
+    chargeAmountMinor: integer('charge_amount_minor'),
+    /** `refundedTotal`'s twin, in the charged currency. */
+    chargeRefundedMinor: integer('charge_refunded_minor').notNull().default(0),
+    /** The published revision the charge was converted at. */
+    ratesRevision: integer('rates_revision'),
+    /** Where the storefront said the shopper is. ISO-2. */
+    country: text('country'),
+    /** The component breakdown, multipliers included (`shared/commerce/fx.ts`). */
+    chargeBreakdown: jsonb('charge_breakdown'),
   },
   (t) => [
+    check(
+      'shop_payment_intents_charge_ccy_ck',
+      sql`${t.chargeCurrency} IS NULL OR ${t.chargeCurrency} ~ '^[A-Z]{3}$'`,
+    ),
+    check(
+      'shop_payment_intents_charge_pair_ck',
+      sql`(${t.chargeCurrency} IS NULL) = (${t.chargeAmountMinor} IS NULL)`,
+    ),
+    check(
+      'shop_payment_intents_charge_amount_ck',
+      sql`${t.chargeAmountMinor} IS NULL OR ${t.chargeAmountMinor} > 0`,
+    ),
+    check(
+      'shop_payment_intents_charge_refunded_ck',
+      sql`${t.chargeRefundedMinor} >= 0 AND (${t.chargeAmountMinor} IS NULL OR ${t.chargeRefundedMinor} <= ${t.chargeAmountMinor})`,
+    ),
+    check('shop_payment_intents_country_ck', sql`${t.country} IS NULL OR ${t.country} ~ '^[A-Z]{2}$'`),
     check('shop_payment_intents_status_ck', sql`${t.status} IN (${sqlLiterals(PAYMENT_STATUSES)})`),
     check('shop_payment_intents_provider_ck', sql`${t.provider} IN ('paystack', 'flutterwave')`),
     check('shop_payment_intents_revision_ck', sql`${t.revision} > 0`),
@@ -248,6 +280,12 @@ export const shopPaymentEvents = pgTable(
      * cancellation was ours, and nothing about that is a failure to process.
      */
     anomaly: text('anomaly'),
+    /**
+     * What the gateway VERIFIED was paid (1140), minor units by the currency's
+     * own exponent. A capture only counts when this matches the charge.
+     */
+    reportedAmount: bigint('reported_amount', { mode: 'number' }),
+    reportedCurrency: text('reported_currency'),
   },
   (t) => [
     check('shop_payment_events_provider_ck', sql`${t.provider} IN ('paystack', 'flutterwave')`),
@@ -301,6 +339,9 @@ export const shopRefunds = pgTable(
     createdBy: uuid('created_by')
       .notNull()
       .references(() => users.id),
+    /** Paid back in the CHARGED currency (1140). NULL: a naira refund, as before. */
+    chargeCurrency: text('charge_currency'),
+    chargeAmountMinor: integer('charge_amount_minor'),
   },
   (t) => [
     check('shop_refunds_status_ck', sql`${t.status} IN ('pending', 'succeeded', 'failed')`),

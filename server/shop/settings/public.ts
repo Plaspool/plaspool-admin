@@ -5,7 +5,24 @@ import { exportCountries } from '../logistics/exports';
 import { activeCourier } from '../logistics/repo';
 import { deliveryConfigFor } from './config';
 import { DEFAULT_DELIVERY_SETTINGS, getDeliverySettings } from './repo';
+import { publicCurrencyConfig, readFxState } from '../currency/state';
 import type { AppEnv } from '../../app-env';
+
+/** The currency config's cache: a minute, and nothing served beyond it. */
+const CURRENCY_CACHE = 'public, s-maxage=60';
+
+/** What a database that cannot answer publishes: the shop as it always was. */
+const NAIRA_ONLY_CONFIG = {
+  base: 'NGN',
+  revision: 0,
+  default: 'NGN',
+  currencies: ['NGN'],
+  rates: { NGN: { multiplier: '1.000000000000', exponent: 2 } },
+  variantMultipliers: {},
+  countries: {},
+  fallbackCurrency: 'NGN',
+  updatedAt: 0,
+};
 
 /**
  * The public delivery config — the address form, as data (migration 0760) —
@@ -114,6 +131,28 @@ export function createDeliveryConfigRoutes(): Hono<AppEnv> {
     c.header('cache-control', CACHE);
     c.header(CORS_HEADER, CORS_VALUE);
     return c.json({ config: deliveryConfigFor(settings, courier, reach) });
+  });
+
+  /**
+   * THE PUBLISHED MULTIPLIERS — what the storefront multiplies naira by for
+   * display, and exactly what a payment link will convert with
+   * (`shared/commerce/fx.ts`). `currencies` is what is OFFERED: switched on,
+   * carrying a fresh multiplier, and chargeable by some gateway.
+   *
+   * Same mount, same cookieless response and the same simple-request rule as
+   * the delivery config above; `s-maxage=60` with no stale-while-revalidate,
+   * so a shared cache is never more than a minute behind — and a storefront
+   * that is behind is told so by the payment route's 409, which carries this
+   * same payload. `*` answers browser GETs from both storefronts without
+   * credentials, which is all this route may ever be read with.
+   *
+   * NEVER 500s: a database that cannot answer is the naira-only shop.
+   */
+  routes.get('/public/shop/currency-config', async (c) => {
+    const state = await readFxState(currentDb(c)).catch(() => null);
+    c.header('cache-control', CURRENCY_CACHE);
+    c.header(CORS_HEADER, CORS_VALUE);
+    return c.json({ config: state ? publicCurrencyConfig(state) : NAIRA_ONLY_CONFIG });
   });
 
   /**

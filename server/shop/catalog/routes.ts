@@ -199,6 +199,13 @@ const ListQueryParams = z
     /** `pageLimit` decides the range and answers 400 itself; this only makes a
      *  non-numeric `?limit=abc` a 400 here rather than a NaN there. */
     limit: z.coerce.number().int().optional(),
+    /**
+     * ACCEPTED AND IGNORED. Prices are always naira: other currencies are
+     * published multipliers the storefront applies itself (`shared/commerce/
+     * fx.ts`). A storefront built against the per-currency catalogue still
+     * sends this, and refusing it would 400 its pages rather than show naira.
+     */
+    currency: str().regex(/^[A-Za-z]{3}$/).optional(),
   })
   /*
    * STRICT, LIKE THE BODIES. A mistyped filter that is silently ignored is worse
@@ -377,7 +384,8 @@ const AdjustBody = z
  */
 routes.get('/products', async (c) => {
   const db = currentDb(c);
-  const q = readQuery(c, ListQueryParams);
+  // `currency` is read and dropped: prices are always naira (see the schema).
+  const { currency: _ignored, ...q } = readQuery(c, ListQueryParams);
   const page = await listProducts(db, q);
   const ids = page.items.map((p) => p.id);
   /* Both fan-outs in ONE statement each, not one per card: a fifty-product

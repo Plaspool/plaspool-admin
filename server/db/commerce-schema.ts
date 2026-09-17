@@ -174,6 +174,15 @@ export const shopOrders = pgTable(
     staffNote: text('staff_note'),
     stockTaken: boolean('stock_taken').notNull().default(false),
     /**
+     * WHAT WAS CHARGED (migration 1140), copied from `payment.captured` in the
+     * same statement as the paid transition. The naira totals above stay
+     * authoritative. The pair is both-null or both-set (a CHECK); `charge`
+     * holds `{ ratesRevision, country, breakdown }` as evidence.
+     */
+    chargeCurrency: text('charge_currency'),
+    chargeAmountMinor: integer('charge_amount_minor'),
+    charge: jsonb('charge'),
+    /**
      * Why some of a cancelled order's goods were NOT put back in stock
      * (migration 1200). Optional, blank is NULL. STAFF ONLY, and therefore not
      * on `Order`: the customer's order view spreads that type.
@@ -198,6 +207,8 @@ export const shopOrders = pgTable(
     check('shop_orders_refunded_ck', sql`${t.refundedTotal} >= 0`),
     check('shop_orders_email_ck', sql`length(${t.email}) > 0 OR ${t.source} = 'manual'`),
     check('shop_orders_source_ck', sql`${t.source} IN ('online', 'manual')`),
+    check('shop_orders_charge_ccy_ck', sql`${t.chargeCurrency} IS NULL OR ${t.chargeCurrency} ~ '^[A-Z]{3}$'`),
+    check('shop_orders_charge_pair_ck', sql`(${t.chargeCurrency} IS NULL) = (${t.chargeAmountMinor} IS NULL)`),
     index('shop_orders_customer_idx').on(t.customerId, t.placedAt.desc(), t.id),
     index('shop_orders_status_idx').on(t.status, t.placedAt.desc(), t.id),
   ],
