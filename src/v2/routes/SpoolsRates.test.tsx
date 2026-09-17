@@ -284,7 +284,7 @@ describe('points and costs', () => {
     await user.click(cabbage);
     const transport = await screen.findByLabelText('Transport in');
     // The stored ₦2,000.00 opens as the typed figure, not as minor units.
-    expect(transport).toHaveProperty('value', '2000.00');
+    expect(transport).toHaveProperty('value', '2,000.00');
     await user.clear(transport);
     await user.click(screen.getByRole('button', { name: 'Save' }));
 

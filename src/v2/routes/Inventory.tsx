@@ -6,9 +6,7 @@ import { humanise, shortDate } from '../lib/format';
 import { AnalyticsBar, AnalyticsMenuItem, PageHeader, useAnalyticsBar, type Metric } from '../ui/Page';
 import { Badge, Banner, Button, EmptyState } from '../ui/primitives';
 import { DataTable, IdCell, TablePager, type Column } from '../ui/DataTable';
-import { TextField } from '../ui/Field';
-import { PopEdit, PopEditFoot } from '../ui/PopEdit';
-import { useToast } from '../ui/Toast';
+import { StockCell } from './StockCell';
 
 /**
  * INVENTORY — `/products/inventory`. One row per variant: on hand, reserved,
@@ -16,8 +14,9 @@ import { useToast } from '../ui/Toast';
  * variant — it is oversold on purpose, shown in the critical ink rather than
  * "fixed" by a floor.
  *
- * Adjustments happen in place, and every one carries its reason — the server
- * refuses a stock change without one, which is the whole audit trail's value.
+ * Adjustments happen in place, through `StockCell` — the same cell the
+ * product page's variant table renders, so a change to adjusting stock lands
+ * on both screens at once.
  */
 
 const TABS = [
@@ -122,7 +121,15 @@ export default function Inventory() {
       header: 'Available',
       label: 'Available',
       numeric: true,
-      render: (r) => <AdjustCell row={r} onWrite={reloadRows} />,
+      render: (r) => (
+        <StockCell
+          variantId={r.variantId}
+          sku={r.sku}
+          available={r.available}
+          backorderable={r.backorderable}
+          onWrite={reloadRows}
+        />
+      ),
     },
     {
       key: 'backorder',
@@ -214,97 +221,6 @@ export default function Inventory() {
         minus reserved.
       </p>
     </div>
-  );
-}
-
-/** Top-level, not nested in the screen — a component defined inside another
- *  gets a fresh identity per parent render, and this one holds an open
- *  popover's draft. */
-function AdjustCell({ row, onWrite }: { row: InventoryRow; onWrite: () => void }) {
-  const toast = useToast();
-  const [delta, setDelta] = useState('');
-  const [reason, setReason] = useState('');
-  const [fieldError, setFieldError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const parsed = Number(delta);
-  const deltaOk = delta.trim() !== '' && Number.isInteger(parsed) && parsed !== 0;
-
-  async function commit(close: () => void) {
-    if (!deltaOk) {
-      setFieldError('Enter a whole number, above or below zero — but not zero.');
-      return;
-    }
-    setBusy(true);
-    try {
-      /* NO REASON GUARD. It is optional since 2026-09-03 (owner's instruction);
-       * the placeholder still asks, and `adjustInventory` omits the key rather
-       * than sending an empty string. */
-      const res = await shopApi.adjustInventory(row.variantId, parsed, reason.trim());
-      toast.show(`${row.sku} — ${res.available} available`);
-      close();
-      onWrite();
-    } catch (cause) {
-      setFieldError(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
-      setBusy(false);
-    }
-  }
-
-  return (
-    <PopEdit
-      ariaLabel={`Adjust stock of ${row.sku}`}
-      value={
-        <span className="num" style={row.available < 0 ? { color: 'var(--critical)' } : undefined}>
-          {row.available}
-        </span>
-      }
-    >
-      {(close) => (
-        <>
-          <TextField
-            label="Adjust by"
-            type="number"
-            step={1}
-            placeholder="+5 or -2"
-            value={delta}
-            autoFocus
-            hint={
-              deltaOk
-                ? `Available ${row.available} → ${row.available + parsed}`
-                : row.backorderable
-                  ? 'Can be back-ordered, so stock is allowed to go below zero.'
-                  : undefined
-            }
-            onChange={(e) => {
-              setDelta(e.target.value);
-              setFieldError(null);
-            }}
-          />
-          <TextField
-            label="Reason (optional)"
-            value={reason}
-            placeholder="Stock count, damage, correction…"
-            hint="Kept on record. Worth a few words if you have them."
-            error={fieldError}
-            onChange={(e) => {
-              setReason(e.target.value);
-              setFieldError(null);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void commit(close);
-            }}
-          />
-          <PopEditFoot>
-            <Button tone="plain" onClick={close}>
-              Cancel
-            </Button>
-            <Button tone="primary" busy={busy} onClick={() => void commit(close)}>
-              Adjust
-            </Button>
-          </PopEditFoot>
-        </>
-      )}
-    </PopEdit>
   );
 }
 

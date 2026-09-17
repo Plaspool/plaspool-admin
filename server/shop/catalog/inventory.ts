@@ -9,6 +9,7 @@ import type {
   ReservationResult,
 } from '../../../shared/commerce/catalog-port';
 import { emitEvent, jsonbObject } from './events';
+import { boxAvailable, boxCapacitySql } from '../boxes/capacity';
 import { rowToInventoryHold, rowToInventoryLevel } from './mapping';
 import type { InventoryHold, InventoryLevel } from './types';
 
@@ -128,6 +129,13 @@ export async function reserve(db: Db, req: ReservationRequest): Promise<Reservat
                 AND p.status = 'active'
                 AND p.deleted_at IS NULL
            )
+           /*
+            * A MYSTERY BOX SELLS ONLY WHAT ITS POOL CAN FILL (migration 1220).
+            * NULL capacity is an ordinary variant and passes untouched. A SOFT
+            * cap, said plainly: nothing holds the pool itself, so two carts can
+            * each see the last box, and the fill screen is where that shows.
+            */
+           AND COALESCE(${boxCapacitySql(sql`i.variant_id`)} >= ${req.qty}, true)
         RETURNING i.variant_id, i.on_hand - i.reserved AS available
       ), hold AS (
         INSERT INTO shop_inventory_holds (reservation_id, variant_id, qty, state,
@@ -218,6 +226,16 @@ async function refusal(db: Db, req: ReservationRequest): Promise<ReservationResu
        AND v.status = 'active' AND p.status = 'active' AND p.deleted_at IS NULL`);
   if (res.rows.length === 0) {
     return { ok: false, reason: 'not_sellable', available: level.available };
+  }
+  /* A box whose POOL said no reports the smaller of its own stock and what the
+     pool can fill, so a "2 left" message tells the truth. */
+  const cap = await db.execute(sql`SELECT ${boxCapacitySql(sql`${req.variantId}::text`)} AS c`);
+  if (cap.rows[0]?.c != null) {
+    return {
+      ok: false,
+      reason: 'insufficient',
+      available: boxAvailable(level.available, level.backorderable, Number(cap.rows[0].c)) ?? 0,
+    };
   }
   return { ok: false, reason: 'insufficient', available: level.available };
 }

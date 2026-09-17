@@ -370,7 +370,14 @@ describe('OrderDetail — courier booking', () => {
     await user.type(within(dialog).getByLabelText('Weight of Recycled Spool'), '600');
     await user.click(within(dialog).getByRole('button', { name: 'Save weights' }));
 
-    await waitFor(() => expect(sent(VARIANT, 'PATCH')).toEqual({ weightGrams: 600 }));
+    /*
+     * `shippingWeightGrams`, NOT `weightGrams` (migration 1180). A variant
+     * reaches this step only when it has neither weight, so either would make
+     * the parcel quotable — but writing the displayed one would publish a spool
+     * size on the storefront as a side effect of booking a courier. This write
+     * is exactly scoped: delivery can price it, the shop looks unchanged.
+     */
+    await waitFor(() => expect(sent(VARIANT, 'PATCH')).toEqual({ shippingWeightGrams: 600 }));
     await waitFor(() => expect(quotes).toBe(2));
     // Now the rates.
     const gig = await within(dialog).findByRole('radio', { name: /GIG Logistics/ });

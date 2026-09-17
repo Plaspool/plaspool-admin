@@ -36,6 +36,14 @@ const setWeight = async (variantId: string, grams: number | null): Promise<void>
     UPDATE shop_variants SET weight_grams = ${grams}::integer WHERE id = ${variantId}`);
 };
 
+/** The migration-1180 override: what delivery is priced on when it is set. */
+const setShippingWeight = async (variantId: string, grams: number | null): Promise<void> => {
+  await ctx.db.execute(sql`
+    UPDATE shop_variants
+       SET shipping_weight_grams = ${grams}::integer
+     WHERE id = ${variantId}`);
+};
+
 describe('weightsFor', () => {
   it('answers grams per id, null where the catalogue does not know', async () => {
     const heavy = await seedSellable(ctx.db, actor(), { title: 'Heavy' });
@@ -59,6 +67,60 @@ describe('weightsFor', () => {
     /* `has` and not `get`: absent and null are different answers, and a caller
      * that cannot tell them apart books a parcel for a variant that is gone. */
     expect(weights.has('var_not_a_thing')).toBe(false);
+  });
+
+  /*
+   * MIGRATION 1180. The weight a shopper reads and the weight a courier prices
+   * stopped being the same number, and `weightsFor` answers the courier's.
+   * Through the REAL port against real Postgres, because the resolution is a
+   * COALESCE in SQL — a fake that spelled it in TS would agree with itself.
+   */
+  it('prices on the shipping override when the variant carries one', async () => {
+    const { variant } = await seedSellable(ctx.db, actor());
+    await setWeight(variant.id, 1_250); // the spool the storefront shows
+    await setShippingWeight(variant.id, 1_400); // what it weighs packed
+
+    const weights = await logisticsCatalogPort.weightsFor(ctx.db, [variant.id]);
+    expect(weights.get(variant.id)).toBe(1_400);
+  });
+
+  it('falls back to the displayed weight when there is no override', async () => {
+    /* The state EVERY variant is in the day 1180 lands, so this is the case
+       that proves nothing about today's parcels changed. */
+    const { variant } = await seedSellable(ctx.db, actor());
+    await setWeight(variant.id, 1_250);
+
+    const weights = await logisticsCatalogPort.weightsFor(ctx.db, [variant.id]);
+    expect(weights.get(variant.id)).toBe(1_250);
+  });
+
+  it('takes a zero override literally rather than falling back', async () => {
+    /* `coalesce` and not `nullif`/`or`: zero is a real weight somebody typed,
+       and the fallback is for an ABSENT override only. A truthiness test here
+       would silently reprice a deliberately weightless line. */
+    const { variant } = await seedSellable(ctx.db, actor());
+    await setWeight(variant.id, 1_250);
+    await setShippingWeight(variant.id, 0);
+
+    const weights = await logisticsCatalogPort.weightsFor(ctx.db, [variant.id]);
+    expect(weights.get(variant.id)).toBe(0);
+  });
+
+  it('is null only when NEITHER weight is known', async () => {
+    const { variant } = await seedSellable(ctx.db, actor());
+
+    const weights = await logisticsCatalogPort.weightsFor(ctx.db, [variant.id]);
+    expect(weights.get(variant.id)).toBeNull();
+  });
+
+  it('answers from the override alone, with no displayed weight at all', async () => {
+    /* The shape the courier dialog's "set weights" step writes: make the
+       parcel quotable without publishing a spool size nobody chose. */
+    const { variant } = await seedSellable(ctx.db, actor());
+    await setShippingWeight(variant.id, 800);
+
+    const weights = await logisticsCatalogPort.weightsFor(ctx.db, [variant.id]);
+    expect(weights.get(variant.id)).toBe(800);
   });
 
   it('asks nothing at all for an empty list', async () => {
@@ -98,5 +160,20 @@ describe('weightCoverage', () => {
       UPDATE shop_products SET deleted_at = 1 WHERE id = ${trashed.product.id}`);
 
     expect(await logisticsCatalogPort.weightCoverage(ctx.db)).toEqual({ missing: 1, total: 2 });
+  });
+
+  it('counts a variant that has only a shipping override as covered', async () => {
+    /* The count has to resolve exactly as `weightsFor` does (migration 1180).
+       If it read `weight_grams` alone, the settings screen would report work
+       that does not exist — and it can never reach zero by doing it. */
+    const shipOnly = await seedSellable(ctx.db, actor(), { title: 'Ship only' });
+    await setShippingWeight(shipOnly.variant.id, 900);
+
+    expect(await logisticsCatalogPort.weightCoverage(ctx.db)).toEqual({ missing: 0, total: 1 });
+  });
+
+  it('counts a variant with neither weight as missing', async () => {
+    await seedSellable(ctx.db, actor(), { title: 'Unweighed' });
+    expect(await logisticsCatalogPort.weightCoverage(ctx.db)).toEqual({ missing: 1, total: 1 });
   });
 });

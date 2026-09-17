@@ -39,6 +39,27 @@ import {
   repliesForAdmin,
   setReaction,
 } from './threads';
+import {
+  LINKABLE_STATUSES,
+  mintReviewLinkToken,
+  reviewLinkOrder,
+  verifyReviewLinkToken,
+} from './review-link';
+import type { ReviewLinkOrder } from './review-link';
+import {
+  MAX_REVIEW_PHOTOS,
+  MAX_REVIEW_PHOTO_BYTES,
+  attachReviewPhotos,
+  attachablePhotoCount,
+  cleanReviewPhoto,
+  insertReviewPhoto,
+  newPhotoId,
+  photoStorage,
+  photosForReviews,
+  storageKeyFor,
+} from './photos';
+import { R2NotConfiguredError, presignGet, putObject } from '../../storage/r2';
+import { storefrontOrigin } from '../storefront-url';
 import type { AppEnv } from '../../app-env';
 import type { Db } from '../../db/client';
 
@@ -161,6 +182,14 @@ const SubmitBody = z.object({
    * projection deliberately never returns.
    */
   authorName: str().trim().min(1).max(120).optional(),
+  /**
+   * A REVIEW LINK the owner sent (migration 1280's feature). When present it
+   * REPLACES the session: identity is the buyer on the linked order, and the
+   * gate is "this product was on that order". See `review-link.ts`.
+   */
+  reviewLink: str().max(500).optional(),
+  /** Photos already uploaded through `POST /reviews/photos`, in display order. */
+  photoIds: z.array(str().max(60)).max(MAX_REVIEW_PHOTOS).optional(),
 });
 
 /*
@@ -223,6 +252,34 @@ const EligibilityQuery = z.object({ products: str().max(MAX_BULK_PRODUCTS * 121)
  */
 export const PURCHASE_REQUIRED = 'purchase_required';
 export const ALREADY_REVIEWED = 'already_reviewed';
+/** The review link is forged, expired, or points at an order that was never paid. */
+export const REVIEW_LINK_INVALID = 'review_link_invalid';
+
+const PHOTO_IP_LIMIT = 40;
+const PHOTO_UPLOADER_LIMIT = 16;
+
+/**
+ * Resolve a review link to its order, or refuse. A link to an order that is
+ * unpaid or cancelled is refused the same way as a forged one: there is nothing
+ * the holder can do about either, and telling them apart helps nobody.
+ */
+async function requireLinkedOrder(db: Db, token: string): Promise<ReviewLinkOrder> {
+  const grant = verifyReviewLinkToken(token, Date.now());
+  if (!grant) throw new ForbiddenError(REVIEW_LINK_INVALID);
+  const order = await reviewLinkOrder(db, grant.orderId);
+  if (!order || !(LINKABLE_STATUSES as readonly string[]).includes(order.status)) {
+    throw new ForbiddenError(REVIEW_LINK_INVALID);
+  }
+  return order;
+}
+
+/** The reviewer an order stands for, in the shape the eligibility reads take. */
+function buyerOf(order: ReviewLinkOrder): ReviewsCustomer {
+  /* An empty id matches no customer_id, so a guest order is matched by email alone.
+     A manual order can carry a BLANK email, which must match nothing — '' would
+     otherwise match every other blank-email review in the shop. */
+  return { id: order.customerId ?? '', email: order.email.trim() || null, displayName: null };
+}
 
 /**
  * Turn a `createReply` refusal into the response it deserves.
@@ -392,6 +449,12 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
     await limit(c, `revsub:${ip}`, INTAKE_IP_LIMIT, INTAKE_WINDOW_MS);
 
     const body = await readJson(c, SubmitBody);
+    const photoIds = [...new Set(body.photoIds ?? [])];
+
+    if (body.reviewLink !== undefined) {
+      return submitThroughLink(c, body, body.reviewLink, photoIds);
+    }
+
     const customer = await resolveCustomer(c);
 
     /*
@@ -425,12 +488,6 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
     if (!authorEmail) {
       throw new BadRequestError('account_email');
     }
-
-    /* The byline: the account's display name when it has one, else what the
-       reviewer typed. Three of four customers have no display name, so the
-       body's value is a real path and not a legacy branch. */
-    const authorName = customer.displayName ?? body.authorName;
-    if (!authorName) throw new BadRequestError('authorName');
 
     /* The narrow bucket cannot move above the parse — it keys on the email
        actually being written. STRONGER THAN IT WAS: the address is now always
@@ -468,6 +525,23 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
     const already = await reviewedProducts(db, customer, [body.productSlug]);
     if (already.has(body.productSlug)) throw new ForbiddenError(ALREADY_REVIEWED);
 
+    /*
+     * The byline: the account's display name, else what the reviewer typed,
+     * else the FIRST NAME on the order that proved the purchase.
+     *
+     * THE THIRD STEP IS A FIX (2026-09-16). Most accounts have no display name,
+     * and the storefront's form never sent `authorName` — so every one of those
+     * customers got a 400 `authorName` it rendered as "invalid". A first name
+     * off the buyer's own delivery address is what a shop would print anyway,
+     * and only the first word is used, never the surname or the email.
+     */
+    const authorName =
+      customer.displayName ?? body.authorName ?? (await reviewLinkOrder(db, proof.orderId))?.firstName;
+    if (!authorName) throw new BadRequestError('authorName');
+
+    const uploaderKey = `cus:${customer.id}`;
+    await requireAttachable(db, uploaderKey, photoIds);
+
     const review = await createReview(db, {
       productSlug: body.productSlug,
       rating: body.rating,
@@ -479,6 +553,7 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
       orderId: proof.orderId,
       now: Date.now(),
     });
+    const photoCount = await attachReviewPhotos(db, review.id, uploaderKey, photoIds);
 
     /*
      * A NARROW ANSWER: the id (so the storefront can say "we have it"), the
@@ -492,9 +567,213 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
         reviewId: review.id,
         status: review.status,
         sentiment: review.sentimentLabel,
+        photoCount,
       },
       201,
     );
+  });
+
+  /**
+   * THE SUBMIT, THROUGH A REVIEW LINK. Same budgets, same one-per-product rule,
+   * same `pending` landing — only WHO and WHETHER come from the linked order
+   * instead of a session.
+   */
+  async function submitThroughLink(
+    c: Context<AppEnv>,
+    body: z.infer<typeof SubmitBody>,
+    token: string,
+    photoIds: string[],
+  ) {
+    const ip = clientIp(c);
+    const db = currentDb(c);
+    const order = await requireLinkedOrder(db, token);
+
+    await limit(c, `revsub:${ip}|${order.email.toLowerCase()}`, INTAKE_EMAIL_LIMIT, INTAKE_WINDOW_MS);
+
+    /* The product must be on THIS order — never "anything the buyer ever bought",
+       which would make one link a key to every review form in the shop. */
+    if (!order.products.some((p) => p.slug === body.productSlug)) {
+      throw new ForbiddenError(PURCHASE_REQUIRED);
+    }
+
+    const buyer = buyerOf(order);
+    const already = await reviewedProducts(db, buyer, [body.productSlug]);
+    if (already.has(body.productSlug)) throw new ForbiddenError(ALREADY_REVIEWED);
+
+    const authorName = body.authorName ?? order.firstName;
+    if (!authorName) throw new BadRequestError('authorName');
+
+    const uploaderKey = `ord:${order.id}`;
+    await requireAttachable(db, uploaderKey, photoIds);
+
+    const review = await createReview(db, {
+      productSlug: body.productSlug,
+      rating: body.rating,
+      title: body.title?.length ? body.title : null,
+      body: body.body,
+      authorName,
+      authorEmail: order.email,
+      customerId: order.customerId,
+      orderId: order.id,
+      now: Date.now(),
+    });
+    const photoCount = await attachReviewPhotos(db, review.id, uploaderKey, photoIds);
+
+    return c.json(
+      { reviewId: review.id, status: review.status, sentiment: review.sentimentLabel, photoCount },
+      201,
+    );
+  }
+
+  /** Every named photo must be this uploader's and not already on a review. */
+  async function requireAttachable(db: Db, uploaderKey: string, photoIds: string[]) {
+    if (photoIds.length === 0) return;
+    const n = await attachablePhotoCount(db, uploaderKey, photoIds);
+    if (n !== photoIds.length) throw new BadRequestError('photoIds');
+  }
+
+  // ------------------------------------------------------------ review links
+
+  /**
+   * WHAT A REVIEW LINK OPENS — the storefront's `/review?token=…` page reads
+   * this. The order number, a first name to greet with, and each product with
+   * whether it has been reviewed already. Never the address, total or email.
+   *
+   * `no-store`: the answer changes the moment a review is written, and it is
+   * one buyer's order.
+   */
+  routes.use('/reviews/link', shopCors<AppEnv>());
+  routes.get('/reviews/link', async (c) => {
+    const q = readQuery(c, z.object({ token: str().max(500) }).strict());
+    await limit(c, `revlink:${clientIp(c)}`, REPLY_IP_LIMIT, INTAKE_WINDOW_MS);
+    const db = currentDb(c);
+    const order = await requireLinkedOrder(db, q.token);
+    const grant = verifyReviewLinkToken(q.token, Date.now());
+    const reviewed = await reviewedProducts(
+      db,
+      buyerOf(order),
+      order.products.map((p) => p.slug),
+    );
+    c.header('cache-control', 'no-store');
+    return c.json({
+      orderNumber: order.orderNumber,
+      firstName: order.firstName,
+      expiresAt: grant?.expiresAt ?? null,
+      products: order.products.map((p) => ({ ...p, reviewed: reviewed.has(p.slug) })),
+    });
+  });
+
+  /**
+   * UPLOAD ONE PHOTO for a review about to be written. `multipart/form-data`
+   * with `file`, plus `reviewLink` when there is no session.
+   *
+   * THE BYTES PASS THROUGH THIS SERVER, unlike the staff image flow, so they can
+   * be sniffed and have their location metadata removed before anything is
+   * stored — see `photos.ts`. Multipart is also a "simple" request type, so no
+   * custom header needs preflighting.
+   */
+  routes.use('/reviews/photos', shopCors<AppEnv>());
+  routes.options('/reviews/photos', (c) =>
+    c.body(null, 204, {
+      'access-control-allow-methods': 'POST',
+      'access-control-allow-headers': 'content-type',
+      'access-control-max-age': '86400',
+    }),
+  );
+  routes.post('/reviews/photos', async (c) => {
+    const ip = clientIp(c);
+    await limit(c, `revpho:${ip}`, PHOTO_IP_LIMIT, INTAKE_WINDOW_MS);
+
+    const declared = Number(c.req.header('content-length') ?? '0');
+    if (declared > MAX_REVIEW_PHOTO_BYTES + 64 * 1024) throw new BadRequestError('file_too_large');
+
+    let form: Record<string, unknown>;
+    try {
+      form = await c.req.parseBody();
+    } catch {
+      throw new BadRequestError('file');
+    }
+    const file = form.file;
+    if (!(file instanceof File) || file.size === 0) throw new BadRequestError('file');
+    if (file.size > MAX_REVIEW_PHOTO_BYTES) throw new BadRequestError('file_too_large');
+
+    const db = currentDb(c);
+    let uploaderKey: string;
+    const link = form.reviewLink;
+    if (typeof link === 'string' && link.length > 0) {
+      const order = await requireLinkedOrder(db, link);
+      uploaderKey = `ord:${order.id}`;
+    } else {
+      const customer = await resolveCustomer(c);
+      if (!customer) throw new UnauthenticatedError();
+      uploaderKey = `cus:${customer.id}`;
+    }
+    await limit(c, `revpho:${uploaderKey}`, PHOTO_UPLOADER_LIMIT, INTAKE_WINDOW_MS);
+
+    const cleaned = cleanReviewPhoto(new Uint8Array(await file.arrayBuffer()));
+    if (!cleaned.ok) {
+      throw new BadRequestError(cleaned.reason === 'type' ? 'file_type' : 'file');
+    }
+
+    const id = newPhotoId();
+    const storageKey = storageKeyFor(id, cleaned.type);
+    try {
+      await putObject(storageKey, cleaned.bytes, cleaned.type);
+    } catch (err) {
+      if (err instanceof R2NotConfiguredError) throw new BadRequestError('storage');
+      throw err;
+    }
+    await insertReviewPhoto(db, {
+      id,
+      uploaderKey,
+      storageKey,
+      contentType: cleaned.type,
+      byteSize: cleaned.bytes.byteLength,
+      width: cleaned.width,
+      height: cleaned.height,
+      now: Date.now(),
+    });
+
+    return c.json({ photoId: id, width: cleaned.width, height: cleaned.height }, 201);
+  });
+
+  /**
+   * THE OWNER'S "COPY REVIEW LINK" on an order. Under `/admin/orders` so it
+   * rides the `orders` permission — whoever talks to buyers about their order
+   * is who sends the link.
+   *
+   * A NEW TOKEN EVERY PRESS. Nothing is stored, so there is no "the" link to
+   * fetch again; every one minted stays valid until its own expiry.
+   */
+  routes.post('/admin/orders/:id/review-link', auth, async (c) => {
+    const id = pathParam(c, 'id');
+    const order = await reviewLinkOrder(currentDb(c), id);
+    if (!order) throw new NotFoundError(id);
+    if (!(LINKABLE_STATUSES as readonly string[]).includes(order.status)) {
+      throw new BadRequestError('order_not_paid');
+    }
+    if (order.products.length === 0) throw new BadRequestError('no_products');
+    const { token, expiresAt } = mintReviewLinkToken(order.id, Date.now());
+    return c.json({
+      url: `${storefrontOrigin()}/review?token=${encodeURIComponent(token)}`,
+      expiresAt,
+      productCount: order.products.length,
+    });
+  });
+
+  /** A review photo for the moderation screen, whatever the review's status. */
+  routes.get('/reviews/photos/:id', auth, async (c) => {
+    const photo = await photoStorage(currentDb(c), pathParam(c, 'id'), false);
+    if (!photo) throw new NotFoundError('photo');
+    let url: string;
+    try {
+      url = await presignGet(photo.storageKey);
+    } catch (err) {
+      if (err instanceof R2NotConfiguredError) throw new BadRequestError('storage');
+      throw err;
+    }
+    c.header('cache-control', 'private, no-store');
+    return c.redirect(url, 302);
   });
 
   /**
@@ -566,14 +845,27 @@ export function createReviewRoutes(deps: ReviewsDeps = {}): Hono<AppEnv> {
 
   routes.get('/reviews', auth, async (c) => {
     const q = readQuery(c, AdminListQuery);
-    const page = await listReviewsAdmin(currentDb(c), {
+    const db = currentDb(c);
+    const page = await listReviewsAdmin(db, {
       status: q.status,
       productSlug: q.product,
       sentiment: q.sentiment,
       cursor: q.cursor,
       limit: q.limit,
     });
-    return c.json(page);
+    /* Photos ride the list so the queue can show them. Their URLs are the STAFF
+       route, which serves a pending review's photo too. */
+    const photos = await photosForReviews(db, page.items.map((r) => r.id));
+    return c.json({
+      ...page,
+      items: page.items.map((r) => ({
+        ...r,
+        photos: (photos.get(r.id) ?? []).map((p) => ({
+          ...p,
+          url: `/api/shop/reviews/photos/${p.id}`,
+        })),
+      })),
+    });
   });
 
   routes.get('/reviews/:id', auth, async (c) => {

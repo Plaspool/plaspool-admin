@@ -5,11 +5,20 @@ import { BadRequestError } from '../../repo/errors';
 import { FakeProvider } from './provider/fake';
 import { fakeCheckoutPort } from './checkout';
 import { applyIntentStatus, createIntent, getIntent } from './intents';
-import { applyRefundEvent, createRefund, listRefunds } from './refunds';
+import {
+  UNCONFIRMED_AFTER_MS,
+  applyRefundEvent,
+  createRefund,
+  listRefunds,
+  resolveUnconfirmedRefund,
+} from './refunds';
+import { RefundFailedError } from './refund-failure';
 import { mutateSql } from './test/mutate';
 import { resetPayments } from './test/db';
 import type { Db } from '../../db/client';
 import type { PaymentIntentRow } from './intents';
+import type { ProviderRefund, RefundRequest } from './provider/types';
+import type { ProviderName } from './schema';
 
 /**
  * Refunds: the SQL sum-check, idempotency before the provider call, and the
@@ -51,11 +60,12 @@ afterAll(async () => {
   await ctx.close();
 });
 
-/** An intent that has been paid, ready to refund. */
-async function capturedIntent(): Promise<PaymentIntentRow> {
+/** An intent that has been paid, ready to refund — through Paystack unless named. */
+async function capturedIntent(gateway: ProviderName = 'paystack'): Promise<PaymentIntentRow> {
   const { intent } = await createIntent(
     db,
     provider,
+    gateway,
     checkout,
     { checkoutId: CHECKOUT, email: 'buyer@example.com', idempotencyKey: 'idem-intent' },
     now,
@@ -386,18 +396,25 @@ describe('a failed refund and an unknown one are not the same thing', () => {
      * information: the refund may well have been created. Releasing the
      * reservation here would let an operator refund the same money again and
      * find out from the bank.
+     *
+     * REPORTED, NOT RETURNED (owner's rule, 2026-09-15). It used to come back as
+     * a refund — a 201 the screen toasts as "Refunded" — for a row with no
+     * gateway id, which no webhook can ever match. It is held and named as
+     * unconfirmed instead, for the owner to settle from the order page.
      */
     const intent = await capturedIntent();
     provider.program('refund', { kind: 'fail', code: 'timeout' });
 
-    const { refund } = await createRefund(
-      db,
-      provider,
-      { intentId: intent.id, amount: 400, idempotencyKey: 'r-timeout', createdBy: owner },
-      now,
-    );
+    await expect(
+      createRefund(
+        db,
+        provider,
+        { intentId: intent.id, amount: 400, idempotencyKey: 'r-timeout', createdBy: owner },
+        now,
+      ),
+    ).rejects.toMatchObject({ outcome: 'unconfirmed', code: 'timeout' });
 
-    expect(refund.status).toBe('pending');
+    expect((await listRefunds(db, intent.id))[0]?.status).toBe('pending');
     expect(await refundedTotal(intent.id), 'still reserved').toBe(400);
     // The remaining balance is 600, not 1,000 — a second refund cannot take the
     // money that may already be on its way back.
@@ -409,6 +426,92 @@ describe('a failed refund and an unknown one are not the same thing', () => {
         now,
       ),
     ).rejects.toBeInstanceOf(BadRequestError);
+  });
+});
+
+/**
+ * A REFUND THAT DID NOT HAPPEN IS NEVER REPORTED AS ONE.
+ *
+ * Found in production 2026-09-15: Flutterwave turned down a ₦500 refund. The
+ * admin showed "internal", and pressing Refund again in the same window — same
+ * key — read the FAILED row back as a 200, which the screen toasts as
+ * "Refunded ₦500". The cancel route's fixed key did the same to a retried
+ * cancel: the order was cancelled and the customer told they had been refunded.
+ * `createRefund` therefore resolves ONLY with a refund that is pending or
+ * succeeded; every other ending is a `RefundFailedError` naming the gateway.
+ */
+describe('a refund that did not happen is never reported as one', () => {
+  async function attempt(intentId: string, key: string, at = now) {
+    return createRefund(db, provider, { intentId, amount: 400, idempotencyKey: key, createdBy: owner }, at);
+  }
+
+  it('names the gateway that took the payment when it refuses', async () => {
+    const intent = await capturedIntent('flutterwave');
+    provider.program('refund', { kind: 'fail', code: 'invalid_request' });
+
+    const err = await attempt(intent.id, 'r-refused').catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(RefundFailedError);
+    expect(err).toMatchObject({ provider: 'flutterwave', outcome: 'refused', code: 'invalid_request' });
+  });
+
+  it('calls an answer it could not read unconfirmed, never refused', async () => {
+    const intent = await capturedIntent();
+    provider.program('refund', { kind: 'fail', code: 'malformed_response' });
+
+    await expect(attempt(intent.id, 'r-unread')).rejects.toMatchObject({
+      provider: 'paystack',
+      outcome: 'unconfirmed',
+      code: 'malformed_response',
+    });
+    // A 2xx it could not read may well have been a refund: nothing is released.
+    expect((await listRefunds(db, intent.id))[0]?.status).toBe('pending');
+    expect(await refundedTotal(intent.id)).toBe(400);
+  });
+
+  it('makes a retry on the same key after a clear refusal a real second attempt', async () => {
+    const intent = await capturedIntent('flutterwave');
+    provider.program('refund', { kind: 'fail', code: 'invalid_request' });
+    await expect(attempt(intent.id, 'r-again')).rejects.toBeInstanceOf(RefundFailedError);
+
+    // The gateway said no and nothing moved, so the same click may try again.
+    const second = await attempt(intent.id, 'r-again', now + 1);
+
+    expect(second.created).toBe(true);
+    expect(second.refund.status).toBe('pending');
+    expect(provider.countOf('refund')).toBe(2);
+    expect((await listRefunds(db, intent.id)).map((r) => r.status)).toEqual(['failed', 'pending']);
+    expect(await refundedTotal(intent.id)).toBe(400);
+  });
+
+  it('refuses a retry on the same key after an unconfirmed failure, without asking the gateway again', async () => {
+    const intent = await capturedIntent();
+    provider.program('refund', { kind: 'fail', code: 'provider_unavailable' });
+    await expect(attempt(intent.id, 'r-unsure')).rejects.toMatchObject({ outcome: 'unconfirmed' });
+
+    // Before this, the read-through answered the failed row as a success.
+    await expect(attempt(intent.id, 'r-unsure', now + 1)).rejects.toMatchObject({
+      provider: 'paystack',
+      outcome: 'unconfirmed',
+    });
+    expect(provider.countOf('refund')).toBe(1);
+  });
+
+  it('treats a gateway that answers "failed" as a refusal and frees the amount again', async () => {
+    const intent = await capturedIntent('flutterwave');
+    class AnswersFailed extends FakeProvider {
+      override async refund(req: RefundRequest, key: string): Promise<ProviderRefund> {
+        return { ...(await super.refund(req, key)), status: 'failed' };
+      }
+    }
+    provider = new AnswersFailed();
+
+    await expect(attempt(intent.id, 'r-said-failed')).rejects.toMatchObject({
+      provider: 'flutterwave',
+      outcome: 'refused',
+    });
+    expect(await refundedTotal(intent.id)).toBe(0);
+    expect((await listRefunds(db, intent.id))[0]?.status).toBe('failed');
   });
 });
 
@@ -574,5 +677,171 @@ describe('settling a refund from a verified webhook', () => {
     );
     expect(row.rows[0].processed_at, 'left pending so a drain retries it').toBeNull();
     expect(row.rows[0].last_error).toBe('unresolved_refund');
+  });
+});
+
+/**
+ * A REFUND WHOSE RESULT IS UNKNOWN STAYS HELD (owner's rule, 2026-09-15).
+ *
+ * Unknown means the gateway may have sent the money: a 5xx, an answer the
+ * adapter could not read, a timeout, or our own save failing after the gateway
+ * said yes. Releasing the amount there makes it refundable again, and a new
+ * refund window then pays the customer twice. Nothing settles such a refund by
+ * itself — Flutterwave's refund notifications are ignored by design and a
+ * Paystack one matches on the gateway id this refund never recorded — so the
+ * owner settles it by hand (`resolveUnconfirmedRefund`, below).
+ */
+describe('a refund whose result is unknown stays held', () => {
+  const refundOf = (intentId: string, key: string, amount = 400, at = now) =>
+    createRefund(db, provider, { intentId, amount, idempotencyKey: key, createdBy: owner }, at);
+
+  it('holds the amount when the gateway answers with a server error', async () => {
+    const intent = await capturedIntent('flutterwave');
+    provider.program('refund', { kind: 'fail', code: 'provider_unavailable' });
+
+    await expect(refundOf(intent.id, 'r-5xx')).rejects.toMatchObject({ outcome: 'unconfirmed' });
+
+    expect((await listRefunds(db, intent.id))[0]?.status).toBe('pending');
+    expect(await refundedTotal(intent.id)).toBe(400);
+    // A second window cannot take the held money: 600 is what is left.
+    await expect(refundOf(intent.id, 'r-5xx-again', 700)).rejects.toBeInstanceOf(BadRequestError);
+  });
+
+  it('answers a same-key retry of a held FULL refund as unconfirmed, not as too large', async () => {
+    /*
+     * The held amount makes the sum-check refuse before the INSERT can meet the
+     * key, so the retry never reached the read-through and came back as
+     * `bad_request: amount` — the cancel route's fixed key sends exactly this.
+     */
+    const intent = await capturedIntent('flutterwave');
+    provider.program('refund', { kind: 'fail', code: 'provider_unavailable' });
+    await expect(refundOf(intent.id, 'cancel:ord_full:1000', CAPTURED)).rejects.toMatchObject({
+      outcome: 'unconfirmed',
+    });
+
+    await expect(refundOf(intent.id, 'cancel:ord_full:1000', CAPTURED, now + 1)).rejects.toMatchObject({
+      provider: 'flutterwave',
+      outcome: 'unconfirmed',
+    });
+    expect(provider.countOf('refund')).toBe(1);
+  });
+
+  it('holds the amount when the gateway accepted but the refund could not be recorded', async () => {
+    const intent = await capturedIntent('flutterwave');
+    // The gateway says yes; the statement that records its answer then fails.
+    const broken = mutateSql(db, 'SET provider_refund_id', 'SET no_such_column');
+
+    await expect(
+      createRefund(broken, provider, { intentId: intent.id, amount: 400, idempotencyKey: 'r-unsaved', createdBy: owner }, now),
+    ).rejects.toMatchObject({ provider: 'flutterwave', outcome: 'unconfirmed' });
+
+    expect(provider.countOf('refund')).toBe(1);
+    expect((await listRefunds(db, intent.id))[0]).toMatchObject({ status: 'pending', providerRefundId: null });
+    expect(await refundedTotal(intent.id)).toBe(400);
+  });
+
+  it('settles a refund the gateway reports finished at once, and tells Orders', async () => {
+    /*
+     * Flutterwave usually answers a refund "completed". That was stored as
+     * `succeeded` and nothing else: the intent never moved and no
+     * `payment.refunded` was written, so the order never showed the refund —
+     * and Flutterwave's refund notifications never arrive to do it later.
+     */
+    const intent = await capturedIntent('flutterwave');
+    class FinishesAtOnce extends FakeProvider {
+      override async refund(req: RefundRequest, key: string): Promise<ProviderRefund> {
+        return { ...(await super.refund(req, key)), status: 'succeeded' };
+      }
+    }
+    provider = new FinishesAtOnce();
+
+    const { refund, created } = await refundOf(intent.id, 'r-at-once');
+
+    expect(created).toBe(true);
+    expect(refund.status).toBe('succeeded');
+    expect((await getIntent(db, intent.id))?.status).toBe('partially_refunded');
+    // By type, like the webhook tests above: the capture wrote its own row first.
+    const refunded = (await outboxRows()).filter((e) => e.type === 'payment.refunded');
+    expect(refunded).toHaveLength(1);
+    expect(refunded[0]?.payload).toMatchObject({ refundedAmount: 400, refundedTotal: 400 });
+  });
+});
+
+describe('settling a held refund by hand', () => {
+  const later = now + UNCONFIRMED_AFTER_MS;
+
+  /** A refund the gateway did not confirm, held against the intent. */
+  async function heldRefund(intentId: string, key = 'r-held'): Promise<string> {
+    provider.program('refund', { kind: 'fail', code: 'provider_unavailable' });
+    await expect(
+      createRefund(db, provider, { intentId, amount: 400, idempotencyKey: key, createdBy: owner }, now),
+    ).rejects.toMatchObject({ outcome: 'unconfirmed' });
+    const [row] = await listRefunds(db, intentId);
+    return row!.id;
+  }
+
+  it('marks it sent: the refund counts, and Orders is told', async () => {
+    const intent = await capturedIntent('flutterwave');
+    const id = await heldRefund(intent.id);
+
+    const result = await resolveUnconfirmedRefund(db, id, 'sent', later);
+
+    expect(result).toMatchObject({ ok: true, refund: { id, status: 'succeeded' } });
+    expect(await refundedTotal(intent.id)).toBe(400);
+    expect((await getIntent(db, intent.id))?.status).toBe('partially_refunded');
+    expect((await outboxRows()).filter((e) => e.type === 'payment.refunded')).toHaveLength(1);
+  });
+
+  it('marks it not sent: the money is refundable again, even on the same key', async () => {
+    const intent = await capturedIntent('flutterwave');
+    const id = await heldRefund(intent.id, 'cancel:ord_1:400');
+
+    const result = await resolveUnconfirmedRefund(db, id, 'not_sent', later);
+
+    expect(result).toMatchObject({ ok: true, refund: { id, status: 'failed' } });
+    expect(await refundedTotal(intent.id)).toBe(0);
+    // The customer was never told a refund was coming, so nobody is told it failed.
+    expect((await outboxRows()).filter((e) => String(e.type).startsWith('payment.refund'))).toEqual([]);
+    // A retried cancel sends the same key; it must be a real attempt now.
+    const retry = await createRefund(
+      db,
+      provider,
+      { intentId: intent.id, amount: 400, idempotencyKey: 'cancel:ord_1:400', createdBy: owner },
+      later + 1,
+    );
+    expect(retry.created).toBe(true);
+    expect(provider.countOf('refund')).toBe(2);
+  });
+
+  it('will not settle a refund younger than a minute, which may still be on its way', async () => {
+    const intent = await capturedIntent();
+    const id = await heldRefund(intent.id);
+
+    const result = await resolveUnconfirmedRefund(db, id, 'not_sent', now + 1_000);
+
+    expect(result).toEqual({ ok: false, reason: 'too_new' });
+    expect((await listRefunds(db, intent.id))[0]?.status).toBe('pending');
+    expect(await refundedTotal(intent.id)).toBe(400);
+  });
+
+  it('will not settle a refund the gateway did confirm, or one that does not exist', async () => {
+    const intent = await capturedIntent();
+    const { refund } = await createRefund(
+      db,
+      provider,
+      { intentId: intent.id, amount: 400, idempotencyKey: 'r-confirmed', createdBy: owner },
+      now,
+    );
+
+    // Pending with a gateway id: its own webhook settles it, not a person guessing.
+    expect(await resolveUnconfirmedRefund(db, refund.id, 'not_sent', later)).toEqual({
+      ok: false,
+      reason: 'not_unconfirmed',
+    });
+    expect(await refundedTotal(intent.id)).toBe(400);
+    expect(await resolveUnconfirmedRefund(db, 'rfd_nobody', 'sent', later)).toEqual({
+      ok: false,
+      reason: 'gone',
+    });
   });
 });

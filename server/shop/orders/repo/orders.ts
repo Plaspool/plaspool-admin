@@ -863,7 +863,7 @@ export async function createOrderFromCheckout(
         ), ins_lines AS (
           INSERT INTO shop_order_lines (id, order_id, line_no, variant_id, sku, title,
                                         option_values, qty, unit_amount, line_total,
-                                        image_id)
+                                        image_id, unit_cost_minor)
           SELECT l.id, ord.id, l.line_no, l.variant_id, l.sku, l.title,
                  l.option_values, l.qty, l.unit_amount, l.line_total,
                  /*
@@ -876,7 +876,11 @@ export async function createOrderFromCheckout(
                   * a paid item from the order, which is the worst possible
                   * failure for the least important column on the row.
                   */
-                 v.image_id
+                 v.image_id,
+                 /* What one unit cost us, frozen here for the same reason
+                    (migration 1300): profit must not move when a cost is
+                    corrected later. */
+                 v.cost_minor
             FROM ord, jsonb_to_recordset(${jsonb(lines)}) AS l(
                    id text, line_no integer, variant_id text, sku text, title text,
                    option_values jsonb, qty integer, unit_amount integer, line_total integer)

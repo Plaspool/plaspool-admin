@@ -22,6 +22,12 @@ export const logisticsCatalogPort: LogisticsCatalog = {
    * the map** rather than present as `null`, so a caller can tell "we do not
    * know this variant's weight" from "we do not know this variant".
    *
+   * THE SHIPPING WEIGHT, RESOLVED IN SQL (migration 1180) — the variant's
+   * override when it has one, else the weight the shop displays. Logistics
+   * asks "what does this weigh in a parcel" and gets one number back; that
+   * there are two columns behind it is Catalog's business, which is the same
+   * reason this port lives in `catalog/` at all.
+   *
    * NO STATUS FILTER HERE, unlike `weightCoverage` below. These ids come off an
    * order that has already been placed, and a variant discontinued between the
    * sale and the parcel still has to be weighed and shipped.
@@ -32,7 +38,7 @@ export const logisticsCatalogPort: LogisticsCatalog = {
     if (variantIds.length === 0) return out;
 
     const res = await db.execute(sql`
-      SELECT id, weight_grams
+      SELECT id, coalesce(shipping_weight_grams, weight_grams) AS weight_grams
         FROM shop_variants
        WHERE id = ANY(ARRAY[${sql.join(
          variantIds.map((id) => sql`${id}`),
@@ -55,7 +61,12 @@ export const logisticsCatalogPort: LogisticsCatalog = {
   async weightCoverage(db: Db): Promise<{ missing: number; total: number }> {
     const res = await db.execute(sql`
       SELECT count(*)::int AS total,
-             count(*) FILTER (WHERE v.weight_grams IS NULL)::int AS missing
+             -- A variant with only a displayed weight IS quotable (1180), so
+             -- the count has to resolve exactly as weightsFor does, or the
+             -- settings screen reports work that does not exist.
+             count(*) FILTER (
+               WHERE coalesce(v.shipping_weight_grams, v.weight_grams) IS NULL
+             )::int AS missing
         FROM shop_variants v
         JOIN shop_products p ON p.id = v.product_id
        WHERE v.status = 'active'

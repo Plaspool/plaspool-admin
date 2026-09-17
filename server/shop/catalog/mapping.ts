@@ -92,6 +92,8 @@ export const PRODUCT_COLUMNS: string[] = [
   'overview_fallback',
   /** Migration 0600. */
   'bulk_discount_enabled',
+  /* Migration 1220. */
+  'box_mode',
   'author_id',
   'revision',
 ];
@@ -117,6 +119,10 @@ export const VARIANT_COLUMNS: string[] = [
   'option_values',
   'position',
   'weight_grams',
+  'shipping_weight_grams',
+  /* Migration 1220. */
+  'box_pool_tag',
+  'box_item_count',
   'status',
   'image_id',
   'color_hex',
@@ -189,6 +195,8 @@ export function rowToProduct(row: Record<string, unknown>): Product {
      * switched off. The explicit comparison refuses to be clever about it.
      */
     bulkDiscountEnabled: row.bulk_discount_enabled === true || row.bulk_discount_enabled === 't',
+    /** Migration 1220. NULL is an ordinary product. */
+    boxMode: row.box_mode == null ? null : (String(row.box_mode) as Product['boxMode']),
     authorId: String(row.author_id),
     revision: Number(row.revision),
   };
@@ -284,7 +292,10 @@ export function toStorefrontProduct(
  * through on purpose: the sale strikethrough is its whole job.
  */
 export function toStorefrontVariant(variant: VariantWithPrice): StorefrontVariant {
-  const { costMinor: _costMinor, ...pub } = variant;
+  /* Both strips are named by `StorefrontVariant` itself, so dropping one here
+     is a compile error rather than a quiet leak. See that type for why the
+     DISPLAYED weight stays and the shipping one does not. */
+  const { costMinor: _costMinor, shippingWeightGrams: _shippingWeightGrams, ...pub } = variant;
   const id = variant.imageId == null ? '' : normalizeBlobId(variant.imageId);
   return { ...pub, imageUrl: id === '' ? null : publicImageUrl(id) };
 }
@@ -297,6 +308,17 @@ export function rowToVariant(row: Record<string, unknown>): Variant {
     optionValues: json<Record<string, string>>(row.option_values) ?? {},
     position: Number(row.position),
     weightGrams: row.weight_grams == null ? null : Number(row.weight_grams),
+    /**
+     * Migration 1180. NULL means "use `weightGrams`", and it is left UNRESOLVED
+     * here on purpose: this mapper feeds the admin, which has to show the
+     * difference between "same as the displayed weight" and a real override.
+     * The COALESCE belongs to the two reads that feed a courier.
+     */
+    shippingWeightGrams:
+      row.shipping_weight_grams == null ? null : Number(row.shipping_weight_grams),
+    /** Migration 1220. Both null on an ordinary variant. */
+    boxPoolTag: row.box_pool_tag == null ? null : String(row.box_pool_tag),
+    boxItemCount: row.box_item_count == null ? null : Number(row.box_item_count),
     status: row.status as VariantStatus,
     /** Migration 0009. NULL until somebody uploads a photograph of this colour. */
     imageId: row.image_id == null ? null : String(row.image_id),

@@ -489,20 +489,69 @@
                         "idx":  69,
                         "version":  "7",
                         "when":  1786600005760,
-                        "tag":  "1120_multi_currency",
+                        "tag":  "1180_variant_shipping_weight",
                         "breakpoints":  true
                     },
                     {
                         "idx":  70,
                         "version":  "7",
-                        "when":  1786600005780,
-                        "tag":  "1140_fx_multipliers",
+                        "when":  1786600005770,
+                        "tag":  "1200_cancel_restock",
                         "breakpoints":  true
                     },
                     {
                         "idx":  71,
                         "version":  "7",
-                        "when":  1786600005800,
+                        "when":  1786600005780,
+                        "tag":  "1220_mystery_boxes",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  72,
+                        "version":  "7",
+                        "when":  1786600005790,
+                        "tag":  "1240_mystery_box_settings",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  73,
+                        "version":  "7",
+                        "when":  1786600005810,
+                        "tag":  "1260_mystery_box_page",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  74,
+                        "version":  "7",
+                        "when":  1786600005830,
+                        "tag":  "1280_review_photos",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  75,
+                        "version":  "7",
+                        "when":  1786600005850,
+                        "tag":  "1300_order_line_cost",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  76,
+                        "version":  "7",
+                        "when":  1786600005860,
+                        "tag":  "1120_multi_currency",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  77,
+                        "version":  "7",
+                        "when":  1786600005870,
+                        "tag":  "1140_fx_multipliers",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  78,
+                        "version":  "7",
+                        "when":  1786600005880,
                         "tag":  "1160_fx_feed_margin",
                         "breakpoints":  true
                     }

@@ -14,6 +14,12 @@ import {
   shopProducts,
   shopVariants,
 } from './schema';
+import {
+  shopBoxFillItems,
+  shopBoxFills,
+  shopMysteryBoxItems,
+  shopMysteryBoxSettings,
+} from '../boxes/schema';
 
 /**
  * The declaration and the DDL, reconciled against a real database.
@@ -64,6 +70,12 @@ const TABLES: [string, PgTable][] = [
   ['shop_prices', shopPrices],
   ['shop_inventory', shopInventory],
   ['shop_inventory_holds', shopInventoryHolds],
+  /* Migration 1220. The mystery-box tables live in their own module. */
+  ['shop_box_fills', shopBoxFills],
+  ['shop_box_fill_items', shopBoxFillItems],
+  /* Migration 1240. */
+  ['shop_mystery_box_settings', shopMysteryBoxSettings],
+  ['shop_mystery_box_items', shopMysteryBoxItems],
   /* Migration 0940. The add-on model — see the same note above about what an
      unregistered table quietly loses. */
   ['shop_add_ons', shopAddOns],

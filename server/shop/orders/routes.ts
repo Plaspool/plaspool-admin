@@ -70,6 +70,10 @@ import {
   sweepEmailIntents,
 } from './repo/emails';
 import { MAX_SEARCH_LENGTH, readOrderByNumber, searchOrders } from '../admin/orders';
+import { readRestock, restockCancelledOrder } from './repo/restock';
+import { boxLinesFor, boxShortAt, listBoxFills, revealedBoxes, saveBoxFill } from '../boxes/fills';
+import { processMysteryBoxes } from '../boxes/auto';
+import { returnBoxItemsToStock } from '../boxes/restock';
 
 /**
  * The HTTP surface (brief §6).
@@ -182,6 +186,15 @@ const LookupQuery = z
   .object({ token: str().max(4000).optional() })
   .strict();
 
+/** `PUT …/lines/:lineId/boxes/:boxNo` (migration 1220). */
+const BoxFillBody = z
+  .object({
+    variantIds: z.array(str().min(1).max(300)).min(1).max(1000),
+    /** `null` for a first fill; the stored `filledAt` when changing a box. */
+    expectedFilledAt: z.number().int().nullable(),
+  })
+  .strict();
+
 const FulfillmentBody = z
   .object({
     lines: z
@@ -251,7 +264,35 @@ const CancelRefundChoice = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('none') }).strict(),
 ]);
 
-const CancelBody = z.object({ refund: CancelRefundChoice.optional() }).strict();
+const CancelBody = z
+  .object({
+    refund: CancelRefundChoice.optional(),
+    /**
+     * What goes back in stock, line by line (migration 1200). Only for a PAID
+     * order: an unpaid order's units were only set aside, and come back when
+     * the hold expires. Absent means "put nothing back", which is what a cancel
+     * did before this existed.
+     */
+    restock: z
+      .object({
+        lines: z
+          .array(
+            z
+              .object({
+                orderLineId: str().min(1).max(300),
+                qty: z.number().int().min(0).max(1_000_000),
+              })
+              .strict(),
+          )
+          .max(1000),
+        keptOutReason: str().max(1000).nullable().optional(),
+        /** Migration 1220. Items packed inside this order's filled mystery boxes that go back on the shelf. */
+        boxItemIds: z.array(str().min(1).max(300)).max(10_000).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
 
 /**
  * Percentage of a FROZEN total, in minor units. `100` is returned as the exact
@@ -294,11 +335,20 @@ function customerView(
   lines: OrderLine[],
   fulfillments?: Fulfillment[],
   addOns?: OrderAddOn[],
+  boxes?: Map<string, { title: string; optionValues: Record<string, string> }[][]>,
 ) {
   const { checkoutId: _checkout, paymentIntentId: _intent, ...rest } = order;
   return {
     order: rest,
-    lines,
+    /*
+     * MIGRATION 1220: A MYSTERY BOX'S CONTENTS, ONLY ONCE ITS PARCEL IS
+     * DELIVERED. Until then the line is just the box. This route is behind the
+     * customer's session or guest token, never on a public cached catalogue page.
+     */
+    lines: lines.map((l) => {
+      const revealed = boxes?.get(l.id);
+      return revealed ? { ...l, boxes: revealed.map((items) => ({ items })) } : l;
+    }),
     ...(fulfillments === undefined
       ? {}
       : { fulfillments: fulfillments.flatMap(customerFulfillmentView) }),
@@ -395,7 +445,8 @@ function registerCustomerRoutes(routes: Hono<AppEnv>, deps: Deps): void {
      * here through the same check, so both get the same body.
      */
     const fulfillments = await listFulfillments(currentDb(c), read.order.id);
-    return c.json(customerView(read.order, read.lines, fulfillments, read.addOns));
+    const boxes = await revealedBoxes(currentDb(c), { orderId: read.order.id });
+    return c.json(customerView(read.order, read.lines, fulfillments, read.addOns, boxes));
   });
 
   routes.get('/orders/:orderNumber/events', async (c) => {
@@ -551,6 +602,26 @@ function registerAdminRoutes(
     const read = await readOrderByNumber(db, orderNumber);
     if (!read) throw new NotFoundError(orderNumber);
     return c.json(await orderDetail(db, read, deps()));
+  });
+
+  /**
+   * `PUT /shop/admin/orders/:id/lines/:lineId/boxes/:boxNo` — fill one mystery
+   * box, or change what is in it (migration 1220). On the orders domain, like
+   * sending a parcel: it is packing.
+   */
+  routes.put('/admin/orders/:id/lines/:lineId/boxes/:boxNo', auth, async (c) => {
+    const db = currentDb(c);
+    const body = await readJson(c, BoxFillBody);
+    const fill = await saveBoxFill(db, {
+      orderId: pathParam(c, 'id'),
+      orderLineId: pathParam(c, 'lineId'),
+      boxNo: Number(pathParam(c, 'boxNo')),
+      variantIds: body.variantIds,
+      expectedFilledAt: body.expectedFilledAt,
+      actorId: currentUser(c).id,
+      now: deps().now(),
+    });
+    return c.json({ fill });
   });
 
   routes.post('/admin/orders/:id/fulfillments', auth, async (c) => {
@@ -879,6 +950,27 @@ function registerAdminRoutes(
       throw new BadRequestError('refund');
     }
 
+    /*
+     * THE RESTOCK LIST IS CHECKED BEFORE ANYTHING HAPPENS (migration 1200), so a
+     * malformed list is a 400 on an order that is still exactly as it was,
+     * rather than a cancel that went through with a restock that could not.
+     * Whether units have SHIPPED is not decided here: that is the restock
+     * statement's own guard, against the rows as they are when it runs.
+     */
+    if (body.restock) {
+      if (read.order.status !== 'paid') throw new BadRequestError('restock');
+      const owned = new Map(read.lines.map((l) => [l.id, l]));
+      const seen = new Set<string>();
+      for (const choice of body.restock.lines) {
+        const orderLine = owned.get(choice.orderLineId);
+        if (!orderLine || seen.has(choice.orderLineId)) {
+          throw new BadRequestError('restock.orderLineId');
+        }
+        if (choice.qty > orderLine.qty) throw new BadRequestError('restock.qty');
+        seen.add(choice.orderLineId);
+      }
+    }
+
     let refundedAmount: number | undefined;
 
     /*
@@ -980,6 +1072,35 @@ function registerAdminRoutes(
      */
     await refundPoints(db, deps().redemption, read.order.id, read.order.orderNumber, 'admin');
 
+    /*
+     * PUT BACK WHAT STAFF CHOSE (migration 1200). After the cancel and never
+     * throwing, for the reason `refundPoints` gives above: the cancel has
+     * happened and is what the caller is owed. A failure is REPORTED, so the
+     * screen can tell staff to adjust the stock count by hand, never swallowed.
+     */
+    if (body.restock) {
+      try {
+        const restock = await restockCancelledOrder(db, {
+          orderId: read.order.id,
+          lines: body.restock.lines,
+          keptOutReason: body.restock.keptOutReason ?? null,
+          actorId: currentUser(c).id,
+          now: deps().now(),
+        });
+        /* Migration 1220: what was packed inside the order's mystery boxes. */
+        const boxItemsReturned = await returnBoxItemsToStock(db, {
+          orderId: read.order.id,
+          itemIds: body.restock.boxItemIds ?? [],
+          actorId: currentUser(c).id,
+          now: deps().now(),
+        });
+        return c.json({ order, restock: { ...restock, boxItemsReturned } });
+      } catch (cause) {
+        console.error('restock after cancel failed', read.order.id, cause);
+        return c.json({ order, restock: { failed: true } });
+      }
+    }
+
     return c.json({ order });
   });
 }
@@ -1065,6 +1186,20 @@ async function runSweep(c: Context<AppEnv>, d: ResolvedDeps) {
     { origin: storefrontOrigin(), redemption: d.redemption, templates },
     { now, limit: SWEEP_BATCH, passes: RUN_SWEEP_COMMERCE_PASS_CEILING },
   );
+  /*
+   * MYSTERY BOXES THE SHOP FILLS BY ITSELF (migration 1240): built boxes handed
+   * to paid orders, items picked for "the shop picks", and the can't-be-filled
+   * choice, including an automatic cancel and refund. AFTER the commerce drain,
+   * so an order paid in this sweep is handled in this sweep, and BEFORE the mail
+   * run, so a cancellation email it queues goes out now. It never throws.
+   */
+  const mysteryBoxes = await processMysteryBoxes(db, {
+    refund: d.refund,
+    redemption: d.redemption,
+    templates,
+    origin: storefrontOrigin(),
+    now,
+  });
   const emails = await sweepEmailIntents(db, d.mailer, now);
   /*
    * ASK THE COURIERS WHERE THE PARCELS ARE — the backstop behind their webhooks
@@ -1112,7 +1247,7 @@ async function runSweep(c: Context<AppEnv>, d: ResolvedDeps) {
    * `ensureSystemTemplates` never throws and never overwrites an edited row.
    */
   const seeded = await ensureSystemTemplates(db, now);
-  return { payments, events, emails, couriers, rates, seeded, passes: events.passes };
+  return { payments, events, mysteryBoxes, emails, couriers, rates, seeded, passes: events.passes };
 }
 
 /**
@@ -1186,6 +1321,18 @@ async function orderDetail(db: Db, read: OrderRead, deps: ResolvedDeps) {
      * field of `Order`. `null` for an online order.
      */
     manual: read.order.source === 'manual' ? await readManualDetails(db, read.order.id) : null,
+    /*
+     * WHAT A CANCELLED ORDER PUT BACK, and why the rest stayed out (migration
+     * 1200). ADMIN ONLY, for the same reason `manual` is: the customer's view
+     * spreads `Order` and `OrderLine`, so neither carries these fields.
+     */
+    restock: await readRestock(db, read.order.id),
+    /* Migration 1220. Which lines are mystery boxes, and what is packed in the
+       filled ones. ADMIN ONLY: the customer sees contents only after delivery. */
+    boxLines: await boxLinesFor(db, read.order.id),
+    boxFills: await listBoxFills(db, read.order.id),
+    /* Migration 1240. When the shop could not fill this order's box by itself. */
+    boxShortAt: await boxShortAt(db, read.order.id),
     fulfillments: await listFulfillments(db, read.order.id),
     timeline: await withActorNames(db, await listTimeline(db, read.order.id)),
     /*

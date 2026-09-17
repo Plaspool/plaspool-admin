@@ -8,6 +8,7 @@ import {
   StaleWriteError,
 } from '../../../repo/errors';
 import { ID, newId } from '../ids';
+import { revealedBoxes } from '../../boxes/fills';
 import {
   renderDelivered,
   renderReviewInvite,
@@ -241,6 +242,25 @@ export async function createFulfillment(
       qty: line.qty,
     }));
 
+    /*
+     * MIGRATION 1220: A MYSTERY BOX GOES IN A PARCEL ONLY ONCE IT IS FILLED. A
+     * fill is free when it is in no parcel, or only in a cancelled one. The
+     * check is in the ord UPDATE's WHERE, so a refused parcel writes nothing at
+     * all, and the rest of the order can still be sent without the box.
+     */
+    const reqLines = sql`jsonb_to_recordset(${sql`${JSON.stringify(lines)}::jsonb`}) AS r(
+                           id text, order_line_id text, qty integer)`;
+    const emptyBoxInRequest = sql`EXISTS (
+      SELECT 1 FROM ${reqLines}
+        JOIN shop_order_lines ol ON ol.id = r.order_line_id
+        JOIN shop_variants v ON v.id = ol.variant_id
+        JOIN shop_products p ON p.id = v.product_id
+       WHERE p.box_mode IS NOT NULL
+         AND r.qty > (SELECT count(*) FROM shop_box_fills f
+                        LEFT JOIN shop_fulfillments pf ON pf.id = f.fulfillment_id
+                       WHERE f.order_line_id = ol.id
+                         AND (f.fulfillment_id IS NULL OR pf.status = 'cancelled')))`;
+
     const res = await runOrTranslate(db, orderId, sql`
       WITH ord AS (
         UPDATE shop_orders SET revision = revision + 1
@@ -248,6 +268,7 @@ export async function createFulfillment(
            AND revision = ${base}
            AND lifecycle_generation = ${pinned}
            AND status IN ('paid', 'partially_refunded')
+           AND NOT ${emptyBoxInRequest}
         RETURNING id
       ), ful AS (
         INSERT INTO shop_fulfillments (id, order_id, status, carrier, tracking_number,
@@ -262,6 +283,20 @@ export async function createFulfillment(
           FROM ful, jsonb_to_recordset(${sql`${JSON.stringify(lines)}::jsonb`}) AS l(
                  id text, order_line_id text, qty integer)
         RETURNING id, order_line_id, qty
+      ), boxes AS (
+        /* Tie the lowest-numbered free fills of each box line to this parcel,
+           so the customer reveal knows which delivery shows which box. */
+        UPDATE shop_box_fills f SET fulfillment_id = ful.id
+          FROM ful, (
+            SELECT f2.id, r.qty,
+                   row_number() OVER (PARTITION BY f2.order_line_id ORDER BY f2.box_no) AS rn
+              FROM shop_box_fills f2
+              LEFT JOIN shop_fulfillments pf ON pf.id = f2.fulfillment_id
+              JOIN ${reqLines} ON r.order_line_id = f2.order_line_id
+             WHERE f2.fulfillment_id IS NULL OR pf.status = 'cancelled'
+          ) pick
+         WHERE f.id = pick.id AND pick.rn <= pick.qty
+        RETURNING 1
       ), timeline AS (
         INSERT INTO shop_order_events (id, order_id, type, message, occurred_at, actor_id)
         SELECT ${newId(ID.timeline)}, ful.order_id, 'fulfillment_created',
@@ -278,6 +313,11 @@ export async function createFulfillment(
 
     const row = res.rows[0];
     if (row) return rowToFulfillment(row);
+
+    const emptyBox = await db.execute(sql`SELECT ${emptyBoxInRequest} AS empty`);
+    if (emptyBox.rows[0]?.empty === true || emptyBox.rows[0]?.empty === 't') {
+      throw new BadRequestError('box_not_filled');
+    }
 
     const after = await readOrder(db, orderId);
     if (!after) throw new NotFoundError(orderId);
@@ -550,7 +590,14 @@ function shipTransition(details?: FulfillmentDetails): FulfillmentTransition {
   };
 }
 
-const DELIVER: FulfillmentTransition = {
+/**
+ * DELIVER, carrying the contents of any mystery boxes in the parcel (migration
+ * 1220). The delivered notice is where a box is revealed; the contents are read
+ * BEFORE the transition, because the mail is rendered inside it.
+ */
+const deliverTransition = (
+  boxes: Map<string, { title: string }[][]>,
+): FulfillmentTransition => ({
   name: 'deliver',
   holds: (f) => f.status === 'shipped',
   guard: sql`status = 'shipped'`,
@@ -578,7 +625,7 @@ const DELIVER: FulfillmentTransition = {
           currency: order.order.currency,
           grandTotal: order.order.grandTotal,
           placedAt: order.order.placedAt,
-          lines: parcelLines(order, fulfillment),
+          lines: parcelLines(order, fulfillment, boxes),
         },
         link,
         templates,
@@ -622,7 +669,7 @@ const DELIVER: FulfillmentTransition = {
       ),
     },
   ],
-};
+});
 
 /**
  * The order lines this parcel actually contains, from the ORDER's own snapshot.
@@ -636,14 +683,23 @@ const DELIVER: FulfillmentTransition = {
 function parcelLines(
   order: OrderRead,
   fulfillment: Fulfillment,
+  /* Migration 1220. A box line's contents, when this message may reveal them.
+     They ride the product-code slot, so no email template has to change. */
+  boxes: Map<string, { title: string }[][]> = new Map(),
 ): { title: string; sku: string; qty: number; lineTotal: number }[] {
   return order.lines
     .filter((line) => fulfillment.lines.some((fl) => fl.orderLineId === line.id))
     .map((line) => {
       const covered = fulfillment.lines.find((fl) => fl.orderLineId === line.id);
+      const inside = boxes.get(line.id);
+      const sku = !inside
+        ? line.sku
+        : inside.length === 1
+          ? `Inside: ${inside[0].map((i) => i.title).join(', ')}`
+          : inside.map((b, n) => `Box ${n + 1}: ${b.map((i) => i.title).join(', ')}`).join('; ');
       return {
         title: line.title,
-        sku: line.sku,
+        sku,
         qty: covered?.qty ?? line.qty,
         lineTotal: line.lineTotal,
         imageId: line.imageId,
@@ -764,7 +820,9 @@ export const deliverFulfillment = (
   link: AccessLink | null = null,
   templates: TemplateSet = BUILT_IN,
 ): Promise<Fulfillment> =>
-  fulfillmentTransition(db, id, DELIVER, now, link, actorId, templates);
+  revealedBoxes(db, { fulfillmentId: id }).then((boxes) =>
+    fulfillmentTransition(db, id, deliverTransition(boxes), now, link, actorId, templates),
+  );
 
 export const cancelFulfillment = (
   db: Db,

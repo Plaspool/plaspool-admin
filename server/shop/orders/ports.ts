@@ -105,6 +105,12 @@ export const NO_PAYMENT_DRAIN: PaymentDrain = () => Promise.resolve({ count: 0 }
  * `routes.ts` for why refund-then-cancel, in that order, is what makes a
  * thrown refund leave the order untouched rather than cancelled with no money
  * moved.
+ *
+ * A REFUND THE GATEWAY DID NOT CARRY OUT THROWS TOO, and that includes a key
+ * whose earlier attempt failed: `createRefund` used to hand that failed row
+ * back as a result, so a retried cancel cancelled the order with nothing
+ * refunded. It is `RefundFailedError` now (answered 422), which means an outcome
+ * that comes back at all is pending or succeeded.
  */
 export interface RefundOutcome {
   refundId: string;

@@ -171,6 +171,12 @@ export const shopProducts = pgTable(
      * passes.
      */
     bulkDiscountEnabled: boolean('bulk_discount_enabled').notNull().default(true),
+    /**
+     * Migration 1220. NULL means an ordinary product. `'pack'` is a mystery box
+     * staff fill by hand; `'built'` and `'auto'` are admitted by the CHECK for
+     * phases 2 and 3 and refused by the phase 1 route.
+     */
+    boxMode: text('box_mode').$type<'pack' | 'built' | 'auto'>(),
     authorId: uuid('author_id')
       .notNull()
       .references(() => users.id),
@@ -191,6 +197,10 @@ export const shopProducts = pgTable(
   (t) => [
     check('shop_products_status_ck', sql`${t.status} IN (${sqlLiterals(PRODUCT_STATUSES)})`),
     check('shop_products_revision_ck', sql`${t.revision} > 0`),
+    check(
+      'shop_products_box_mode_ck',
+      sql`${t.boxMode} IS NULL OR ${t.boxMode} IN ('pack', 'built', 'auto')`,
+    ),
     index('shop_products_status_updated_idx').on(t.status, t.updatedAt.desc()),
     index('shop_products_deleted_idx').on(t.deletedAt),
     index('shop_products_category_idx').on(t.category),
@@ -258,8 +268,34 @@ export const shopVariants = pgTable(
     /** `{ "Size": "M", "Colour": "Navy" }`. */
     optionValues: jsonb('option_values').$type<Record<string, string>>().notNull(),
     position: integer('position').notNull(),
-    /** Shipping needs it; nullable is honest for a variant nobody has weighed. */
+    /**
+     * What the shop SHOWS — the spool size on the storefront. Nullable is
+     * honest for a variant nobody has weighed.
+     *
+     * Until migration 1180 this was also the only number a courier was told,
+     * so displaying an honest spool size and quoting an honest parcel were the
+     * same edit. `shippingWeightGrams` below is now the one delivery is priced
+     * on; this one stayed put so the storefront contract did not move.
+     */
     weightGrams: integer('weight_grams'),
+    /**
+     * What DELIVERY is priced on (migration 1180). Grams, integer.
+     *
+     * NULL MEANS DERIVE IT — fall back to `weightGrams` — not "weightless".
+     * The COALESCE lives in the two reads that feed a courier (`port.ts`'s
+     * quote and `logistics-port.ts`'s `weightsFor`), so nothing downstream of
+     * the catalog seam has to choose between two numbers.
+     *
+     * EXCLUDES THE OUTER BOX: `shop_delivery_settings.packaging_weight_kg` is
+     * already added on top of the basket, so counting packaging here too pays
+     * for it twice.
+     */
+    shippingWeightGrams: integer('shipping_weight_grams'),
+    /** Migration 1220. The tag pool 1220 used. NO LONGER READ since migration
+     *  1240 moved the pool into Settings → Mystery box; left in place. */
+    boxPoolTag: text('box_pool_tag'),
+    /** Migration 1220. How many items one box of this variant holds. */
+    boxItemCount: integer('box_item_count'),
     status: text('status').$type<VariantStatus>().notNull(),
     /**
      * ONE image, for the option this variant actually is (migration 0009).
@@ -320,6 +356,11 @@ export const shopVariants = pgTable(
     check('shop_variants_status_ck', sql`${t.status} IN (${sqlLiterals(VARIANT_STATUSES)})`),
     check('shop_variants_position_ck', sql`${t.position} >= 0`),
     check('shop_variants_weight_ck', sql`${t.weightGrams} IS NULL OR ${t.weightGrams} >= 0`),
+    check(
+      'shop_variants_shipping_weight_ck',
+      sql`${t.shippingWeightGrams} IS NULL OR ${t.shippingWeightGrams} >= 0`,
+    ),
+    check('shop_variants_box_item_count_ck', sql`${t.boxItemCount} IS NULL OR ${t.boxItemCount} > 0`),
     // Sign backstops, as `weight_ck`: against a backfill or hand-run UPDATE,
     // not display policy — zero is storable and simply never renders as a sale.
     check(

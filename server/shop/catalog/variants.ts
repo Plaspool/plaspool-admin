@@ -90,7 +90,11 @@ export interface CreateVariantInput {
   sku?: string;
   optionValues?: Record<string, string>;
   position?: number;
+  /** Grams. What the shop SHOWS. */
   weightGrams?: number | null;
+  /** Grams. What DELIVERY is priced on (migration 1180); omitted or `null`
+   *  means "use `weightGrams`". */
+  shippingWeightGrams?: number | null;
   /** Stock at creation. Defaults to zero — nothing is in the warehouse yet. */
   onHand?: number;
   backorderable?: boolean;
@@ -104,6 +108,7 @@ export interface CreateVariantInput {
   costMinor?: number | null;
 }
 
+
 /**
  * A non-negative integer of minor units, `null`, or a 400 that names the field.
  *
@@ -116,6 +121,22 @@ function checkedMinor(
   value: number | null,
   field: 'compareAtMinor' | 'costMinor',
 ): number | null {
+  if (value !== null && (!Number.isInteger(value) || value < 0)) {
+    throw new BadRequestError(field);
+  }
+  return value;
+}
+
+/**
+ * The same non-negative integer, in GRAMS rather than minor units.
+ *
+ * A separate function from `checkedMinor` only so neither name lies about what
+ * its argument measures — the arithmetic is identical. Applied on CREATE as
+ * well as on patch, which `weightGrams` is not: a `1.5` reaching the column
+ * gets rounded by the driver or refused by the CHECK as a 500, and a 400 that
+ * names the field is the honest answer to a caller that is not the route.
+ */
+function checkedGrams(value: number | null, field: 'shippingWeightGrams'): number | null {
   if (value !== null && (!Number.isInteger(value) || value < 0)) {
     throw new BadRequestError(field);
   }
@@ -355,6 +376,10 @@ export async function createVariant(
   if (!Number.isInteger(onHand) || onHand < 0) throw new BadRequestError('onHand');
   const compareAtMinor = checkedMinor(input.compareAtMinor ?? null, 'compareAtMinor');
   const costMinor = checkedMinor(input.costMinor ?? null, 'costMinor');
+  const shippingWeightGrams = checkedGrams(
+    input.shippingWeightGrams ?? null,
+    'shippingWeightGrams',
+  );
   await checkVariantImage(db, input.imageId);
 
   /*
@@ -375,12 +400,14 @@ export async function createVariant(
         SELECT id FROM shop_products WHERE id = ${productId}
       ), ins AS (
         INSERT INTO shop_variants (id, product_id, sku, option_values, position,
-                                   weight_grams, status, image_id, color_hex,
+                                   weight_grams, shipping_weight_grams,
+                                   status, image_id, color_hex,
                                    compare_at_minor, cost_minor,
                                    created_at, updated_at)
         SELECT ${id}, prod.id, ${sku},
                ${JSON.stringify(options)}::jsonb, ${position},
-               ${input.weightGrams ?? null}, 'active', ${input.imageId || null},
+               ${input.weightGrams ?? null}, ${shippingWeightGrams},
+               'active', ${input.imageId || null},
                ${colorHex}, ${compareAtMinor}, ${costMinor}, ${now}, ${now}
           FROM prod
         RETURNING ${sql.raw(VARIANT_COLUMNS.join(', '))}
@@ -459,6 +486,13 @@ export async function updateVariant(
       throw new BadRequestError('weightGrams');
     }
     assignments.push(sql`weight_grams = ${patch.weightGrams}`);
+  }
+  if (patch.shippingWeightGrams !== undefined) {
+    /* `null` is a real value here, not an absence: it CLEARS the override, and
+       delivery rejoins the displayed weight. */
+    assignments.push(
+      sql`shipping_weight_grams = ${checkedGrams(patch.shippingWeightGrams, 'shippingWeightGrams')}`,
+    );
   }
   if (patch.status !== undefined) {
     assignments.push(sql`status = ${patch.status satisfies VariantStatus}`);

@@ -142,7 +142,11 @@ export default function Reviews() {
           }
           meta={
             <>
-              {r.authorName} · {r.body.length > 90 ? `${r.body.slice(0, 90)}…` : r.body}
+              {r.authorName} ·{' '}
+              {(r.photos?.length ?? 0) > 0
+                ? `${r.photos!.length} ${r.photos!.length === 1 ? 'photo' : 'photos'} · `
+                : ''}
+              {r.body.length > 90 ? `${r.body.slice(0, 90)}…` : r.body}
             </>
           }
         />
@@ -292,6 +296,39 @@ export default function Reviews() {
             <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
               {openReview.body}
             </p>
+            {openReview.photos && openReview.photos.length > 0 ? (
+              <div
+                className="row"
+                role="list"
+                aria-label="Customer photos"
+                style={{ gap: 'var(--s2)', flexWrap: 'wrap' }}
+              >
+                {openReview.photos.map((photo, i) => (
+                  <a
+                    key={photo.id}
+                    role="listitem"
+                    href={photo.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="Open full size"
+                  >
+                    <img
+                      src={photo.url}
+                      alt={`Customer photo ${i + 1}`}
+                      loading="lazy"
+                      style={{
+                        width: '6rem',
+                        height: '6rem',
+                        objectFit: 'cover',
+                        borderRadius: 'var(--r-md)',
+                        border: '1px solid var(--border)',
+                        display: 'block',
+                      }}
+                    />
+                  </a>
+                ))}
+              </div>
+            ) : null}
             <Defs
               rows={[
                 { label: 'Product', value: <span className="mono">/{openReview.productSlug}</span> },

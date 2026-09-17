@@ -61,6 +61,8 @@ const RULES: readonly Rule[] = [
    * while only this admin half is owner-and-developer work. */
   { prefix: '/api/shop/admin/logistics', domain: 'settings' },
   { prefix: '/api/shop/admin/notification-settings', domain: 'settings' },
+  /* Migration 1240. Settings → Mystery box, including building boxes ahead. */
+  { prefix: '/api/shop/admin/mystery-box', domain: 'settings' },
   /*
    * `orders` AND NOT `settings`, unlike the line above it, because these two
    * prefixes answer different questions for different people. The settings say

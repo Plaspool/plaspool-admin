@@ -29,11 +29,11 @@ import { ApiError } from '../../data/errors';
 import { brand } from '../../brand';
 import { dateTime, humanise, money, productTone, shortDate } from '../lib/format';
 import { PageHeader } from '../ui/Page';
-import { Badge, Banner, Button, EmptyState } from '../ui/primitives';
+import { Badge, Banner, Button, ButtonLink, EmptyState } from '../ui/primitives';
 import { Card } from '../ui/Card';
 import { Defs } from '../ui/Defs';
-import { AffixField, Checkbox, SelectField, TextArea, TextField } from '../ui/Field';
-import { StoredImg, MediaManager, type MediaValue } from '../ui/Img';
+import { AffixField, Checkbox, MoneyField, SelectField, TextArea, TextField } from '../ui/Field';
+import { StoredImg, MediaManager, PhotoPicker, type MediaValue } from '../ui/Img';
 import { Menu, MenuItem, MenuSeparator } from '../ui/Menu';
 import { TableScroll } from '../ui/TableScroll';
 import { Modal } from '../ui/Modal';
@@ -45,6 +45,8 @@ import { TagInput } from '../ui/TagInput';
 import { Timeline, type TimelineEvent } from '../ui/Timeline';
 import { useToast } from '../ui/Toast';
 import { VariantMultipliers } from './VariantMultipliers';
+import { StockCell } from './StockCell';
+import { EMPTY_PRICING, PricingFields, pricingFrom, readPricing, type PricingValues } from './PricingFields';
 
 /**
  * PRODUCT DETAIL — `/products/:id`, and `/products/new` for creation.
@@ -125,6 +127,11 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
   const [seoDescription, setSeoDescription] = useState('');
   const [overview, setOverview] = useState('');
   const [bulkEnabled, setBulkEnabled] = useState(true);
+  /* CREATE ONLY: the first variant, made in the same save as the product, so a
+     new product is never left sitting with no price, cost or stock. */
+  const [firstPricing, setFirstPricing] = useState<PricingValues>(EMPTY_PRICING);
+  const [firstStock, setFirstStock] = useState('0');
+  const [firstError, setFirstError] = useState<string | null>(null);
   /* The shop-wide default, read once — the ladder shown while this product
      inherits, and what "Use the shop default" reverts to. */
   const [bulkTiers, setBulkTiers] = useState<BulkTier[]>([]);
@@ -403,6 +410,9 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
       seoDescription.trim() !== '' ||
       overview.trim() !== '' ||
       !bulkEnabled ||
+      firstPricing.price.trim() !== '' ||
+      firstPricing.cost.trim() !== '' ||
+      firstPricing.original.trim() !== '' ||
       descDirty
     : product
       ? title !== product.title ||
@@ -441,7 +451,40 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
     setSaving(true);
     try {
       if (create) {
+        /* Everything is checked BEFORE the product exists, so a typo in a
+           price cannot leave a half-made product behind. */
+        const priced = readPricing(firstPricing, STORE_CURRENCY);
+        if (!priced.ok) {
+          setFirstError(priced.error);
+          return;
+        }
+        const stock = firstStock.trim() === '' ? 0 : Number(firstStock);
+        if (!Number.isInteger(stock) || stock < 0) {
+          setFirstError('Stock is a whole number of zero or more.');
+          return;
+        }
         const created = await shopApi.createProduct(patch());
+        /* Three writes, not one statement: product, variant, then price
+           through its own route so the price history starts with an entry.
+           If a later step fails the product is already saved as a draft, so
+           say exactly that and open it, where the variant can be added. */
+        const wantsVariant = priced.priceMinor !== null || priced.costMinor !== null || stock > 0;
+        if (wantsVariant) {
+          try {
+            const variant = await shopApi.createVariant(created.id, {
+              onHand: stock,
+              costMinor: priced.costMinor,
+              compareAtMinor: priced.compareAtMinor,
+            });
+            if (priced.priceMinor !== null) {
+              await shopApi.setVariantPrice(variant.id, priced.priceMinor, STORE_CURRENCY, 'Set when the product was created');
+            }
+          } catch (cause) {
+            toast.show(`Product saved, but its price and stock weren’t: ${messageFor(cause)}`, 'critical');
+            navigate(`/products/${created.id}`, { replace: true });
+            return;
+          }
+        }
         toast.show(`${created.title || 'Product'} created as a draft`);
         navigate(`/products/${created.id}`, { replace: true });
         return;
@@ -688,10 +731,43 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
           </Card>
 
           {create ? (
-            <Card title="Variants">
-              <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
-                Save the product first. Variants, prices and stock can only be added afterwards.
-              </p>
+            <Card title="Pricing">
+              <div className="stack">
+                <PricingFields
+                  values={firstPricing}
+                  currency={STORE_CURRENCY}
+                  onChange={(next) => {
+                    setFirstPricing(next);
+                    setFirstError(null);
+                  }}
+                />
+                <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)', flexWrap: 'wrap' }}>
+                  <div style={{ flex: '1 1 14rem' }}>
+                    <TextField
+                      label="Stock"
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={firstStock}
+                      hint="How many you have ready to sell."
+                      onChange={(e) => {
+                        setFirstStock(e.target.value);
+                        setFirstError(null);
+                      }}
+                    />
+                  </div>
+                  <div style={{ flex: '1 1 14rem' }} aria-hidden="true" />
+                </div>
+                {firstError ? (
+                  <span className="field__error" role="alert">
+                    {firstError}
+                  </span>
+                ) : null}
+                <p className="muted" style={{ fontSize: 'var(--t-sm)', lineHeight: 1.55 }}>
+                  This becomes the product’s first variant. Add colours or sizes as more variants
+                  after saving.
+                </p>
+              </div>
             </Card>
           ) : (
             <VariantsCard
@@ -975,8 +1051,8 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
                 </div>
               ) : audit.length === 0 ? (
                 <p className="muted" style={{ fontSize: 'var(--t-md)' }}>
-                  No stock or price changes recorded yet. Every change appears here with its
-                  reason.
+                  No stock or price changes recorded yet. Every change appears here, with its
+                  reason if one was given.
                 </p>
               ) : (
                 <Timeline events={audit.map(auditEvent)} />
@@ -1009,6 +1085,20 @@ export default function ProductDetail({ create = false }: { create?: boolean }) 
               </span>
             </Card>
           )}
+
+          {/* Migration 1240. The mystery box is set up in Settings, not here; this
+              card only says so, so nobody hunts for the controls on the product. */}
+          {!create && product && product.boxMode !== null ? (
+            <Card title="Mystery box">
+              <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
+                This product is the shop’s mystery box. What goes inside, how many items each size
+                holds and how boxes get filled are set in Settings.
+              </p>
+              <div>
+                <ButtonLink to="/settings/mystery-box">Open Mystery box settings</ButtonLink>
+              </div>
+            </Card>
+          ) : null}
 
           <Card title="Organisation">
             {namingCategory ? (
@@ -1258,7 +1348,14 @@ function VariantsCard({
                     <PriceCell key={`p${v.price?.amount ?? 'none'}`} variant={v} onWrite={onWrite} />
                   </td>
                   <td className="cell--num" data-label="Available" data-mobile="keep">
-                    <StockCell key={`s${v.available ?? 'none'}`} variant={v} onWrite={onWrite} />
+                    <StockCell
+                      key={`s${v.available ?? 'none'}`}
+                      variantId={v.id}
+                      sku={v.sku}
+                      available={v.available}
+                      backorderable={v.backorderable}
+                      onWrite={onWrite}
+                    />
                   </td>
                   <td className="cell--tight" data-label="Status" data-mobile="keep">
                     <Badge tone={v.status === 'active' ? 'ok' : 'neutral'}>
@@ -1384,10 +1481,9 @@ function PriceCell({ variant, onWrite }: { variant: ShopVariant; onWrite: () => 
     >
       {(close) => (
         <>
-          <AffixField
+          <MoneyField
             label="Price"
-            prefix={currency}
-            inputMode="decimal"
+            currency={currency}
             value={draft}
             error={error}
             autoFocus
@@ -1412,103 +1508,6 @@ function PriceCell({ variant, onWrite }: { variant: ShopVariant; onWrite: () => 
             </Button>
             <Button tone="primary" busy={busy} onClick={() => void commit(close)}>
               Save
-            </Button>
-          </PopEditFoot>
-        </>
-      )}
-    </PopEdit>
-  );
-}
-
-function StockCell({ variant, onWrite }: { variant: ShopVariant; onWrite: () => void }) {
-  const toast = useToast();
-  const [delta, setDelta] = useState('');
-  const [reason, setReason] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const parsedDelta = Number(delta);
-  const deltaOk = delta.trim() !== '' && Number.isInteger(parsedDelta) && parsedDelta !== 0;
-
-  async function commit(close: () => void) {
-    if (!deltaOk) {
-      setError('Enter a whole number, above or below zero — but not zero.');
-      return;
-    }
-    if (!reason.trim()) {
-      setError('A stock change needs a reason. It is kept on record.');
-      return;
-    }
-    setBusy(true);
-    try {
-      const res = await shopApi.adjustInventory(variant.id, parsedDelta, reason.trim());
-      toast.show(`${variant.sku} — ${res.available} available`);
-      close();
-      setDelta('');
-      setReason('');
-      onWrite();
-    } catch (cause) {
-      setError(messageFor(cause));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const available = variant.available;
-
-  return (
-    <PopEdit
-      ariaLabel={`Adjust stock of ${variant.sku}`}
-      value={
-        available === null ? (
-          <span className="muted">No stock row</span>
-        ) : (
-          <span className="num" style={available < 0 ? { color: 'var(--critical)' } : undefined}>
-            {available}
-          </span>
-        )
-      }
-    >
-      {(close) => (
-        <>
-          <TextField
-            label="Adjust by"
-            type="number"
-            step={1}
-            placeholder="+5 or -2"
-            value={delta}
-            autoFocus
-            hint={
-              available !== null && deltaOk
-                ? `Available ${available} → ${available + parsedDelta}`
-                : variant.backorderable
-                  ? 'Can be back-ordered, so stock is allowed to go below zero.'
-                  : undefined
-            }
-            onChange={(e) => {
-              setDelta(e.target.value);
-              setError(null);
-            }}
-          />
-          <TextField
-            label="Reason"
-            value={reason}
-            placeholder="Stock count, damage, correction…"
-            error={error}
-            onChange={(e) => {
-              setReason(e.target.value);
-              setError(null);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void commit(close);
-            }}
-          />
-          <PopEditFoot>
-            <Button tone="plain" onClick={close}>
-              Cancel
-            </Button>
-            <Button tone="primary" busy={busy} onClick={() => void commit(close)}>
-              Adjust
             </Button>
           </PopEditFoot>
         </>
@@ -1542,16 +1541,18 @@ function VariantModal({
   const [weight, setWeight] = useState(
     variant?.weightGrams != null ? String(variant.weightGrams) : '',
   );
+  /* EMPTY WHEN THERE IS NO OVERRIDE, not the displayed weight copied in — see
+     the field's own comment for why a prefill would be a trap. */
+  const [shipWeight, setShipWeight] = useState(
+    variant?.shippingWeightGrams != null ? String(variant.shippingWeightGrams) : '',
+  );
   const [colorHex, setColorHex] = useState(variant?.colorHex ?? '');
   const [imageId, setImageId] = useState<string | null>(variant?.imageId ?? null);
   /* The variant's own currency where it has a price; the store's for a new one.
      Compare-at and cost render beside that price, so they share its currency. */
   const currency = variant?.price?.currency ?? STORE_CURRENCY;
-  const [compareAt, setCompareAt] = useState(() =>
-    variant?.compareAtMinor != null ? plainMajor(variant.compareAtMinor, currency) : '',
-  );
-  const [cost, setCost] = useState(() =>
-    variant?.costMinor != null ? plainMajor(variant.costMinor, currency) : '',
+  const [pricing, setPricing] = useState<PricingValues>(() =>
+    variant ? pricingFrom(variant, currency) : EMPTY_PRICING,
   );
   /* No longer create-only (owner's queue, 2026-08-25): editing initialises
      from the row and the PATCH carries the flag when it changes. */
@@ -1564,34 +1565,6 @@ function VariantModal({
     ...(product.coverImageId ? [product.coverImageId] : []),
     ...product.imageIds,
   ];
-
-  /* Live economics beside the cost box. Price is set from the variants table
-     (that path carries the reason into the audit trail), so here it is only
-     read — margin against it is the whole point of recording cost at all. */
-  const price = variant?.price ?? null;
-  const costParsed = cost.trim() === '' ? null : parseMajor(cost, currency);
-  const marginHint = (() => {
-    if (!price) return 'Profit shows once you set a price in the variants table.';
-    if (costParsed === null || !costParsed.ok || price.amount === 0) {
-      return `Against the current price of ${money(price.amount, currency)}.`;
-    }
-    const profit = price.amount - costParsed.minor;
-    const pct = Math.round(((profit / price.amount) * 1000)) / 10;
-    return `${pct}% profit · ${money(profit, currency)} per sale`;
-  })();
-  const compareParsed = compareAt.trim() === '' ? null : parseMajor(compareAt, currency);
-  const compareHint =
-    price && compareParsed?.ok && compareParsed.minor <= price.amount
-      ? 'At or below the current price, so your shop won’t show this as a sale.'
-      : 'Shown crossed out in your shop while it is above the price.';
-
-  /* The owner's quick-fill rules (2026-08-25): compare-at offers price +20%,
-     cost offers price −15%, both rounded to the whole naira — the same 85%
-     figure migration 0500 backfilled. Offers, never values: the keycap or Tab
-     types the digits out for editing, and an untouched field stays empty. */
-  const roundNaira = (minor: number) => Math.round(minor / 100) * 100;
-  const compareSuggest = price ? plainMajor(roundNaira(price.amount * 1.2), currency) : undefined;
-  const costSuggest = price ? plainMajor(roundNaira(price.amount * 0.85), currency) : undefined;
 
   function buildOptionValues(): Record<string, string> {
     const out: Record<string, string> = {};
@@ -1608,21 +1581,33 @@ function VariantModal({
       setError('Weight is grams — a non-negative number, or empty.');
       return;
     }
+    const shippingWeightGrams = shipWeight.trim() === '' ? null : Number(shipWeight);
+    if (
+      shippingWeightGrams !== null &&
+      (!Number.isFinite(shippingWeightGrams) || shippingWeightGrams < 0)
+    ) {
+      setError('Shipping weight is grams — a non-negative number, or empty.');
+      return;
+    }
     const color = colorHex.trim() === '' ? null : colorHex.trim().toLowerCase();
     if (color !== null && !/^#[0-9a-f]{6}$/.test(color)) {
       setError('Colour is a six-digit hex code like #8b5a2b, or empty.');
       return;
     }
-    /* Empty clears — "not on sale" / "cost unknown" are real states, so the
-       fields parse only when there is something to parse. */
-    const compareAtMinor = compareAt.trim() === '' ? null : parseMajor(compareAt, currency);
-    if (compareAtMinor !== null && !compareAtMinor.ok) {
-      setError(`Original price: ${moneyRefusalMessage(compareAtMinor.reason, currency)}`);
+    /* Empty clears — "not on sale" / "cost unknown" are real states. */
+    const priced = readPricing(pricing, currency);
+    if (!priced.ok) {
+      setError(priced.error);
       return;
     }
-    const costMinor = cost.trim() === '' ? null : parseMajor(cost, currency);
-    if (costMinor !== null && !costMinor.ok) {
-      setError(`Cost per item: ${moneyRefusalMessage(costMinor.reason, currency)}`);
+    const compareAtMinor = priced.compareAtMinor;
+    const costMinor = priced.costMinor;
+    /* PRICE GOES THROUGH ITS OWN ROUTE, never the variant PATCH: that route
+       writes the price history. Only when it actually moved, so opening this
+       modal to fix a photo leaves no false entry in that history. */
+    const priceMoved = priced.priceMinor !== null && priced.priceMinor !== (variant?.price?.amount ?? null);
+    if (!creating && variant.price && priced.priceMinor === null) {
+      setError('Price can’t be emptied once set. Discontinue the variant to stop selling it.');
       return;
     }
     const stock = Number(onHand);
@@ -1637,27 +1622,35 @@ function VariantModal({
           ...(sku.trim() ? { sku: sku.trim() } : {}),
           optionValues: buildOptionValues(),
           weightGrams,
+          shippingWeightGrams,
           colorHex: color,
           imageId,
           backorderable,
           onHand: stock,
-          compareAtMinor: compareAtMinor === null ? null : compareAtMinor.minor,
-          costMinor: costMinor === null ? null : costMinor.minor,
+          compareAtMinor,
+          costMinor,
         });
+        if (priced.priceMinor !== null) {
+          await shopApi.setVariantPrice(created.id, priced.priceMinor, currency, 'Set when the variant was added');
+        }
         toast.show(`${created.sku} added`);
       } else {
         await shopApi.updateVariant(variant.id, {
           ...(sku.trim() && sku.trim() !== variant.sku ? { sku: sku.trim() } : {}),
           optionValues: buildOptionValues(),
           weightGrams,
+          shippingWeightGrams,
           colorHex: color,
           imageId,
-          compareAtMinor: compareAtMinor === null ? null : compareAtMinor.minor,
-          costMinor: costMinor === null ? null : costMinor.minor,
+          compareAtMinor,
+          costMinor,
           /* Only when it moved: the flag lands on the inventory row, and a
              no-op write would still bump that row's clock. */
           ...(backorderable !== variant.backorderable ? { backorderable } : {}),
         });
+        if (priceMoved) {
+          await shopApi.setVariantPrice(variant.id, priced.priceMinor!, currency, 'Changed in the variant editor');
+        }
         toast.show(`${sku.trim() || variant.sku} updated`);
       }
       onDone();
@@ -1740,10 +1733,30 @@ function VariantModal({
               suffix="g"
               inputMode="numeric"
               value={weight}
-              hint="Optional."
+              hint="Shown in your shop. Optional."
               onChange={(e) => setWeight(e.target.value)}
             />
           </div>
+          <div style={{ flex: 1 }}>
+            <AffixField
+              label="Shipping weight"
+              suffix="g"
+              inputMode="numeric"
+              value={shipWeight}
+              hint="Used to price delivery. Blank means the weight beside it."
+              /* A SUGGESTION, NEVER A PREFILL. Blank is the ordinary state and
+                 it means "use the weight shown" — writing that number in would
+                 pin every variant to whatever it displayed the day somebody
+                 opened this modal to change something else. Tab types it out
+                 for the one case where the two really do differ by a little. */
+              suggestion={weight.trim() === '' ? undefined : weight.trim()}
+              onSuggest={setShipWeight}
+              onChange={(e) => setShipWeight(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
           <div style={{ flex: 1 }}>
             <TextField
               label="Colour code"
@@ -1755,103 +1768,32 @@ function VariantModal({
               onChange={(e) => setColorHex(e.target.value)}
             />
           </div>
+          {/* Keeps the hex field at the half width it has always had. `.row`
+              does not wrap, so this costs nothing on a phone either. */}
+          <div style={{ flex: 1 }} aria-hidden="true" />
         </div>
 
         <div className="stack stack--tight">
           <span className="field__label">Pricing</span>
-          <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
-            <div style={{ flex: 1 }}>
-              <AffixField
-                label="Original price"
-                prefix={currency}
-                inputMode="decimal"
-                value={compareAt}
-                hint={compareHint}
-                suggestion={compareSuggest}
-                onSuggest={(v) => {
-                  setCompareAt(v);
-                  setError(null);
-                }}
-                onChange={(e) => {
-                  setCompareAt(e.target.value);
-                  setError(null);
-                }}
-              />
-            </div>
-            <div style={{ flex: 1 }}>
-              <AffixField
-                label="Cost per item"
-                prefix={currency}
-                inputMode="decimal"
-                value={cost}
-                hint={marginHint}
-                suggestion={costSuggest}
-                onSuggest={(v) => {
-                  setCost(v);
-                  setError(null);
-                }}
-                onChange={(e) => {
-                  setCost(e.target.value);
-                  setError(null);
-                }}
-              />
-            </div>
-          </div>
+          <PricingFields
+            values={pricing}
+            currency={currency}
+            onChange={(next) => {
+              setPricing(next);
+              setError(null);
+            }}
+          />
         </div>
 
         {/* A variant's own rate in another currency needs the variant's id,
             so it is offered once the variant exists — never while adding. */}
         {creating ? null : <VariantMultipliers variantId={variant.id} />}
 
-        {productImages.length > 0 ? (
-          <div className="stack stack--tight">
-            <span className="field__label">Variant photo</span>
-            <div className="row" style={{ flexWrap: 'wrap', gap: 'var(--s2)' }}>
-              <button
-                type="button"
-                className="imgg__tile"
-                style={{
-                  width: '3.5rem',
-                  aspectRatio: '1',
-                  cursor: 'pointer',
-                  boxShadow:
-                    imageId === null
-                      ? '0 0 0 2px var(--accent) inset'
-                      : '0 0 0 1px rgb(26 26 26 / 0.08) inset',
-                }}
-                aria-pressed={imageId === null}
-                aria-label="No photo"
-                onClick={() => setImageId(null)}
-              >
-                <span className="muted" style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', fontSize: 'var(--t-xs)' }}>
-                  None
-                </span>
-              </button>
-              {productImages.map((pid) => (
-                <button
-                  key={pid}
-                  type="button"
-                  className="imgg__tile"
-                  style={{
-                    width: '3.5rem',
-                    aspectRatio: '1',
-                    cursor: 'pointer',
-                    boxShadow:
-                      imageId === pid
-                        ? '0 0 0 2px var(--accent) inset'
-                        : '0 0 0 1px rgb(26 26 26 / 0.08) inset',
-                  }}
-                  aria-pressed={imageId === pid}
-                  aria-label="Use this product image"
-                  onClick={() => setImageId(pid)}
-                >
-                  <StoredImg id={pid} />
-                </button>
-              ))}
-            </div>
-            <span className="field__hint">Picked from the product’s own media.</span>
-          </div>
-        ) : null}
+        <div className="stack stack--tight">
+          <span className="field__label">Variant photo</span>
+          <PhotoPicker value={imageId} onChange={setImageId} choices={productImages} alt="Variant photo" />
+          <span className="field__hint">Pick one of the product’s pictures, or upload a photo of this variant.</span>
+        </div>
 
         {creating ? (
           <div className="row" style={{ alignItems: 'flex-start', gap: 'var(--s3)' }}>
@@ -1886,8 +1828,8 @@ function VariantModal({
             </div>
             <div style={{ flex: 1 }}>
               <span className="field__hint">
-                Stock moves through the Available column’s adjuster, never here — every change
-                carries its reason into the audit trail.
+                Stock moves through the Available column’s adjuster, never here — so every
+                change is kept on record.
               </span>
             </div>
           </div>

@@ -273,3 +273,82 @@ describe('what only the REAL port can be asked', () => {
     ).toMatchObject({ ok: false, reason: 'not_sellable' });
   });
 });
+
+/**
+ * THE TWO WEIGHTS (migration 1180), through the REAL port only.
+ *
+ * `weight_grams` is what the shop SHOWS — the spool size on the storefront —
+ * and `shipping_weight_grams` is what DELIVERY is priced on. Before 1180 they
+ * were one column doing both jobs, so printing an honest spool size and
+ * quoting an honest parcel were the same edit.
+ *
+ * REAL-ONLY BECAUSE THE RESOLUTION IS A COALESCE IN SQL. The fake spells the
+ * same rule in TypeScript, and a fake asserting against itself would agree no
+ * matter what the query said — which is how a `weightsFor` reading one column
+ * would have shipped green. `quote` is the read that prices a shopper's
+ * delivery at checkout, so this is the money-adjacent half of the seam.
+ */
+describe('quote — the displayed weight and the shipping weight', () => {
+  const setWeights = async (
+    variantId: string,
+    o: { display?: number | null; shipping?: number | null },
+  ): Promise<void> => {
+    await ctx.db.execute(sql`
+      UPDATE shop_variants
+         SET weight_grams = ${o.display ?? null}::integer,
+             shipping_weight_grams = ${o.shipping ?? null}::integer
+       WHERE id = ${variantId}`);
+  };
+
+  it('carries both, and they differ when the variant has an override', async () => {
+    const { variant } = await seedSellable(ctx.db, actor(), { onHand: 5, amount: 1000 });
+    await setWeights(variant.id, { display: 1_250, shipping: 1_400 });
+
+    const quote = await catalogPort.quote(ctx.db, variant.id);
+    /* The order line records the spool the customer was shown… */
+    expect(quote?.weightGrams).toBe(1_250);
+    /* …and the courier is quoted on the parcel. */
+    expect(quote?.shippingWeightGrams).toBe(1_400);
+  });
+
+  it('resolves the shipping weight to the displayed one when there is no override', async () => {
+    /* Every variant in production is in this state the day 1180 lands, so this
+       is the assertion that says delivery prices did not move. */
+    const { variant } = await seedSellable(ctx.db, actor(), { onHand: 5, amount: 1000 });
+    await setWeights(variant.id, { display: 1_250 });
+
+    const quote = await catalogPort.quote(ctx.db, variant.id);
+    expect(quote?.weightGrams).toBe(1_250);
+    expect(quote?.shippingWeightGrams).toBe(1_250);
+  });
+
+  it('leaves the displayed weight null while the override prices delivery', async () => {
+    /* What the courier dialog's "set weights" step writes: the parcel becomes
+       quotable and the storefront still publishes no spool size. */
+    const { variant } = await seedSellable(ctx.db, actor(), { onHand: 5, amount: 1000 });
+    await setWeights(variant.id, { shipping: 800 });
+
+    const quote = await catalogPort.quote(ctx.db, variant.id);
+    expect(quote?.weightGrams).toBeNull();
+    expect(quote?.shippingWeightGrams).toBe(800);
+  });
+
+  it('is null on both only when the variant has never been weighed', async () => {
+    const { variant } = await seedSellable(ctx.db, actor(), { onHand: 5, amount: 1000 });
+
+    const quote = await catalogPort.quote(ctx.db, variant.id);
+    expect(quote?.weightGrams).toBeNull();
+    /* NOT zero. The checkout rate path substitutes `DEFAULT_ITEM_GRAMS` for
+       this; a port that answered 0 would book a weightless parcel, which the
+       courier reprices on the doorstep. */
+    expect(quote?.shippingWeightGrams).toBeNull();
+  });
+
+  it('takes a zero override literally rather than falling back', async () => {
+    const { variant } = await seedSellable(ctx.db, actor(), { onHand: 5, amount: 1000 });
+    await setWeights(variant.id, { display: 1_250, shipping: 0 });
+
+    const quote = await catalogPort.quote(ctx.db, variant.id);
+    expect(quote?.shippingWeightGrams).toBe(0);
+  });
+});

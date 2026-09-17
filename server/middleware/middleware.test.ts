@@ -33,6 +33,7 @@ import {
 import { DuplicateEmailError, UserInputError } from '../repo/users';
 import { ATTEMPT_RETENTION_MS, forget, hit } from '../repo/ratelimit';
 import { DbError } from '../db/client';
+import { RefundFailedError } from '../shop/payments/refund-failure';
 import type { Post } from '../../shared/types';
 
 let ctx: RawCtx;
@@ -80,6 +81,12 @@ describe('the spec §8 error table', () => {
       'precondition_failed',
     ],
     ['rate limited', new RateLimitedError(42), 429, 'rate_limited'],
+    [
+      'a refund the gateway did not carry out',
+      new RefundFailedError({ provider: 'flutterwave', outcome: 'refused', code: 'invalid_request' }),
+      422,
+      'refund_failed',
+    ],
     ['unhandled', new TypeError('undefined is not a function'), 500, 'internal'],
   ];
 
@@ -120,6 +127,24 @@ describe('the spec §8 error table', () => {
     );
     expect(body.path).toBe('content[2].content[0]');
     expect(body.reason).toBe('too_deep');
+  });
+
+  it('names the gateway and what is known on a failed refund, as a 4xx that is never retried', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const res = toResponse(
+      new RefundFailedError({ provider: 'flutterwave', outcome: 'unconfirmed', code: 'provider_unavailable' }),
+      RID,
+    );
+    expect(res.status).toBe(422);
+    expect(await bodyOf(res)).toEqual({
+      error: 'refund_failed',
+      provider: 'flutterwave',
+      outcome: 'unconfirmed',
+      code: 'provider_unavailable',
+      requestId: RID,
+    });
+    // A mapped row is an answer, not a crash: the 500 log stays for crashes.
+    expect(log).not.toHaveBeenCalled();
   });
 
   it('sends Retry-After beside the 429 body', async () => {

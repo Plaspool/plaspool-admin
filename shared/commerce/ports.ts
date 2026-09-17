@@ -94,12 +94,26 @@ export function paymentStatusRank(status: PaymentStatus): number {
 export interface PaymentSnapshot {
   intentId: string;
   checkoutId: string;
+  /**
+   * The gateway that took this payment, fixed when it was created
+   * (`shop_payment_intents.provider`, migration 1100). A refund always goes back
+   * through it, whatever the payment settings say today — so the order page
+   * names it rather than assuming one.
+   */
+  provider: 'paystack' | 'flutterwave';
   status: PaymentStatus;
   /** Minor units, frozen at creation, never recomputed (`03-payments.md` §1). */
   amount: number;
   currency: string;
   /** Sum of refunds that have not failed. `0` when none. */
   refundedTotal: number;
+  /**
+   * Refunds nobody could confirm — the gateway's answer was unknown — held
+   * against this payment until the owner says whether they went through
+   * (owner's rule, 2026-09-15). Their amounts are inside `refundedTotal`.
+   * Empty when there are none.
+   */
+  unconfirmedRefunds: { id: string; amount: number; currency: string; createdAt: number }[];
   createdAt: number;
   updatedAt: number;
 }
@@ -549,8 +563,13 @@ export interface VariantQuote {
   optionValues: Record<string, string>;
   /** Minor units plus an ISO-4217 code — contract §10's `Money`, structurally. */
   price: { amount: number; currency: string };
-  /** Shipping needs it; NULL is honest for a variant nobody has weighed. */
+  /** What the shop SHOWS. NULL is honest for a variant nobody has weighed. */
   weightGrams: number | null;
+  /**
+   * What DELIVERY is priced on (migration 1180), ALREADY RESOLVED: the
+   * variant's shipping-weight override when it has one, else `weightGrams`.
+   */
+  shippingWeightGrams: number | null;
   /**
    * `on_hand - reserved`, DERIVED (brief §5). A number to SHOW a shopper, never
    * a number to decide a sale on: between this read and a `reserve`, any

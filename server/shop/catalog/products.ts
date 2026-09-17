@@ -269,6 +269,9 @@ export async function saveProduct(
       patch.overview !== undefined ? (normalizeSeo(patch.overview) ?? null) : current.overview,
     /* Migration 0600. A boolean has no "clear" spelling, so absence is the only
        "leave it alone" and `??` is right here where it is wrong two fields up. */
+    /* Migration 0600. A boolean has no "clear" spelling, so absence is the only
+       "leave it alone" and `??` is right here where it is wrong two fields up.
+       box_mode is NOT written here: Settings → Mystery box owns it (migration 1240). */
     bulkDiscountEnabled: patch.bulkDiscountEnabled ?? current.bulkDiscountEnabled,
   };
 

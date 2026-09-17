@@ -5,6 +5,10 @@ import { requireAuth } from '../../middleware/session';
 import { currentDb, currentUser } from '../../app-env';
 import type { AppEnv } from '../../app-env';
 import { NotFoundError } from '../../repo/errors';
+import { boxAvailable, boxCapacitySql } from '../boxes/capacity';
+import { withBoxFallback } from '../boxes/fallback';
+import { boxLive, boxShopContent, loadBoxShop } from '../boxes/shop';
+import { sql } from 'drizzle-orm';
 import { money } from '../../../shared/commerce/money';
 import type { DocNode } from '../../../shared/types';
 import {
@@ -229,6 +233,9 @@ const CreateVariantBody = z
     optionValues: z.record(str().max(100), str().max(200)).optional(),
     position: z.number().int().min(0).optional(),
     weightGrams: z.number().int().min(0).max(10_000_000).nullable().optional(),
+    /** What DELIVERY is priced on (migration 1180). Absent or `null` means
+     *  "use `weightGrams`". Same bounds — it is the same unit and column type. */
+    shippingWeightGrams: z.number().int().min(0).max(10_000_000).nullable().optional(),
     onHand: z.number().int().min(0).max(100_000_000).optional(),
     backorderable: z.boolean().optional(),
     /** The photograph of this colour (migration 0009). */
@@ -258,6 +265,8 @@ const UpdateVariantBody = z
     optionValues: z.record(str().max(100), str().max(200)),
     position: z.number().int().min(0),
     weightGrams: z.number().int().min(0).max(10_000_000).nullable(),
+    /** `null` CLEARS the override, so delivery rejoins `weightGrams`. */
+    shippingWeightGrams: z.number().int().min(0).max(10_000_000).nullable(),
     status: z.enum(['active', 'discontinued']),
     /** `null` clears the colour photograph; a string sets it. */
     imageId: str().min(1).max(200).nullable(),
@@ -386,15 +395,25 @@ routes.get('/products', async (c) => {
     listVariantsForProducts(db, ids),
     resolveTiers(db, ids),
   ]);
+  /* Migration 1240: the mystery box borrows its pool's pictures and a line of
+     copy until the owner gives it its own; 1260 adds its size and "How it
+     works". Read only when a box is on the page. */
+  const box = page.items.some((p) => p.boxMode !== null) ? await loadBoxShop(db) : null;
   return c.json({
     ...page,
-    items: page.items.map((p) => ({
-      ...toStorefrontProduct(p, { bulkTiers: tiers.get(p.id) ?? [] }),
+    items: page.items.map((p) => {
       /* `?? []` and not the map's absence: a JSON response cannot have a
          `Map#get` miss, and a product with no variants is a real state that
          reads as an empty list on the wire. */
-      variants: (variants.get(p.id) ?? []).map(toStorefrontVariant),
-    })),
+      const all = variants.get(p.id) ?? [];
+      /* A removed box size is retired, not deleted; the shop never offers it. */
+      const own = p.boxMode !== null ? all.filter((v) => v.status === 'active') : all;
+      return {
+        ...withBoxFallback(toStorefrontProduct(p, { bulkTiers: tiers.get(p.id) ?? [] }), box?.fallback ?? null),
+        mysteryBox: p.boxMode !== null && box ? boxShopContent(own, box.page) : null,
+        variants: own.map(toStorefrontVariant),
+      };
+    }),
   });
 });
 
@@ -414,10 +433,15 @@ routes.get('/products/:slug', async (c) => {
     listVariantsWithPrices(db, product.id),
     resolveTiersFor(db, product.id),
   ]);
+  /* Migration 1240: pictures and copy borrowed from the pool until the box has
+     its own; 1260: its size and "How it works". */
+  const box = product.boxMode !== null ? await loadBoxShop(db) : null;
   return c.json({
     product: {
-      ...toStorefrontProduct(product, { bulkTiers }),
-      variants: variants.map(toStorefrontVariant),
+      ...withBoxFallback(toStorefrontProduct(product, { bulkTiers }), box?.fallback ?? null),
+      mysteryBox: box ? boxShopContent(variants, box.page) : null,
+      /* A removed box size is retired, not deleted; the shop never offers it. */
+      variants: (box ? variants.filter((v) => v.status === 'active') : variants).map(toStorefrontVariant),
     },
   });
 });
@@ -437,13 +461,22 @@ routes.get('/variants/:id/availability', async (c) => {
   const variant = await getVariant(db, id);
   if (!variant) throw new NotFoundError(id);
   const level = await getInventory(db, id);
+  /* Migration 1220. How many more boxes the pool can fill; null for an ordinary
+     variant. A box is only as available as the smaller of its own stock and that. */
+  const cap = await db.execute(sql`SELECT ${boxCapacitySql(sql`${id}::text`)} AS c`);
+  const canFill = cap.rows[0]?.c == null ? null : Number(cap.rows[0].c);
+  const available = boxAvailable(level?.available ?? null, level?.backorderable ?? false, canFill);
   return c.json({
     variantId: id,
     // Null when the variant has no inventory row at all. A shop that renders
     // "0 left" for something nobody has stocked is telling the customer
     // something different from "we do not track this".
-    available: level?.available ?? null,
+    available,
     backorderable: level?.backorderable ?? false,
+    canFill,
+    /* Migration 1260: the mystery box's cues ("Only 22 left", "Just dropped"),
+       resolved here because this route is never cached. Null on an ordinary variant. */
+    box: canFill === null ? null : await boxLive(db, id, available),
   });
 });
 
@@ -631,6 +664,8 @@ routes.get('/admin/products', auth, async (c) => {
       ...q,
       includeUnpublished: true,
       withTotal: withTotal === '1' || withTotal === 'true',
+      /* Migration 1240: the mystery box is edited in Settings → Mystery box. */
+      excludeBoxes: true,
     }),
   );
 });

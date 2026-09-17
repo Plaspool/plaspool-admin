@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useLocation, useParams } from 'react-router-dom';
 import { Ban, Check, CreditCard, PackageCheck, Pencil, Receipt, Truck, Undo2 } from 'lucide-react';
 import {
@@ -10,10 +10,14 @@ import {
   type ManualOrderStock,
   type ShopCourierProvider,
   type ShopEmailIntent,
+  type ShopBoxFill,
+  type ShopBoxLine,
   type ShopFulfillment,
   type ShopOrderDetail,
   type ShopOrderLine,
+  type ShopRestockChoice,
   type ShopTimelineEntry,
+  type ShopUnconfirmedRefund,
 } from '../../data/api-shop';
 import { ApiError } from '../../data/errors';
 import { getSession } from '../../data/session';
@@ -23,7 +27,8 @@ import { PageHeader } from '../ui/Page';
 import { Badge, Banner, Button, ButtonLink } from '../ui/primitives';
 import { Card } from '../ui/Card';
 import { Defs, type DefRow } from '../ui/Defs';
-import { AffixField, Radio, TextField } from '../ui/Field';
+import { Checkbox, MoneyField, Radio, TextField } from '../ui/Field';
+import { BoxFillModal } from './BoxFillModal';
 import { MenuItem, MenuSeparator } from '../ui/Menu';
 import { Modal } from '../ui/Modal';
 import { Timeline, type TimelineEvent } from '../ui/Timeline';
@@ -41,6 +46,15 @@ import {
   stockReason,
 } from './manual-order-copy';
 import { countryName } from './countries';
+import { ReviewLinkCard } from './ReviewLinkCard';
+import {
+  RESOLVE_REFUND_COPY,
+  describeRefundError,
+  describeResolveError,
+  gatewayName,
+  heldRefundNote,
+  refundFailureOf,
+} from './payment-copy';
 import { isAdminRole } from '../../../shared/roles';
 
 /**
@@ -128,15 +142,44 @@ function firstParcel(
   return null;
 }
 
+/**
+ * MYSTERY BOXES (migration 1220). Whether a filled box is still free to go in a
+ * parcel: in none yet, or only in one that was cancelled. The server's parcel
+ * guard uses the same rule; this copy only shapes the screen.
+ */
+function boxIsFree(fill: ShopBoxFill, fulfillments: ShopFulfillment[]): boolean {
+  if (fill.fulfillmentId === null) return true;
+  return fulfillments.find((f) => f.id === fill.fulfillmentId)?.status === 'cancelled';
+}
+
+/**
+ * How many units of a line can go in a parcel NOW. An ordinary line: whatever
+ * has not been sent. A box line: only its filled boxes not already in a live
+ * parcel, because an empty box cannot be sent.
+ */
+function sendableUnits(
+  line: ShopOrderLine,
+  fulfillments: ShopFulfillment[],
+  boxLines: ShopBoxLine[],
+  boxFills: ShopBoxFill[],
+): number {
+  const remaining = line.qty - line.fulfilledQty;
+  if (!boxLines.some((b) => b.orderLineId === line.id)) return remaining;
+  const free = boxFills.filter((f) => f.orderLineId === line.id && boxIsFree(f, fulfillments)).length;
+  return Math.max(0, Math.min(remaining, free));
+}
+
 function deriveNextStep(
   order: ShopOrderDetail['order'],
   lines: ShopOrderLine[],
   fulfillments: ShopFulfillment[],
+  boxLines: ShopBoxLine[] = [],
+  boxFills: ShopBoxFill[] = [],
 ): NextStep {
   if (order.status === 'pending') return { kind: 'awaiting' };
   if (order.status === 'cancelled' || order.status === 'refunded') return { kind: 'settled' };
 
-  const remainder = lines.reduce((n, l) => n + (l.qty - l.fulfilledQty), 0);
+  const remainder = lines.reduce((n, l) => n + sendableUnits(l, fulfillments, boxLines, boxFills), 0);
   if ((order.status === 'paid' || order.status === 'partially_refunded') && remainder > 0) {
     return { kind: 'fulfil' };
   }
@@ -216,6 +259,13 @@ export default function OrderDetail() {
     (location.state as { stockFailed?: ManualOrderStock['failed'] } | null)?.stockFailed ?? [];
 
   const [modal, setModal] = useState<'none' | 'fulfil' | 'cancel' | 'refund' | 'void'>('none');
+  /* Migration 1220. The mystery box being filled, if any. */
+  const [filling, setFilling] = useState<{ lineId: string; boxNo: number } | null>(null);
+  /* A refund nobody could confirm, and what the owner is about to say happened to it. */
+  const [resolving, setResolving] = useState<{
+    refund: ShopUnconfirmedRefund;
+    outcome: 'sent' | 'not_sent';
+  } | null>(null);
   /** Booking a courier for ONE parcel, so it carries which parcel — the same
    *  shape and the same reason as the ship dialog below. */
   const [courierDialog, setCourierDialog] = useState<{
@@ -247,6 +297,21 @@ export default function OrderDetail() {
   const { order, lines, fulfillments, timeline, emails, payment } = data;
   const currency = order.currency;
   const itemCount = lines.reduce((n, l) => n + l.qty, 0);
+  /* Migration 1220. Which lines are mystery boxes, and what is in the filled ones.
+     Both absent on a response from before boxes existed. */
+  const boxLines = data.boxLines ?? [];
+  const boxFills = data.boxFills ?? [];
+  const boxPaid = order.status === 'paid' || order.status === 'partially_refunded';
+  const emptyBoxes = boxPaid
+    ? boxLines.flatMap((b) => {
+        const line = lines.find((l) => l.id === b.orderLineId);
+        if (!line) return [];
+        return Array.from({ length: line.qty }, (_, i) => i + 1)
+          .filter((n) => !boxFills.some((f) => f.orderLineId === line.id && f.boxNo === n))
+          .map((boxNo) => ({ line, boxNo }));
+      })
+    : [];
+  const onlyOneBoxLine = boxLines.length === 1;
   const unfulfilled = lines.some((l) => l.fulfilledQty < l.qty);
 
   /* A SALE RECORDED BY HAND. It arrives already sent out and paid, has no
@@ -270,7 +335,14 @@ export default function OrderDetail() {
   const canCancel =
     !isManual && isOwner && (order.status === 'pending' || order.status === 'paid');
   const intentId = payment?.intentId ?? order.paymentIntentId;
-  const refundable = order.grandTotal - order.refundedTotal;
+  /* The gateway THIS payment went through — a refund goes back the same way. */
+  const gateway = gatewayName(payment?.provider);
+  /* Refunds nobody could confirm hold their amount (owner's rule, 2026-09-15).
+     The order's own total only counts settled ones, so the held money is taken
+     off here too — offering it again is a refund the server must refuse. */
+  const heldRefunds = payment?.unconfirmedRefunds ?? [];
+  const refundable =
+    order.grandTotal - order.refundedTotal - heldRefunds.reduce((sum, r) => sum + r.amount, 0);
   const canRefund =
     !isManual &&
     isOwner &&
@@ -308,7 +380,7 @@ export default function OrderDetail() {
     }
   }
 
-  const nextStep = deriveNextStep(order, lines, fulfillments);
+  const nextStep = deriveNextStep(order, lines, fulfillments, boxLines, boxFills);
 
   /** The FIRST item of More actions, always present: it names the next
    *  lifecycle move and runs it — or says honestly that there is none. */
@@ -474,8 +546,57 @@ export default function OrderDetail() {
 
       {order.status === 'pending' ? (
         <Banner tone="warn" title="Waiting for payment">
-          The customer reached checkout but the money hasn’t arrived yet. This updates on its own
-          once Paystack confirms. Nothing to do here yet.
+          The customer reached checkout but the money hasn’t arrived yet. This updates on its own once{' '}
+          {gateway ? `${gateway} confirms` : 'the payment is confirmed'}. Nothing to do here yet.
+        </Banner>
+      ) : null}
+
+      {heldRefunds.map((held) => (
+        <Banner
+          key={held.id}
+          tone="warn"
+          title="Refund not confirmed"
+          action={
+            isOwner ? (
+              <div className="row" style={{ gap: 'var(--s2)', flexWrap: 'wrap' }}>
+                <Button onClick={() => setResolving({ refund: held, outcome: 'sent' })}>It went through</Button>
+                <Button onClick={() => setResolving({ refund: held, outcome: 'not_sent' })}>
+                  It didn’t go through
+                </Button>
+              </div>
+            ) : undefined
+          }
+        >
+          {heldRefundNote(gateway, money(held.amount, held.currency), dateTime(held.createdAt))}
+        </Banner>
+      ))}
+
+      {boxPaid && data.boxShortAt && emptyBoxes.length > 0 ? (
+        <Banner tone="critical" title="The shop couldn’t fill this mystery box by itself">
+          {`There wasn’t enough on the mystery box list on ${dateTime(data.boxShortAt)}. Fill it by hand below, or cancel and refund the order.`}
+        </Banner>
+      ) : null}
+
+      {emptyBoxes.length > 0 ? (
+        <Banner
+          tone="warn"
+          title={
+            onlyOneBoxLine
+              ? `Box ${emptyBoxes[0].boxNo} needs filling before it can go in a parcel`
+              : `${emptyBoxes[0].line.title}, box ${emptyBoxes[0].boxNo}, needs filling before it can go in a parcel`
+          }
+          action={
+            <Button
+              tone="primary"
+              onClick={() => setFilling({ lineId: emptyBoxes[0].line.id, boxNo: emptyBoxes[0].boxNo })}
+            >
+              {`Fill box ${emptyBoxes[0].boxNo}`}
+            </Button>
+          }
+        >
+          {emptyBoxes.length === 1
+            ? 'Everything else on this order can be sent out now. The box’s items leave stock when you save its contents.'
+            : `${emptyBoxes.length} boxes are empty. Everything else on this order can be sent out now.`}
         </Banner>
       ) : null}
 
@@ -508,7 +629,8 @@ export default function OrderDetail() {
                 </thead>
                 <tbody>
                   {lines.map((line) => (
-                    <tr key={line.id}>
+                    <Fragment key={line.id}>
+                    <tr>
                       <td className="cell--primary">
                         <span className="idcell">
                           <span className="idcell__text">
@@ -541,6 +663,42 @@ export default function OrderDetail() {
                         <strong className="num">{money(line.lineTotal, currency)}</strong>
                       </td>
                     </tr>
+                    {boxLines.some((b) => b.orderLineId === line.id)
+                      ? Array.from({ length: line.qty }, (_, i) => i + 1).map((boxNo) => {
+                          const fill = boxFills.find((f) => f.orderLineId === line.id && f.boxNo === boxNo);
+                          const label = onlyOneBoxLine ? `box ${boxNo}` : `box ${boxNo} of ${line.title}`;
+                          return (
+                            <tr key={`${line.id}-box-${boxNo}`} className="tr--box">
+                              <td colSpan={isManual ? 3 : 4}>
+                                <span className="idcell">
+                                  <span className="idcell__text">
+                                    <span className="idcell__title">Box {boxNo}</span>
+                                    <span className="idcell__meta">
+                                      {fill
+                                        ? fill.items.map((it) => it.title).join(', ')
+                                        : 'Not filled yet'}
+                                    </span>
+                                  </span>
+                                </span>
+                              </td>
+                              <td className="cell--num">
+                                {!boxPaid ? null : !fill ? (
+                                  <Button aria-label={`Fill ${label}`} onClick={() => setFilling({ lineId: line.id, boxNo })}>
+                                    Fill box
+                                  </Button>
+                                ) : boxIsFree(fill, fulfillments) ? (
+                                  <Button tone="plain" aria-label={`Change ${label}`} onClick={() => setFilling({ lineId: line.id, boxNo })}>
+                                    Change
+                                  </Button>
+                                ) : (
+                                  <Badge tone="ok">In a parcel</Badge>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      : null}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
@@ -660,6 +818,8 @@ export default function OrderDetail() {
             ) : null}
           </Card>
 
+          <ReviewLinkCard orderId={order.id} status={order.status} />
+
           <Card title="Payment">
             <Defs
               rows={[
@@ -697,6 +857,7 @@ export default function OrderDetail() {
             {payment ? (
               <div className="row" style={{ gap: 'var(--s2)', flexWrap: 'wrap' }}>
                 <CreditCard aria-hidden="true" style={{ width: 15, height: 15, color: 'var(--ink-sub)' }} />
+                {gateway ? <span style={{ fontWeight: 'var(--w-medium)' }}>{gateway}</span> : null}
                 <Badge tone={payment.status === 'captured' ? 'ok' : payment.status === 'failed' ? 'critical' : 'info'}>
                   {humanise(payment.status)}
                 </Badge>
@@ -734,18 +895,63 @@ export default function OrderDetail() {
         <VoidModal order={data} onClose={() => setModal('none')} onDone={done} />
       ) : null}
       {modal === 'fulfil' ? (
-        <FulfilModal orderId={order.id} lines={lines} courier={courier} onClose={() => setModal('none')} onDone={done} />
+        <FulfilModal
+          orderId={order.id}
+          lines={lines}
+          courier={courier}
+          sendable={(l) => sendableUnits(l, fulfillments, boxLines, boxFills)}
+          onClose={() => setModal('none')}
+          onDone={done}
+        />
       ) : null}
       {modal === 'cancel' ? (
         <CancelModal order={data} onClose={() => setModal('none')} onDone={done} />
       ) : null}
+      {filling
+        ? (() => {
+            const line = lines.find((l) => l.id === filling.lineId);
+            const spec = boxLines.find((b) => b.orderLineId === filling.lineId);
+            if (!line || !spec) return null;
+            return (
+              <BoxFillModal
+                target={{
+                  kind: 'order',
+                  orderId: order.id,
+                  line,
+                  boxNo: filling.boxNo,
+                  existing:
+                    boxFills.find((f) => f.orderLineId === filling.lineId && f.boxNo === filling.boxNo) ?? null,
+                }}
+                itemCount={spec.itemCount ?? 1}
+                onClose={() => setFilling(null)}
+                onDone={() => {
+                  setFilling(null);
+                  reload();
+                }}
+              />
+            );
+          })()
+        : null}
       {modal === 'refund' && intentId ? (
         <RefundModal
           intentId={intentId}
+          gateway={gateway}
           currency={currency}
           maxMinor={refundable}
           onClose={() => setModal('none')}
           onDone={done}
+        />
+      ) : null}
+      {resolving ? (
+        <ResolveRefundModal
+          refund={resolving.refund}
+          outcome={resolving.outcome}
+          gateway={gateway}
+          onClose={() => setResolving(null)}
+          onDone={() => {
+            setResolving(null);
+            reload();
+          }}
         />
       ) : null}
       {courierDialog ? (
@@ -852,6 +1058,8 @@ function ManualRail({ detail, itemCount }: { detail: ShopOrderDetail; itemCount:
         )}
         {hasAddress ? <AddressBlock label="Delivery address" addr={shownAddress} /> : null}
       </Card>
+
+      <ReviewLinkCard orderId={order.id} status={order.status} />
 
       <Card title="Payment">
         <Defs
@@ -1400,6 +1608,7 @@ function FulfilModal({
   orderId,
   lines,
   courier,
+  sendable,
   onClose,
   onDone,
 }: {
@@ -1407,14 +1616,16 @@ function FulfilModal({
   lines: ShopOrderLine[];
   /** Which courier the shop has switched on — `manual` is the screen as it was. */
   courier: ShopCourierProvider;
+  /** Units of a line that can go in a parcel now. An empty mystery box cannot (migration 1220). */
+  sendable: (line: ShopOrderLine) => number;
   onClose: () => void;
   onDone: () => void;
 }) {
   const toast = useToast();
   const courierOn = courier.provider !== 'manual';
-  const open = useMemo(() => lines.filter((l) => l.fulfilledQty < l.qty), [lines]);
+  const open = useMemo(() => lines.filter((l) => sendable(l) > 0), [lines, sendable]);
   const [qty, setQty] = useState<Record<string, string>>(() =>
-    Object.fromEntries(open.map((l) => [l.id, String(l.qty - l.fulfilledQty)])),
+    Object.fromEntries(open.map((l) => [l.id, String(sendable(l))])),
   );
   const [carrier, setCarrier] = useState('');
   const [tracking, setTracking] = useState('');
@@ -1425,7 +1636,7 @@ function FulfilModal({
     const picked: { orderLineId: string; qty: number }[] = [];
     for (const line of open) {
       const n = Number(qty[line.id] ?? '0');
-      const remaining = line.qty - line.fulfilledQty;
+      const remaining = sendable(line);
       if (!Number.isInteger(n) || n < 0 || n > remaining) {
         setError(`${line.title}: a whole number between 0 and ${remaining}.`);
         return;
@@ -1478,7 +1689,7 @@ function FulfilModal({
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 'var(--t-md)', fontWeight: 'var(--w-medium)' }}>{line.title}</div>
               <div className="muted" style={{ fontSize: 'var(--t-sm)' }}>
-                {line.qty - line.fulfilledQty} of {line.qty} remaining
+                {sendable(line)} of {line.qty} remaining
               </div>
             </div>
             <input
@@ -1486,7 +1697,7 @@ function FulfilModal({
               style={{ width: '5rem', textAlign: 'right' }}
               type="number"
               min={0}
-              max={line.qty - line.fulfilledQty}
+              max={sendable(line)}
               step={1}
               aria-label={`Quantity of ${line.title}`}
               value={qty[line.id] ?? '0'}
@@ -1525,6 +1736,26 @@ function FulfilModal({
 
 /* ══════════════════════════════════════════════════ CANCEL AND REFUND ════ */
 
+/**
+ * How many units of each line could still go back on the shelf: the line's
+ * quantity minus what is in a parcel that has SHIPPED or been DELIVERED. A parcel
+ * that was packed but not shipped is still in the building, so it counts.
+ *
+ * The same rule the server's restock statement guards on (migration 1200). This
+ * copy only shapes the dialog; the server's is the one that decides.
+ */
+function returnableUnits(
+  line: ShopOrderLine,
+  fulfillments: ShopFulfillment[],
+): { max: number; sent: number } {
+  const sent = fulfillments
+    .filter((f) => f.status === 'shipped' || f.status === 'delivered')
+    .flatMap((f) => f.lines)
+    .filter((fl) => fl.orderLineId === line.id)
+    .reduce((n, fl) => n + fl.qty, 0);
+  return { max: Math.max(0, line.qty - sent), sent };
+}
+
 function CancelModal({
   order: detail,
   onClose,
@@ -1545,6 +1776,47 @@ function CancelModal({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  /*
+   * WHAT GOES BACK IN STOCK (migration 1200; owner's decision 2026-09-15). A
+   * number per line rather than a tick, because a line of three can have one
+   * damaged spool. Starts at everything that can go back: most cancelled goods
+   * were never opened, and lowering a number is the deliberate act.
+   */
+  const stockLines = useMemo(
+    () =>
+      paid
+        ? detail.lines.map((line) => ({ line, ...returnableUnits(line, detail.fulfillments) }))
+        : [],
+    [paid, detail.lines, detail.fulfillments],
+  );
+  const [putBack, setPutBack] = useState<Record<string, string>>(() =>
+    Object.fromEntries(stockLines.map((s) => [s.line.id, String(s.max)])),
+  );
+  const [keptOut, setKeptOut] = useState('');
+  const [stockError, setStockError] = useState<string | null>(null);
+
+  /*
+   * MIGRATION 1220: WHAT WAS PACKED INSIDE A FILLED MYSTERY BOX. Only items not
+   * already returned whose box has not shipped. Every one starts ticked, because
+   * most cancelled boxes were never opened.
+   */
+  const returnableBoxItems = useMemo(
+    () =>
+      paid
+        ? (detail.boxFills ?? [])
+            .filter((f) => boxIsFree(f, detail.fulfillments) ||
+              detail.fulfillments.find((p) => p.id === f.fulfillmentId)?.status === 'pending')
+            .flatMap((f) =>
+              f.items.filter((it) => it.returnedToStockAt === null).map((it) => ({ fill: f, item: it })),
+            )
+        : [],
+    [paid, detail.boxFills, detail.fulfillments],
+  );
+  const [boxTicked, setBoxTicked] = useState<Set<string>>(
+    () => new Set(returnableBoxItems.map((r) => r.item.id)),
+  );
+  const lowered = stockLines.some((s) => putBack[s.line.id] !== String(s.max));
+
   async function commit() {
     let refund: CancelRefundChoice | undefined;
     if (paid) {
@@ -1560,13 +1832,51 @@ function CancelModal({
         refund = { kind: 'amount', amount: parsed.minor };
       }
     }
+
+    let restock: ShopRestockChoice | undefined;
+    if (paid) {
+      const lines: ShopRestockChoice['lines'] = [];
+      for (const s of stockLines) {
+        const raw = (putBack[s.line.id] ?? '').trim();
+        const n = Number(raw);
+        if (raw === '' || !Number.isInteger(n) || n < 0 || n > s.max) {
+          setStockError(`${s.line.title}: a whole number from 0 to ${s.max}.`);
+          return;
+        }
+        lines.push({ orderLineId: s.line.id, qty: n });
+      }
+      const boxKeptOut = boxTicked.size < returnableBoxItems.length;
+      restock = {
+        lines,
+        keptOutReason: lowered || boxKeptOut ? keptOut.trim() || null : null,
+        ...(returnableBoxItems.length > 0 ? { boxItemIds: [...boxTicked] } : {}),
+      };
+    }
+
     setBusy(true);
     try {
-      await shopApi.cancelOrder(order.id, refund);
-      toast.show(`${order.orderNumber} cancelled`);
+      const res = await shopApi.cancelAndRestock(order.id, refund, restock);
+      const result = res.restock;
+      if (result && 'failed' in result) {
+        toast.show(
+          `${order.orderNumber} cancelled, but the stock wasn’t put back. Adjust the stock count by hand.`,
+        );
+      } else if (result && result.refused.length > 0) {
+        toast.show(
+          `${order.orderNumber} cancelled. Some items had already been sent out and weren’t put back.`,
+        );
+      } else {
+        toast.show(`${order.orderNumber} cancelled`);
+      }
       onDone();
     } catch (cause) {
-      setError(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
+      /* The order is still paid and its refund is held — see RefundModal. */
+      if (refundFailureOf(cause) === 'unconfirmed') {
+        toast.show(describeRefundError(cause), 'critical');
+        onDone();
+        return;
+      }
+      setError(describeRefundError(cause));
       setBusy(false);
     }
   }
@@ -1586,11 +1896,83 @@ function CancelModal({
     >
       <div className="stack">
         <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
-          Cancelling puts the stock back and stops this order ever shipping.
-          {paid ? ' The customer has paid, so choose what happens to the money:' : ''}
+          {paid
+            ? 'Cancelling stops this order ever shipping. The customer has paid, so choose what goes back in stock and what happens to the money.'
+            : 'Cancelling stops this order ever shipping. Items set aside for it go back in stock within about 30 minutes.'}
         </p>
+        {stockLines.length > 0 ? (
+          <fieldset className="stack stack--tight" style={{ border: 0, margin: 0, padding: 0 }}>
+            <legend className="field__label" style={{ marginBottom: 'var(--s2)' }}>
+              Put back in stock
+            </legend>
+            {stockLines.map((s) => (
+              <div key={s.line.id} className="row" style={{ gap: 'var(--s3)', alignItems: 'center' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 'var(--t-md)', fontWeight: 'var(--w-medium)' }}>
+                    {s.line.title}
+                  </div>
+                  <div className="muted" style={{ fontSize: 'var(--t-sm)' }}>
+                    {s.sent > 0 ? `${s.sent} already sent out` : `${s.line.qty} ordered`}
+                  </div>
+                </div>
+                <input
+                  className="input"
+                  style={{ width: '4.5rem', textAlign: 'right' }}
+                  type="number"
+                  min={0}
+                  max={s.max}
+                  step={1}
+                  aria-label={`Put back how many of ${s.line.title}`}
+                  value={putBack[s.line.id] ?? ''}
+                  disabled={s.max === 0}
+                  onChange={(e) => {
+                    setPutBack((p) => ({ ...p, [s.line.id]: e.target.value }));
+                    setStockError(null);
+                  }}
+                />
+                <span className="muted" style={{ fontSize: 'var(--t-sm)', minWidth: '2.5rem' }}>
+                  of {s.max}
+                </span>
+              </div>
+            ))}
+            {returnableBoxItems.length > 0 ? (
+              <div className="stack stack--tight">
+                <span className="field__label">What was packed in the boxes</span>
+                {returnableBoxItems.map(({ fill, item }) => (
+                  <Checkbox
+                    key={item.id}
+                    label={`${item.title} · Box ${fill.boxNo}`}
+                    checked={boxTicked.has(item.id)}
+                    onChange={(on) =>
+                      setBoxTicked((t) => {
+                        const next = new Set(t);
+                        if (on) next.add(item.id);
+                        else next.delete(item.id);
+                        return next;
+                      })
+                    }
+                  />
+                ))}
+              </div>
+            ) : null}
+            {stockError ? (
+              <span className="field__error" role="alert">
+                {stockError}
+              </span>
+            ) : null}
+            {lowered || boxTicked.size < returnableBoxItems.length ? (
+              <TextField
+                label="Why the rest stays out (optional)"
+                placeholder="For example: seal broken in transit"
+                value={keptOut}
+                onChange={(e) => setKeptOut(e.target.value)}
+              />
+            ) : null}
+          </fieldset>
+        ) : null}
         {paid ? (
           <div className="stack stack--tight">
+            <span className="field__label">Refund</span>
             <Radio
               name="cancel-refund"
               label={`Refund in full — ${money(max, currency)}`}
@@ -1611,10 +1993,9 @@ function CancelModal({
               onChange={() => setChoice('custom')}
             />
             {choice === 'custom' ? (
-              <AffixField
+              <MoneyField
                 label="Amount"
-                prefix={currency}
-                inputMode="decimal"
+                currency={currency}
                 value={amount}
                 error={error}
                 hint={`Up to ${money(max, currency)}.`}
@@ -1645,12 +2026,15 @@ function CancelModal({
 
 function RefundModal({
   intentId,
+  gateway,
   currency,
   maxMinor,
   onClose,
   onDone,
 }: {
   intentId: string;
+  /** The gateway that took the payment, or `null` when the page does not know. */
+  gateway: string | null;
   currency: string;
   maxMinor: number;
   onClose: () => void;
@@ -1683,7 +2067,14 @@ function RefundModal({
       toast.show(`Refunded ${money(refund.amount, refund.currency)}`);
       onDone();
     } catch (cause) {
-      setError(cause instanceof Error && cause.message ? cause.message : 'Something went wrong.');
+      /* Held, not failed: the order page now carries the refund and the two
+         buttons that settle it, so the window gets out of the way. */
+      if (refundFailureOf(cause) === 'unconfirmed') {
+        toast.show(describeRefundError(cause), 'critical');
+        onDone();
+        return;
+      }
+      setError(describeRefundError(cause));
       setBusy(false);
     }
   }
@@ -1704,13 +2095,12 @@ function RefundModal({
     >
       <div className="stack">
         <p className="muted" style={{ fontSize: 'var(--t-md)', lineHeight: 1.5 }}>
-          The money goes back through Paystack. The order itself stays as it is — a refund does not cancel
-          it.
+          {gateway ? `The money goes back through ${gateway}.` : 'The money goes back the way the customer paid.'}{' '}
+          The order itself stays as it is — a refund does not cancel it.
         </p>
-        <AffixField
+        <MoneyField
           label="Amount"
-          prefix={currency}
-          inputMode="decimal"
+          currency={currency}
           value={amount}
           error={error}
           autoFocus
@@ -1726,6 +2116,70 @@ function RefundModal({
           placeholder="Optional — the customer never sees this"
           onChange={(e) => setReason(e.target.value)}
         />
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * "It went through" / "It didn’t go through" for a refund nobody could confirm
+ * (owner's rule, 2026-09-15). A confirmation first, because the owner is
+ * recording where money went on the strength of another company's dashboard,
+ * and "sent" also emails the customer.
+ */
+function ResolveRefundModal({
+  refund,
+  outcome,
+  gateway,
+  onClose,
+  onDone,
+}: {
+  refund: ShopUnconfirmedRefund;
+  outcome: 'sent' | 'not_sent';
+  gateway: string | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const toast = useToast();
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const copy = RESOLVE_REFUND_COPY[outcome];
+
+  async function commit() {
+    setBusy(true);
+    setError(null);
+    try {
+      await shopApi.resolveRefund(refund.id, outcome);
+      toast.show(copy.done);
+      onDone();
+    } catch (cause) {
+      setError(describeResolveError(cause));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={copy.title}
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Go back</Button>
+          <Button tone="primary" busy={busy} onClick={() => void commit()}>
+            {copy.confirm}
+          </Button>
+        </>
+      }
+    >
+      <div className="stack">
+        <p style={{ fontSize: 'var(--t-md)', lineHeight: 1.55 }}>
+          {copy.body(gateway, money(refund.amount, refund.currency))}
+        </p>
+        {error ? (
+          <span className="field__error" role="alert">
+            {error}
+          </span>
+        ) : null}
       </div>
     </Modal>
   );

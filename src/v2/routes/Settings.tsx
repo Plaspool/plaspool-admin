@@ -4,6 +4,7 @@ import {
   Bell,
   ChevronRight,
   CreditCard,
+  Gift,
   MapPin,
   MapPinned,
   PenLine,
@@ -57,6 +58,12 @@ const DOORS: SettingsDoor[] = [
     icon: <Send />,
     title: 'Delivery courier',
     body: 'Who carries parcels to customers — by hand, Fez Delivery or Terminal Africa.',
+  },
+  {
+    to: '/settings/mystery-box',
+    icon: <Gift />,
+    title: 'Mystery box',
+    body: 'Switch the mystery box on or off, choose what can go inside, and how boxes get filled.',
   },
   {
     to: '/settings/notifications',

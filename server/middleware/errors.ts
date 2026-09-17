@@ -12,6 +12,7 @@ import {
 } from '../repo/errors';
 import { DuplicateEmailError, UserInputError } from '../repo/users';
 import { MailNotConfiguredError } from '../mail/port';
+import { RefundFailedError } from '../shop/payments/refund-failure';
 
 /**
  * The error contract (spec §8), in one place.
@@ -29,6 +30,7 @@ import { MailNotConfiguredError } from '../mail/port';
  * | CAS lost                        | 409    | `{ error: 'stale_write', expected, actual, post }` |
  * | Lifecycle op refused, no race   | 409    | `{ error: 'precondition_failed', operation, post }` |
  * | Rate limited                    | 429    | `{ error: 'rate_limited', retryAfter }`         |
+ * | Gateway did not refund          | 422    | `{ error: 'refund_failed', provider, outcome, code }` |
  * | Unhandled                       | 500    | `{ error: 'internal', requestId }`              |
  *
  * TWO RULES DECIDE EVERY LINE BELOW.
@@ -242,6 +244,19 @@ function map(err: unknown): Mapped | null {
    */
   if (err instanceof MailNotConfiguredError) {
     return { status: 501, body: { error: 'not_implemented', feature: err.feature } };
+  }
+  /*
+   * A REFUND THE GATEWAY DID NOT CARRY OUT (`shop/payments/refund-failure.ts`).
+   * It had no row, so Flutterwave refusing a refund in production reached the
+   * owner as `internal`. 422 and not a 5xx: the client retries a 5xx, and a
+   * retry cannot change the answer. Enumerated fields only — the gateway's own
+   * words never leave the adapter.
+   */
+  if (err instanceof RefundFailedError) {
+    return {
+      status: 422,
+      body: { error: 'refund_failed', provider: err.provider, outcome: err.outcome, code: err.code },
+    };
   }
 
   return null;

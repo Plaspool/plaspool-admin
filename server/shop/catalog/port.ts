@@ -40,6 +40,9 @@ import { resolveTiersFor } from './bulk-tiers';
 async function quote(db: Db, variantId: string): Promise<VariantQuote | null> {
   const res = await db.execute(sql`
     SELECT v.id, v.product_id, v.sku, v.option_values, v.weight_grams,
+           -- Migration 1180. RESOLVED HERE so no consumer chooses between two
+           -- numbers: shipping_weight_grams when set, else the displayed one.
+           coalesce(v.shipping_weight_grams, v.weight_grams) AS shipping_weight_grams,
            p.title,
            pr.amount, pr.currency,
            i.on_hand - i.reserved AS available,
@@ -72,7 +75,18 @@ async function quote(db: Db, variantId: string): Promise<VariantQuote | null> {
      * read rather than a product that simply cannot be quoted.
      */
     price: { amount: Number(row.amount), currency: String(row.currency) },
+    /* WHAT THE SHOP SHOWS. Frozen onto the order line as part of the product
+       snapshot, and never what a courier is quoted on — see below. */
     weightGrams: row.weight_grams == null ? null : Number(row.weight_grams),
+    /*
+     * WHAT DELIVERY IS PRICED ON (migration 1180), already resolved by the
+     * COALESCE above. Two fields rather than one overloaded number because the
+     * order line wants the spool size a customer was shown and the courier
+     * wants the parcel — they agree for every variant nobody has overridden,
+     * and the day they disagree is the day this column was added for.
+     */
+    shippingWeightGrams:
+      row.shipping_weight_grams == null ? null : Number(row.shipping_weight_grams),
     /*
      * DERIVED IN SQL. A number to show a shopper, and never the number the sale
      * is decided on — between this read and a `reserve` any quantity of it can

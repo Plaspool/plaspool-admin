@@ -346,6 +346,10 @@ async function openRowMenu(
 const FRESH_PATCH_BASE = {
   optionValues: { Colour: 'Blue' },
   weightGrams: 1000,
+  /* NULL, not 1000 (migration 1180). The modal leaves the shipping box empty
+     when there is no override, so an untouched save says "keep pricing
+     delivery on the weight I display" rather than minting one. */
+  shippingWeightGrams: null,
   colorHex: '#2244aa',
   imageId: null,
   compareAtMinor: null,
@@ -543,7 +547,7 @@ describe('the product editor', () => {
     await user.click(within(menu).getByRole('menuitem', { name: 'Edit variant…' }));
     await screen.findByRole('dialog', { name: 'Edit SPL-BLU-1KG' });
 
-    await retype(user, 'Original price', 'abc');
+    await retype(user, 'Original price (optional)', 'abc');
     await user.click(screen.getByRole('button', { name: 'Save variant' }));
 
     /* One shared parser, two boxes — the refusal has to say WHICH. */
@@ -552,17 +556,118 @@ describe('the product editor', () => {
       'Original price: That is not an amount — digits and one decimal point only.',
     );
 
-    await user.clear(screen.getByLabelText('Original price'));
-    await retype(user, 'Cost per item', 'abc');
+    await user.clear(screen.getByLabelText('Original price (optional)'));
+    await retype(user, 'Cost price', 'abc');
     await user.click(screen.getByRole('button', { name: 'Save variant' }));
 
     expect(await screen.findByRole('alert')).toHaveProperty(
       'textContent',
-      'Cost per item: That is not an amount — digits and one decimal point only.',
+      'Cost price: That is not an amount — digits and one decimal point only.',
     );
     expect(screen.queryByText(/^Original price:/)).toBeNull();
 
     /* Both refusals happened HERE: nothing reached the wire. */
+    expect(writes()).toEqual([]);
+  });
+
+  it('refuses an original price that is not higher than the price, before any write', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    mountAt(spool.id);
+    await screen.findByDisplayValue('Recycled Spool');
+
+    const menu = await openRowMenu(user, freshVariant.sku);
+    await user.click(within(menu).getByRole('menuitem', { name: 'Edit variant…' }));
+    await screen.findByRole('dialog', { name: 'Edit SPL-BLU-1KG' });
+
+    await retype(user, 'Price', '1000');
+    await retype(user, 'Original price (optional)', '900');
+    await user.click(screen.getByRole('button', { name: 'Save variant' }));
+
+    expect((await screen.findByRole('alert')).textContent).toMatch(/^Original price must be higher than the price/);
+    expect(writes()).toEqual([]);
+  });
+
+  /**
+   * THE TWO WEIGHTS IN THE MODAL (migration 1180).
+   *
+   * The screen has to keep "delivery uses the weight I display" distinguishable
+   * from "delivery uses this other number", because the first is the state
+   * every variant is in and saving it as an override would pin the whole
+   * catalogue to today's spool sizes.
+   */
+  it('keeps the shipping weight empty until somebody sets one, and sends it', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    when(variantPath(freshVariant.id), { variant: { id: freshVariant.id, sku: freshVariant.sku } });
+    mountAt(spool.id);
+    await screen.findByDisplayValue('Recycled Spool');
+
+    const menu = await openRowMenu(user, freshVariant.sku);
+    await user.click(within(menu).getByRole('menuitem', { name: 'Edit variant…' }));
+    await screen.findByRole('dialog', { name: 'Edit SPL-BLU-1KG' });
+
+    /* The variant weighs 1000 g and has no override, so the box is EMPTY —
+       not pre-filled with 1000, which is the trap this asserts against. */
+    expect(screen.getByLabelText('Weight')).toHaveProperty('value', '1000');
+    expect(screen.getByLabelText('Shipping weight')).toHaveProperty('value', '');
+
+    await retype(user, 'Shipping weight', '1150');
+    await user.click(screen.getByRole('button', { name: 'Save variant' }));
+
+    await waitFor(() =>
+      expect(sent(variantPath(freshVariant.id), 'PATCH')).toEqual({
+        ...FRESH_PATCH_BASE,
+        shippingWeightGrams: 1150,
+      }),
+    );
+  });
+
+  it('shows an existing override, and an emptied box clears it', async () => {
+    const user = userEvent.setup();
+    /* A variant the owner has already given a parcel weight. */
+    withProduct({
+      ...spool,
+      variants: [{ ...freshVariant, shippingWeightGrams: 1400 }],
+    });
+    when(variantPath(freshVariant.id), { variant: { id: freshVariant.id, sku: freshVariant.sku } });
+    mountAt(spool.id);
+    await screen.findByDisplayValue('Recycled Spool');
+
+    const menu = await openRowMenu(user, freshVariant.sku);
+    await user.click(within(menu).getByRole('menuitem', { name: 'Edit variant…' }));
+    await screen.findByRole('dialog', { name: 'Edit SPL-BLU-1KG' });
+    expect(screen.getByLabelText('Shipping weight')).toHaveProperty('value', '1400');
+
+    /* Emptied means "go back to the displayed weight", which is `null` on the
+       wire — not an omitted key, which would leave the override in place. */
+    await retype(user, 'Shipping weight', '');
+    await user.click(screen.getByRole('button', { name: 'Save variant' }));
+
+    await waitFor(() =>
+      expect(sent(variantPath(freshVariant.id), 'PATCH')).toEqual({
+        ...FRESH_PATCH_BASE,
+        shippingWeightGrams: null,
+      }),
+    );
+  });
+
+  it('refuses a shipping weight that is not grams, before anything reaches the wire', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    mountAt(spool.id);
+    await screen.findByDisplayValue('Recycled Spool');
+
+    const menu = await openRowMenu(user, freshVariant.sku);
+    await user.click(within(menu).getByRole('menuitem', { name: 'Edit variant…' }));
+    await screen.findByRole('dialog', { name: 'Edit SPL-BLU-1KG' });
+    await retype(user, 'Shipping weight', '-5');
+    await user.click(screen.getByRole('button', { name: 'Save variant' }));
+
+    expect(await screen.findByRole('alert')).toHaveProperty(
+      'textContent',
+      'Shipping weight is grams — a non-negative number, or empty.',
+    );
     expect(writes()).toEqual([]);
   });
 
@@ -599,6 +704,76 @@ describe('the product editor', () => {
         backorderable: true,
       }),
     );
+  });
+});
+
+// ------------------------------------------ the stock cell in the variant table
+
+/*
+ * THE REASON IS OPTIONAL SINCE 2026-09-03 (owner’s instruction). This cell
+ * was once a near-copy of the Stock screen's; PR #103 changed only that copy,
+ * so this one kept refusing a blank reason until the owner met it on
+ * 2026-09-15. Both screens now render the one `StockCell.tsx`. These tests
+ * stay beside `Inventory.test.tsx`'s three because each suite pins its OWN
+ * screen's wiring to that cell — which variant id, which toast, which re-read.
+ *
+ * THE BODY IS THE ASSERTION, not the toast. The route keeps `.min(1)` inside
+ * its `.optional()`, so `{ delta: 3, reason: '' }` would look identical on
+ * screen and be a 400 in production; `toEqual` pins the key ABSENT.
+ */
+describe('the stock cell in the variant table', () => {
+  const ADJUST = `/api/shop/admin/inventory/${freshVariant.id}/adjust`;
+
+  async function openStock(user: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> {
+    await user.click(screen.getByRole('button', { name: `Adjust stock of ${freshVariant.sku}` }));
+    return await screen.findByRole('dialog', { name: `Adjust stock of ${freshVariant.sku}` });
+  }
+
+  it('sends no reason key at all when the box is left empty', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    when(ADJUST, { inventory: { variantId: freshVariant.id, onHand: 8, reserved: 0, available: 8 } });
+    mountAt(spool.id);
+    await screen.findByDisplayValue('Recycled Spool');
+
+    const panel = await openStock(user);
+    await user.type(within(panel).getByLabelText('Adjust by'), '3');
+    await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
+
+    await waitFor(() => expect(sent(ADJUST, 'POST')).toEqual({ delta: 3 }));
+    expect(await screen.findByText(`${freshVariant.sku} — 8 available`)).toBeTruthy();
+  });
+
+  it('still sends a reason when one is given, trimmed', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    when(ADJUST, { inventory: { variantId: freshVariant.id, onHand: 8, reserved: 0, available: 8 } });
+    mountAt(spool.id);
+    await screen.findByDisplayValue('Recycled Spool');
+
+    const panel = await openStock(user);
+    await user.type(within(panel).getByLabelText('Adjust by'), '3');
+    await user.type(within(panel).getByLabelText('Reason (optional)'), '  Stock count ');
+    await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
+
+    await waitFor(() => expect(sent(ADJUST, 'POST')).toEqual({ delta: 3, reason: 'Stock count' }));
+  });
+
+  /* The number still gates it: zero is a change the server cannot make. */
+  it('still refuses a delta of zero, sending nothing', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    mountAt(spool.id);
+    await screen.findByDisplayValue('Recycled Spool');
+
+    const panel = await openStock(user);
+    await user.type(within(panel).getByLabelText('Adjust by'), '0');
+    await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
+
+    expect(
+      await within(panel).findByText('Enter a whole number, above or below zero — but not zero.'),
+    ).toBeTruthy();
+    expect(writes()).not.toContain(ADJUST);
   });
 });
 
@@ -825,5 +1000,65 @@ describe('the bulk quantity discounts', () => {
     await user.click(screen.getByRole('checkbox', { name: /quantity discount on this product/ }));
     expect(screen.queryByText('Shop default')).toBeNull();
     expect(screen.queryByText('3 or more')).toBeNull();
+  });
+});
+
+describe('a new product', () => {
+  function mountNew() {
+    when('/api/shop/admin/categories', { items: [] });
+    when('/api/shop/admin/tags', { items: [] });
+    when('/api/shop/admin/bulk-tiers', { tiers: DEFAULT_LADDER });
+    when('/api/shop/admin/products', { product: { ...productRow(spool), id: 'prd_new' } }, 201);
+    when('/api/shop/admin/products/prd_new/variants', { variant: { id: 'var_new', sku: 'NEW-1' } }, 201);
+    when('/api/shop/admin/variants/var_new/price', { price: { amount: 150000, currency: 'NGN' } });
+    return render(
+      <ToastHost>
+        <MemoryRouter initialEntries={['/products/new']}>
+          <Routes>
+            <Route path="/products/new" element={<ProductDetail create />} />
+            <Route path="/products/:id" element={<p>the product</p>} />
+          </Routes>
+        </MemoryRouter>
+      </ToastHost>,
+    );
+  }
+
+  it('makes its first variant in the same save: cost and stock on the variant, price through the price route', async () => {
+    const user = userEvent.setup();
+    mountNew();
+    await user.type(await screen.findByLabelText('Title'), 'Silk PLA');
+    await retype(user, 'Price', '1500');
+    await retype(user, 'Cost price', '1100');
+    await retype(user, 'Original price (optional)', '1800');
+    await retype(user, 'Stock', '12');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    await screen.findByText('the product');
+    expect(writes()).toEqual([
+      '/api/shop/admin/products',
+      '/api/shop/admin/products/prd_new/variants',
+      '/api/shop/admin/variants/var_new/price',
+    ]);
+    expect(sent('/api/shop/admin/products/prd_new/variants', 'POST')).toEqual({
+      onHand: 12,
+      costMinor: 110000,
+      compareAtMinor: 180000,
+    });
+    expect(sent('/api/shop/admin/variants/var_new/price', 'PUT')).toMatchObject({
+      amount: 150000,
+      currency: 'NGN',
+    });
+  });
+
+  it('refuses an original price at or below the price before the product exists', async () => {
+    const user = userEvent.setup();
+    mountNew();
+    await user.type(await screen.findByLabelText('Title'), 'Silk PLA');
+    await retype(user, 'Price', '1500');
+    await retype(user, 'Original price (optional)', '1500');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect((await screen.findByRole('alert')).textContent).toMatch(/^Original price must be higher/);
+    expect(writes()).toEqual([]);
   });
 });

@@ -206,7 +206,12 @@ export async function courierShippingOptions(
     const quotes = await Promise.all(
       a.lines.map((line) => a.catalog.quote(db, line.variantId).then((q) => ({ line, q }))),
     );
-    const weights = new Map(quotes.map(({ line, q }) => [line.variantId, q?.weightGrams ?? null]));
+    /* `shippingWeightGrams`, not `weightGrams` (migration 1180): the number a
+       courier is priced on, already resolved to the displayed weight for every
+       variant that carries no override. */
+    const weights = new Map(
+      quotes.map(({ line, q }) => [line.variantId, q?.shippingWeightGrams ?? null]),
+    );
     const grams = basketGrams(a.lines, weights, settings.packaging.weightKg);
 
     /* The courier's own banding is coarser than this, so a cache keyed on whole
@@ -237,7 +242,7 @@ export async function courierShippingOptions(
       unitMinor: q?.price.amount ?? 0,
       /* The SAME substitution `basketGrams` made, so the adapter's own total
          agrees with the one this cache was keyed on. */
-      weightGrams: q?.weightGrams ?? DEFAULT_ITEM_GRAMS,
+      weightGrams: q?.shippingWeightGrams ?? DEFAULT_ITEM_GRAMS,
     }));
 
     /*

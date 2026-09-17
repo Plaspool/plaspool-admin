@@ -16,6 +16,7 @@
  * operator they have four of something they sold this morning. Every read here
  * is a plain fetch into component state.
  */
+import type { BoxPage } from '../../shared/commerce/mystery-box';
 import { apiFetch, type RequestOptions } from './api';
 import type { AnalyticsMoney } from './api-shop-analytics';
 import { UNRENDERABLE } from './when';
@@ -388,6 +389,8 @@ export interface ShopProduct {
   overviewFallback: string;
   /** Whether the quantity ladder applies to this product (migration 0600). */
   bulkDiscountEnabled: boolean;
+  /** Migration 1220. `null` is an ordinary product; `'pack'` a mystery box staff fill by hand. */
+  boxMode: ShopBoxMode | null;
   authorId: string;
   /** The CAS token. Every save carries the revision it derived from. */
   revision: number;
@@ -455,7 +458,19 @@ export interface ShopVariantBase {
   sku: string;
   optionValues: Record<string, string>;
   position: number;
+  /** Grams. What the shop SHOWS — the spool size on the storefront. */
   weightGrams: number | null;
+  /**
+   * Grams. What DELIVERY is priced on (migration 1180). `null` means "use
+   * `weightGrams`", and the edit modal shows that as an empty box rather than
+   * pre-filling the displayed weight — a pre-fill would save an override the
+   * moment anybody touched anything else on the variant.
+   */
+  shippingWeightGrams: number | null;
+  /** Migration 1220. The tag a mystery box variant draws from; `null` on an ordinary variant. */
+  boxPoolTag: string | null;
+  /** Migration 1220. Items in one box; `null` exactly when `boxPoolTag` is. */
+  boxItemCount: number | null;
   status: VariantStatus;
   createdAt: number;
   updatedAt: number;
@@ -930,10 +945,19 @@ export type PaymentStatus =
 export interface ShopPayment {
   intentId: string;
   checkoutId: string;
+  /** The gateway that took this payment. A refund always goes back through it. */
+  provider: PaymentProviderName;
   status: PaymentStatus;
   amount: number;
   currency: string;
   refundedTotal: number;
+  /**
+   * Refunds held because the gateway's answer was unknown, until the owner
+   * says whether they went through (owner's rule, 2026-09-15). Their amounts
+   * are inside `refundedTotal`. Optional so a fixture or an older response
+   * without it reads as none.
+   */
+  unconfirmedRefunds?: ShopUnconfirmedRefund[];
   createdAt: number;
   updatedAt: number;
 }
@@ -985,6 +1009,177 @@ export interface ShopOrderAddOn {
   currency: string;
 }
 
+/** What goes back in stock when a paid order is cancelled (migration 1200). */
+export interface ShopRestockChoice {
+  lines: { orderLineId: string; qty: number }[];
+  /** Why the rest stays out. Optional; `null` or blank stores nothing. */
+  keptOutReason: string | null;
+  /** Migration 1220. Items packed in this order's mystery boxes that go back on the shelf. */
+  boxItemIds?: string[];
+}
+
+/** The server's answer: units put back and lines refused, or that it failed after the cancel. */
+export type ShopRestockResult =
+  | { returned: number; refused: string[]; boxItemsReturned?: number }
+  | { failed: true };
+
+// ----------------------------------------------------------- mystery boxes
+
+/** How the mystery box's contents get decided (migrations 1220, 1240). */
+export type ShopBoxMode = 'pack' | 'built' | 'auto';
+
+/** What happens when a paid box can't be filled (migration 1240). */
+export type ShopBoxShortfall = 'hold' | 'backup' | 'cancel_refund';
+
+/** One variant on a mystery box tick list, as Settings shows it. */
+export interface ShopMysteryBoxItem {
+  variantId: string;
+  list: 'main' | 'backup';
+  productId: string;
+  productTitle: string;
+  sku: string;
+  optionValues: Record<string, string>;
+  colorHex: string | null;
+  imageId: string | null;
+  available: number;
+  /** False when the product or variant can't currently be used. */
+  usable: boolean;
+}
+
+export interface ShopBoxFillItem {
+  id: string;
+  position: number;
+  variantId: string;
+  sku: string;
+  title: string;
+  optionValues: Record<string, string>;
+  imageId: string | null;
+  returnedToStockAt: number | null;
+}
+
+/** One filled box on an order line. */
+export interface ShopBoxFill {
+  id: string;
+  orderLineId: string;
+  boxNo: number;
+  source: 'hand' | 'built' | 'auto' | 'backup';
+  /** The parcel it went out in; `null` until it is in one. */
+  fulfillmentId: string | null;
+  filledBy: string | null;
+  filledAt: number;
+  items: ShopBoxFillItem[];
+}
+
+/** A box built ahead and still on the shelf. */
+export interface ShopBuiltBox {
+  id: string;
+  sizeVariantId: string;
+  filledAt: number;
+  items: ShopBoxFillItem[];
+}
+
+/** The mystery box's own product, edited only on Settings → Mystery box. */
+/** One size of the mystery box ("5kg"): a variant of the box's product. */
+export interface ShopMysteryBoxSize {
+  variantId: string;
+  /** Null when the only size has no name. */
+  size: string | null;
+  itemCount: number | null;
+  priceMinor: number | null;
+  /** Grams, shown on the shop. */
+  weightGrams: number | null;
+  /** Grams, what delivery is priced on; null means `weightGrams`. */
+  shippingWeightGrams: number | null;
+  imageId: string | null;
+  /** How many more boxes of this size can be bought right now. */
+  canBuy: number;
+  /** Packed ahead and on the shelf. */
+  ready: number;
+  /** Paid and waiting to be packed, plus held in a checkout. Locks the item count. */
+  owed: number;
+  soldLast24Hours: number;
+  /** Bought before: removing it retires it instead of deleting it. */
+  everOrdered: boolean;
+}
+
+export interface ShopMysteryBoxProduct {
+  productId: string;
+  slug: string | null;
+  status: string;
+  name: string;
+  description: unknown;
+  /** The owner's overview; null means the shop derives it from the description. */
+  overview: string | null;
+  /** What the shop shows while `overview` is null. */
+  overviewFallback: string;
+  coverImageId: string | null;
+  imageIds: string[];
+  currency: string;
+  /** In the owner's order. */
+  sizes: ShopMysteryBoxSize[];
+}
+
+/** Settings → Mystery box, as the server holds it. */
+export interface ShopMysteryBox {
+  settings: {
+    enabled: boolean;
+    mode: ShopBoxMode;
+    shortfall: ShopBoxShortfall;
+    revision: number;
+    updatedAt: number;
+    /** Migration 1260: "How it works" and the cues. */
+    page: BoxPage;
+    /** When the box was last switched on; null while it is off. */
+    onSaleSince: number | null;
+  };
+  /** Null until the screen is first saved. */
+  box: ShopMysteryBoxProduct | null;
+  /** What the shop shows while the box has no pictures or description of its own. */
+  fallback: { imageIds: string[]; line: string; productTitles: string[] };
+  items: ShopMysteryBoxItem[];
+  built: ShopBuiltBox[];
+}
+
+export interface ShopMysteryBoxSave {
+  expectedRevision: number;
+  enabled: boolean;
+  mode: ShopBoxMode;
+  shortfall: ShopBoxShortfall;
+  name: string;
+  description: unknown | null;
+  /** Blank lets the shop derive the overview from the description. */
+  overview: string;
+  page: BoxPage;
+  coverImageId: string | null;
+  imageIds: string[];
+  /** In the order they show on the shop. */
+  sizes: {
+    /** Null for a new size. */
+    variantId: string | null;
+    size: string;
+    itemCount: number | null;
+    priceMinor: number | null;
+    weightGrams: number | null;
+    shippingWeightGrams: number | null;
+    imageId: string | null;
+  }[];
+  main: string[];
+  backup: string[];
+}
+
+/** An order line that is a mystery box, filled or not. */
+export interface ShopBoxLine {
+  orderLineId: string;
+  itemCount: number | null;
+}
+
+/** The 409 body when the database refused a fill as a whole. */
+export interface ShopBoxRefusal {
+  error: 'box_refused';
+  reason: 'box_short' | 'box_changed' | 'box_in_parcel';
+  short: string[];
+}
+
 export interface ShopOrderDetail {
   order: ShopOrder;
   lines: ShopOrderLine[];
@@ -1001,6 +1196,17 @@ export interface ShopOrderDetail {
    * the same way: there is nothing to show.
    */
   manual?: ShopManualOrderInfo | null;
+  /** What a cancelled order put back (migration 1200). Staff only; absent on older responses. */
+  restock?: {
+    lines: { orderLineId: string; returnedQty: number }[];
+    keptOutReason: string | null;
+  };
+  /** Migration 1220. Which lines are mystery boxes. Absent on older responses. */
+  boxLines?: ShopBoxLine[];
+  /** Migration 1220. What is packed in the filled boxes. Absent on older responses. */
+  boxFills?: ShopBoxFill[];
+  /** Migration 1240. When the shop couldn't fill this order's box by itself. */
+  boxShortAt?: number | null;
 }
 
 // ------------------------------------------------------------ manual orders
@@ -1521,6 +1727,14 @@ export interface ShopRefund {
   createdAt: number;
 }
 
+/** A refund nobody could confirm, held against its payment (`ShopPayment.unconfirmedRefunds`). */
+export interface ShopUnconfirmedRefund {
+  id: string;
+  amount: number;
+  currency: string;
+  createdAt: number;
+}
+
 /**
  * What `POST /admin/orders/:id/cancel` refunds before it cancels, for a PAID
  * order (`server/shop/orders/routes.ts`, task-d3). REQUIRED by the server on a
@@ -1922,6 +2136,8 @@ export const shopApi = {
       optionValues?: Record<string, string>;
       position?: number;
       weightGrams?: number | null;
+      /** Absent or `null` means "price delivery on `weightGrams`". */
+      shippingWeightGrams?: number | null;
       onHand?: number;
       backorderable?: boolean;
       imageId?: string | null;
@@ -1947,6 +2163,8 @@ export const shopApi = {
       optionValues?: Record<string, string>;
       position?: number;
       weightGrams?: number | null;
+      /** `null` CLEARS the override, so delivery rejoins `weightGrams`. */
+      shippingWeightGrams?: number | null;
       status?: VariantStatus;
       /** `null` clears the colour photograph; a committed image id sets it. */
       imageId?: string | null;
@@ -2401,6 +2619,59 @@ export const shopApi = {
    * reused rather than re-invented. Same no-params, `.strict()` rule as
    * categories.
    */
+  /** Settings → Mystery box (migration 1240). */
+  async getMysteryBox(signal?: AbortSignal): Promise<ShopMysteryBox> {
+    const res = await shopFetch<{ mysteryBox: ShopMysteryBox }>(`${BASE}/mystery-box`, { signal });
+    return res.mysteryBox;
+  },
+
+  /** Save the whole Mystery box screen. A 409 means someone else saved it first. */
+  async saveMysteryBox(body: ShopMysteryBoxSave): Promise<ShopMysteryBox> {
+    const res = await shopFetch<{ mysteryBox: ShopMysteryBox }>(`${BASE}/mystery-box`, {
+      method: 'PUT',
+      body,
+      subject: 'Mystery box',
+    });
+    return res.mysteryBox;
+  },
+
+  /** Pack a box ahead of any sale, for one size. Its items leave stock now. */
+  async buildMysteryBox(sizeVariantId: string, variantIds: string[]): Promise<ShopMysteryBox> {
+    const res = await shopFetch<{ mysteryBox: ShopMysteryBox }>(`${BASE}/mystery-box/built`, {
+      method: 'POST',
+      body: { sizeVariantId, variantIds },
+      subject: 'Mystery box',
+    });
+    return res.mysteryBox;
+  },
+
+  /** Unpack a built box that hasn't sold; its items go back in stock. */
+  async breakUpMysteryBox(id: string): Promise<ShopMysteryBox> {
+    const res = await shopFetch<{ mysteryBox: ShopMysteryBox }>(
+      `${BASE}/mystery-box/built/${seg(id)}/break-up`,
+      { method: 'POST', body: {}, id, subject: 'Mystery box' },
+    );
+    return res.mysteryBox;
+  },
+
+  /**
+   * Fill one mystery box, or change what is in it (migration 1220). A 409
+   * `box_refused` means nothing was saved: an item ran out, somebody else
+   * changed the box, or it is already in a parcel.
+   */
+  async saveBoxFill(
+    orderId: string,
+    lineId: string,
+    boxNo: number,
+    body: { variantIds: string[]; expectedFilledAt: number | null },
+  ): Promise<ShopBoxFill> {
+    const res = await shopFetch<{ fill: ShopBoxFill }>(
+      `${BASE}/orders/${seg(orderId)}/lines/${seg(lineId)}/boxes/${boxNo}`,
+      { method: 'PUT', body, id: orderId, subject: 'Order' },
+    );
+    return res.fill;
+  },
+
   async listTags(signal?: AbortSignal): Promise<ShopTag[]> {
     const res = await shopFetch<{ items: ShopTag[] }>(`${BASE}/tags`, { signal });
     return res.items ?? [];
@@ -2629,13 +2900,26 @@ export const shopApi = {
    * captured, so there is nothing to choose an amount of.
    */
   async cancelOrder(id: string, refund?: CancelRefundChoice): Promise<ShopOrder> {
-    const res = await shopFetch<{ order: ShopOrder }>(`${BASE}/orders/${seg(id)}/cancel`, {
-      method: 'POST',
-      body: refund === undefined ? {} : { refund },
-      id,
-      subject: 'Order',
-    });
-    return res.order;
+    return (await shopApi.cancelAndRestock(id, refund)).order;
+  },
+
+  /**
+   * `cancelOrder`, plus what goes back in stock (migration 1200). `restock` is
+   * for a PAID order only — the server 400s it on an unpaid one, whose units
+   * were only set aside. The answer's `restock` is absent when none was sent.
+   */
+  async cancelAndRestock(
+    id: string,
+    refund?: CancelRefundChoice,
+    restock?: ShopRestockChoice,
+  ): Promise<{ order: ShopOrder; restock?: ShopRestockResult }> {
+    const body: Record<string, unknown> = {};
+    if (refund !== undefined) body.refund = refund;
+    if (restock !== undefined) body.restock = restock;
+    return shopFetch<{ order: ShopOrder; restock?: ShopRestockResult }>(
+      `${BASE}/orders/${seg(id)}/cancel`,
+      { method: 'POST', body, id, subject: 'Order' },
+    );
   },
 
   /**
@@ -2655,6 +2939,21 @@ export const shopApi = {
     const res = await shopFetch<{ refund: ShopRefund }>(
       `${BASE}/payments/intents/${seg(intentId)}/refunds`,
       { method: 'POST', body, id: intentId, subject: 'Payment' },
+    );
+    return res.refund;
+  },
+
+  /**
+   * Settle a refund nobody could confirm (owner's rule, 2026-09-15): `sent`
+   * when the owner found it in the gateway's dashboard, `not_sent` when it is
+   * not there. Same gate as `refundPayment`. 409 `refund_still_sending` inside
+   * the minute its gateway call could still be running, and
+   * `refund_not_unconfirmed` once something else has settled it.
+   */
+  async resolveRefund(refundId: string, outcome: 'sent' | 'not_sent'): Promise<ShopRefund> {
+    const res = await shopFetch<{ refund: ShopRefund }>(
+      `${BASE}/payments/refunds/${seg(refundId)}/resolve`,
+      { method: 'POST', body: { outcome }, id: refundId, subject: 'Refund' },
     );
     return res.refund;
   },
