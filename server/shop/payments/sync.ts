@@ -253,6 +253,38 @@ export interface PaymentSyncSummary {
  */
 export const PAYMENT_SYNC_LIMIT = 10;
 
+/**
+ * How long this pass may spend STARTING gateway calls before it leaves the rest
+ * for the next one.
+ *
+ * WHY A WALL CLOCK AND NOT JUST A PAGE SIZE. Both adapters default to a
+ * ten-second per-call timeout, so a page of ten against a gateway that is
+ * hanging is a hundred seconds of work inside a function `vercel.json` caps at
+ * `maxDuration: 30` — and Vercel does not retry what it kills. The page size
+ * bounds how MANY calls; only a clock bounds how LONG.
+ *
+ * IT MATTERS MORE HERE THAN FOR THE COURIER SWEEP, which has the same exposure
+ * and no such budget, because of WHERE the two sit: couriers are asked LAST, so
+ * a hang there costs only the courier updates — the payments, the commerce
+ * events and the mail have already been done. This pass runs FIRST, on purpose
+ * (`runSweep`), so without a budget one hanging gateway would starve the drain,
+ * the outbox and the mail run of the entire invocation. That would make the
+ * sweep less reliable than it was before this feature existed, which is not a
+ * trade any recovery path gets to make.
+ *
+ * SIX SECONDS, and the arithmetic is deliberate: the check happens BEFORE a call
+ * starts, so the worst case is a call begun at 5.9s running its full ten — about
+ * sixteen seconds — which still leaves the rest of the sweep more than a third of
+ * the budget. Stopping mid-call is not on the table: the database writes that
+ * follow a gateway answer have to complete, and abandoning one half-done is how
+ * a capture gets recorded without its checkout being completed.
+ *
+ * WHAT IS LEFT BEHIND IS NOT LOST. `provider_synced_at` advances only for the
+ * intents actually asked about, and the queue is ordered oldest-asked-first, so
+ * the ones this pass skipped sort to the FRONT of the next one.
+ */
+export const PAYMENT_SYNC_BUDGET_MS = 6_000;
+
 export interface IntentSyncDeps {
   /** Resolve the gateway an intent was created under. `null` = not wired here. */
   providerFor: (name: ProviderName) => PaymentProvider | null;
@@ -282,6 +314,7 @@ export async function syncPaymentIntents(
   deps: IntentSyncDeps,
   now: number,
   limit = PAYMENT_SYNC_LIMIT,
+  budgetMs = PAYMENT_SYNC_BUDGET_MS,
 ): Promise<PaymentSyncSummary> {
   const summary: PaymentSyncSummary = { checked: 0, changed: 0, captured: 0, failed: 0 };
 
@@ -290,7 +323,19 @@ export async function syncPaymentIntents(
      shop runs this every ten minutes forever. */
   if (due.length === 0) return summary;
 
+  /*
+   * THE WALL CLOCK, NOT `now`. `now` is one logical timestamp for the whole
+   * sweep — it is what gets written to rows, and it does not advance — so
+   * measuring elapsed time with it would compare a number against itself and
+   * never trip. `Date.now()` is the only thing here that moves.
+   */
+  const startedAt = Date.now();
+
   for (const intent of due) {
+    /* Checked BEFORE the call, so the budget bounds what we START. See
+       `PAYMENT_SYNC_BUDGET_MS`: what is left behind sorts to the front of the
+       next pass, because its `provider_synced_at` was never advanced. */
+    if (summary.checked > 0 && Date.now() - startedAt >= budgetMs) break;
     summary.checked += 1;
     let failure: string | undefined;
     try {
