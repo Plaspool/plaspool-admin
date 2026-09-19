@@ -183,7 +183,15 @@ export type CourierSync = (
 export type IntentSync = (
   db: Db,
   now: number,
-) => Promise<{ checked: number; changed: number; captured: number; failed: number }>;
+) => Promise<{
+  checked: number;
+  changed: number;
+  captured: number;
+  failed: number;
+  /** Set when the pass could not work out which payments to ask about at all —
+   *  distinct from `checked: 0`, which means it looked and found none. */
+  error?: string;
+}>;
 
 export interface OrdersDeps {
   customer?: CustomerResolver;

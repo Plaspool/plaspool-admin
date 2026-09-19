@@ -924,7 +924,14 @@ export interface SweepRun {
    * as well as nullable, so a response from a deployment older than this field
    * reads as "we do not know" rather than as zero.
    */
-  intents?: { checked: number; changed: number; captured: number; failed: number } | null;
+  intents?: {
+    checked: number;
+    changed: number;
+    captured: number;
+    failed: number;
+    /** Set when the pass could not work out which payments to ask about. */
+    error?: string;
+  } | null;
   payments: { count: number };
   events: { applied: number; ignored: number; parked: number; passes: number };
   emails: { sent: number; failed: number; skipped: number };

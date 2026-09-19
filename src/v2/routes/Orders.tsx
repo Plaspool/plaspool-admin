@@ -67,6 +67,16 @@ export function sweepReport(res: SweepRun): { text: string; critical: boolean } 
     return { text: 'Nothing to check — no gateway or courier is set up here.', critical: false };
   }
 
+  /* THE PASS COULD NOT EVEN WORK OUT WHAT TO ASK ABOUT — reported first and on
+     its own, because every count below it is then meaningless rather than zero,
+     and "nothing new" would be a lie about payments nobody looked at. */
+  if (intents?.error) {
+    return {
+      text: 'Couldn’t check the payments — the gateway list couldn’t be read. Parcels and emails were still swept.',
+      critical: true,
+    };
+  }
+
   const paid = intents?.captured ?? 0;
   /* Changed but not captured: a payment the gateway now calls failed or
      cancelled. Worth reporting — it is still the screen catching up — but not as

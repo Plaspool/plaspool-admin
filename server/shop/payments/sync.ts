@@ -239,6 +239,25 @@ export interface PaymentSyncSummary {
   captured: number;
   /** Of those, the ones where the gateway could not be reached or is not wired. */
   failed: number;
+  /**
+   * Set when the pass could not even work out WHICH payments to ask about — the
+   * candidate query itself failed.
+   *
+   * IT EXISTS SO THIS PASS CANNOT TAKE THE SWEEP DOWN WITH IT. Everything else
+   * here is guarded per intent, but `listIntentsToSync` is one statement outside
+   * that loop, and this pass runs FIRST in `runSweep` — so an unhandled throw
+   * would cost the invocation its payment drain, its commerce events, its
+   * mystery boxes, its mail and its courier updates. A database that has not had
+   * migration 1320 applied is the concrete way that happens: `provider_synced_at`
+   * is missing, the SELECT is a `42703`, and the entire money pipeline stops on a
+   * deployment where everything else would have worked.
+   *
+   * REPORTED RATHER THAN SWALLOWED, because `checked: 0` with no error means "we
+   * looked and there was nothing to ask about" — a completely different fact, and
+   * one an operator reading the sweep's answer must not be handed instead of
+   * this.
+   */
+  error?: string;
 }
 
 /**
@@ -318,7 +337,21 @@ export async function syncPaymentIntents(
 ): Promise<PaymentSyncSummary> {
   const summary: PaymentSyncSummary = { checked: 0, changed: 0, captured: 0, failed: 0 };
 
-  const due = await listIntentsToSync(db, { now, limit });
+  /* THE ONE STATEMENT OUTSIDE THE PER-INTENT GUARD, so it gets its own — see
+     `PaymentSyncSummary.error`. This pass runs first in the sweep, and a throw
+     here would cost the invocation everything that comes after it. */
+  let due: PaymentIntentRow[];
+  try {
+    due = await listIntentsToSync(db, { now, limit });
+  } catch (cause) {
+    // eslint-disable-next-line no-console -- a sweep that cannot ask is an
+    // operator's to fix, and this is the only place it is visible.
+    console.error(
+      '[payments] could not work out which payments to ask about',
+      JSON.stringify({ error: cause instanceof Error ? cause.name : typeof cause }),
+    );
+    return { ...summary, error: 'candidates_failed' };
+  }
   /* Nothing to ask about is the ORDINARY answer and must cost nothing — an idle
      shop runs this every ten minutes forever. */
   if (due.length === 0) return summary;
