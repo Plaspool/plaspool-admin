@@ -85,11 +85,8 @@
   gap: var(--s3);
 }
 
-.mo__stepper {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s1);
-}
+/* The line quantity's stepper is `.stepper--tiny` in ui.css now — one control
+   shared with mystery box sizes and the stock panel. */
 
 .mo__price {
   width: 9rem;

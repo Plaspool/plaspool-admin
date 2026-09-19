@@ -7,7 +7,6 @@ import {
   Gift,
   ImagePlus,
   Lock,
-  Minus,
   Package,
   PackageX,
   Plus,
@@ -45,6 +44,7 @@ import { Card } from '../ui/Card';
 import { Badge, Banner, Button, EmptyState, Loading, type BadgeTone } from '../ui/primitives';
 import { AffixField, Checkbox, MoneyField, Radio, Segmented, TextArea, TextField, Toggle } from '../ui/Field';
 import { InfoTip } from '../ui/InfoTip';
+import { Stepper } from '../ui/Stepper';
 import { MediaManager, PhotoPicker, StoredImg, type MediaValue } from '../ui/Img';
 import { Modal } from '../ui/Modal';
 import { RichText } from '../ui/RichText';
@@ -837,46 +837,32 @@ export default function SettingsMysteryBox() {
                       }
                       onChange={(e) => editSize(z.key, { price: e.target.value })}
                     />
-                    <div className="field">
-                      <span className="field__label mbx-label">
-                        Items per box
-                        <InfoTip label="What items per box means">
-                          How many products go into each box of this size. With 5, every box holds 5 items picked
-                          from the products you tick below. The same product can go in twice if it has to.
-                        </InfoTip>
-                      </span>
-                      <div className="mbx-stepper">
-                        <Button
-                          iconOnly
-                          aria-label={`One fewer item in ${label}`}
-                          disabled={f.locked || !f.countOk || f.count <= 1}
-                          onClick={() => editSize(z.key, { itemCount: String(Math.max(1, f.count - 1)) })}
-                        >
-                          <Minus aria-hidden="true" />
-                        </Button>
-                        <input
-                          className="input"
-                          inputMode="numeric"
-                          aria-label={`Items per box in ${label}`}
-                          value={z.itemCount}
-                          disabled={f.locked}
-                          onChange={(e) => editSize(z.key, { itemCount: e.target.value })}
-                        />
-                        <Button
-                          iconOnly
-                          aria-label={`One more item in ${label}`}
-                          disabled={f.locked}
-                          onClick={() => editSize(z.key, { itemCount: String(f.countOk ? f.count + 1 : 1) })}
-                        >
-                          <Plus aria-hidden="true" />
-                        </Button>
-                      </div>
-                      {f.locked ? (
-                        <span className="field__hint">
-                          Fixed while {f.saved!.owed > 0 ? `${f.saved!.owed} paid ${f.saved!.owed === 1 ? 'box waits' : 'boxes wait'} to be packed` : `${f.saved!.ready} packed ${f.saved!.ready === 1 ? 'box is' : 'boxes are'} ready`}.
-                        </span>
-                      ) : null}
-                    </div>
+                    <Stepper
+                      label={
+                        <>
+                          Items per box
+                          <InfoTip label="What items per box means">
+                            How many products go into each box of this size. With 5, every box holds 5 items picked
+                            from the products you tick below. The same product can go in twice if it has to.
+                          </InfoTip>
+                        </>
+                      }
+                      inputLabel={`Items per box in ${label}`}
+                      decrementLabel={`One fewer item in ${label}`}
+                      incrementLabel={`One more item in ${label}`}
+                      value={z.itemCount}
+                      min={1}
+                      fallback={1}
+                      disabled={f.locked}
+                      hint={
+                        f.locked ? (
+                          <>
+                            Fixed while {f.saved!.owed > 0 ? `${f.saved!.owed} paid ${f.saved!.owed === 1 ? 'box waits' : 'boxes wait'} to be packed` : `${f.saved!.ready} packed ${f.saved!.ready === 1 ? 'box is' : 'boxes are'} ready`}.
+                          </>
+                        ) : undefined
+                      }
+                      onChange={(itemCount) => editSize(z.key, { itemCount })}
+                    />
                     <AffixField
                       label="Weight"
                       suffix="kg"

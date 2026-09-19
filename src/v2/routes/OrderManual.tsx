@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ChevronDown, Minus, Plus, Receipt, X } from 'lucide-react';
+import { ChevronDown, Receipt, X } from 'lucide-react';
 import {
   parseMajor,
   plainMajor,
@@ -19,6 +19,7 @@ import { Badge, Banner, Button, Loading } from '../ui/primitives';
 import { Card } from '../ui/Card';
 import { Defs } from '../ui/Defs';
 import { Checkbox, MoneyField, SelectField, TextArea, TextField } from '../ui/Field';
+import { Stepper } from '../ui/Stepper';
 import { useToast } from '../ui/Toast';
 import { byName, countryName, HOME_COUNTRY, SHIPPABLE_COUNTRIES } from './countries';
 import {
@@ -772,10 +773,6 @@ function LineRow({
 }) {
   const label = lineLabel(line);
   const qty = Number(line.qty);
-  const step = (by: number) => {
-    const base = Number.isSafeInteger(qty) && qty >= 1 ? qty : 1;
-    onQty(String(Math.max(1, base + by)));
-  };
   const parsed = line.price.trim() ? parseMajor(line.price, currency) : null;
   const unit = parsed && parsed.ok ? parsed.minor : line.currentPrice;
   const lineTotal = unit !== null && Number.isSafeInteger(qty) && qty >= 1 ? unit * qty : null;
@@ -797,28 +794,22 @@ function LineRow({
         </span>
       </div>
       <div className="mo__line-controls">
-        <div className="field">
-          <span className="field__label" aria-hidden="true">
-            Quantity
-          </span>
-          <div className="mo__stepper">
-            <Button iconOnly tone="plain" aria-label={`One fewer ${label}`} onClick={() => step(-1)}>
-              <Minus aria-hidden="true" />
-            </Button>
-            <input
-              className={qtyError ? 'input input--invalid input--tiny' : 'input input--tiny'}
-              inputMode="numeric"
-              aria-label={`Quantity of ${label}`}
-              aria-invalid={qtyError ? true : undefined}
-              value={line.qty}
-              onChange={(e) => onQty(e.target.value)}
-            />
-            <Button iconOnly tone="plain" aria-label={`One more ${label}`} onClick={() => step(1)}>
-              <Plus aria-hidden="true" />
-            </Button>
-          </div>
-          {qtyError ? <span className="field__error">{qtyError}</span> : null}
-        </div>
+        <Stepper
+          label="Quantity"
+          /* The input's own name already says which line it belongs to, and on
+           * a list of them the repeated word is noise. Nothing focusable is in
+           * this label. */
+          labelHidden
+          inputLabel={`Quantity of ${label}`}
+          decrementLabel={`One fewer ${label}`}
+          incrementLabel={`One more ${label}`}
+          value={line.qty}
+          min={1}
+          fallback={1}
+          tiny
+          error={qtyError}
+          onChange={onQty}
+        />
         <div className="mo__price">
           <MoneyField
             label="Price"

@@ -737,11 +737,33 @@ describe('the stock cell in the variant table', () => {
     await screen.findByDisplayValue('Recycled Spool');
 
     const panel = await openStock(user);
-    await user.type(within(panel).getByLabelText('Adjust by'), '3');
+    // Opens at this variant's own count — 5 — so 8 is a delta of 3.
+    const box = within(panel).getByLabelText(`Available for ${freshVariant.sku}`);
+    expect(box).toHaveProperty('value', '5');
+    await user.clear(box);
+    await user.type(box, '8');
     await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
 
     await waitFor(() => expect(sent(ADJUST, 'POST')).toEqual({ delta: 3 }));
     expect(await screen.findByText(`${freshVariant.sku} — 8 available`)).toBeTruthy();
+  });
+
+  /* The buttons are the owner's ask (2026-09-19) and this screen renders the
+   * same cell, so they must work here too — a wiring test, not a repeat of
+   * `Stepper.test.tsx`'s arithmetic. */
+  it('steps the count with the buttons and sends the difference', async () => {
+    const user = userEvent.setup();
+    withProduct(spool);
+    when(ADJUST, { inventory: { variantId: freshVariant.id, onHand: 7, reserved: 0, available: 7 } });
+    mountAt(spool.id);
+    await screen.findByDisplayValue('Recycled Spool');
+
+    const panel = await openStock(user);
+    await user.click(within(panel).getByRole('button', { name: `One more ${freshVariant.sku}` }));
+    await user.click(within(panel).getByRole('button', { name: `One more ${freshVariant.sku}` }));
+    await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
+
+    await waitFor(() => expect(sent(ADJUST, 'POST')).toEqual({ delta: 2 }));
   });
 
   it('still sends a reason when one is given, trimmed', async () => {
@@ -752,26 +774,29 @@ describe('the stock cell in the variant table', () => {
     await screen.findByDisplayValue('Recycled Spool');
 
     const panel = await openStock(user);
-    await user.type(within(panel).getByLabelText('Adjust by'), '3');
+    const box = within(panel).getByLabelText(`Available for ${freshVariant.sku}`);
+    await user.clear(box);
+    await user.type(box, '8');
     await user.type(within(panel).getByLabelText('Reason (optional)'), '  Stock count ');
     await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
 
     await waitFor(() => expect(sent(ADJUST, 'POST')).toEqual({ delta: 3, reason: 'Stock count' }));
   });
 
-  /* The number still gates it: zero is a change the server cannot make. */
-  it('still refuses a delta of zero, sending nothing', async () => {
+  /* The number still gates it: a change of nothing is a change the server
+   * cannot make, and with the count pre-filled that is now what pressing
+   * Adjust straight away means. */
+  it('refuses when the number has not been changed, sending nothing', async () => {
     const user = userEvent.setup();
     withProduct(spool);
     mountAt(spool.id);
     await screen.findByDisplayValue('Recycled Spool');
 
     const panel = await openStock(user);
-    await user.type(within(panel).getByLabelText('Adjust by'), '0');
     await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
 
     expect(
-      await within(panel).findByText('Enter a whole number, above or below zero — but not zero.'),
+      await within(panel).findByText('Already 5. Change the number to adjust it.'),
     ).toBeTruthy();
     expect(writes()).not.toContain(ADJUST);
   });
