@@ -677,13 +677,60 @@ export class FlutterwaveProvider implements PaymentProvider {
    * Reads a charge back BY OUR OWN REFERENCE — `tx_ref`, the query parameter
    * `verify_by_reference` takes — never by Flutterwave's numeric id, which we
    * may not even have yet if the customer has not returned from checkout.
+   *
+   * A 404 IS "NOBODY HAS PAID THIS YET", NOT A FAILURE — and this is the one
+   * place in the adapter that reads a status code for meaning rather than for
+   * classification.
+   *
+   * WHY IT HAS TO. Unlike Paystack, which registers a transaction at
+   * `/transaction/initialize` and can therefore verify it as `abandoned`
+   * forever after, Flutterwave's `/v3/payments` only mints a hosted LINK: no
+   * transaction exists under that `tx_ref` until a customer actually pays one.
+   * So `verify_by_reference` for an untouched checkout has nothing to return,
+   * and `#classify` — correctly, for every other call — turns that 4xx into a
+   * thrown `invalid_request`.
+   *
+   * WHAT THAT COST BEFORE THIS. `shop/payments/sync.ts` counts a thrown
+   * `fetchIntent` as "we asked and could not get an answer": it records the
+   * message on the intent and reports the gateway as unreachable. On a
+   * deployment whose active gateway is Flutterwave, EVERY abandoned cart inside
+   * the three-day window would therefore be asked about every fifteen minutes
+   * and written down as a gateway failure — turning the sweep's "N couldn't be
+   * reached" into a permanent false alarm, which is exactly how an operator
+   * learns to ignore it. The storefront's own `/confirm` poll had the same edge:
+   * a shopper who abandoned and came back got a 5xx rather than "still unpaid".
+   *
+   * NARROW ON PURPOSE. Only 404, and only here. It reasons from the status
+   * code — the same basis `#classify` uses — and not from Flutterwave's message
+   * wording, which this adapter still refuses to match on because no sandbox has
+   * confirmed it (see `#classify`). Every other refusal, including a 2xx whose
+   * envelope says `error`, still throws exactly as it did.
    */
   async fetchIntent(providerIntentId: string): Promise<ProviderIntent> {
-    const data = await this.#request(
-      'fetchIntent',
-      'GET',
-      `/transactions/verify_by_reference?tx_ref=${encodeURIComponent(providerIntentId)}`,
-    );
+    let data: Record<string, unknown>;
+    try {
+      data = await this.#request(
+        'fetchIntent',
+        'GET',
+        `/transactions/verify_by_reference?tx_ref=${encodeURIComponent(providerIntentId)}`,
+      );
+    } catch (cause) {
+      if (cause instanceof ProviderError && cause.status === 404) {
+        return {
+          providerIntentId,
+          status: 'requires_payment',
+          /* No transaction, so no amount and no currency to report. The charge
+             check never runs on `requires_payment`, and inventing the intent's
+             own figures here would fabricate a gateway answer. */
+          amount: 0,
+          currency: '',
+          authorizationUrl: null,
+          failureReason: null,
+          providerChargeId: null,
+        };
+      }
+      throw cause;
+    }
     return this.#toIntent(data, providerIntentId);
   }
 
