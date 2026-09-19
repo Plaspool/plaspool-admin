@@ -41,10 +41,15 @@ import { resolveShopCustomer } from './shop/cart/identity/customers';
 import { shopCors } from './shop/cart/cors';
 import { paymentPort } from './shop/payments/port';
 import { drainPaymentEvents } from './shop/payments/webhook';
+import { syncPaymentIntents } from './shop/payments/sync';
 import { createRefund } from './shop/payments/refunds';
 import { getIntent } from './shop/payments/intents';
 import { providerFor } from './shop/payments/routing';
-import { flutterwaveProvider, paystackProvider } from './shop/payments/config';
+import {
+  flutterwaveProvider,
+  paystackProvider,
+  providerKeyPresence,
+} from './shop/payments/config';
 import { redemptionPort } from './marketing/redemption/port';
 import { discountPort } from './marketing/discounts/port';
 import type { Mailer } from './mail/port';
@@ -339,6 +344,39 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
      * existed then.
      */
     syncCouriers: (db, now) => syncCourierStatuses(db, resolveLogisticsDeps(), now),
+    /*
+     * THE SEVENTH SEAM: ASK THE GATEWAYS WHETHER THESE PAYMENTS WENT THROUGH.
+     *
+     * The backstop behind the payment webhook, and NOT the same thing as
+     * `drainPayments` above — that one finishes events we already stored, and a
+     * delivery that never arrived leaves nothing to finish. Without this, a
+     * capture whose webhook was lost is invisible on this side and settled on
+     * the gateway's: no order, no email, nothing stuck anywhere to notice.
+     *
+     * `providerFor(name, resolveAppFactories(deps))` PER INTENT, never
+     * `resolveAppProvider(deps)` — the same rule the refund seam above spells
+     * out at length. The gateway that took a payment is fixed on its row, and
+     * an owner who flips the active-gateway switch must not cause us to ask
+     * Paystack about a Flutterwave reference. `providerKeyPresence` is what
+     * makes "not set up here" a recorded per-intent failure rather than a throw
+     * that would take the whole sweep down with it.
+     *
+     * `resolveAppFactories(deps)` IS CALLED PER SWEEP for `syncCouriers`'s
+     * reason: keys can change under a running process, and a resolution captured
+     * at boot would keep answering with the adapters that existed then.
+     */
+    syncIntents: (db, now) =>
+      syncPaymentIntents(
+        db,
+        {
+          providerFor: (name) => {
+            const factories = resolveAppFactories(deps);
+            return providerKeyPresence()[name] ? providerFor(name, factories) : null;
+          },
+          checkout: checkoutPort(),
+        },
+        now,
+      ),
     /*
      * THE DAILY EXCHANGE RATES, refreshed by the same sweep (1160) — the
      * external ten-minute cron is the schedule, so no third Vercel cron is

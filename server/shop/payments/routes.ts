@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { shopCors } from '../cart/cors';
 import { pathParam, readJson, str } from '../../middleware/errors';
@@ -8,7 +7,7 @@ import { NotFoundError } from '../../repo/errors';
 import { currentDb, currentUser } from '../../app-env';
 import { ProviderError } from './provider/scrub';
 import { flutterwaveProvider, paystackProvider, paymentsEnv, providerCeilings, providerKeyPresence } from './config';
-import { cancelIntent, chargedOf, createIntent, getIntent, applyIntentStatus } from './intents';
+import { cancelIntent, chargedOf, createIntent, getIntent } from './intents';
 import type { ChargeSpec, PaymentIntentRow } from './intents';
 import { BASE_CURRENCY, chargeBreakdown } from '../../../shared/commerce/fx';
 import {
@@ -21,13 +20,10 @@ import { createRefund, listRefunds, resolveUnconfirmedRefund } from './refunds';
 import { chooseProvider, providerFor, NoGatewayAvailableError, NoProviderForCurrencyError } from './routing';
 import { readPaymentSettings, writePaymentSettings } from './settings';
 import { PROVIDER_NAMES } from './schema';
-import {
-  chargeVerdict,
-  completeCheckoutForIntent,
-  drainPaymentEvents,
-  processEvent,
-  storeEvent,
-} from './webhook';
+import { drainPaymentEvents, processEvent, storeEvent } from './webhook';
+/* The one path from "a gateway says X" to a state change, shared by the confirm
+   route, the sweep and the Refresh status button below — see `./sync.ts`. */
+import { reconcileIntent, refreshIntentNow } from './sync';
 import type { Context } from 'hono';
 import type { AppEnv } from '../../app-env';
 import { paymentsCallbackUrl } from './utils/callback-url';
@@ -730,6 +726,15 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
    *
    * It exists because a webhook can be late: without it, a customer who has
    * genuinely paid stares at an unpaid order and has no way to resolve it.
+   *
+   * THE BODY OF THIS ROUTE IS `reconcileIntent` (`./sync.ts`) AND NOTHING ELSE.
+   * It used to hold the fetch, the synthetic event, the money guard, the
+   * checkout completion and the status apply inline; all five moved out when the
+   * sweep and the admin's Refresh status button needed the same five steps. The
+   * rule is `applyCourierUpdate`'s: the place that decides what a gateway's word
+   * MEANS is one place, so three callers cannot end up with three readings of
+   * `captured`. What stays here is what is genuinely this route's own — who may
+   * call it, what the shopper is shown, and the inline sweep.
    */
   app.post('/shop/payments/intents/:id/confirm', async (c) => {
     const db = currentDb(c);
@@ -743,81 +748,27 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
      * forever, whatever the admin switch says now. `providerFor` takes no
      * `db` and reads no settings row for exactly this reason (`routing.ts`).
      */
-    const truth = await providerFor(intent.provider, factories).fetchIntent(intent.providerIntentId);
-    if (truth.status === 'requires_payment') return c.json(publicIntent(intent));
+    const outcome = await reconcileIntent(db, intent, {
+      provider: providerFor(intent.provider, factories),
+      checkout,
+      now: Date.now(),
+    });
 
-    /*
-     * A SYNTHETIC EVENT ROW, so the confirm path and the webhook path share one
-     * application mechanism instead of having two that can disagree. It is
-     * recorded in the same append-only log with `type = 'verify:…'`, so the
-     * dispute record shows that this state change came from us asking rather
-     * than from the provider telling.
-     *
-     * `intent.provider`, NOT a fixed literal — unlike the webhook route above,
-     * this one already has the ONE intent this event is about in hand, so the
-     * gateway that actually took its money is a plain field read rather than a
-     * guess. This is exactly the "resolve per intent" property `refunds.ts`
-     * documents: the row's own recorded gateway, never a global setting.
-     */
-    const stored = await storeEvent(
-      db,
-      {
-        providerEventId: `verify:${intent.providerIntentId}:${truth.status}`,
-        type: `verify.${truth.status}`,
-        providerIntentId: intent.providerIntentId,
-        providerRefundId: null,
-        intentStatus: truth.status,
-        refundStatus: null,
-        failureReason: truth.failureReason,
-        amount: truth.amount,
-        currency: truth.currency,
-        payload: { source: 'fetchIntent', status: truth.status },
-      },
-      intent.provider,
-    );
-
-    /*
-     * THE SAME CHECK AS THE WEBHOOK (1140): money counts only in the charged
-     * currency and at least the charged amount. A payment that does not is
-     * written down on its event row and applied nowhere — the shopper sees an
-     * unpaid intent, and the operator a named anomaly to reconcile.
-     */
-    const verdict =
-      truth.status === 'captured' || truth.status === 'authorized'
-        ? chargeVerdict(intent, truth.amount, truth.currency)
-        : null;
-    if (verdict) {
-      if (!stored.duplicate) {
-        await currentDb(c).execute(sql`
-          UPDATE shop_payment_events SET processed_at = ${Date.now()}, anomaly = ${verdict}
-           WHERE id = ${stored.rowId} AND processed_at IS NULL`);
-      }
+    if (outcome.anomaly) {
       // eslint-disable-next-line no-console -- a payment that does not count is an operator's to reconcile
-      console.error('[payments] refused a capture', JSON.stringify({ intentId: intent.id, verdict }));
+      console.error(
+        '[payments] refused a capture',
+        JSON.stringify({ intentId: intent.id, verdict: outcome.anomaly }),
+      );
       return c.json(publicIntent(intent));
     }
 
-    if (!stored.duplicate) {
-      /*
-       * THE SAME ORDER AS THE WEBHOOK, for the same reason. This route is a
-       * genuine capture path — a customer returning from Paystack whose webhook
-       * is late reaches `captured` here and nowhere else — so leaving the
-       * completion out would have made the fix work only for the delivery that
-       * happened to arrive first. `completeCheckoutForIntent` is a no-op for
-       * every other status.
-       */
-      if (truth.status === 'captured') {
-        await completeCheckoutForIntent(db, intent.id, { checkout });
-      }
-      await applyIntentStatus(db, {
-        eventRowId: stored.rowId,
-        intentId: intent.id,
-        next: truth.status,
-        providerIntentId: intent.providerIntentId,
-        failureReason: truth.failureReason,
-      });
+    if (outcome.newEvent) {
       // Best-effort, bounded, and never able to fail the confirm — see the
-      // webhook route's note.
+      // webhook route's note. `newEvent` and not `moved`: the sweep runs on a new
+      // answer exactly as it did when this was written inline, because a capture
+      // whose rank guard declined the re-apply can still have completed a
+      // checkout that wants draining.
       await deps.sweepEvents?.(db, storefrontOrigin()).catch(() => undefined);
     }
 
@@ -930,6 +881,72 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
       processed: await drainPaymentEvents(currentDb(c), 50, Date.now(), { checkout }),
     }),
   );
+
+  /**
+   * ASK THE GATEWAY ABOUT THIS ONE PAYMENT. The admin's Refresh status button.
+   *
+   * WHY THIS IS NOT THE DRAIN ABOVE, which is the distinction the whole feature
+   * turns on. The drain finishes processing events we ALREADY STORED — the
+   * post-response-work gap. If the webhook never arrived at all there is no row
+   * to drain, so the drain runs clean and reports nothing wrong while a paid
+   * order does not exist. This route is the other half: it goes and ASKS.
+   *
+   * `reconcileIntent` through `refreshIntentNow`, so this button, the storefront's
+   * confirm and the sweep are one mechanism (`./sync.ts`). What it adds over the
+   * sweep is that it ignores the re-check floor and the three-day window: a
+   * person pressing a button gets an answer about the intent they named, now.
+   *
+   * THE ANSWER IS REPORTED, NOT JUST APPLIED. The operator pressed this because
+   * the screen disagreed with a gateway dashboard, so "the gateway says captured
+   * and the order has moved" and "the gateway still says unpaid" have to be told
+   * apart on the way back. A refused capture comes back as `anomaly` rather than
+   * as success — `chargeVerdict` declined to count it and nothing was applied.
+   */
+  app.post('/shop/admin/payments/intents/:id/refresh', admin, async (c) => {
+    const db = currentDb(c);
+    const id = pathParam(c, 'id');
+    const intent = await getIntent(db, id);
+    if (!intent) throw new NotFoundError(id);
+    /*
+     * NO PROVIDER REFERENCE, NOTHING TO ASK — and this is a real state, not an
+     * error: `createIntent` writes the row before it calls the gateway, so an
+     * intent whose creation timed out has no reference. Answered honestly rather
+     * than 404'd, because the intent plainly exists and the screen is showing it.
+     */
+    if (!intent.providerIntentId) {
+      return c.json({
+        asked: false,
+        gateway: intent.provider,
+        gatewayStatus: null,
+        status: intent.status,
+        changed: false,
+        anomaly: null,
+      });
+    }
+
+    const { result, intent: after } = await refreshIntentNow(db, id, {
+      /* The gateway that TOOK it, from the row — never the active-gateway
+         switch. `providerFor` takes no `db` and reads no settings row. */
+      provider: providerFor(intent.provider, factories),
+      checkout,
+      now: Date.now(),
+    });
+
+    /* Same best-effort inline sweep the confirm route runs, and for the same
+       reason: a capture found here has just written `checkout.completed`, and an
+       operator who presses Refresh status expects the ORDER to exist when the
+       screen reloads — not ten minutes later when the cron gets to it. */
+    if (result.newEvent) await deps.sweepEvents?.(db, storefrontOrigin()).catch(() => undefined);
+
+    return c.json({
+      asked: true,
+      gateway: intent.provider,
+      gatewayStatus: result.gatewayStatus,
+      status: after.status,
+      changed: result.moved,
+      anomaly: result.anomaly,
+    });
+  });
 
   /**
    * The gateway switch. Owner and developer only (`requireAdmin()`) — the

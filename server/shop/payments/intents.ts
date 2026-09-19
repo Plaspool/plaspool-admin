@@ -638,6 +638,99 @@ export async function recordIntentError(
      WHERE id = ${id}`);
 }
 
+// ------------------------------------------------- asking the gateway again
+
+/**
+ * How long after an intent is created we keep asking its gateway about it.
+ *
+ * THREE DAYS, and the bound exists because the candidate pool is every
+ * abandoned cart this shop has ever had. A checkout link nobody paid in three
+ * days is not going to be paid; continuing to ask about it would spend a
+ * gateway call every re-check interval, forever, on a shopper who left. The
+ * cases this actually recovers — a capture whose webhook was lost — resolve
+ * within minutes of the payment, so the window is generous by two orders of
+ * magnitude for the thing it is for.
+ */
+export const INTENT_SYNC_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+
+/**
+ * How long before the same intent may be asked about again.
+ *
+ * Fifteen minutes against the owner's ten-minute cron, so a candidate is asked
+ * roughly every other pass rather than every pass. This is what stops a page
+ * size of ten from meaning ten gateway calls every ten minutes on a quiet shop
+ * with nine abandoned carts.
+ *
+ * It does NOT apply to the admin's Refresh status button, which asks about one
+ * named intent because a person is looking at it and wants an answer now.
+ */
+export const INTENT_RECHECK_MS = 15 * 60 * 1000;
+
+/**
+ * Intents whose money could still arrive, oldest-asked first.
+ *
+ * `shop_payment_status_rank(status) < shop_payment_status_rank('captured')` —
+ * the SQL ladder `cancelled` and `applyIntentStatus` already use, rather than a
+ * hand-listed set of statuses. That is deliberate: `failed` and `cancelled` sit
+ * BELOW `captured` on that ladder precisely because money can still arrive on a
+ * reference we gave up on (see `paymentStatusRank`'s own comment), so listing
+ * statuses here would eventually disagree with the ladder about which of them
+ * are really finished. Anything at `captured` or above has either been settled
+ * or has a refund, and a refund's unknown answer is resolved by the owner on
+ * `POST /shop/admin/payments/refunds/:id/resolve`, not here.
+ *
+ * `provider_intent_id IS NOT NULL` because there is nothing to ask about
+ * otherwise — an intent that never reached the gateway has no reference, and
+ * `createIntent`'s retry path is what recovers it.
+ *
+ * ORDER BY `provider_synced_at ASC NULLS FIRST, id ASC` — the parcel twin's
+ * exact ordering (`listCourierParcelsToSync`). Nulls first puts intents nobody
+ * has ever asked about at the front, `id` breaks the tie so a page is stable,
+ * and writing the column on every attempt (success or failure) is what makes
+ * the page ADVANCE instead of re-reading the same row forever.
+ */
+export async function listIntentsToSync(
+  db: Db,
+  a: { now: number; limit: number; windowMs?: number; recheckMs?: number },
+): Promise<PaymentIntentRow[]> {
+  const oldest = a.now - (a.windowMs ?? INTENT_SYNC_WINDOW_MS);
+  const staleBefore = a.now - (a.recheckMs ?? INTENT_RECHECK_MS);
+  const res = await db.execute(sql`
+    SELECT ${INTENT_COLUMNS} FROM shop_payment_intents
+     WHERE provider_intent_id IS NOT NULL
+       AND shop_payment_status_rank(status) < shop_payment_status_rank('captured')
+       AND created_at >= ${oldest}
+       AND (provider_synced_at IS NULL OR provider_synced_at < ${staleBefore})
+     ORDER BY provider_synced_at ASC NULLS FIRST, id ASC
+     LIMIT ${a.limit}`);
+  return res.rows.map(mapIntentRow);
+}
+
+/**
+ * Write down that we asked — whatever the answer was.
+ *
+ * ON FAILURE TOO, and that is the point: a gateway that is down would otherwise
+ * be re-asked about the same intent on every pass while every other candidate
+ * waits behind it. `message` is the courier twin's treatment (`left(…, 500)`,
+ * `recordCourierSyncError`) so a verbose adapter cannot fill the row.
+ *
+ * NOT `updated_at`, NOT `revision`. Nothing about the payment changed — we
+ * looked. `updated_at` means "this intent moved" and is read as that by the
+ * screens; bumping it here would make every abandoned cart look freshly active
+ * every fifteen minutes.
+ */
+export async function markIntentSynced(
+  db: Db,
+  id: string,
+  a: { now: number; message?: string },
+): Promise<void> {
+  await db.execute(sql`
+    UPDATE shop_payment_intents
+       SET provider_synced_at = ${a.now},
+           last_error = ${a.message === undefined ? sql`last_error` : sql`left(${a.message}::text, 500)`}
+     WHERE id = ${id}`);
+}
+
 // --------------------------------------------------------- the status ladder
 
 /** The outbox type each terminal status announces. `null` = nothing to announce. */

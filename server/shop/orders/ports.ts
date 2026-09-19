@@ -159,6 +159,32 @@ export type CourierSync = (
   now: number,
 ) => Promise<{ checked: number; changed: number; transitioned: number; failed: number }>;
 
+/**
+ * Ask every gateway about every payment that could still have taken money.
+ *
+ * STRUCTURAL FOR THE SAME RULE AS `CourierSync` AND `PaymentDrain`: the shape is
+ * declared here, and `server/index.ts` is the only place allowed to know that
+ * the implementation is `shop/payments/sync.ts#syncPaymentIntents`.
+ *
+ * WHY IT IS A SECOND PAYMENT SEAM AND NOT PART OF `PaymentDrain`. They cover
+ * different failures and only one of them is survivable on its own. The drain
+ * finishes events we STORED and did not process — the post-response-work gap. A
+ * webhook that never arrived leaves NO row, so the drain runs clean and reports
+ * nothing wrong while a shopper who paid has no order at all: the intent still
+ * reads `requires_payment`, `checkout.completed` was never emitted, and there is
+ * nothing in the admin to notice. Folding the two together would hide that
+ * distinction behind one number; keeping them apart is what lets the sweep's
+ * answer say "we asked the gateways about four payments and one had gone
+ * through".
+ *
+ * IT NEVER THROWS FOR A GATEWAY BEING DOWN. Recorded per intent and counted in
+ * `failed`, exactly as a courier's bad afternoon is.
+ */
+export type IntentSync = (
+  db: Db,
+  now: number,
+) => Promise<{ checked: number; changed: number; captured: number; failed: number }>;
+
 export interface OrdersDeps {
   customer?: CustomerResolver;
   payments?: PaymentPort<Db> | null;
@@ -247,6 +273,15 @@ export interface OrdersDeps {
    */
   syncCouriers?: CourierSync;
   /**
+   * ASK THE GATEWAYS WHETHER THESE PAYMENTS WENT THROUGH, on the schedule. See
+   * {@link IntentSync}. Wired at the composition root to `syncPaymentIntents`.
+   *
+   * ABSENT MEANS THE SWEEP DOES NOT ASK, and reports `intents: null` — the same
+   * distinction `syncCouriers` draws, and it matters more here: a deployment
+   * holding no gateway keys must not report "we checked, all fine" about money.
+   */
+  syncIntents?: IntentSync;
+  /**
    * REFRESH THE DAILY EXCHANGE RATES, on the schedule (1160). Wired at the
    * composition root to `refreshFeedRates` — injected rather than imported for
    * the same rule as `syncCouriers`. It fetches only when a rate is due (twelve
@@ -267,6 +302,8 @@ export interface ResolvedDeps {
   refund: RefundIssuer | null;
   /** `null` when no courier subsystem is wired — see {@link OrdersDeps.syncCouriers}. */
   syncCouriers: CourierSync | null;
+  /** `null` when no gateway is wired — see {@link OrdersDeps.syncIntents}. */
+  syncIntents: IntentSync | null;
   /** `null` when not wired — see {@link OrdersDeps.refreshRates}. */
   refreshRates: ((db: Db, now: number) => Promise<unknown>) | null;
 }
@@ -358,6 +395,7 @@ export function resolveDeps(deps: OrdersDeps = {}): ResolvedDeps {
     redemption: merged.redemption,
     refund: merged.refund ?? null,
     syncCouriers: merged.syncCouriers ?? null,
+    syncIntents: merged.syncIntents ?? null,
     refreshRates: merged.refreshRates ?? null,
   };
 }

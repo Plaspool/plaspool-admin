@@ -280,6 +280,8 @@ export default function OrderDetail() {
     index: number;
     mode: 'ship' | 'details';
   } | null>(null);
+  /** Asking the gateway whether this payment went through. */
+  const [checkingPayment, setCheckingPayment] = useState(false);
 
   if (error) {
     return (
@@ -377,6 +379,55 @@ export default function OrderDetail() {
         cause instanceof Error && cause.message ? cause.message : 'Something went wrong.',
         'critical',
       );
+    }
+  }
+
+  /**
+   * ASK THE GATEWAY WHETHER THIS PAYMENT WENT THROUGH.
+   *
+   * THE SITUATION IT IS FOR is one the admin cannot otherwise show: the gateway's
+   * dashboard says paid and this screen says Waiting for payment. That is a lost
+   * webhook, and nothing here looks broken — there is no failed event to retry,
+   * no stuck email, nothing red. So the banner that used to end "Nothing to do
+   * here yet" now carries this, because there is something to do.
+   *
+   * IT REPORTS THE GATEWAY'S ANSWER, whatever it is. "Nothing changed" is a real
+   * and useful outcome — it tells the operator the money is genuinely not there
+   * and the problem is somewhere else — so it gets a toast of its own rather than
+   * a silent reload that reads as a click that did not land.
+   */
+  async function checkPayment() {
+    if (!intentId) return;
+    setCheckingPayment(true);
+    try {
+      const res = await shopApi.refreshPaymentStatus(intentId);
+      const who = gatewayName(res.gateway) ?? 'The gateway';
+      if (res.anomaly) {
+        /* A capture refused for the wrong amount or currency. Never reported as
+           success: the money is not counted and somebody has to look. */
+        toast.show(
+          `${who} took a payment that doesn’t match this order. Nothing was applied — check the payment before sending anything out.`,
+          'critical',
+        );
+      } else if (!res.asked) {
+        toast.show(`This payment never reached ${who}, so there’s nothing to check.`);
+      } else if (res.changed) {
+        toast.show(
+          res.gatewayStatus === 'captured'
+            ? `${who} says this was paid. The order is up to date now.`
+            : `${who} says this is ${humanise(res.status).toLowerCase()}. The order is up to date now.`,
+        );
+      } else {
+        toast.show(`Nothing new — ${who} still says it hasn’t been paid.`);
+      }
+      reload();
+    } catch (cause) {
+      toast.show(
+        cause instanceof Error && cause.message ? cause.message : 'Something went wrong.',
+        'critical',
+      );
+    } finally {
+      setCheckingPayment(false);
     }
   }
 
@@ -545,9 +596,28 @@ export default function OrderDetail() {
       ) : null}
 
       {order.status === 'pending' ? (
-        <Banner tone="warn" title="Waiting for payment">
+        <Banner
+          tone="warn"
+          title="Waiting for payment"
+          action={
+            /* OWNER-GRADE ONLY, mirroring the server's `requireAdmin()` on the
+               route — the same reason cancel and refund are gated above: a writer
+               gets no button that only leads to a 403. And only with an intent to
+               ask about; a checkout that never reached a gateway has no
+               reference, which the server would answer honestly and the operator
+               would read as a broken button. */
+            isOwner && intentId ? (
+              <Button busy={checkingPayment} onClick={() => void checkPayment()}>
+                Refresh status
+              </Button>
+            ) : undefined
+          }
+        >
           The customer reached checkout but the money hasn’t arrived yet. This updates on its own once{' '}
-          {gateway ? `${gateway} confirms` : 'the payment is confirmed'}. Nothing to do here yet.
+          {gateway ? `${gateway} confirms` : 'the payment is confirmed'}.
+          {isOwner && intentId
+            ? ` If ${gateway ?? 'the gateway'} already shows it as paid, Refresh status asks ${gateway ? 'them' : 'the gateway'} directly.`
+            : ''}
         </Banner>
       ) : null}
 

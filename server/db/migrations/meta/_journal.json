@@ -554,6 +554,13 @@
                         "when":  1786600005880,
                         "tag":  "1160_fx_feed_margin",
                         "breakpoints":  true
+                    },
+                    {
+                        "idx":  79,
+                        "version":  "7",
+                        "when":  1786600005890,
+                        "tag":  "1320_payment_intent_sync",
+                        "breakpoints":  true
                     }
                 ]
 }
