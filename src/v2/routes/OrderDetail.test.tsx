@@ -990,3 +990,117 @@ describe('putting stock back when cancelling', () => {
     await waitFor(() => expect(sent(CANCEL, 'POST')).toEqual({}));
   });
 });
+
+/**
+ * REFRESH STATUS — asking the gateway when the webhook never arrived.
+ *
+ * WHAT THESE CASES ARE ACTUALLY FOR is the wiring, not the wording: the PATH,
+ * the METHOD and the role gate. The server half of this feature is proved in
+ * `server/shop/payments/sync.test.ts` and through the real composition root in
+ * `server/shop/composition.test.ts`; what no server test can catch is a button
+ * that posts to the wrong URL, which is the failure this harness exists for.
+ */
+describe('refresh status on an unpaid order', () => {
+  const REFRESH = '/api/shop/admin/payments/intents/pi_1/refresh';
+
+  /** The order as it looks when the money has not arrived — no payment row yet. */
+  function unpaid(): void {
+    when(ORDER, {
+      order: { ...order, status: 'pending', paidAt: null },
+      lines: [line],
+      fulfillments: [],
+      timeline: [],
+      emails: [],
+      payment: null,
+    });
+  }
+
+  it('asks the gateway about this intent, and says what came back', async () => {
+    const user = userEvent.setup();
+    unpaid();
+    when(REFRESH, {
+      asked: true,
+      gateway: 'paystack',
+      gatewayStatus: 'captured',
+      status: 'captured',
+      changed: true,
+      anomaly: null,
+    });
+    mount();
+    await loaded();
+
+    await user.click(screen.getByRole('button', { name: 'Refresh status' }));
+
+    /* The path and the method, which is the whole point of stubbing `fetch`
+       rather than the module. */
+    await waitFor(() => expect(sent(REFRESH, 'POST')).toEqual({}));
+    expect(await screen.findByText('Paystack says this was paid. The order is up to date now.')).toBeTruthy();
+  });
+
+  it('says plainly when the money still is not there', async () => {
+    const user = userEvent.setup();
+    unpaid();
+    when(REFRESH, {
+      asked: true,
+      gateway: 'paystack',
+      gatewayStatus: 'requires_payment',
+      status: 'requires_payment',
+      changed: false,
+      anomaly: null,
+    });
+    mount();
+    await loaded();
+
+    await user.click(screen.getByRole('button', { name: 'Refresh status' }));
+
+    /*
+     * "NOTHING CHANGED" IS A RESULT, NOT A NON-EVENT. An operator presses this
+     * because a gateway dashboard disagrees with this screen; being told the
+     * money is genuinely not there is what sends them to look elsewhere instead
+     * of pressing again.
+     */
+    expect(
+      await screen.findByText('Nothing new — Paystack still says it hasn’t been paid.'),
+    ).toBeTruthy();
+  });
+
+  it('never reports a refused capture as success', async () => {
+    const user = userEvent.setup();
+    unpaid();
+    when(REFRESH, {
+      asked: true,
+      gateway: 'paystack',
+      gatewayStatus: 'captured',
+      status: 'requires_payment',
+      changed: false,
+      anomaly: 'amount_short',
+    });
+    mount();
+    await loaded();
+
+    await user.click(screen.getByRole('button', { name: 'Refresh status' }));
+
+    /* Somebody paid the wrong sum. The money is not counted, nothing is applied,
+       and the screen must not imply the order is ready to send. */
+    expect(
+      await screen.findByText(/doesn’t match this order. Nothing was applied/),
+    ).toBeTruthy();
+  });
+
+  it('is not offered to a writer, who the server would 403', async () => {
+    fixture.session.user.role = 'writer';
+    unpaid();
+    mount();
+    await loaded();
+
+    expect(screen.queryByRole('button', { name: 'Refresh status' })).toBeNull();
+  });
+
+  it('is not offered on a paid order, which has nothing to chase', async () => {
+    withOrder();
+    mount();
+    await loaded();
+
+    expect(screen.queryByRole('button', { name: 'Refresh status' })).toBeNull();
+  });
+});

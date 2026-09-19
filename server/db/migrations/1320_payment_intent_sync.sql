@@ -1,0 +1,41 @@
+-- WHEN WE LAST ASKED THE GATEWAY ABOUT THIS PAYMENT (range 1320-1339).
+--
+-- Hand-written, like every commerce migration: drizzle-kit has never seen
+-- shop_payment_intents.
+--
+-- WHAT THIS COLUMN IS FOR. A webhook is the mechanism by which a capture
+-- reaches us, and it can be lost outright: a deploy mid-flight, a cold start, a
+-- 500 answered while the database was asleep, a URL nobody registered, a
+-- verif-hash that changed. When that happens there is no stored event to drain
+-- and NOTHING anywhere in this system knows the money arrived — the intent
+-- still reads requires_payment, no checkout completes, and no order is ever
+-- created. The shopper has paid and the shop has no record of the sale.
+--
+-- shop/payments/sync.ts closes that by ASKING the gateway about intents that
+-- could still take money, which is exactly what shop_fulfillments.
+-- provider_synced_at already does for a courier whose callback was lost
+-- (migration 1080). This column is that column's twin, deliberately named the
+-- same, and it does the same two jobs: it ROTATES the work (order by it, nulls
+-- first, so a bounded page moves through the candidates instead of re-asking
+-- the oldest one every pass) and it RATE-LIMITS it (a candidate is skipped
+-- until the re-check interval has passed), so an abandoned cart cannot cost a
+-- gateway call every ten minutes forever.
+--
+-- NULLABLE, PERMANENTLY, AND THE NULL MEANS "NEVER ASKED". Every intent that
+-- existed before this migration reads null and therefore sorts FIRST, which is
+-- the behaviour we want on the deploy that introduces it: the oldest unanswered
+-- payments are the ones most likely to be a capture nobody noticed. There is no
+-- backfill statement here on purpose — a timestamp saying we asked when we
+-- never did is worse than no timestamp.
+--
+-- NOT A MONEY COLUMN, AND NOT EVIDENCE. It records only that we looked. What
+-- the gateway SAID is written where every other provider answer is written —
+-- an append-only shop_payment_events row with type verify.<status> — so this
+-- column can be wrong, reset or dropped without losing a single fact about a
+-- payment.
+--
+-- NO INDEX, exactly as 1080 took none for the parcel twin: the candidate set is
+-- bounded by status and by a created_at window, the page size is ten, and this
+-- runs once per sweep rather than per request.
+ALTER TABLE shop_payment_intents
+  ADD COLUMN provider_synced_at bigint;

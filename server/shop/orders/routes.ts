@@ -1161,6 +1161,23 @@ function registerAdminRoutes(
 async function runSweep(c: Context<AppEnv>, d: ResolvedDeps) {
   const db = currentDb(c);
   const now = d.now();
+  /*
+   * ASK THE GATEWAYS FIRST, BEFORE THE DRAIN — and the order is the point.
+   *
+   * `drainPayments` below is the safety net for an event we STORED and did not
+   * finish processing. It cannot help with a delivery that never arrived: there
+   * is no row, so it runs clean and reports nothing wrong while a shopper who
+   * paid has no order at all. `syncIntents` is the other half — it goes and asks
+   * the gateway — and it writes exactly the kind of row the drain, the commerce
+   * loop and the mail run below then carry the rest of the way. Putting it after
+   * them would leave everything it discovers for the NEXT pass, ten minutes
+   * later, which is most of the delay this exists to remove.
+   *
+   * `null` RATHER THAN A ZEROED SUMMARY when nothing is wired, exactly as
+   * `couriers` is below: a deployment holding no gateway keys has not checked
+   * anything, and must not answer an operator as though it had.
+   */
+  const intents = d.syncIntents ? await d.syncIntents(db, now) : null;
   const payments = await d.drainPayments(db, now);
   /*
    * THE SYSTEM TEMPLATES, LOADED ONCE PER SWEEP AND PASSED DOWN AS DATA.
@@ -1247,7 +1264,17 @@ async function runSweep(c: Context<AppEnv>, d: ResolvedDeps) {
    * `ensureSystemTemplates` never throws and never overwrites an edited row.
    */
   const seeded = await ensureSystemTemplates(db, now);
-  return { payments, events, mysteryBoxes, emails, couriers, rates, seeded, passes: events.passes };
+  return {
+    intents,
+    payments,
+    events,
+    mysteryBoxes,
+    emails,
+    couriers,
+    rates,
+    seeded,
+    passes: events.passes,
+  };
 }
 
 /**

@@ -916,11 +916,42 @@ export type OutboxBucket = 'attention' | 'queued' | 'sent' | 'dismissed';
  * the event drain answers applied/ignored/parked, not processed.
  */
 export interface SweepRun {
+  /**
+   * What asking the GATEWAYS found — payments whose webhook never arrived.
+   *
+   * `null` when no gateway is wired on this deployment, which is not the same
+   * fact as "we asked and everything was fine" and must not read as it. Optional
+   * as well as nullable, so a response from a deployment older than this field
+   * reads as "we do not know" rather than as zero.
+   */
+  intents?: { checked: number; changed: number; captured: number; failed: number } | null;
   payments: { count: number };
   events: { applied: number; ignored: number; parked: number; passes: number };
   emails: { sent: number; failed: number; skipped: number };
+  /** What asking the COURIERS found. `null` when none is wired. */
+  couriers?: { checked: number; changed: number; transitioned: number; failed: number } | null;
   seeded: number;
   passes: number;
+}
+
+/**
+ * What asking one gateway about one payment found.
+ *
+ * `asked: false` is the honest answer for an intent that never reached a gateway
+ * and so has no reference to ask about — `gatewayStatus` is null there, and it is
+ * not an error.
+ */
+export interface ShopPaymentRefresh {
+  asked: boolean;
+  gateway: PaymentProviderName;
+  /** What the gateway says, or null when there was nothing to ask about. */
+  gatewayStatus: PaymentStatus | null;
+  /** The intent's status after applying whatever came back. */
+  status: PaymentStatus;
+  /** True when the payment actually moved. */
+  changed: boolean;
+  /** Set when a capture was refused for the wrong amount or currency. */
+  anomaly: string | null;
 }
 
 /** An intent joined with the order number the list screen links through. */
@@ -1866,6 +1897,27 @@ export const shopApi = {
    */
   async sweepNow(): Promise<SweepRun> {
     return shopFetch<SweepRun>(`${BASE}/sweep`, { method: 'POST', body: {} });
+  },
+
+  /**
+   * Ask the gateway whether ONE payment went through, and apply what it says.
+   *
+   * THE CASE THIS IS FOR: the gateway's dashboard shows a payment and this admin
+   * does not. That happens when the webhook never arrived — a deploy mid-flight,
+   * a cold start, a URL nobody registered — and it is invisible from here,
+   * because nothing is stuck: there is no failed event to retry and no order to
+   * look wrong. Draining events cannot find it either; only asking can.
+   *
+   * `requireAdmin()` on the server, so the button that calls this is gated on the
+   * same tier (`isAdminRole`) rather than left to 403.
+   */
+  async refreshPaymentStatus(intentId: string): Promise<ShopPaymentRefresh> {
+    return shopFetch<ShopPaymentRefresh>(`${BASE}/payments/intents/${seg(intentId)}/refresh`, {
+      method: 'POST',
+      body: {},
+      id: intentId,
+      subject: 'Payment',
+    });
   },
 
   // ------------------------------------------------------------------ push

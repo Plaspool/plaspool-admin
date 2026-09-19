@@ -642,6 +642,113 @@ describe('the scheduled sweep recovers a payment the webhook stored but never pr
     expect(read?.order.status).toBe('paid');
     expect(read?.order.grandTotal).toBe(SWEEP_AMOUNT);
   });
+
+  /**
+   * THE OTHER HALF, AND THE WORSE ONE: the webhook never arrived AT ALL.
+   *
+   * The case above reproduces a delivery that was stored and not processed. This
+   * one stores NOTHING — no `shop_payment_events` row, nothing to drain — which
+   * is what a lost delivery actually looks like: a deploy mid-flight, a cold
+   * start, a URL nobody registered, a signing secret somebody rotated. The
+   * payment drain cannot help, because there is nothing for it to find; it runs
+   * clean and answers `count: 0` while a shopper who paid has no order.
+   *
+   * SO THIS DRIVES THE `syncIntents` SEAM THROUGH THE REAL COMPOSITION ROOT, for
+   * the reason this whole file exists: `sync.test.ts` proves the FUNCTION and
+   * would stay green if `server/index.ts` never registered it. Only a test that
+   * builds the real `createApp()` and calls the real scheduled path can tell the
+   * difference, and that difference is a silently uncollected sale.
+   *
+   * ONLY THE NETWORK IS STUBBED. The real Paystack adapter runs — its URL, its
+   * bearer header, its envelope parsing, its status mapping — so this also pins
+   * that `fetchIntent` asks `/transaction/verify/:ref` and reads `data.status`.
+   * Stubbing the provider instead would have proved the seam and nothing about
+   * the adapter behind it.
+   */
+  it('finds a capture NOTHING ever told us about, through GET /admin/sweep alone', async () => {
+    const CART = 'crt_never_told_0001';
+    const REF = 'psref_never_told_0001';
+    await frozenCart(CART, REF, SWEEP_AMOUNT);
+    /*
+     * DATED TO NOW, and it has to be: this suite registers no `now` seam on
+     * purpose — the point is the real composition root — so the sweep runs on the
+     * wall clock while `frozenCart` stamps the fixed `NOW` these tests share,
+     * which is years in the past. `listIntentsToSync` only asks about payments
+     * inside a three-day window, so the fixture's own date put this one out of
+     * range and the sweep correctly asked about nothing. A payment made moments
+     * ago is also the realistic shape for this failure.
+     */
+    await ctx.db.execute(sql`
+      UPDATE shop_payment_intents SET created_at = ${Date.now()} WHERE checkout_id = ${CART}`);
+
+    const asked: string[] = [];
+    const realFetch = globalThis.fetch;
+    /* Paystack's own verify envelope, and nothing else answered — an adapter that
+       asked for anything but the verify path fails here rather than passing on a
+       plausible shape. */
+    globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+      const href = String(url);
+      asked.push(href);
+      if (!href.includes(`/transaction/verify/${REF}`)) {
+        throw new Error(`unexpected Paystack call: ${href}`);
+      }
+      expect((init?.headers as Record<string, string>)?.authorization).toBe(
+        `Bearer ${PAYSTACK_KEY}`,
+      );
+      return new Response(
+        JSON.stringify({
+          status: true,
+          data: { status: 'success', reference: REF, amount: SWEEP_AMOUNT, currency: 'USD' },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof fetch;
+
+    try {
+      /* Reproduced, not assumed: NOTHING is stored about any payment — the table
+         is truncated per test, so an empty count is the whole "no delivery ever
+         arrived" precondition rather than a filter that matched nothing. */
+      const before = await ctx.db.execute(sql`SELECT count(*)::int AS n FROM shop_payment_events`);
+      expect(before.rows[0]?.n).toBe(0);
+      expect(await readOrderByCheckout(ctx.db, CART)).toBeNull();
+
+      const res = await client.app.request('/api/shop/admin/sweep', {
+        method: 'GET',
+        headers: { authorization: `Bearer ${CRON_SECRET}` },
+      });
+      expect(res.status).toBe(200);
+      const body = await json<{
+        intents: { checked: number; captured: number } | null;
+        events: { applied: number };
+      }>(res);
+
+      /* The seam is wired, it asked, and it found the money. */
+      expect(asked).toHaveLength(1);
+      expect(body.intents).toMatchObject({ checked: 1, captured: 1 });
+
+      /* And the order exists — the whole point. `events.applied` covers both the
+         `checkout.completed` the capture wrote and the `payment.captured` that
+         parks on it, in one sweep, because the ask runs before the drain. */
+      const read = await readOrderByCheckout(ctx.db, CART);
+      expect(read).not.toBeNull();
+      expect(read?.order.status).toBe('paid');
+      expect(read?.order.grandTotal).toBe(SWEEP_AMOUNT);
+
+      /* The evidence says we ASKED rather than were told, and the dedupe key
+         carries the FETCHED status — keyed on a status a payload merely claimed,
+         one reference could mint unlimited distinct keys. A dispute months from
+         now has to be able to tell a state change we were told about from one we
+         went looking for. */
+      const evidence = await ctx.db.execute(
+        sql`SELECT provider_event_id, type FROM shop_payment_events`,
+      );
+      expect(evidence.rows).toEqual([
+        { provider_event_id: `verify:${REF}:captured`, type: 'verify.captured' },
+      ]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
 });
 
 // ============================================================================
