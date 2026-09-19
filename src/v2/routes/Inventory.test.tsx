@@ -8,11 +8,13 @@ vi.setConfig({ testTimeout: 20_000 });
 /**
  * INVENTORY, pinned on the two behaviours the debt ledger names:
  *
- *  - **The adjust popover refuses a change without a reason.** The server
- *    refuses one too — the reason IS the audit trail's value — so the popover
- *    must refuse on this side, before a write, with the sentence under the
- *    box that has to change; and the write that finally goes carries `delta`
- *    and `reason` together.
+ *  - **The adjust popover sets a COUNT and sends a DELTA.** Since 2026-09-19 the
+ *    box opens at the variant's own Available figure and two buttons move it;
+ *    the wire still carries the difference, because "+4, delivery arrived" is
+ *    what the stock ledger is for. A change of nothing — the box left as it
+ *    opened, or cleared — is refused on this side, before a write. (The REASON
+ *    has been optional since 2026-09-03, the owner's instruction; this file
+ *    used to open by asserting a delta alone was refused.)
  *  - **`belowOnly` crosses the wire as `'1'`/`'0'`, never as a boolean's
  *    `String()`.** The route's schema is `z.enum(['0','1'])` precisely
  *    because `?belowOnly=false` is a string every truthiness test calls true
@@ -169,11 +171,17 @@ describe('the inventory screen', () => {
     await user.click(await screen.findByRole('button', { name: 'Adjust stock of SPL-RED' }));
     const panel = screen.getByRole('dialog', { name: 'Adjust stock of SPL-RED' });
 
-    await user.type(within(panel).getByLabelText('Adjust by'), '3');
+    // The box opens at the variant's OWN count, not empty — 10 available.
+    const box = within(panel).getByLabelText('Available for SPL-RED');
+    expect(box).toHaveProperty('value', '10');
+
+    await user.clear(box);
+    await user.type(box, '13');
     await user.type(within(panel).getByLabelText('Reason (optional)'), 'Stocktake');
     await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
 
-    // Key by key: the delta as a number and the reason, nothing else.
+    // Key by key: the DELTA as a number and the reason, nothing else. The panel
+    // takes a target and the wire still carries the difference — 13 from 10.
     await waitFor(() => expect(sent(ADJUST, 'POST')).toEqual({ delta: 3, reason: 'Stocktake' }));
     // The receipt names the row and the SERVER'S new available figure, not a
     // locally recomputed one.
@@ -199,16 +207,67 @@ describe('the inventory screen', () => {
     await user.click(await screen.findByRole('button', { name: 'Adjust stock of SPL-RED' }));
     const panel = screen.getByRole('dialog', { name: 'Adjust stock of SPL-RED' });
 
-    await user.type(within(panel).getByLabelText('Adjust by'), '3');
+    const box = within(panel).getByLabelText('Available for SPL-RED');
+    await user.clear(box);
+    await user.type(box, '13');
     await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
 
     await waitFor(() => expect(sent(ADJUST, 'POST')).toEqual({ delta: 3 }));
     expect(await screen.findByText('SPL-RED — 11 available')).toBeTruthy();
   });
 
-  /* The number still gates it: zero is a change the server cannot make, and a
-   * blank box is not a delta at all. */
-  it('still refuses a delta of zero, sending nothing', async () => {
+  /*
+   * THE OWNER'S ASK, 2026-09-19: the buttons are the point. Typing "+3" was
+   * the thing being replaced, so a suite that only ever types a target would
+   * pass while the two controls this change exists for did nothing.
+   */
+  it('steps the count with the buttons and sends the difference', async () => {
+    const user = userEvent.setup();
+    withRows();
+    when(ADJUST, { inventory: { variantId: 'var_1', onHand: 14, reserved: 2, available: 12 } });
+    mount();
+
+    await user.click(await screen.findByRole('button', { name: 'Adjust stock of SPL-RED' }));
+    const panel = screen.getByRole('dialog', { name: 'Adjust stock of SPL-RED' });
+
+    await user.click(within(panel).getByRole('button', { name: 'One more SPL-RED' }));
+    await user.click(within(panel).getByRole('button', { name: 'One more SPL-RED' }));
+    expect(within(panel).getByLabelText('Available for SPL-RED')).toHaveProperty('value', '12');
+
+    // And back down once, to prove the pair is not one-way.
+    await user.click(within(panel).getByRole('button', { name: 'One fewer SPL-RED' }));
+    expect(within(panel).getByLabelText('Available for SPL-RED')).toHaveProperty('value', '11');
+
+    await user.click(within(panel).getByRole('button', { name: 'One more SPL-RED' }));
+    await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
+
+    await waitFor(() => expect(sent(ADJUST, 'POST')).toEqual({ delta: 2 }));
+  });
+
+  /* A variant that cannot be back-ordered has nothing below zero to offer, and
+   * the button says so by being unpressable rather than by doing nothing. */
+  it('will not step an ordinary variant below zero', async () => {
+    const user = userEvent.setup();
+    when(INVENTORY, { items: [{ ...row, onHand: 0, reserved: 0, available: 0 }], nextCursor: null });
+    mount();
+
+    await user.click(await screen.findByRole('button', { name: 'Adjust stock of SPL-RED' }));
+    const panel = screen.getByRole('dialog', { name: 'Adjust stock of SPL-RED' });
+
+    expect(within(panel).getByRole('button', { name: 'One fewer SPL-RED' })).toHaveProperty(
+      'disabled',
+      true,
+    );
+  });
+
+  /*
+   * THE NUMBER STILL GATES IT, but the shape of "no change" moved with the
+   * control: it used to be a typed zero, and now it is the box left exactly as
+   * it opened. Pressing Adjust straight away is the easy accident once the
+   * figure is pre-filled, so it has to be refused BEFORE a write — a delta of
+   * zero is a change the server cannot make.
+   */
+  it('refuses when the number has not been changed, sending nothing', async () => {
     const user = userEvent.setup();
     withRows();
     mount();
@@ -216,14 +275,29 @@ describe('the inventory screen', () => {
     await user.click(await screen.findByRole('button', { name: 'Adjust stock of SPL-RED' }));
     const panel = screen.getByRole('dialog', { name: 'Adjust stock of SPL-RED' });
 
-    await user.type(within(panel).getByLabelText('Adjust by'), '0');
     await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
 
     expect(
-      await within(panel).findByText(
-        'Enter a whole number, above or below zero — but not zero.',
-      ),
+      await within(panel).findByText('Already 10. Change the number to adjust it.'),
     ).toBeTruthy();
+    expect(sentNothing(ADJUST)).toBe(true);
+  });
+
+  /* A cleared box is not a zero — it is nothing yet, and writing stock off to
+   * zero because somebody hit Backspace on the way to typing is the accident
+   * this refusal exists for. */
+  it('refuses an empty box, sending nothing', async () => {
+    const user = userEvent.setup();
+    withRows();
+    mount();
+
+    await user.click(await screen.findByRole('button', { name: 'Adjust stock of SPL-RED' }));
+    const panel = screen.getByRole('dialog', { name: 'Adjust stock of SPL-RED' });
+
+    await user.clear(within(panel).getByLabelText('Available for SPL-RED'));
+    await user.click(within(panel).getByRole('button', { name: 'Adjust' }));
+
+    expect(await within(panel).findByText('Enter a whole number.')).toBeTruthy();
     expect(sentNothing(ADJUST)).toBe(true);
   });
 

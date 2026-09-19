@@ -462,6 +462,73 @@
   border-color: var(--critical);
 }
 
+/*
+ * A NUMBER WITH A BUTTON EITHER SIDE — `ui/Stepper.tsx`. The one copy, after
+ * manual orders, mystery box and the stock panel each grew their own.
+ *
+ * A TRACK OF ITS OWN WIDTH, not the field's: a stepper that stretched to the
+ * form column would put its two buttons a hand's width apart, and the pair
+ * only reads as one control while they hug the number.
+ */
+.stepper {
+  display: inline-grid;
+  grid-template-columns: auto 4.5rem auto;
+  gap: var(--s2);
+  /* STRETCH, not centre: the buttons take the box's height so the trio reads
+     as one control. `--ctl-h` is 32px and an input is 36.45px with its own
+     padding, and a pair of studs shorter than the number between them reads
+     as three things that happen to be adjacent. */
+  align-items: stretch;
+  justify-self: start;
+  width: max-content;
+}
+
+/* Manual orders' line rows, where the stepper shares a row with a price and a
+   running total and every character of width is spoken for. */
+.stepper--tiny {
+  grid-template-columns: auto 3.5rem auto;
+}
+
+/* The label sits on one line with anything it carries beside its word — the
+   mystery box's InfoTip is the case, and it was `.mbx-label` before the three
+   steppers became one. */
+.stepper-field > .field__label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  width: max-content;
+}
+
+.stepper .input {
+  /* Centred and tabular so the digits do not shuffle sideways as the number
+     grows — the buttons are fixed points and the figure between them should
+     be too. */
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* `height: auto` releases `.btn`'s fixed `--ctl-h` so the grid's `stretch` can
+   take over and the buttons finish exactly as tall as the box. */
+.stepper .btn--icon {
+  position: relative;
+  height: auto;
+}
+
+/*
+ * A 44px TARGET WITHOUT A 44px BUTTON. The button is 32px wide, and the pair
+ * sits under a thumb on the phone where stock actually gets counted. Growing
+ * the button would push the number off-centre and widen every row that
+ * carries one, so the TARGET is grown instead — the same trick
+ * `.alerts__check` uses (CLAUDE.md §5) for the same reason. 32 + 6 + 6 = 44,
+ * and the 8px gap either side means the two never overlap each other or the
+ * box between them.
+ */
+.stepper .btn--icon::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+}
+
 .textarea {
   min-height: 5rem;
   resize: vertical;
@@ -2315,19 +2382,8 @@
   align-items: start;
 }
 
-.mbx-stepper {
-  display: inline-grid;
-  /* Its own width, not the field's: the buttons belong next to the number. */
-  justify-self: start;
-  width: max-content;
-  grid-template-columns: auto 4.5rem auto;
-  gap: var(--s2);
-  align-items: center;
-}
-.mbx-stepper .input {
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
+/* Items-per-box rides the shared `.stepper` above — this block was the second
+   of the three hand-rolled copies it replaced. */
 
 /* The one number the owner is really asking about: how many can sell now. */
 .mbx-stat {

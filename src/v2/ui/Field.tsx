@@ -33,7 +33,9 @@ interface Common {
   hiddenLabel?: boolean;
 }
 
-function useIds(hint: unknown, error: unknown) {
+/** Exported for `Stepper.tsx`, which is a field like any other here and must
+ *  wire its hint and error the same way rather than growing a second copy. */
+export function useFieldIds(hint: unknown, error: unknown) {
   const base = useId();
   const hintId = hint ? `${base}-hint` : undefined;
   const errorId = error ? `${base}-err` : undefined;
@@ -48,7 +50,7 @@ export function TextField({
   hiddenLabel,
   ...rest
 }: Common & Omit<InputHTMLAttributes<HTMLInputElement>, 'id'>) {
-  const { id, hintId, errorId, describedBy } = useIds(hint, error);
+  const { id, hintId, errorId, describedBy } = useFieldIds(hint, error);
   return (
     <div className="field">
       <label className={hiddenLabel ? 'sr' : 'field__label'} htmlFor={id}>
@@ -101,7 +103,7 @@ export function AffixField({
   suggestion?: string;
   onSuggest?: (value: string) => void;
 } & Omit<InputHTMLAttributes<HTMLInputElement>, 'id'>) {
-  const { id, hintId, errorId, describedBy } = useIds(hint, error);
+  const { id, hintId, errorId, describedBy } = useFieldIds(hint, error);
   const inputRef = useRef<HTMLInputElement>(null);
   const empty = rest.value == null || rest.value === '';
   const offer = suggestion !== undefined && onSuggest !== undefined && empty;
@@ -399,7 +401,7 @@ export function SelectField({
   children,
   ...rest
 }: Common & Omit<SelectHTMLAttributes<HTMLSelectElement>, 'id'>) {
-  const { id, hintId, errorId, describedBy } = useIds(hint, error);
+  const { id, hintId, errorId, describedBy } = useFieldIds(hint, error);
   return (
     <div className="field">
       <label className={hiddenLabel ? 'sr' : 'field__label'} htmlFor={id}>
@@ -438,7 +440,7 @@ export function TextArea({
     InputHTMLAttributes<HTMLTextAreaElement>,
     'id' | 'rows' | 'type'
   >) {
-  const { id, hintId, errorId, describedBy } = useIds(hint, error);
+  const { id, hintId, errorId, describedBy } = useFieldIds(hint, error);
   return (
     <div className="field">
       <label className="field__label" htmlFor={id}>
