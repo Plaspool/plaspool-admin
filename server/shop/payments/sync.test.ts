@@ -359,6 +359,38 @@ describe('which payments it asks about', () => {
     expect(out.checked).toBe(PAYMENT_SYNC_LIMIT);
   });
 
+  it('stops starting calls when the time budget is spent, and still asks about one', async () => {
+    for (let n = 0; n < 4; n += 1) await anIntent(`idem-budget-${n}`);
+
+    /*
+     * A ZERO BUDGET IS THE DEGENERATE CASE OF THE REAL ONE. Both adapters time
+     * out at ten seconds a call, so a full page against a hanging gateway is a
+     * hundred seconds inside a function Vercel kills at thirty — and this pass
+     * runs FIRST in the sweep, so overrunning would starve the drain, the outbox
+     * and the mail run of the whole invocation.
+     *
+     * It still asks about ONE. A pass that checked nothing would never advance
+     * the queue, so an exhausted budget would mean a payment is never recovered
+     * rather than recovered a pass later.
+     */
+    const out = await syncPaymentIntents(db, deps(), NOW, PAYMENT_SYNC_LIMIT, 0);
+
+    expect(out.checked).toBe(1);
+    /*
+     * And the three it left alone were never stamped, which is what makes them
+     * sort to the FRONT of the next pass (`ORDER BY provider_synced_at ASC NULLS
+     * FIRST`) rather than being skipped again. Asserted as the count of unstamped
+     * rows, not as the next page's length: the one that WAS asked becomes a
+     * candidate again as soon as the re-check floor passes, so a length here
+     * would be measuring the floor rather than the budget.
+     */
+    const unasked = await db.execute(sql`
+      SELECT count(*)::int AS n FROM shop_payment_intents WHERE provider_synced_at IS NULL`);
+    expect(unasked.rows[0]?.n).toBe(3);
+    const next = await listIntentsToSync(db, { now: NOW + 20 * 60_000, limit: 10 });
+    expect(next.slice(0, 3).every((i) => i.providerIntentId !== null)).toBe(true);
+  });
+
   it('takes the ones nobody has ever asked about first', async () => {
     const asked = await anIntent('idem-order-asked');
     const never = await anIntent('idem-order-never');
