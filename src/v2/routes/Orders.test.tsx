@@ -277,3 +277,20 @@ describe('what the sweep is reported as', () => {
     expect(sweepReport(old).text).toBe('Nothing to check — no gateway or courier is set up here.');
   });
 });
+
+describe('when the payment pass could not run at all', () => {
+  it('says so instead of reporting zero, and is critical', () => {
+    /*
+     * `checked: 0` means "we looked and found nothing to ask about". An `error`
+     * means nobody looked — a database missing migration 1320 is the concrete
+     * case — and those must not read the same. The rest of the sweep still ran,
+     * so the message says that too rather than implying a total failure.
+     */
+    const out = sweepReport(
+      sweep({ intents: { checked: 0, changed: 0, captured: 0, failed: 0, error: 'candidates_failed' } }),
+    );
+    expect(out.critical).toBe(true);
+    expect(out.text).toContain('Couldn’t check the payments');
+    expect(out.text).not.toContain('Nothing new');
+  });
+});
