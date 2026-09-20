@@ -63,8 +63,14 @@ async function failureOf(promise: Promise<unknown>): Promise<ProviderError> {
 }
 
 describe('a reference with no transaction behind it', () => {
-  it('reads as requires_payment rather than throwing', async () => {
-    const { fetch, urls } = answering(404, {
+  /*
+   * 400 FIRST, BECAUSE IT IS THE ONE PRODUCTION ACTUALLY SENDS. Measured: the
+   * live sweep asked about six real unpaid references and every one came back
+   * `invalid_request (http 400)`. The first version of this fix guessed 404 and
+   * would have left all six reported as "gateway unreachable" forever.
+   */
+  it.each([400, 404])('reads as requires_payment rather than throwing (http %i)', async (status) => {
+    const { fetch, urls } = answering(status, {
       status: 'error',
       message: 'No transaction was found for this id',
       data: null,
@@ -91,16 +97,17 @@ describe('a reference with no transaction behind it', () => {
 
   it('still throws for every other refusal, which is what keeps this narrow', async () => {
     /*
-     * The arm reads 404 and nothing else. A gateway that is down, rate-limiting
-     * us, or refusing our credentials must still be a recorded failure — turning
-     * those into "nobody has paid" would report a broken integration as a shop
-     * with no sales.
+     * The arm reads 400 and 404 and nothing else. A gateway that is down,
+     * rate-limiting us, or refusing our credentials must still be a recorded
+     * failure — turning those into "nobody has paid" would report a broken
+     * integration as a shop with no sales, which is the opposite mistake and the
+     * worse one.
      */
     for (const [status, code] of [
       [500, 'provider_unavailable'],
       [429, 'rate_limited'],
       [401, 'auth'],
-      [400, 'invalid_request'],
+      [403, 'auth'],
     ] as const) {
       const { fetch } = answering(status, { status: 'error', message: 'nope', data: null });
       const err = await failureOf(provider(fetch).fetchIntent('plaspool-ref-002'));

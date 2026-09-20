@@ -91,6 +91,33 @@ const BASE_URL = 'https://api.flutterwave.com/v3';
  */
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+/**
+ * The statuses `verify_by_reference` answers when NOBODY HAS PAID THIS YET.
+ *
+ * MEASURED AGAINST PRODUCTION, not inferred. `/v3/payments` mints a hosted LINK
+ * rather than a transaction, so no transaction exists under a `tx_ref` until a
+ * customer pays one, and this lookup has nothing to return. The first attempt at
+ * this guessed 404; the production sweep then asked about six real unpaid
+ * references and every one came back **HTTP 400**
+ * (`flutterwave.fetchIntent failed: invalid_request (http 400)`), so 400 is what
+ * it actually sends. 404 stays in the set because it costs nothing and is the
+ * status the same condition would conventionally carry.
+ *
+ * WHY 400 IS SAFE TO READ THIS WAY HERE, when `#classify` rightly calls every
+ * other 4xx an `invalid_request`: the only input this endpoint takes is the
+ * reference. A malformed REQUEST would fail for the paid references too, and it
+ * does not — the same adapter verified a genuinely captured charge on this
+ * deployment the same day. And the two costs are not symmetric. Reading it as
+ * "unpaid" risks never recovering a payment whose reference we somehow sent
+ * malformed; NOT reading it that way makes every abandoned cart a permanent
+ * "gateway unreachable" on the sweep's report, which trains an operator to
+ * ignore the one alarm this feature exists to raise.
+ *
+ * SCOPED TO `fetchIntent`. `createIntent` and `refund` share `#request` and are
+ * untouched: a 400 from either is a real refusal about real money.
+ */
+const UNKNOWN_REFERENCE_STATUSES: ReadonlySet<number> = new Set([400, 404]);
+
 export interface FlutterwaveConfig {
   /** `FLWSECK-…` live, `FLWSECK_TEST-…` test. Also the value `config.ts` refuses to log. NEVER logged here either. */
   secretKey: string;
@@ -678,9 +705,10 @@ export class FlutterwaveProvider implements PaymentProvider {
    * `verify_by_reference` takes — never by Flutterwave's numeric id, which we
    * may not even have yet if the customer has not returned from checkout.
    *
-   * A 404 IS "NOBODY HAS PAID THIS YET", NOT A FAILURE — and this is the one
-   * place in the adapter that reads a status code for meaning rather than for
-   * classification.
+   * A 400 OR 404 IS "NOBODY HAS PAID THIS YET", NOT A FAILURE — and this is the
+   * one place in the adapter that reads a status code for meaning rather than for
+   * classification. `UNKNOWN_REFERENCE_STATUSES` carries which, and the measured
+   * evidence that 400 is the one Flutterwave actually sends.
    *
    * WHY IT HAS TO. Unlike Paystack, which registers a transaction at
    * `/transaction/initialize` and can therefore verify it as `abandoned`
@@ -700,11 +728,11 @@ export class FlutterwaveProvider implements PaymentProvider {
    * learns to ignore it. The storefront's own `/confirm` poll had the same edge:
    * a shopper who abandoned and came back got a 5xx rather than "still unpaid".
    *
-   * NARROW ON PURPOSE. Only 404, and only here. It reasons from the status
-   * code — the same basis `#classify` uses — and not from Flutterwave's message
-   * wording, which this adapter still refuses to match on because no sandbox has
-   * confirmed it (see `#classify`). Every other refusal, including a 2xx whose
-   * envelope says `error`, still throws exactly as it did.
+   * NARROW ON PURPOSE. Only the two statuses above, and only here. It reasons
+   * from the status code — the same basis `#classify` uses — and not from
+   * Flutterwave's message wording, which this adapter still refuses to match on
+   * because no sandbox has confirmed it (see `#classify`). A 401, a 429, a 5xx
+   * and a 2xx whose envelope says `error` all still throw exactly as they did.
    */
   async fetchIntent(providerIntentId: string): Promise<ProviderIntent> {
     let data: Record<string, unknown>;
@@ -715,7 +743,7 @@ export class FlutterwaveProvider implements PaymentProvider {
         `/transactions/verify_by_reference?tx_ref=${encodeURIComponent(providerIntentId)}`,
       );
     } catch (cause) {
-      if (cause instanceof ProviderError && cause.status === 404) {
+      if (cause instanceof ProviderError && UNKNOWN_REFERENCE_STATUSES.has(cause.status ?? 0)) {
         return {
           providerIntentId,
           status: 'requires_payment',
