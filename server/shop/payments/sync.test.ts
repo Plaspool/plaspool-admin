@@ -418,3 +418,65 @@ describe('reconcileIntent is the one mechanism', () => {
     expect(again).toMatchObject({ moved: false, newEvent: false, duplicate: true });
   });
 });
+
+describe('a recovery pass never cancels anything', () => {
+  it('reports a gateway-reported failure and writes NOTHING', async () => {
+    const intent = await anIntent('idem-abandoned');
+    /*
+     * Paystack maps `abandoned` to `failed`, and an abandoned checkout is the
+     * ordinary end of most checkouts. In this system `payment.failed` is not
+     * informational: Orders' consumer CANCELS the order on it, releases its
+     * reservations and emails the customer — and where no order exists yet, the
+     * event parks forever awaiting a checkout that will never complete, one row
+     * per abandoned cart, which also destroys the `commerce_events WHERE
+     * processed_at IS NULL` count the owner reads as this pipeline's health.
+     */
+    provider.settle(intent.providerIntentId!, 'failed');
+
+    const out = await syncPaymentIntents(db, deps(), NOW);
+
+    /* Asked, and told — but acted on nowhere. */
+    expect(out).toEqual({ checked: 1, changed: 0, captured: 0, failed: 0 });
+    expect((await getIntent(db, intent.id))?.status).toBe('requires_payment');
+    /*
+     * NOT STORED, which is the mechanism rather than a shortcut: an unprocessed
+     * event row is picked up by `drainPaymentEvents` on the next pass and applied
+     * THERE, so "store but do not apply" would apply it seconds later through a
+     * different door.
+     */
+    expect(await eventTypes()).toEqual([]);
+    expect(await outboxTypes()).toEqual([]);
+    /* But we did look, so the queue advances rather than re-asking forever. */
+    expect(await syncedAt(intent.id)).toBe(NOW);
+  });
+
+  it('tells the caller what the gateway said, so an operator can act on it', async () => {
+    const intent = await anIntent('idem-abandoned-report');
+    provider.settle(intent.providerIntentId!, 'failed');
+
+    const { result } = await refreshIntentNow(db, intent.id, { provider, checkout, now: NOW });
+
+    /* The button reports "the gateway says this failed" and changes nothing —
+       cancelling stays a deliberate act on the order screen. */
+    expect(result).toMatchObject({ gatewayStatus: 'failed', moved: false, newEvent: false });
+    expect((await getIntent(db, intent.id))?.status).toBe('requires_payment');
+  });
+
+  it('still applies a failure for the storefront confirm, which must show it', async () => {
+    const intent = await anIntent('idem-confirm-failed');
+    provider.settle(intent.providerIntentId!, 'failed');
+
+    /* `applyWhen: 'any'` is the confirm route's, and only its: a customer back
+       from a failed payment has to be shown that it failed. */
+    const out = await reconcileIntent(db, intent, {
+      provider,
+      checkout,
+      now: NOW,
+      applyWhen: 'any',
+    });
+
+    expect(out).toMatchObject({ gatewayStatus: 'failed', moved: true, newEvent: true });
+    expect((await getIntent(db, intent.id))?.status).toBe('failed');
+    expect(await eventTypes()).toEqual(['verify.failed']);
+  });
+});

@@ -752,6 +752,16 @@ export function createPaymentRoutes(deps: PaymentDeps = {}): Hono<AppEnv> {
       provider: providerFor(intent.provider, factories),
       checkout,
       now: Date.now(),
+      /*
+       * `'any'`, AND THIS IS THE ONLY CALLER THAT MAY PASS IT. A customer who has
+       * just come back from a payment that failed must be shown that it failed —
+       * that is what this route is for, and it is the behaviour it had before
+       * `reconcileIntent` was extracted out of it. The sweep and the admin's
+       * Refresh status button both default to `'money'`, because in this system
+       * applying `failed` cancels an order and emails its customer;
+       * `ReconcileDeps.applyWhen` carries the full argument.
+       */
+      applyWhen: 'any',
     });
 
     if (outcome.anomaly) {

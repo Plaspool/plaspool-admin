@@ -95,6 +95,44 @@ export interface ReconcileDeps {
   /** Cart's port, so a capture found here completes its checkout. */
   checkout: PaymentsCheckoutPort;
   now: number;
+  /**
+   * WHICH GATEWAY ANSWERS THIS CALLER IS WILLING TO ACT ON.
+   *
+   * `'money'` — the DEFAULT for everything that asks on its own initiative (the
+   * sweep, the admin's Refresh status button): act only when the gateway says
+   * the money arrived (`captured`, `authorized`). Any other answer is REPORTED
+   * and applied nowhere.
+   *
+   * WHY THAT IS NOT TIMIDITY. Paystack maps `abandoned` to `failed`, and an
+   * abandoned checkout is the ordinary end of most checkouts. `payment.failed`
+   * is not an informational event in this system — Orders' consumer CANCELS the
+   * order on it, releases its reservations and emails the customer. So a sweep
+   * that applied every answer would, every ten minutes and unprompted:
+   *
+   * - cancel any order still waiting for payment and email its customer that it
+   *   was cancelled, on the strength of a gateway word the customer may be about
+   *   to act on — they can still pay an abandoned Paystack reference, which is
+   *   exactly why `paymentStatusRank` puts `failed` BELOW `captured`; and
+   * - for the far commoner case where no order exists at all, emit a
+   *   `payment.failed` that parks forever, because the consumer has no order to
+   *   cancel and parks awaiting a checkout that will never complete. One parked
+   *   row per abandoned cart, permanently — which also destroys the
+   *   `commerce_events WHERE processed_at IS NULL` count the owner reads as this
+   *   pipeline's health.
+   *
+   * The owner asked for one thing: find the payments that SUCCEEDED and that we
+   * missed. Cancelling orders is a different decision, with a customer-visible
+   * consequence, and it stays a deliberate act on the order screen rather than a
+   * side effect of a button labelled Refresh status. The operator is told what
+   * the gateway said (`gatewayStatus` on the response), so they can act on it.
+   *
+   * `'any'` — the STOREFRONT'S CONFIRM ROUTE, and only it. A customer who has
+   * just come back from a payment that failed must be shown that it failed; that
+   * is what the route is for, and it is the behaviour it already had before this
+   * file existed. Widening the sweep to `'any'` would be an owner's decision, not
+   * a tidy-up.
+   */
+  applyWhen?: 'money' | 'any';
 }
 
 /**
@@ -137,6 +175,30 @@ export async function reconcileIntent(
   if (truth.status === 'requires_payment') {
     return {
       gatewayStatus: 'requires_payment',
+      wasStatus: intent.status,
+      moved: false,
+      newEvent: false,
+      anomaly: null,
+      duplicate: false,
+    };
+  }
+
+  /*
+   * AN ANSWER THIS CALLER WILL NOT ACT ON — reported, and nothing written.
+   *
+   * NOT STORED, and that is the whole mechanism rather than a shortcut: an event
+   * row left unprocessed is picked up by `drainPaymentEvents` on the very next
+   * pass and applied there instead, so "store but do not apply" would apply it a
+   * few seconds later through a different door. Taking no action means writing
+   * nothing. `provider_synced_at` still advances at the caller, so the queue
+   * moves on, and `gatewayStatus` carries the answer back to whoever asked.
+   *
+   * See `ReconcileDeps.applyWhen` for why a recovery sweep must not act on
+   * `failed`: in this system that word cancels an order and emails a customer.
+   */
+  if ((deps.applyWhen ?? 'money') === 'money' && truth.status !== 'captured' && truth.status !== 'authorized') {
+    return {
+      gatewayStatus: truth.status,
       wasStatus: intent.status,
       moved: false,
       newEvent: false,
