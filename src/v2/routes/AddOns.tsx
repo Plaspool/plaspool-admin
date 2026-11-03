@@ -11,7 +11,7 @@ import { InfoTip } from '../ui/InfoTip';
 import { describeRule, summariseRules } from './add-on-copy';
 
 /**
- * ADD-ONS — `/products/add-ons`. Extras offered at checkout: a picture, a
+ * ADD-ONS — `/products/add-ons`. Extras offered to shoppers: a picture, a
  * name, a price, and rules that say when the shopper is asked or when it is
  * simply included.
  *
@@ -98,7 +98,7 @@ export default function AddOns() {
       <PageHeader
         icon={<Gift />}
         title="Add-ons"
-        subtitle="Extras offered at checkout — packaging, a gift note."
+        subtitle="Extras offered at checkout, and on the product page — packaging, a gift note."
         actions={
           <ButtonLink tone="primary" size="lg" to="/products/add-ons/new">
             <Plus aria-hidden="true" />
@@ -129,7 +129,7 @@ export default function AddOns() {
             body={
               search || tab !== 'all'
                 ? 'Try another tab or a shorter search.'
-                : 'Add-ons are extras offered at checkout — packaging, a gift note. Set the price and say when to offer it.'
+                : 'Add-ons are extras offered at checkout, and on the product page — packaging, a gift note. Set the price and say when to offer it.'
             }
             actions={
               search ? (

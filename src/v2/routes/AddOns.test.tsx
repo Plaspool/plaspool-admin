@@ -84,6 +84,6 @@ describe('Add-ons', () => {
     items = [];
     mount();
     expect(await screen.findByText('No add-ons yet')).toBeTruthy();
-    expect(screen.getByText(/Add-ons are extras offered at checkout/)).toBeTruthy();
+    expect(screen.getByText(/Add-ons are extras offered at checkout, and on the product page/)).toBeTruthy();
   });
 });

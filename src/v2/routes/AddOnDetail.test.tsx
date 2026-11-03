@@ -169,7 +169,7 @@ describe('AddOnDetail', () => {
     when(ONE, echoing(box));
     mount('/products/add-ons/ado_box');
     await screen.findByDisplayValue('Gift box');
-    const offered = screen.getByRole('switch', { name: 'Offered at checkout' }) as HTMLInputElement;
+    const offered = screen.getByRole('switch', { name: 'Offered to shoppers' }) as HTMLInputElement;
     expect(offered.checked).toBe(false);
     await user.click(offered);
     expect(offered.checked).toBe(true);
@@ -198,7 +198,7 @@ describe('AddOnDetail', () => {
     // The screen adopts the archived row: the badge, the sidebar, and the menu
     // now offering the way back.
     expect(await screen.findByText('Archived')).toBeTruthy();
-    expect(screen.queryByRole('switch', { name: 'Offered at checkout' })).toBeNull();
+    expect(screen.queryByRole('switch', { name: 'Offered to shoppers' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'More actions' }));
     expect(await screen.findByRole('menuitem', { name: 'Put it back' })).toBeTruthy();
   });
