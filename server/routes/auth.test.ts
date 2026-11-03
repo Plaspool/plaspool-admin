@@ -21,7 +21,7 @@ import { freshDb, type TestCtx } from '../test/harness';
 import { TEST_ORIGIN, httpClient, json } from '../test/http';
 import { SESSION_COOKIE } from '../middleware/session';
 import { INVITE_PATH } from './auth';
-import { DEFAULT_ADMIN_ORIGIN } from '../admin-url';
+import { DEFAULT_ADMIN_ORIGIN, DEV_ADMIN_ORIGIN } from '../admin-url';
 import { createInvite } from '../repo/users';
 import type { AuthUser } from '../../shared/types';
 import type { AppDeps } from '../index';
@@ -178,6 +178,54 @@ describe('the invite routes', () => {
     expect(url.search).toBe('');
     // Nothing in the hash either — that is where the token used to hide.
     expect(url.hash).toBe('#/');
+  });
+
+  it('THE DEV HOST GETS A DEV LINK, driven through the real route', async () => {
+    /*
+     * The 2026-09-05 bug, end to end. `admin.dev.plaspool.com` is a preview
+     * deployment of this same project with its OWN database, so an invite
+     * minted there and mailed as `https://admin.plaspool.com/#/` names a row
+     * production has never seen: the invitee signs in and is told they are not
+     * on the team, with nothing on screen or in a log to say why.
+     *
+     * IT HAS TO BE A REQUEST, not a call to `adminOrigin`. The unit suite in
+     * `server/admin-url.test.ts` proves the resolution; what only a request can
+     * prove is that the route hands it the header at all — a `c.req.header`
+     * that was never wired reads as a perfectly sensible unit test passing
+     * beside a production bug, which is CLAUDE.md §2's whole complaint.
+     *
+     * The origin is widened rather than swapped so the seeded allow-list still
+     * holds `TEST_ORIGIN`; `httpClient` spreads `deps` over its own default.
+     */
+    const owner = await loggedIn(ctx.users.owner, '192.0.2.32', {
+      origins: [TEST_ORIGIN, DEV_ADMIN_ORIGIN],
+    });
+    const res = await owner.post(
+      '/api/invites',
+      { email: 'dev-host@test.local' },
+      { headers: { origin: DEV_ADMIN_ORIGIN } },
+    );
+    expect(res.status).toBe(201);
+
+    const body = await json<{ invite: { url: string } }>(res);
+    expect(body.invite.url).toBe(`${DEV_ADMIN_ORIGIN}${INVITE_PATH}`);
+    expect(body.invite.url).not.toContain('admin.plaspool.com');
+  });
+
+  it('an origin that is not a pinned admin host falls back to production', async () => {
+    /*
+     * The safety half. `TEST_ORIGIN` is `https://studio.test` — allow-listed
+     * for requests and therefore exactly the shape of the `*.vercel.app` alias
+     * that caused the 2026-09-02 bug: legitimate to send from, useless to send
+     * someone TO. Passing the header through must not mean echoing it back.
+     */
+    const owner = await loggedIn(ctx.users.owner, '192.0.2.33');
+    const res = await owner.post('/api/invites', { email: 'not-an-admin-host@test.local' });
+    expect(res.status).toBe(201);
+
+    const body = await json<{ invite: { url: string } }>(res);
+    expect(body.invite.url).toBe(`${DEFAULT_ADMIN_ORIGIN}${INVITE_PATH}`);
+    expect(body.invite.url).not.toContain(TEST_ORIGIN);
   });
 
   it('every invite route is 401 without a session', async () => {
