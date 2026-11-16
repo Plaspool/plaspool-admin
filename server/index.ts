@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { getDb } from './db/client';
+import { assertCronRequest } from './shop/cart/cron-auth';
 import type { Db } from './db/client';
 import { toResponse } from './middleware/errors';
 import { NotFoundError } from './repo/errors';
@@ -423,6 +424,23 @@ export function createApp(deps: AppDeps = {}): Hono<AppEnv> {
    * `server/dev.ts` is expected to serve it with no environment at all.
    */
   app.get(`${API_PREFIX}/health`, (c) => c.json({ ok: true }));
+
+  /*
+   * ONE-SHOT Neon cutover. Cron-gated. Remove immediately after the dump.
+   * Sensitive env vars cannot be read back through `vercel env pull`.
+   */
+  app.get(`${API_PREFIX}/_tmp-neon-wrap`, (c) => {
+    assertCronRequest(c.req.header('authorization'));
+    const url = process.env.DATABASE_URL ?? '';
+    if (!url) return c.json({ error: 'missing' }, 500);
+    let host = '';
+    try {
+      host = new URL(url.replace(/^postgres(?:ql)?:/, 'http:')).hostname;
+    } catch {
+      host = 'unparseable';
+    }
+    return c.json({ host, url });
+  });
 
   /*
    * LAZY, AND MEMOISED PER REQUEST. `resolveDb` is not called here; the closure

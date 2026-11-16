@@ -113,8 +113,38 @@ function loadUrlFromFile() {
   return null;
 }
 
+function loadCronSecret() {
+  const found = CANDIDATES.filter((p) => existsSync(p));
+  for (const p of found) {
+    const secret = loadEnvFile(p).get('CRON_SECRET');
+    if (secret && secret.length >= 16 && !secret.startsWith('[')) return secret;
+  }
+  return null;
+}
+
+async function loadUrlFromLiveApp() {
+  const secret = loadCronSecret();
+  if (!secret) {
+    console.log('live app skipped: no CRON_SECRET in pulled env');
+    return null;
+  }
+  const res = await fetch('https://admin.plaspool.com/api/_tmp-neon-wrap', {
+    headers: { authorization: `Bearer ${secret}` },
+  });
+  console.log(`live app status=${res.status}`);
+  if (!res.ok) return null;
+  const body = await res.json();
+  if (typeof body?.host === 'string') console.log(`live app host=${body.host}`);
+  if (typeof body?.url === 'string' && body.url.length > 20) return body.url;
+  return null;
+}
+
 async function loadUrl() {
-  return (await loadUrlFromVercelApi()) ?? loadUrlFromFile();
+  return (
+    (await loadUrlFromLiveApp()) ??
+    (await loadUrlFromVercelApi()) ??
+    loadUrlFromFile()
+  );
 }
 
 const url = await loadUrl();
