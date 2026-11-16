@@ -23,29 +23,58 @@ const CANDIDATES = [
   '.vercel/.env.production',
 ];
 
+function strip(raw) {
+  let v = raw.trim().replace(/\r$/, '');
+  if (
+    (v.startsWith('"') && v.endsWith('"')) ||
+    (v.startsWith("'") && v.endsWith("'"))
+  ) {
+    v = v.slice(1, -1).trim();
+  }
+  return v;
+}
+
+function loadEnvFile(path) {
+  const text = readFileSync(path, 'utf8');
+  const keys = [...text.matchAll(/^([A-Z0-9_]+)=/gm)].map((m) => m[1]);
+  console.log(`file ${path} keys=${keys.join(',')}`);
+  const map = new Map();
+  for (const line of text.split(/\n/)) {
+    const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
+    if (!m) continue;
+    map.set(m[1], strip(m[2]));
+  }
+  return map;
+}
+
 function loadUrl() {
   const found = CANDIDATES.filter((p) => existsSync(p));
+  console.log(`env files present: ${found.join(', ') || '(none)'}`);
+  const prefer = [
+    'DATABASE_URL_UNPOOLED',
+    'POSTGRES_URL_NON_POOLING',
+    'DATABASE_URL',
+    'POSTGRES_URL',
+    'POSTGRES_PRISMA_URL',
+  ];
   for (const p of found) {
-    const text = readFileSync(p, 'utf8');
-    const m = text.match(/^DATABASE_URL=(.*)$/m);
-    if (!m) continue;
-    let v = m[1].trim();
-    if (
-      (v.startsWith('"') && v.endsWith('"')) ||
-      (v.startsWith("'") && v.endsWith("'"))
-    ) {
-      v = v.slice(1, -1);
+    const map = loadEnvFile(p);
+    for (const key of prefer) {
+      const v = map.get(key);
+      if (v) {
+        console.log(`using ${key} length=${v.length} prefix=${v.slice(0, 12)}`);
+        return v;
+      }
     }
-    if (v.length > 0) return v;
   }
   throw new Error(
-    `DATABASE_URL not found. Present files: ${found.join(', ') || '(none)'}`,
+    `No postgres URL in pulled env. Present files: ${found.join(', ') || '(none)'}`,
   );
 }
 
 const url = loadUrl();
 try {
-  const host = new URL(url.replace(/^postgres(ql)?:/, 'http:')).hostname;
+  const host = new URL(url.replace(/^postgres(?:ql)?:/, 'http:')).hostname;
   console.log(`dumping host=${host}`);
 } catch {
   console.log('dumping host=(unparseable)');
@@ -53,8 +82,18 @@ try {
 
 const dump = spawnSync(
   'pg_dump',
-  [url, '--no-owner', '--no-privileges', '--format=custom', '--file=neon.dump'],
-  { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  [
+    '--no-owner',
+    '--no-privileges',
+    '--format=custom',
+    '--file=neon.dump',
+    `--dbname=${url}`,
+  ],
+  {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, PGSSLMODE: 'require' },
+  },
 );
 if (dump.status !== 0) {
   const err = `${dump.stderr || ''}\n${dump.stdout || ''}`.replaceAll(url, '[redacted]');
