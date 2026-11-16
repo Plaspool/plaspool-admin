@@ -47,7 +47,49 @@ function loadEnvFile(path) {
   return map;
 }
 
-function loadUrl() {
+function describe(label, v) {
+  console.log(
+    `${label} length=${v.length} startsPostgres=${v.startsWith('postgres')} hasAt=${v.includes('@')} c0=${v.charCodeAt(0)} cN=${v.charCodeAt(v.length - 1)}`,
+  );
+}
+
+async function loadUrlFromVercelApi() {
+  const token = process.env.VERCEL_TOKEN;
+  const projectId = process.env.VERCEL_PROJECT_ID;
+  const teamId = process.env.VERCEL_ORG_ID;
+  if (!token || !projectId || !teamId) {
+    console.log('vercel api skipped: missing token/project/team');
+    return null;
+  }
+  const url = `https://api.vercel.com/v9/projects/${projectId}/env?decrypt=true&teamId=${teamId}`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) {
+    console.log(`vercel api ${res.status}`);
+    return null;
+  }
+  const data = await res.json();
+  const envs = Array.isArray(data.envs) ? data.envs : [];
+  console.log(`vercel api rows=${envs.length}`);
+  const prefer = ['DATABASE_URL_UNPOOLED', 'POSTGRES_URL_NON_POOLING', 'DATABASE_URL', 'POSTGRES_URL'];
+  const production = envs.filter((e) => Array.isArray(e.target) && e.target.includes('production'));
+  for (const row of production) {
+    if (typeof row.value === 'string') {
+      console.log(`api ${row.key} length=${row.value.length} targets=${row.target.join('+')}`);
+    } else {
+      console.log(`api ${row.key} valueType=${typeof row.value}`);
+    }
+  }
+  for (const key of prefer) {
+    const row = production.find((e) => e.key === key && typeof e.value === 'string' && e.value.length > 20);
+    if (row) {
+      describe(`api ${key}`, row.value);
+      return row.value;
+    }
+  }
+  return null;
+}
+
+function loadUrlFromFile() {
   const found = CANDIDATES.filter((p) => existsSync(p));
   console.log(`env files present: ${found.join(', ') || '(none)'}`);
   const prefer = [
@@ -59,20 +101,24 @@ function loadUrl() {
   ];
   for (const p of found) {
     const map = loadEnvFile(p);
+    for (const [key, v] of map) describe(`file ${key}`, v);
     for (const key of prefer) {
       const v = map.get(key);
-      if (v) {
-        console.log(`using ${key} length=${v.length} prefix=${v.slice(0, 12)}`);
+      if (v && v.length > 20) {
+        describe(`using file ${key}`, v);
         return v;
       }
     }
   }
-  throw new Error(
-    `No postgres URL in pulled env. Present files: ${found.join(', ') || '(none)'}`,
-  );
+  return null;
 }
 
-const url = loadUrl();
+async function loadUrl() {
+  return (await loadUrlFromVercelApi()) ?? loadUrlFromFile();
+}
+
+const url = await loadUrl();
+if (!url) throw new Error('No usable postgres URL from Vercel API or pulled env file');
 try {
   const host = new URL(url.replace(/^postgres(?:ql)?:/, 'http:')).hostname;
   console.log(`dumping host=${host}`);
