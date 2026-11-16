@@ -1,0 +1,42 @@
+# One-shot: pull production DATABASE_URL from Vercel and dump Neon.
+# The dump is AES-encrypted before upload so the public artifact is ciphertext.
+# Delete this workflow and branch after the cutover.
+name: tmp-neon-pull
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Pull Vercel production env
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: team_B4wbpcZQWPJ2KxdhcKOaRMSi
+          VERCEL_PROJECT_ID: prj_PcphVWAqTVHb1XbjWfulMbRaCqTH
+        run: |
+          set +x
+          npx vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Install postgresql-client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Dump Neon and encrypt
+        run: node .github/workflows/tmp-encrypt-dump.mjs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neon-dump-enc
+          path: |
+            neon.dump.enc
+            neon.dump.key.json
+          retention-days: 1
+          if-no-files-found: error
